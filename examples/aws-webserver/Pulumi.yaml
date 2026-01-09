@@ -1,0 +1,3 @@
+name: aws-webserver-hcl
+runtime: hcl
+description: A simple AWS webserver example using HCL
