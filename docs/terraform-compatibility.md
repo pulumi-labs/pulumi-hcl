@@ -89,21 +89,19 @@ module "vpc" {
 
 ### Provisioners
 
-Provisioner blocks (`local-exec`, `remote-exec`, `file`) are not supported and will produce a warning:
+Provisioner blocks (`local-exec`, `remote-exec`, `file`) are parsed but not yet executed. They will map to the [Pulumi Command provider](https://www.pulumi.com/registry/packages/command/) once implemented:
 
 ```hcl
 resource "aws_instance" "web" {
   ami           = "ami-12345678"
   instance_type = "t3.micro"
 
-  # NOT SUPPORTED
+  # PARSED BUT NOT YET EXECUTED
   provisioner "remote-exec" {
     inline = ["sudo apt-get update"]
   }
 }
 ```
-
-**Workaround**: Use the [Pulumi Command provider](https://www.pulumi.com/registry/packages/command/).
 
 ### Variable Configuration
 
@@ -220,7 +218,7 @@ Existing Terraform state files are not compatible. When migrating, import resour
 | `replace_triggered_by` | No | No direct Pulumi equivalent |
 | `precondition` / `postcondition` | Pending | Parsed but not enforced |
 | Modules | No | Not yet implemented |
-| Provisioners | No | Not supported; use Command provider |
+| Provisioners | Pending | Will map to Command provider |
 | `moved` / `import` blocks | No | Use CLI commands |
 | Functions | Mostly | 80+ supported; `rsadecrypt` pending |
 
