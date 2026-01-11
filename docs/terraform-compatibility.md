@@ -34,28 +34,19 @@ These are cases where valid HCL syntax is interpreted differently by Pulumi HCL.
 
 ### Lifecycle Block Behavior
 
-The `lifecycle` block is parsed, but some options have different semantics:
+The `lifecycle` block is supported, but not all options have an effect:
 
-| Lifecycle Option | Terraform Behavior | Pulumi HCL Behavior |
-|------------------|-------------------|---------------------|
-| `prevent_destroy` | Prevents `terraform destroy` from removing the resource | Maps to Pulumi's `protect` option (similar effect) |
-| `create_before_destroy` | Creates replacement before destroying original | Parsed but not enforced; Pulumi determines replacement ordering |
-| `ignore_changes` | Ignores specified attribute changes during updates | Supported via Pulumi's `ignoreChanges` resource option |
-| `replace_triggered_by` | Forces replacement when referenced resources change | Parsed but has no effect |
-| `precondition` / `postcondition` | Validates conditions before/after apply | Parsed but not enforced |
+| Lifecycle Option | Status | Behavior |
+|------------------|--------|----------|
+| `prevent_destroy` | Works | Maps to Pulumi's `protect` resource option |
+| `ignore_changes` | Works | Maps to Pulumi's `ignoreChanges` resource option |
+| `create_before_destroy` | No effect | Pulumi uses its own replacement ordering logic |
+| `replace_triggered_by` | No effect | Parsed but ignored |
+| `precondition` / `postcondition` | No effect | Parsed but validations do not run |
 
-**Example**:
-```hcl
-resource "aws_instance" "web" {
-  # ...
+For `create_before_destroy`: Pulumi's engine determines replacement strategy based on resource type and provider behavior. You cannot override this ordering via HCL.
 
-  lifecycle {
-    prevent_destroy = true        # Works - maps to Pulumi protect
-    ignore_changes  = [tags]      # Works - maps to ignoreChanges
-    create_before_destroy = true  # Parsed but Pulumi controls ordering
-  }
-}
-```
+For `replace_triggered_by`: If you depend on this to force resource replacement when dependencies change, you'll need to restructure your configuration or trigger replacements manually.
 
 ### Provider Source Names
 
@@ -247,7 +238,7 @@ Existing Terraform state files are not compatible with Pulumi. When migrating, e
 | Providers | Yes | Use `pulumi/` source prefix |
 | `count` / `for_each` | Yes | Full support |
 | `depends_on` | Yes | Full support |
-| `lifecycle` | Partial | Some options differ; see above |
+| `lifecycle` | Partial | `prevent_destroy` and `ignore_changes` work; others ignored |
 | Modules | No | Not yet implemented |
 | Provisioners | No | Silently ignored; use Command provider |
 | `moved` / `import` blocks | No | Use CLI commands |
