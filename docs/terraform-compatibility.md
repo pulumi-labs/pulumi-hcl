@@ -1,31 +1,27 @@
 # Terraform HCL Compatibility
 
-Pulumi HCL allows you to write infrastructure as code using Terraform-compatible HCL syntax while leveraging the Pulumi engine for state management, secrets, and deployments.
+Pulumi HCL lets you write infrastructure using Terraform-compatible HCL syntax while running on the Pulumi engine. This document covers what works, what's different, and what's not yet implemented.
 
-**Goal**: Maximum compatibility with Terraform HCL syntax with no gratuitous differences.
+## Supported Features
 
-This document describes what's supported, what's not yet implemented, and what platform-level differences to expect when using Pulumi instead of Terraform.
+The following HCL constructs work with identical behavior to Terraform:
 
-## Fully Supported
+### Core Blocks
 
-The following Terraform HCL constructs work with identical behavior:
-
-### Core Constructs
-
-| Feature | Notes |
-|---------|-------|
-| `resource` blocks | Full support including nested blocks |
-| `data` source blocks | Invoked via Pulumi provider functions |
-| `variable` blocks | Type constraints, defaults, nullable, sensitive |
-| `locals` blocks | Full expression interpolation |
-| `output` blocks | value, description, sensitive, depends_on |
-| `provider` blocks | Including alias support |
+| Block | Notes |
+|-------|-------|
+| `resource` | Full support including nested blocks |
+| `data` | Data sources invoked via Pulumi provider functions |
+| `variable` | Type constraints, defaults, nullable, sensitive |
+| `locals` | Full expression interpolation |
+| `output` | value, description, sensitive, depends_on |
+| `provider` | Including alias support |
 | `terraform.required_providers` | Provider version constraints |
 
 ### Meta-Arguments
 
-| Feature | Notes |
-|---------|-------|
+| Argument | Notes |
+|----------|-------|
 | `count` | Index expansion with `count.index` |
 | `for_each` | Key expansion with `each.key`, `each.value` |
 | `depends_on` | Explicit dependency declarations |
@@ -33,12 +29,12 @@ The following Terraform HCL constructs work with identical behavior:
 
 ### Lifecycle Options
 
-| Option | Notes |
-|--------|-------|
-| `prevent_destroy` | Maps to Pulumi's `protect` resource option |
-| `ignore_changes` | Maps to Pulumi's `ignoreChanges` resource option |
+| Option | Pulumi Equivalent |
+|--------|-------------------|
+| `prevent_destroy` | [`protect`](https://www.pulumi.com/docs/iac/concepts/resources/options/protect/) |
+| `ignore_changes` | [`ignoreChanges`](https://www.pulumi.com/docs/iac/concepts/resources/options/ignorechanges/) |
 
-### Expressions and Functions
+### Expressions
 
 | Feature | Notes |
 |---------|-------|
@@ -46,11 +42,11 @@ The following Terraform HCL constructs work with identical behavior:
 | Splat expressions | `resource.name[*].attr` |
 | Resource references | `aws_instance.web.id`, `data.aws_ami.ubuntu.id` |
 | Complex types | Lists, maps, sets, objects, tuples |
-| Built-in functions | 80+ Terraform functions supported |
+| Built-in functions | 80+ Terraform functions |
 
 ### Sensitive Values
 
-Values marked `sensitive` are automatically wrapped as Pulumi secrets, providing encryption at rest:
+Values marked `sensitive` become Pulumi secrets, providing encryption at rest:
 
 ```hcl
 variable "database_password" {
@@ -59,107 +55,13 @@ variable "database_password" {
 }
 ```
 
-## Not Yet Implemented
-
-These features are parsed for compatibility but not yet functional. They represent temporary implementation gaps.
-
-### Lifecycle Options
-
-| Option | Status |
-|--------|--------|
-| `create_before_destroy` | Parsed but not yet wired to Pulumi's [`deleteBeforeReplace`](https://www.pulumi.com/docs/iac/concepts/resources/options/deletebeforereplace/) |
-| `replace_triggered_by` | Not supported (no direct Pulumi equivalent) |
-| `precondition` / `postcondition` | Parsed but validations do not run |
-
-**Note on `replace_triggered_by`**: Terraform's `replace_triggered_by` cascades replacement when *other* resources change. Pulumi's [`replaceOnChanges`](https://www.pulumi.com/docs/iac/concepts/resources/options/replaceonchanges/) triggers replacement when properties on *this* resource change—different semantics that don't directly map.
-
-### Modules
-
-Module blocks produce an error at runtime:
-
-```hcl
-# NOT YET SUPPORTED - will error
-module "vpc" {
-  source = "./modules/vpc"
-  cidr_block = "10.0.0.0/16"
-}
-```
-
-**Workaround**: Inline the module's resources directly into your configuration.
-
-### Provisioners
-
-Provisioner blocks (`local-exec`, `remote-exec`, `file`) are parsed but not yet executed. They will map to the [Pulumi Command provider](https://www.pulumi.com/registry/packages/command/) once implemented:
-
-```hcl
-resource "aws_instance" "web" {
-  ami           = "ami-12345678"
-  instance_type = "t3.micro"
-
-  # PARSED BUT NOT YET EXECUTED
-  provisioner "remote-exec" {
-    inline = ["sudo apt-get update"]
-  }
-}
-```
-
-### Variable Configuration
-
-Variables currently only use default values from HCL. Pulumi stack configuration (`pulumi config set`) is not yet integrated:
-
-```hcl
-variable "region" {
-  type    = string
-  default = "us-west-2"  # Only this default is used
-}
-```
-
-**Workaround**: Set values via environment variables (`TF_VAR_region=us-east-1`) or ensure all variables have defaults.
-
-### Variable Validation
-
-Validation blocks are not yet enforced (will produce a warning):
-
-```hcl
-variable "instance_type" {
-  type    = string
-  default = "t3.micro"
-
-  # NOT YET ENFORCED
-  validation {
-    condition     = can(regex("^t3\\.", var.instance_type))
-    error_message = "Must be a t3 instance type."
-  }
-}
-```
-
-### State Migration Blocks
-
-`moved` and `import` blocks are not supported:
-
-```hcl
-# NOT SUPPORTED
-moved {
-  from = aws_instance.old_name
-  to   = aws_instance.new_name
-}
-```
-
-**Workaround**: Use `pulumi state rename` and `pulumi import` CLI commands.
-
-### Missing Functions
-
-| Function | Status |
-|----------|--------|
-| `rsadecrypt()` | Not yet implemented |
-
 ## Platform Differences
 
-These are expected differences when using Pulumi instead of Terraform. They don't affect HCL syntax or behavior—just how you operate the tool.
+These are expected differences when using Pulumi instead of Terraform. They affect tooling, not HCL behavior.
 
-### Provider Configuration
+### Provider Sources
 
-Provider sources use Pulumi's namespace:
+Use the `pulumi/` namespace for providers:
 
 ```hcl
 terraform {
@@ -176,56 +78,139 @@ Terraform-style resource type names (e.g., `aws_instance`) are automatically map
 
 ### Ignored Blocks
 
-The following blocks are parsed but have no effect (Pulumi handles these concerns differently):
+These blocks are parsed but have no effect:
 
 ```hcl
 terraform {
-  backend "s3" { }        # Ignored - use Pulumi state backends
-  cloud { }               # Ignored - use Pulumi Cloud
-  required_version = ""   # Ignored - Pulumi has its own versioning
+  backend "s3" { }        # Use Pulumi state backends instead
+  cloud { }               # Use Pulumi Cloud instead
+  required_version = ""   # Pulumi has its own versioning
 }
 ```
 
-### CLI and State
+### CLI Commands
 
-| Concern | Terraform | Pulumi HCL |
-|---------|-----------|------------|
-| **State storage** | Local files, S3, Terraform Cloud | Pulumi Cloud or self-managed backends |
-| **State commands** | `terraform state` | `pulumi state` |
-| **Import resources** | `terraform import` | `pulumi import` |
-| **Workspaces** | `terraform workspace` | Pulumi stacks |
-| **Preview changes** | `terraform plan` | `pulumi preview` |
-| **Apply changes** | `terraform apply` | `pulumi up` |
-| **Destroy** | `terraform destroy` | `pulumi destroy` |
+| Operation | Terraform | Pulumi |
+|-----------|-----------|--------|
+| Preview changes | `terraform plan` | `pulumi preview` |
+| Apply changes | `terraform apply` | `pulumi up` |
+| Destroy | `terraform destroy` | `pulumi destroy` |
+| State operations | `terraform state` | `pulumi state` |
+| Import resources | `terraform import` | `pulumi import` |
+| Environments | `terraform workspace` | Pulumi stacks |
 
-Existing Terraform state files are not compatible. When migrating, import resources with `pulumi import` or recreate them.
+Existing Terraform state files are not compatible. Import resources with `pulumi import` or recreate them.
+
+## Unsupported Features
+
+These features cannot be supported due to fundamental differences between Pulumi and Terraform.
+
+### `replace_triggered_by`
+
+Terraform's `replace_triggered_by` cascades replacement when *other* resources change. Pulumi's [`replaceOnChanges`](https://www.pulumi.com/docs/iac/concepts/resources/options/replaceonchanges/) triggers replacement when properties on *this* resource change—different semantics that don't map directly.
+
+### `moved` and `import` Blocks
+
+Use `pulumi state rename` and `pulumi import` CLI commands instead.
+
+## Not Yet Implemented
+
+These features are parsed for compatibility but not yet functional. They represent temporary gaps.
+
+### Lifecycle Options
+
+| Option | Status |
+|--------|--------|
+| `create_before_destroy` | Will map to [`deleteBeforeReplace`](https://www.pulumi.com/docs/iac/concepts/resources/options/deletebeforereplace/) |
+| `precondition` / `postcondition` | Validations do not run yet |
+
+### Modules
+
+Module blocks produce an error at runtime:
+
+```hcl
+module "vpc" {
+  source     = "./modules/vpc"
+  cidr_block = "10.0.0.0/16"
+}
+# Error: module support not yet implemented
+```
+
+**Workaround**: Inline the module's resources directly.
+
+### Provisioners
+
+Provisioner blocks (`local-exec`, `remote-exec`, `file`) are parsed but not executed. They will map to the [Pulumi Command provider](https://www.pulumi.com/registry/packages/command/):
+
+```hcl
+provisioner "remote-exec" {
+  inline = ["sudo apt-get update"]
+}
+# Parsed but not yet executed
+```
+
+### Variable Configuration
+
+Variables use default values only. Pulumi stack configuration (`pulumi config set`) is not yet integrated:
+
+```hcl
+variable "region" {
+  type    = string
+  default = "us-west-2"  # Only this default is used
+}
+```
+
+**Workaround**: Use environment variables (`TF_VAR_region=us-east-1`) or ensure all variables have defaults.
+
+### Variable Validation
+
+Validation blocks are parsed but not enforced:
+
+```hcl
+variable "instance_type" {
+  type    = string
+  default = "t3.micro"
+
+  validation {
+    condition     = can(regex("^t3\\.", var.instance_type))
+    error_message = "Must be a t3 instance type."
+  }
+}
+# Validation is not enforced
+```
+
+### Missing Functions
+
+| Function | Status |
+|----------|--------|
+| `rsadecrypt()` | Not yet implemented |
 
 ## Quick Reference
 
 | Feature | Status | Notes |
 |---------|:------:|-------|
-| Resources | Yes | Full support |
-| Data sources | Yes | Full support |
+| Resources | Yes | |
+| Data sources | Yes | |
 | Variables | Partial | Defaults only; stack config pending |
-| Locals | Yes | Full support |
-| Outputs | Yes | Full support |
+| Locals | Yes | |
+| Outputs | Yes | |
 | Providers | Yes | Use `pulumi/` source prefix |
-| `count` / `for_each` | Yes | Full support |
-| `depends_on` | Yes | Full support |
+| `count` / `for_each` | Yes | |
+| `depends_on` | Yes | |
 | `prevent_destroy` | Yes | Maps to `protect` |
 | `ignore_changes` | Yes | Maps to `ignoreChanges` |
-| `create_before_destroy` | Pending | Parsed but not yet functional |
+| `create_before_destroy` | Pending | Will map to `deleteBeforeReplace` |
 | `replace_triggered_by` | No | No direct Pulumi equivalent |
-| `precondition` / `postcondition` | Pending | Parsed but not enforced |
-| Modules | No | Not yet implemented |
+| `precondition` / `postcondition` | Pending | |
+| Modules | Pending | Not yet implemented |
 | Provisioners | Pending | Will map to Command provider |
 | `moved` / `import` blocks | No | Use CLI commands |
 | Functions | Mostly | 80+ supported; `rsadecrypt` pending |
 
 ## Getting Help
 
-If you encounter compatibility issues not covered here:
+If you encounter compatibility issues:
 
-1. Check the [Pulumi HCL GitHub repository](https://github.com/pulumi/pulumi-language-hcl) for known issues
-2. File an issue with a minimal reproduction case
-3. Join the [Pulumi Community Slack](https://slack.pulumi.com/) for community support
+1. Check the [GitHub repository](https://github.com/pulumi/pulumi-language-hcl) for known issues
+2. File an issue with a minimal reproduction
+3. Join the [Pulumi Community Slack](https://slack.pulumi.com/)
