@@ -18,6 +18,7 @@ package run
 import (
 	"context"
 	"fmt"
+	"os"
 	"strings"
 	"sync"
 
@@ -25,11 +26,13 @@ import (
 	"github.com/pulumi/pulumi-language-hcl/pkg/hcl/ast"
 	"github.com/pulumi/pulumi-language-hcl/pkg/hcl/eval"
 	"github.com/pulumi/pulumi-language-hcl/pkg/hcl/graph"
+	"github.com/pulumi/pulumi-language-hcl/pkg/hcl/modules"
 	"github.com/pulumi/pulumi-language-hcl/pkg/hcl/packages"
 	"github.com/pulumi/pulumi-language-hcl/pkg/hcl/parser"
 	"github.com/pulumi/pulumi-language-hcl/pkg/hcl/transform"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/resource"
 	"github.com/zclconf/go-cty/cty"
+	"github.com/zclconf/go-cty/cty/json"
 )
 
 // ResourceMonitor is the interface for registering resources with Pulumi.
@@ -47,15 +50,17 @@ type ResourceMonitor interface {
 
 // RegisterResourceRequest contains the parameters for registering a resource.
 type RegisterResourceRequest struct {
-	Type          string
-	Name          string
-	Inputs        resource.PropertyMap
-	Dependencies  []string
-	Protect       bool
-	IgnoreChanges []string
-	Aliases       []string
-	Provider      string
-	Parent        string
+	Type                    string
+	Name                    string
+	Inputs                  resource.PropertyMap
+	Dependencies            []string
+	Protect                 bool
+	IgnoreChanges           []string
+	Aliases                 []string
+	Provider                string
+	Parent                  string
+	DeleteBeforeReplace     bool
+	DeleteBeforeReplaceDef  bool // True if DeleteBeforeReplace was explicitly set
 }
 
 // RegisterResourceResponse contains the result of registering a resource.
@@ -114,6 +119,21 @@ type Engine struct {
 
 	// workDir is the working directory.
 	workDir string
+
+	// pulumiConfig contains Pulumi stack configuration values.
+	pulumiConfig map[string]string
+
+	// configSecretKeys lists keys that should be treated as secrets.
+	configSecretKeys []string
+
+	// moduleLoader loads and caches module configurations.
+	moduleLoader *modules.Loader
+
+	// moduleOutputs maps module keys to their output values.
+	moduleOutputs map[string]cty.Value
+
+	// parentURN is the parent resource URN (for child modules).
+	parentURN string
 }
 
 // EngineOptions configures the engine.
@@ -167,6 +187,10 @@ func NewEngine(config *ast.Config, opts *EngineOptions) *Engine {
 		stackName:         opts.StackName,
 		dryRun:            opts.DryRun,
 		workDir:           workDir,
+		pulumiConfig:      opts.Config,
+		configSecretKeys:  opts.ConfigSecretKeys,
+		moduleLoader:      modules.NewLoader(),
+		moduleOutputs:     make(map[string]cty.Value),
 	}
 }
 
@@ -468,28 +492,156 @@ func (e *Engine) processVariable(ctx context.Context, node *graph.Node) error {
 		return fmt.Errorf("variable node missing Variable field")
 	}
 
-	// Get variable value from config or use default
+	varName := node.Key[4:] // Remove "var." prefix
 	var val cty.Value
+	var isSecret bool
+	var valueSource string
 
-	// TODO: Get from Pulumi config
-	// For now, use the default value if available
-	if v.Default != nil {
-		var diags hcl.Diagnostics
-		val, diags = v.Default.Value(e.evaluator.Context().HCLContext())
-		if diags.HasErrors() {
-			return fmt.Errorf("evaluating variable default: %s", diags.Error())
+	// Variable value precedence (highest to lowest):
+	// 1. Environment variable TF_VAR_<name>
+	// 2. Pulumi stack config (projectName:<name>)
+	// 3. Default value
+
+	// Check environment variable first
+	envVarName := "TF_VAR_" + varName
+	if envVal := os.Getenv(envVarName); envVal != "" {
+		val = cty.StringVal(envVal)
+		valueSource = "environment"
+	} else if e.pulumiConfig != nil {
+		// Check Pulumi stack config with project prefix
+		configKey := e.projectName + ":" + varName
+		if configVal, ok := e.pulumiConfig[configKey]; ok {
+			val = cty.StringVal(configVal)
+			valueSource = "config"
+			// Check if it's a secret
+			for _, secretKey := range e.configSecretKeys {
+				if secretKey == configKey || secretKey == varName {
+					isSecret = true
+					break
+				}
+			}
+		} else if configVal, ok := e.pulumiConfig[varName]; ok {
+			// Also check without project prefix
+			val = cty.StringVal(configVal)
+			valueSource = "config"
+			for _, secretKey := range e.configSecretKeys {
+				if secretKey == varName {
+					isSecret = true
+					break
+				}
+			}
 		}
-	} else {
-		// Variable has no default and no config value - this is an error in strict mode
-		// For now, use null
-		val = cty.NullVal(cty.DynamicPseudoType)
 	}
 
-	// Store in eval context
-	varName := node.Key[4:] // Remove "var." prefix
+	// If no value from env or config, use default
+	if valueSource == "" {
+		if v.Default != nil {
+			var diags hcl.Diagnostics
+			val, diags = v.Default.Value(e.evaluator.Context().HCLContext())
+			if diags.HasErrors() {
+				return fmt.Errorf("evaluating variable default: %s", diags.Error())
+			}
+			valueSource = "default"
+		} else if v.Nullable {
+			// Variable is nullable and has no value - use null
+			val = cty.NullVal(cty.DynamicPseudoType)
+			valueSource = "null"
+		} else {
+			// Variable is required but no value provided
+			return fmt.Errorf("variable %q is required but no value was provided. Set it with TF_VAR_%s environment variable or Pulumi config: pulumi config set %s <value>",
+				varName, varName, varName)
+		}
+	}
+
+	// Type conversion if type constraint is specified and value came from string source (env/config)
+	if v.TypeConstraint != cty.NilType && v.TypeConstraint != cty.DynamicPseudoType {
+		if valueSource == "environment" || valueSource == "config" {
+			// String values from config/env need type conversion
+			converted, err := convertStringToType(val.AsString(), v.TypeConstraint)
+			if err != nil {
+				return fmt.Errorf("variable %q: %w", varName, err)
+			}
+			val = converted
+		}
+	}
+
+	// Handle sensitive marking
+	if v.Sensitive || isSecret {
+		val = val.Mark("sensitive")
+	}
+
+	// Store in eval context (needed for validation which may reference var.<name>)
 	e.evaluator.Context().SetVariable(varName, val)
 
+	// Run validations
+	for i, validation := range v.Validations {
+		// Evaluate condition
+		condVal, diags := validation.Condition.Value(e.evaluator.Context().HCLContext())
+		if diags.HasErrors() {
+			return fmt.Errorf("evaluating validation condition %d for variable %q: %s", i+1, varName, diags.Error())
+		}
+
+		if condVal.Type() != cty.Bool {
+			return fmt.Errorf("validation condition %d for variable %q must be boolean, got %s",
+				i+1, varName, condVal.Type().FriendlyName())
+		}
+
+		if condVal.False() {
+			// Get error message
+			errMsgVal, diags := validation.ErrorMessage.Value(e.evaluator.Context().HCLContext())
+			var errMsg string
+			if diags.HasErrors() || errMsgVal.Type() != cty.String {
+				errMsg = "validation failed"
+			} else {
+				errMsg = errMsgVal.AsString()
+			}
+			return fmt.Errorf("validation failed for variable %q: %s", varName, errMsg)
+		}
+	}
+
 	return nil
+}
+
+// convertStringToType converts a string value to the specified cty type.
+func convertStringToType(s string, targetType cty.Type) (cty.Value, error) {
+	switch {
+	case targetType == cty.String:
+		return cty.StringVal(s), nil
+	case targetType == cty.Number:
+		// Parse as number
+		var f float64
+		if _, err := fmt.Sscanf(s, "%f", &f); err != nil {
+			return cty.NilVal, fmt.Errorf("cannot convert %q to number: %w", s, err)
+		}
+		return cty.NumberFloatVal(f), nil
+	case targetType == cty.Bool:
+		switch strings.ToLower(s) {
+		case "true", "1", "yes", "on":
+			return cty.True, nil
+		case "false", "0", "no", "off":
+			return cty.False, nil
+		default:
+			return cty.NilVal, fmt.Errorf("cannot convert %q to bool", s)
+		}
+	case targetType.IsListType() || targetType.IsTupleType() || targetType.IsSetType():
+		// For complex types, try JSON parsing
+		return parseJSONValue(s, targetType)
+	case targetType.IsMapType() || targetType.IsObjectType():
+		return parseJSONValue(s, targetType)
+	default:
+		// For other types, try to use it as-is
+		return cty.StringVal(s), nil
+	}
+}
+
+// parseJSONValue parses a JSON string into a cty value.
+func parseJSONValue(s string, targetType cty.Type) (cty.Value, error) {
+	// Use cty's built-in JSON unmarshaling
+	val, err := json.Unmarshal([]byte(s), targetType)
+	if err != nil {
+		return cty.NilVal, fmt.Errorf("cannot parse JSON value: %w", err)
+	}
+	return val, nil
 }
 
 // processLocal processes a local value definition.
@@ -595,6 +747,13 @@ func (e *Engine) registerResourceInstance(
 	// Build resource options
 	opts := e.buildResourceOptions(res, instance)
 
+	// Evaluate preconditions before resource creation
+	if len(res.Preconditions) > 0 {
+		if err := e.evaluateCheckRules(res.Preconditions, instance.Key, "precondition"); err != nil {
+			return err
+		}
+	}
+
 	// Register the resource
 	urn, id, outputs, err := e.registerResource(ctx, typeToken, instance.Key, inputs, opts)
 	if err != nil {
@@ -617,6 +776,23 @@ func (e *Engine) registerResourceInstance(
 
 	// Also store in eval context for expression references
 	e.evaluator.Context().SetResource(instance.Key, cty.ObjectVal(outputObj))
+
+	// Evaluate postconditions after resource creation
+	// Set self to the resource outputs so postconditions can reference self
+	if len(res.Postconditions) > 0 {
+		e.evaluator.Context().SetSelf(cty.ObjectVal(outputObj))
+		defer e.evaluator.Context().ClearSelf()
+		if err := e.evaluateCheckRules(res.Postconditions, instance.Key, "postcondition"); err != nil {
+			return err
+		}
+	}
+
+	// Process provisioners after resource creation
+	if len(res.Provisioners) > 0 {
+		if err := e.processProvisioners(ctx, res, urn, cty.ObjectVal(outputObj), instance.Key); err != nil {
+			return fmt.Errorf("processing provisioners: %w", err)
+		}
+	}
 
 	return nil
 }
@@ -652,6 +828,25 @@ func (e *Engine) buildResourceOptions(res *ast.Resource, instance *graph.Expande
 		}
 		// Aliases
 		opts.Aliases = res.Lifecycle.Aliases
+		// create_before_destroy controls replacement order:
+		// - true: create new, then delete old (Pulumi's default behavior)
+		// - false: delete old, then create new (Terraform's default behavior)
+		// - nil/unset: use Pulumi's default (create-then-delete)
+		//
+		// Pulumi's deleteBeforeReplace is the inverse:
+		// - true: delete old, then create new
+		// - false: create new, then delete old (default)
+		if res.Lifecycle.CreateBeforeDestroy != nil {
+			if *res.Lifecycle.CreateBeforeDestroy {
+				// Explicit true: create-then-delete (Pulumi default, but mark as explicitly set)
+				opts.DeleteBeforeReplace = false
+				opts.DeleteBeforeReplaceDef = true
+			} else {
+				// Explicit false: delete-then-create (Terraform default)
+				opts.DeleteBeforeReplace = true
+				opts.DeleteBeforeReplaceDef = true
+			}
+		}
 	}
 
 	// Handle provider reference
@@ -698,12 +893,14 @@ func formatTraversalForIgnoreChanges(traversal hcl.Traversal) string {
 
 // ResourceOptions contains resource registration options.
 type ResourceOptions struct {
-	DependsOn     []string
-	Protect       bool
-	IgnoreChanges []string
-	Aliases       []string
-	Provider      string
-	Parent        string
+	DependsOn               []string
+	Protect                 bool
+	IgnoreChanges           []string
+	Aliases                 []string
+	Provider                string
+	Parent                  string
+	DeleteBeforeReplace     bool
+	DeleteBeforeReplaceDef  bool // True if DeleteBeforeReplace was explicitly set
 }
 
 // registerResource registers a resource with the Pulumi engine.
@@ -726,15 +923,17 @@ func (e *Engine) registerResource(
 
 	// Register with the resource monitor
 	resp, err := e.resmon.RegisterResource(ctx, RegisterResourceRequest{
-		Type:          typeToken,
-		Name:          name,
-		Inputs:        inputs,
-		Dependencies:  deps,
-		Protect:       opts.Protect,
-		IgnoreChanges: opts.IgnoreChanges,
-		Aliases:       opts.Aliases,
-		Provider:      opts.Provider,
-		Parent:        opts.Parent,
+		Type:                   typeToken,
+		Name:                   name,
+		Inputs:                 inputs,
+		Dependencies:           deps,
+		Protect:                opts.Protect,
+		IgnoreChanges:          opts.IgnoreChanges,
+		Aliases:                opts.Aliases,
+		Provider:               opts.Provider,
+		Parent:                 opts.Parent,
+		DeleteBeforeReplace:    opts.DeleteBeforeReplace,
+		DeleteBeforeReplaceDef: opts.DeleteBeforeReplaceDef,
 	})
 	if err != nil {
 		return "", "", nil, err
@@ -818,20 +1017,295 @@ func (e *Engine) invokeFunction(
 }
 
 // processModule processes a module call.
+// Terraform modules map to Pulumi component resources. The module's resources
+// become children of the component, and module outputs are collected for references.
 func (e *Engine) processModule(ctx context.Context, node *graph.Node) error {
 	mod := node.Module
 	if mod == nil {
 		return fmt.Errorf("module node missing Module field")
 	}
 
-	// For now, modules map to Pulumi components
-	// This is a simplified implementation - full support requires:
-	// 1. Loading the module source (local path or remote package)
-	// 2. Parsing and executing the module's HCL
-	// 3. Passing inputs and collecting outputs
+	// Expand the module for count/for_each
+	instances, err := e.expandModuleInstances(mod)
+	if err != nil {
+		return fmt.Errorf("expanding module instances: %w", err)
+	}
 
-	// TODO: Implement full module support
-	return fmt.Errorf("module support not yet implemented")
+	for _, instance := range instances {
+		if err := e.processModuleInstance(ctx, mod, instance); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+// expandedModule represents an expanded module instance (for count/for_each).
+type expandedModule struct {
+	Key      string     // e.g., "module.vpc" or "module.vpc[0]"
+	Index    *int       // count index if using count
+	EachKey  *cty.Value // for_each key if using for_each
+	EachVal  *cty.Value // for_each value if using for_each
+}
+
+// expandModuleInstances expands a module for count/for_each.
+func (e *Engine) expandModuleInstances(mod *ast.Module) ([]*expandedModule, error) {
+	baseKey := "module." + mod.Name
+
+	// Handle count
+	if mod.Count != nil {
+		countVal, diags := mod.Count.Value(e.evaluator.Context().HCLContext())
+		if diags.HasErrors() {
+			return nil, fmt.Errorf("evaluating count: %s", diags.Error())
+		}
+
+		if !countVal.Type().Equals(cty.Number) {
+			return nil, fmt.Errorf("count must be a number")
+		}
+
+		count, _ := countVal.AsBigFloat().Int64()
+		if count < 0 {
+			return nil, fmt.Errorf("count cannot be negative")
+		}
+
+		var instances []*expandedModule
+		for i := int64(0); i < count; i++ {
+			idx := int(i)
+			instances = append(instances, &expandedModule{
+				Key:   fmt.Sprintf("%s[%d]", baseKey, i),
+				Index: &idx,
+			})
+		}
+		return instances, nil
+	}
+
+	// Handle for_each
+	if mod.ForEach != nil {
+		forEachVal, diags := mod.ForEach.Value(e.evaluator.Context().HCLContext())
+		if diags.HasErrors() {
+			return nil, fmt.Errorf("evaluating for_each: %s", diags.Error())
+		}
+
+		if !forEachVal.CanIterateElements() {
+			return nil, fmt.Errorf("for_each must be a set or map")
+		}
+
+		var instances []*expandedModule
+		it := forEachVal.ElementIterator()
+		for it.Next() {
+			k, v := it.Element()
+			keyStr := k.AsString()
+			instances = append(instances, &expandedModule{
+				Key:     fmt.Sprintf("%s[\"%s\"]", baseKey, keyStr),
+				EachKey: &k,
+				EachVal: &v,
+			})
+		}
+		return instances, nil
+	}
+
+	// No count or for_each - single instance
+	return []*expandedModule{{Key: baseKey}}, nil
+}
+
+// processModuleInstance processes a single module instance.
+func (e *Engine) processModuleInstance(ctx context.Context, mod *ast.Module, instance *expandedModule) error {
+	// Set up instance-specific context (count.index, each.key, etc.)
+	if instance.Index != nil {
+		e.evaluator.Context().SetCount(*instance.Index)
+		defer e.evaluator.Context().ClearCount()
+	}
+	if instance.EachKey != nil && instance.EachVal != nil {
+		e.evaluator.Context().SetEach(*instance.EachKey, *instance.EachVal)
+		defer e.evaluator.Context().ClearEach()
+	}
+
+	// Load the module source
+	loadedModule, err := e.moduleLoader.LoadModule(mod.Source, e.workDir)
+	if err != nil {
+		return fmt.Errorf("loading module %s: %w", mod.Name, err)
+	}
+
+	// Evaluate module inputs from the module block
+	inputs := make(resource.PropertyMap)
+	attrs, _ := mod.Config.JustAttributes()
+	for name, attr := range attrs {
+		val, diags := attr.Expr.Value(e.evaluator.Context().HCLContext())
+		if diags.HasErrors() {
+			return fmt.Errorf("evaluating module input %s: %s", name, diags.Error())
+		}
+		pv, err := transform.CtyToPropertyValue(val)
+		if err != nil {
+			return fmt.Errorf("converting module input %s: %w", name, err)
+		}
+		inputs[resource.PropertyKey(name)] = pv
+	}
+
+	// Register the module as a component resource
+	componentType := "pulumi:hcl:Module"
+	componentOpts := &ResourceOptions{
+		Parent: e.parentURN,
+	}
+
+	// Handle depends_on
+	for _, dep := range mod.DependsOn {
+		depKey := graph.FormatTraversal(dep)
+		if depKey != "" {
+			componentOpts.DependsOn = append(componentOpts.DependsOn, depKey)
+		}
+	}
+
+	componentURN, _, _, err := e.registerComponentResource(ctx, componentType, instance.Key, inputs, componentOpts)
+	if err != nil {
+		return fmt.Errorf("registering module component: %w", err)
+	}
+
+	// Create a child engine to execute the module
+	childEngine := e.createChildEngine(loadedModule.Config, componentURN, loadedModule.SourcePath)
+
+	// Set up the child engine's variables with module inputs
+	childEngine.setModuleInputs(attrs, e.evaluator.Context())
+
+	// Execute the module
+	if err := childEngine.runModule(ctx); err != nil {
+		return fmt.Errorf("executing module %s: %w", mod.Name, err)
+	}
+
+	// Collect module outputs and make them available
+	moduleOutputs := childEngine.collectModuleOutputs()
+	e.moduleOutputs[instance.Key] = moduleOutputs
+
+	// Set module in eval context using just the module name or indexed key
+	// instance.Key is like "module.vpc" or "module.vpc[0]"
+	// We need to store at "vpc" or "vpc[0]" for module.vpc.output_name to work
+	moduleRefKey := strings.TrimPrefix(instance.Key, "module.")
+	e.evaluator.Context().SetModule(moduleRefKey, moduleOutputs)
+
+	// Register the component outputs
+	if e.resmon != nil {
+		outputProps := make(resource.PropertyMap)
+		if moduleOutputs.Type().IsObjectType() {
+			for name, val := range moduleOutputs.AsValueMap() {
+				pv, err := transform.CtyToPropertyValue(val)
+				if err == nil {
+					outputProps[resource.PropertyKey(name)] = pv
+				}
+			}
+		}
+		if err := e.resmon.RegisterResourceOutputs(ctx, componentURN, outputProps); err != nil {
+			return fmt.Errorf("registering module outputs: %w", err)
+		}
+	}
+
+	return nil
+}
+
+// registerComponentResource registers a component (non-custom) resource.
+func (e *Engine) registerComponentResource(
+	ctx context.Context,
+	typeToken string,
+	name string,
+	inputs resource.PropertyMap,
+	opts *ResourceOptions,
+) (string, string, resource.PropertyMap, error) {
+	if e.resmon == nil {
+		// No resource monitor - return synthetic values for testing
+		urn := fmt.Sprintf("urn:pulumi:%s::%s::%s::%s",
+			e.stackName, e.projectName, typeToken, name)
+		return urn, "", inputs, nil
+	}
+
+	// Build dependencies list
+	deps := opts.DependsOn
+
+	// Register with the resource monitor - Custom=false for components
+	resp, err := e.resmon.RegisterResource(ctx, RegisterResourceRequest{
+		Type:         typeToken,
+		Name:         name,
+		Inputs:       inputs,
+		Dependencies: deps,
+		Parent:       opts.Parent,
+		// Note: Custom=false for components, but we handle this in server.go
+	})
+	if err != nil {
+		return "", "", nil, err
+	}
+
+	return resp.URN, resp.ID, resp.Outputs, nil
+}
+
+// createChildEngine creates a child engine for executing a module.
+func (e *Engine) createChildEngine(config *ast.Config, parentURN string, moduleDir string) *Engine {
+	return &Engine{
+		config:            config,
+		evaluator:         eval.NewEvaluator(eval.NewContext(moduleDir)),
+		pkgLoader:         e.pkgLoader,
+		resmon:            e.resmon,
+		resourceOutputs:   make(map[string]cty.Value),
+		dataSourceOutputs: make(map[string]cty.Value),
+		stackOutputs:      make(resource.PropertyMap),
+		projectName:       e.projectName,
+		stackName:         e.stackName,
+		dryRun:            e.dryRun,
+		workDir:           moduleDir,
+		pulumiConfig:      e.pulumiConfig,
+		configSecretKeys:  e.configSecretKeys,
+		moduleLoader:      e.moduleLoader, // Share the module loader for caching
+		moduleOutputs:     make(map[string]cty.Value),
+		parentURN:         parentURN,
+	}
+}
+
+// setModuleInputs sets up the module's variables with input values.
+func (e *Engine) setModuleInputs(inputs hcl.Attributes, parentContext *eval.Context) {
+	for name, attr := range inputs {
+		val, diags := attr.Expr.Value(parentContext.HCLContext())
+		if !diags.HasErrors() {
+			e.evaluator.Context().SetVariable(name, val)
+		}
+	}
+}
+
+// runModule executes a module's contents (without registering a stack).
+func (e *Engine) runModule(ctx context.Context) error {
+	// Build dependency graph for the module
+	g, err := graph.BuildFromConfig(e.config)
+	if err != nil {
+		return fmt.Errorf("building module graph: %w", err)
+	}
+
+	// Get execution order
+	order, err := g.TopologicalSort()
+	if err != nil {
+		return fmt.Errorf("calculating module execution order: %w", err)
+	}
+
+	// Process nodes in order
+	for _, node := range order {
+		if err := e.processNode(ctx, node); err != nil {
+			return fmt.Errorf("processing %s: %w", node.Key, err)
+		}
+	}
+
+	return nil
+}
+
+// collectModuleOutputs collects the module's output values.
+func (e *Engine) collectModuleOutputs() cty.Value {
+	outputMap := make(map[string]cty.Value)
+
+	for name, output := range e.config.Outputs {
+		val, diags := output.Value.Value(e.evaluator.Context().HCLContext())
+		if !diags.HasErrors() {
+			outputMap[name] = val
+		}
+	}
+
+	if len(outputMap) == 0 {
+		return cty.EmptyObjectVal
+	}
+
+	return cty.ObjectVal(outputMap)
 }
 
 // processOutput processes an output definition.
@@ -926,4 +1400,48 @@ func Validate(config *ast.Config) []error {
 	// TODO: Type checking, schema validation, etc.
 
 	return errs
+}
+
+// evaluateCheckRules evaluates a list of preconditions or postconditions.
+// Returns an error if any check fails, with the evaluated error message.
+func (e *Engine) evaluateCheckRules(
+	rules []*ast.CheckRule,
+	resourceName string,
+	phase string,
+) error {
+	for i, rule := range rules {
+		// Evaluate the condition
+		condVal, diags := rule.Condition.Value(e.evaluator.Context().HCLContext())
+		if diags.HasErrors() {
+			return fmt.Errorf("evaluating %s %d for %s: %s", phase, i+1, resourceName, diags.Error())
+		}
+
+		// Check if condition is true
+		if condVal.Type() != cty.Bool {
+			return fmt.Errorf("%s %d for %s: condition must be a boolean", phase, i+1, resourceName)
+		}
+
+		if condVal.True() {
+			// Condition passed, continue to next rule
+			continue
+		}
+
+		// Condition failed - evaluate the error message
+		msgVal, msgDiags := rule.ErrorMessage.Value(e.evaluator.Context().HCLContext())
+		if msgDiags.HasErrors() {
+			return fmt.Errorf("%s %d for %s failed (could not evaluate error message: %s)",
+				phase, i+1, resourceName, msgDiags.Error())
+		}
+
+		var errMsg string
+		if msgVal.Type() == cty.String {
+			errMsg = msgVal.AsString()
+		} else {
+			errMsg = fmt.Sprintf("%s check failed", phase)
+		}
+
+		return fmt.Errorf("%s for %s: %s", phase, resourceName, errMsg)
+	}
+
+	return nil
 }

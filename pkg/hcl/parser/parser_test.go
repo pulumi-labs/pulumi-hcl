@@ -304,7 +304,7 @@ resource "aws_instance" "app" {
 	if r1.Lifecycle == nil {
 		t.Error("Expected lifecycle block")
 	} else {
-		if !r1.Lifecycle.CreateBeforeDestroy {
+		if r1.Lifecycle.CreateBeforeDestroy == nil || !*r1.Lifecycle.CreateBeforeDestroy {
 			t.Error("Expected create_before_destroy to be true")
 		}
 		if len(r1.Lifecycle.IgnoreChanges) != 2 {

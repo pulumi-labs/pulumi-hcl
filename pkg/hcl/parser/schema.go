@@ -114,6 +114,10 @@ var lifecycleSchema = &hcl.BodySchema{
 		// Pulumi-specific
 		{Name: "aliases"},
 	},
+	Blocks: []hcl.BlockHeaderSchema{
+		{Type: "precondition"},
+		{Type: "postcondition"},
+	},
 }
 
 // connectionSchema defines the structure of a connection block.
@@ -147,24 +151,12 @@ var connectionSchema = &hcl.BodySchema{
 }
 
 // provisionerSchema defines the structure of a provisioner block.
+// Note: The actual provisioner-specific attributes (command, working_dir, inline, etc.)
+// are intentionally NOT listed here so they remain in the Config body for dynamic evaluation.
 var provisionerSchema = &hcl.BodySchema{
 	Attributes: []hcl.AttributeSchema{
 		{Name: "when"},
 		{Name: "on_failure"},
-		// local-exec specific
-		{Name: "command"},
-		{Name: "working_dir"},
-		{Name: "interpreter"},
-		{Name: "environment"},
-		{Name: "quiet"},
-		// remote-exec specific
-		{Name: "inline"},
-		{Name: "script"},
-		{Name: "scripts"},
-		// file specific
-		{Name: "source"},
-		{Name: "content"},
-		{Name: "destination"},
 	},
 	Blocks: []hcl.BlockHeaderSchema{
 		{Type: "connection"},

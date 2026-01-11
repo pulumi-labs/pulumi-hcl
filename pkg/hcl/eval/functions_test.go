@@ -15,6 +15,12 @@
 package eval
 
 import (
+	"crypto/rand"
+	"crypto/rsa"
+	"crypto/x509"
+	"encoding/base64"
+	"encoding/pem"
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -336,6 +342,180 @@ func TestHashFunctions(t *testing.T) {
 		})
 	}
 }
+
+func TestRsaDecrypt(t *testing.T) {
+	// Generate a test RSA key pair
+	privateKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatalf("Failed to generate RSA key: %v", err)
+	}
+
+	// Test message
+	message := "secret message"
+
+	// Encrypt the message with the public key
+	ciphertext, err := rsa.EncryptPKCS1v15(rand.Reader, &privateKey.PublicKey, []byte(message))
+	if err != nil {
+		t.Fatalf("Failed to encrypt: %v", err)
+	}
+
+	// Base64 encode the ciphertext
+	ciphertextB64 := base64.StdEncoding.EncodeToString(ciphertext)
+
+	// Encode private key as PEM
+	privateKeyPEM := pem.EncodeToMemory(&pem.Block{
+		Type:  "RSA PRIVATE KEY",
+		Bytes: x509.MarshalPKCS1PrivateKey(privateKey),
+	})
+
+	// Build the expression
+	// Need to escape the PEM newlines for HCL
+	pemStr := string(privateKeyPEM)
+
+	// Create HCL context with functions
+	ctx := &hcl.EvalContext{
+		Functions: Functions("/tmp"),
+		Variables: map[string]cty.Value{
+			"ciphertext": cty.StringVal(ciphertextB64),
+			"privatekey": cty.StringVal(pemStr),
+		},
+	}
+
+	// Parse and evaluate
+	expr, diags := hclsyntax.ParseExpression([]byte(`rsadecrypt(ciphertext, privatekey)`), "test.hcl", hcl.Pos{Line: 1, Column: 1})
+	if diags.HasErrors() {
+		t.Fatalf("Failed to parse expression: %s", diags.Error())
+	}
+
+	result, diags := expr.Value(ctx)
+	if diags.HasErrors() {
+		t.Fatalf("Failed to evaluate rsadecrypt: %s", diags.Error())
+	}
+
+	if result.AsString() != message {
+		t.Errorf("Expected %q, got %q", message, result.AsString())
+	}
+}
+
+func TestRsaDecryptPKCS8(t *testing.T) {
+	// Generate a test RSA key pair
+	privateKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatalf("Failed to generate RSA key: %v", err)
+	}
+
+	// Test message
+	message := "another secret"
+
+	// Encrypt the message with the public key
+	ciphertext, err := rsa.EncryptPKCS1v15(rand.Reader, &privateKey.PublicKey, []byte(message))
+	if err != nil {
+		t.Fatalf("Failed to encrypt: %v", err)
+	}
+
+	// Base64 encode the ciphertext
+	ciphertextB64 := base64.StdEncoding.EncodeToString(ciphertext)
+
+	// Encode private key as PKCS8 PEM
+	pkcs8Bytes, err := x509.MarshalPKCS8PrivateKey(privateKey)
+	if err != nil {
+		t.Fatalf("Failed to marshal PKCS8: %v", err)
+	}
+	privateKeyPEM := pem.EncodeToMemory(&pem.Block{
+		Type:  "PRIVATE KEY",
+		Bytes: pkcs8Bytes,
+	})
+
+	pemStr := string(privateKeyPEM)
+
+	// Create HCL context with functions
+	ctx := &hcl.EvalContext{
+		Functions: Functions("/tmp"),
+		Variables: map[string]cty.Value{
+			"ciphertext": cty.StringVal(ciphertextB64),
+			"privatekey": cty.StringVal(pemStr),
+		},
+	}
+
+	// Parse and evaluate
+	expr, diags := hclsyntax.ParseExpression([]byte(`rsadecrypt(ciphertext, privatekey)`), "test.hcl", hcl.Pos{Line: 1, Column: 1})
+	if diags.HasErrors() {
+		t.Fatalf("Failed to parse expression: %s", diags.Error())
+	}
+
+	result, diags := expr.Value(ctx)
+	if diags.HasErrors() {
+		t.Fatalf("Failed to evaluate rsadecrypt with PKCS8: %s", diags.Error())
+	}
+
+	if result.AsString() != message {
+		t.Errorf("Expected %q, got %q", message, result.AsString())
+	}
+}
+
+func TestRsaDecryptErrors(t *testing.T) {
+	tests := []struct {
+		name       string
+		ciphertext string
+		privatekey string
+		errContain string
+	}{
+		{
+			name:       "invalid base64",
+			ciphertext: "not-valid-base64!!!",
+			privatekey: "-----BEGIN RSA PRIVATE KEY-----\ntest\n-----END RSA PRIVATE KEY-----",
+			errContain: "invalid base64",
+		},
+		{
+			name:       "invalid pem",
+			ciphertext: "aGVsbG8=",
+			privatekey: "not a pem key",
+			errContain: "invalid PEM",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx := &hcl.EvalContext{
+				Functions: Functions("/tmp"),
+				Variables: map[string]cty.Value{
+					"ciphertext": cty.StringVal(tt.ciphertext),
+					"privatekey": cty.StringVal(tt.privatekey),
+				},
+			}
+
+			expr, _ := hclsyntax.ParseExpression([]byte(`rsadecrypt(ciphertext, privatekey)`), "test.hcl", hcl.Pos{Line: 1, Column: 1})
+			_, diags := expr.Value(ctx)
+
+			if !diags.HasErrors() {
+				t.Error("Expected error but got none")
+				return
+			}
+
+			errStr := diags.Error()
+			if !contains(errStr, tt.errContain) {
+				t.Errorf("Expected error containing %q, got %q", tt.errContain, errStr)
+			}
+		})
+	}
+}
+
+func contains(s, substr string) bool {
+	return len(s) >= len(substr) && (s == substr || len(substr) == 0 ||
+		(len(s) > 0 && len(substr) > 0 && findSubstring(s, substr)))
+}
+
+func findSubstring(s, substr string) bool {
+	for i := 0; i <= len(s)-len(substr); i++ {
+		if s[i:i+len(substr)] == substr {
+			return true
+		}
+	}
+	return false
+}
+
+// Ensure fmt is used
+var _ = fmt.Sprintf
 
 func TestTypeFunctions(t *testing.T) {
 	tests := []struct {

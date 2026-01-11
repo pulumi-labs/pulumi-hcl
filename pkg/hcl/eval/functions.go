@@ -19,13 +19,17 @@ import (
 	"bytes"
 	"compress/gzip"
 	"crypto/md5"
+	"crypto/rand"
+	"crypto/rsa"
 	"crypto/sha1"
 	"crypto/sha256"
 	"crypto/sha512"
+	"crypto/x509"
 	"encoding/base64"
 	"encoding/csv"
 	"encoding/hex"
 	"encoding/json"
+	"encoding/pem"
 	"fmt"
 	"math"
 	"net"
@@ -1213,8 +1217,43 @@ var rsaDecryptFunc = function.New(&function.Spec{
 	},
 	Type: function.StaticReturnType(cty.String),
 	Impl: func(args []cty.Value, retType cty.Type) (cty.Value, error) {
-		// TODO: Implement RSA decrypt
-		return cty.NilVal, fmt.Errorf("rsadecrypt not yet implemented")
+		// Ciphertext is base64-encoded
+		ciphertextB64 := args[0].AsString()
+		privateKeyPEM := args[1].AsString()
+
+		// Decode base64 ciphertext
+		ciphertext, err := base64.StdEncoding.DecodeString(ciphertextB64)
+		if err != nil {
+			return cty.NilVal, fmt.Errorf("invalid base64 ciphertext: %w", err)
+		}
+
+		// Parse PEM-encoded private key
+		block, _ := pem.Decode([]byte(privateKeyPEM))
+		if block == nil {
+			return cty.NilVal, fmt.Errorf("invalid PEM-encoded private key")
+		}
+
+		// Parse the private key (supports PKCS1 and PKCS8)
+		var privKey *rsa.PrivateKey
+		if key, err := x509.ParsePKCS1PrivateKey(block.Bytes); err == nil {
+			privKey = key
+		} else if key, err := x509.ParsePKCS8PrivateKey(block.Bytes); err == nil {
+			var ok bool
+			privKey, ok = key.(*rsa.PrivateKey)
+			if !ok {
+				return cty.NilVal, fmt.Errorf("private key is not an RSA key")
+			}
+		} else {
+			return cty.NilVal, fmt.Errorf("failed to parse private key")
+		}
+
+		// Decrypt using PKCS1v15 (Terraform's default)
+		plaintext, err := rsa.DecryptPKCS1v15(rand.Reader, privKey, ciphertext)
+		if err != nil {
+			return cty.NilVal, fmt.Errorf("decryption failed: %w", err)
+		}
+
+		return cty.StringVal(string(plaintext)), nil
 	},
 })
 

@@ -62,6 +62,12 @@ type Resource struct {
 	// Provisioners contains provisioner blocks, in order.
 	Provisioners []*Provisioner
 
+	// Preconditions contains precondition checks (evaluated before resource creation).
+	Preconditions []*CheckRule
+
+	// Postconditions contains postcondition checks (evaluated after resource creation).
+	Postconditions []*CheckRule
+
 	// DeclRange is the source range of the entire resource block.
 	DeclRange hcl.Range
 
@@ -87,7 +93,11 @@ type ProviderRef struct {
 // Lifecycle contains lifecycle configuration for a resource.
 type Lifecycle struct {
 	// CreateBeforeDestroy indicates whether to create the new resource before destroying the old one.
-	CreateBeforeDestroy bool
+	// nil means unset (use Pulumi's default: create-then-delete).
+	// Pulumi and Terraform have opposite defaults:
+	// - Terraform default: delete-then-create (create_before_destroy = false)
+	// - Pulumi default: create-then-delete (deleteBeforeReplace = false)
+	CreateBeforeDestroy *bool
 
 	// PreventDestroy indicates whether destruction of the resource should be prevented.
 	// In Pulumi, this maps to the "protect" resource option.

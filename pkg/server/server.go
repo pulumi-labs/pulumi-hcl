@@ -361,19 +361,21 @@ func (r *resourceMonitorAdapter) RegisterResource(
 
 	// Build the registration request
 	registerReq := &pulumirpc.RegisterResourceRequest{
-		Type:                  req.Type,
-		Name:                  req.Name,
-		Custom:                isCustom,
-		Object:                inputsStruct,
-		Protect:               req.Protect,
-		Dependencies:          req.Dependencies,
-		Provider:              req.Provider,
-		Parent:                req.Parent,
-		IgnoreChanges:         req.IgnoreChanges,
-		Aliases:               aliases,
-		AcceptSecrets:         true,
-		AcceptResources:       true,
-		SupportsPartialValues: true,
+		Type:                       req.Type,
+		Name:                       req.Name,
+		Custom:                     isCustom,
+		Object:                     inputsStruct,
+		Protect:                    req.Protect,
+		Dependencies:               req.Dependencies,
+		Provider:                   req.Provider,
+		Parent:                     req.Parent,
+		IgnoreChanges:              req.IgnoreChanges,
+		Aliases:                    aliases,
+		AcceptSecrets:              true,
+		AcceptResources:            true,
+		SupportsPartialValues:      true,
+		DeleteBeforeReplace:        req.DeleteBeforeReplace,
+		DeleteBeforeReplaceDefined: req.DeleteBeforeReplaceDef,
 	}
 
 	// Call the resource monitor

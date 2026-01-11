@@ -423,9 +423,11 @@ func (p *Parser) parseResourceBlock(config *ast.Config, block *hcl.Block, isData
 	for _, subBlock := range content.Blocks {
 		switch subBlock.Type {
 		case "lifecycle":
-			lifecycle, lcDiags := p.parseLifecycleBlock(subBlock)
+			lcResult, lcDiags := p.parseLifecycleBlock(subBlock)
 			diags = append(diags, lcDiags...)
-			resource.Lifecycle = lifecycle
+			resource.Lifecycle = lcResult.Lifecycle
+			resource.Preconditions = append(resource.Preconditions, lcResult.Preconditions...)
+			resource.Postconditions = append(resource.Postconditions, lcResult.Postconditions...)
 		case "connection":
 			conn, connDiags := p.parseConnectionBlock(subBlock)
 			diags = append(diags, connDiags...)
@@ -467,8 +469,15 @@ func (p *Parser) parseProviderRef(expr hcl.Expression) (*ast.ProviderRef, hcl.Di
 	return ref, diags
 }
 
+// lifecycleResult contains the parsed lifecycle block plus any preconditions/postconditions.
+type lifecycleResult struct {
+	Lifecycle      *ast.Lifecycle
+	Preconditions  []*ast.CheckRule
+	Postconditions []*ast.CheckRule
+}
+
 // parseLifecycleBlock parses a lifecycle block.
-func (p *Parser) parseLifecycleBlock(block *hcl.Block) (*ast.Lifecycle, hcl.Diagnostics) {
+func (p *Parser) parseLifecycleBlock(block *hcl.Block) (*lifecycleResult, hcl.Diagnostics) {
 	content, diags := block.Body.Content(lifecycleSchema)
 
 	lifecycle := &ast.Lifecycle{
@@ -479,7 +488,8 @@ func (p *Parser) parseLifecycleBlock(block *hcl.Block) (*ast.Lifecycle, hcl.Diag
 		val, valDiags := attr.Expr.Value(nil)
 		diags = append(diags, valDiags...)
 		if val.Type() == cty.Bool {
-			lifecycle.CreateBeforeDestroy = val.True()
+			b := val.True()
+			lifecycle.CreateBeforeDestroy = &b
 		}
 	}
 
@@ -516,7 +526,29 @@ func (p *Parser) parseLifecycleBlock(block *hcl.Block) (*ast.Lifecycle, hcl.Diag
 		lifecycle.ReplaceTriggeredBy = exprs
 	}
 
-	return lifecycle, diags
+	result := &lifecycleResult{
+		Lifecycle: lifecycle,
+	}
+
+	// Parse preconditions and postconditions
+	for _, subBlock := range content.Blocks {
+		switch subBlock.Type {
+		case "precondition":
+			rule, ruleDiags := p.parseCheckRule(subBlock)
+			diags = append(diags, ruleDiags...)
+			if rule != nil {
+				result.Preconditions = append(result.Preconditions, rule)
+			}
+		case "postcondition":
+			rule, ruleDiags := p.parseCheckRule(subBlock)
+			diags = append(diags, ruleDiags...)
+			if rule != nil {
+				result.Postconditions = append(result.Postconditions, rule)
+			}
+		}
+	}
+
+	return result, diags
 }
 
 // parseConnectionBlock parses a connection block.
