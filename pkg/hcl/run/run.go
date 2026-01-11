@@ -1141,8 +1141,14 @@ func (e *Engine) processModuleInstance(ctx context.Context, mod *ast.Module, ins
 		inputs[resource.PropertyKey(name)] = pv
 	}
 
-	// Register the module as a component resource
-	componentType := "pulumi:hcl:Module"
+	// Register the module as a component resource with a dynamic type token.
+	// Format: {projectName}:modules:{moduleName}
+	// This enables proper identification in the Pulumi state and UI.
+	moduleName := mod.Name
+	if idx := strings.LastIndex(moduleName, "/"); idx != -1 {
+		moduleName = moduleName[idx+1:]
+	}
+	componentType := fmt.Sprintf("%s:modules:%s", e.projectName, moduleName)
 	componentOpts := &ResourceOptions{
 		Parent: e.parentURN,
 	}

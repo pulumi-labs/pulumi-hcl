@@ -93,9 +93,45 @@ Modules support:
 - Nested modules (modules within modules)
 - Cycle detection to prevent infinite recursion
 
-**Limitations**:
-- Only local paths (`./path`, `../path`) are supported
-- Registry modules and Git sources are not yet implemented
+**Source Types**:
+- Local paths: `./path`, `../path`
+- Git repositories: `git::https://github.com/org/repo.git`
+- GitHub shorthand: `github.com/org/repo`
+- Terraform Registry: `hashicorp/consul/aws`
+- HTTP archives: `https://example.com/module.zip`
+
+```hcl
+# Local module
+module "vpc" {
+  source = "./modules/vpc"
+}
+
+# Git with version tag
+module "network" {
+  source = "git::https://github.com/org/terraform-modules.git//network?ref=v1.0.0"
+}
+
+# Terraform Registry
+module "eks" {
+  source  = "terraform-aws-modules/eks/aws"
+  version = "19.0"
+}
+```
+
+**Caching**: Remote modules are cached in `~/.pulumi/modules/` for performance.
+
+### Multi-Language Component Support
+
+HCL modules can be served as Pulumi component providers, making them consumable from other Pulumi languages (TypeScript, Python, Go, etc.). This enables:
+
+- Generating Pulumi package schemas from HCL module definitions
+- Dynamic component type tokens (`{project}:modules:{moduleName}`)
+- Running HCL modules as component providers via `RunPlugin`
+
+Module schemas are automatically generated from:
+- `variable` blocks → Input properties
+- `output` blocks → Output properties
+- HCL type constraints → Pulumi schema types
 
 ### Provisioners
 
@@ -249,24 +285,6 @@ Use `pulumi state rename` and `pulumi import` CLI commands instead.
 
 These features are parsed for compatibility but not yet functional. They represent temporary gaps.
 
-### Remote Module Sources
-
-Only local module paths are currently supported:
-
-```hcl
-module "vpc" {
-  source = "./modules/vpc"  # Supported
-}
-
-module "eks" {
-  source  = "terraform-aws-modules/eks/aws"  # Not yet supported
-  version = "19.0"
-}
-# Error: registry module sources not yet supported
-```
-
-**Workaround**: Clone or vendor remote modules locally.
-
 ### Timeouts Block
 
 Resource timeout configuration is parsed but not yet enforced:
@@ -299,8 +317,9 @@ resource "aws_instance" "web" {
 | `create_before_destroy` | Yes | Maps to `deleteBeforeReplace` |
 | `precondition` / `postcondition` | Yes | |
 | Modules (local) | Yes | Maps to component resources |
-| Modules (remote) | Pending | Local paths only |
+| Modules (remote) | Yes | Git, Registry, HTTP |
 | Provisioners | Yes | Maps to Command provider |
+| Multi-language components | Yes | Via RunPlugin |
 | `replace_triggered_by` | No | No direct Pulumi equivalent |
 | `moved` / `import` blocks | No | Use CLI commands |
 | Functions | Yes | 80+ including `rsadecrypt` |

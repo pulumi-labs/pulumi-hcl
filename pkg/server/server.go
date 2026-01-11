@@ -18,6 +18,7 @@ package server
 import (
 	"context"
 	"fmt"
+	"net"
 	"strings"
 
 	"github.com/pulumi/pulumi-language-hcl/pkg/hcl/parser"
@@ -245,12 +246,93 @@ func (host *LanguageHost) GetProgramDependencies(
 }
 
 // RunPlugin runs a plugin program (for component providers).
+// This allows HCL modules to be consumed as component resources from other languages.
 func (host *LanguageHost) RunPlugin(
 	req *pulumirpc.RunPluginRequest,
 	server pulumirpc.LanguageRuntime_RunPluginServer,
 ) error {
-	// TODO: Implement component provider support
-	return status.Errorf(codes.Unimplemented, "RunPlugin not yet implemented")
+	logging.V(5).Infof("RunPlugin: pwd=%s args=%v", req.Pwd, req.Args)
+
+	// Get the module path from the request
+	modulePath := req.Pwd
+	if req.Info != nil && req.Info.EntryPoint != "" {
+		modulePath = req.Info.EntryPoint
+	}
+
+	// Extract provider name and version from args
+	name := "hcl-component"
+	version := version.Version
+	for i, arg := range req.Args {
+		if arg == "--name" && i+1 < len(req.Args) {
+			name = req.Args[i+1]
+		}
+		if arg == "--version" && i+1 < len(req.Args) {
+			version = req.Args[i+1]
+		}
+	}
+
+	// Create the provider
+	provider, err := NewHCLProvider(modulePath, name, version)
+	if err != nil {
+		errBytes := []byte(fmt.Sprintf("Error creating provider: %v\n", err))
+		server.Send(&pulumirpc.RunPluginResponse{
+			Output: &pulumirpc.RunPluginResponse_Stderr{Stderr: errBytes},
+		})
+		server.Send(&pulumirpc.RunPluginResponse{
+			Output: &pulumirpc.RunPluginResponse_Exitcode{Exitcode: 1},
+		})
+		return nil
+	}
+
+	// Create gRPC server
+	grpcServer := grpc.NewServer()
+	pulumirpc.RegisterResourceProviderServer(grpcServer, provider)
+
+	// Listen on a random port
+	lis, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		errBytes := []byte(fmt.Sprintf("Error listening: %v\n", err))
+		server.Send(&pulumirpc.RunPluginResponse{
+			Output: &pulumirpc.RunPluginResponse_Stderr{Stderr: errBytes},
+		})
+		server.Send(&pulumirpc.RunPluginResponse{
+			Output: &pulumirpc.RunPluginResponse_Exitcode{Exitcode: 1},
+		})
+		return nil
+	}
+
+	// Output the port for the engine to connect
+	port := lis.Addr().(*net.TCPAddr).Port
+	portMsg := fmt.Sprintf("%d\n", port)
+	server.Send(&pulumirpc.RunPluginResponse{
+		Output: &pulumirpc.RunPluginResponse_Stdout{Stdout: []byte(portMsg)},
+	})
+
+	// Start serving in a goroutine
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- grpcServer.Serve(lis)
+	}()
+
+	// Wait for context cancellation or server error
+	ctx := server.Context()
+	select {
+	case <-ctx.Done():
+		grpcServer.GracefulStop()
+	case err := <-errCh:
+		if err != nil {
+			errBytes := []byte(fmt.Sprintf("Server error: %v\n", err))
+			server.Send(&pulumirpc.RunPluginResponse{
+				Output: &pulumirpc.RunPluginResponse_Stderr{Stderr: errBytes},
+			})
+		}
+	}
+
+	server.Send(&pulumirpc.RunPluginResponse{
+		Output: &pulumirpc.RunPluginResponse_Exitcode{Exitcode: 0},
+	})
+
+	return nil
 }
 
 // GenerateProgram generates an HCL program from a PCL program.
