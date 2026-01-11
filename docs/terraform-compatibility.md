@@ -67,9 +67,11 @@ These features are parsed for compatibility but not yet functional. They represe
 
 | Option | Status |
 |--------|--------|
-| `create_before_destroy` | Parsed but not yet wired to Pulumi's `deleteBeforeReplace` |
-| `replace_triggered_by` | Parsed but ignored |
+| `create_before_destroy` | Parsed but not yet wired to Pulumi's [`deleteBeforeReplace`](https://www.pulumi.com/docs/iac/concepts/resources/options/deletebeforereplace/) |
+| `replace_triggered_by` | Parsed but not yet wired to Pulumi's [`replaceOnChanges`](https://www.pulumi.com/docs/iac/concepts/resources/options/replaceonchanges/) (partial support possible—see note) |
 | `precondition` / `postcondition` | Parsed but validations do not run |
+
+**Note on `replace_triggered_by`**: Pulumi's `replaceOnChanges` watches properties on the *current* resource, while Terraform's `replace_triggered_by` watches *other* resources. When the referenced resource's output is also an input to this resource, the behavior can be equivalent. Cases where `replace_triggered_by` references a resource not used as an input cannot be directly mapped.
 
 ### Modules
 
@@ -215,7 +217,7 @@ Existing Terraform state files are not compatible. When migrating, import resour
 | `prevent_destroy` | Yes | Maps to `protect` |
 | `ignore_changes` | Yes | Maps to `ignoreChanges` |
 | `create_before_destroy` | Pending | Parsed but not yet functional |
-| `replace_triggered_by` | Pending | Parsed but ignored |
+| `replace_triggered_by` | Pending | Partial support possible via `replaceOnChanges` |
 | `precondition` / `postcondition` | Pending | Parsed but not enforced |
 | Modules | No | Not yet implemented |
 | Provisioners | No | Silently ignored |
