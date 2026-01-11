@@ -89,14 +89,14 @@ module "vpc" {
 
 ### Provisioners
 
-Provisioner blocks (`local-exec`, `remote-exec`, `file`) are parsed but silently ignored:
+Provisioner blocks (`local-exec`, `remote-exec`, `file`) are not supported and will produce a warning:
 
 ```hcl
 resource "aws_instance" "web" {
   ami           = "ami-12345678"
   instance_type = "t3.micro"
 
-  # SILENTLY IGNORED
+  # NOT SUPPORTED
   provisioner "remote-exec" {
     inline = ["sudo apt-get update"]
   }
@@ -120,14 +120,14 @@ variable "region" {
 
 ### Variable Validation
 
-Validation blocks are parsed but not enforced:
+Validation blocks are not yet enforced (will produce a warning):
 
 ```hcl
 variable "instance_type" {
   type    = string
   default = "t3.micro"
 
-  # PARSED BUT NOT ENFORCED
+  # NOT YET ENFORCED
   validation {
     condition     = can(regex("^t3\\.", var.instance_type))
     error_message = "Must be a t3 instance type."
@@ -220,7 +220,7 @@ Existing Terraform state files are not compatible. When migrating, import resour
 | `replace_triggered_by` | No | No direct Pulumi equivalent |
 | `precondition` / `postcondition` | Pending | Parsed but not enforced |
 | Modules | No | Not yet implemented |
-| Provisioners | No | Silently ignored |
+| Provisioners | No | Not supported; use Command provider |
 | `moved` / `import` blocks | No | Use CLI commands |
 | Functions | Mostly | 80+ supported; `rsadecrypt` pending |
 
