@@ -106,6 +106,10 @@ func (p *Parser) parseBlock(config *ast.Config, block *hcl.Block) hcl.Diagnostic
 		return p.parseOutputBlock(config, block)
 	case "module":
 		return p.parseModuleBlock(config, block)
+	case "moved":
+		return p.parseMovedBlock(config, block)
+	case "import":
+		return p.parseImportBlock(config, block)
 	default:
 		return hcl.Diagnostics{{
 			Severity: hcl.DiagError,
@@ -438,6 +442,10 @@ func (p *Parser) parseResourceBlock(config *ast.Config, block *hcl.Block, isData
 			if prov != nil {
 				resource.Provisioners = append(resource.Provisioners, prov)
 			}
+		case "timeouts":
+			timeouts, timeoutsDiags := p.parseTimeoutsBlock(subBlock)
+			diags = append(diags, timeoutsDiags...)
+			resource.Timeouts = timeouts
 		}
 	}
 
@@ -613,6 +621,49 @@ func (p *Parser) parseProvisionerBlock(block *hcl.Block) (*ast.Provisioner, hcl.
 	return provisioner, diags
 }
 
+// parseTimeoutsBlock parses a timeouts block.
+func (p *Parser) parseTimeoutsBlock(block *hcl.Block) (*ast.Timeouts, hcl.Diagnostics) {
+	content, diags := block.Body.Content(timeoutsSchema)
+
+	timeouts := &ast.Timeouts{
+		DeclRange: block.DefRange,
+	}
+
+	if attr, ok := content.Attributes["create"]; ok {
+		val, valDiags := attr.Expr.Value(nil)
+		diags = append(diags, valDiags...)
+		if val.Type() == cty.String {
+			timeouts.Create = val.AsString()
+		}
+	}
+
+	if attr, ok := content.Attributes["read"]; ok {
+		val, valDiags := attr.Expr.Value(nil)
+		diags = append(diags, valDiags...)
+		if val.Type() == cty.String {
+			timeouts.Read = val.AsString()
+		}
+	}
+
+	if attr, ok := content.Attributes["update"]; ok {
+		val, valDiags := attr.Expr.Value(nil)
+		diags = append(diags, valDiags...)
+		if val.Type() == cty.String {
+			timeouts.Update = val.AsString()
+		}
+	}
+
+	if attr, ok := content.Attributes["delete"]; ok {
+		val, valDiags := attr.Expr.Value(nil)
+		diags = append(diags, valDiags...)
+		if val.Type() == cty.String {
+			timeouts.Delete = val.AsString()
+		}
+	}
+
+	return timeouts, diags
+}
+
 // parseOutputBlock parses an output block.
 func (p *Parser) parseOutputBlock(config *ast.Config, block *hcl.Block) hcl.Diagnostics {
 	var diags hcl.Diagnostics
@@ -784,5 +835,67 @@ func (p *Parser) parseModuleBlock(config *ast.Config, block *hcl.Block) hcl.Diag
 	}
 
 	config.Modules[name] = module
+	return diags
+}
+
+// parseMovedBlock parses a moved block.
+func (p *Parser) parseMovedBlock(config *ast.Config, block *hcl.Block) hcl.Diagnostics {
+	content, diags := block.Body.Content(movedSchema)
+
+	moved := &ast.Moved{
+		DeclRange: block.DefRange,
+	}
+
+	if attr, ok := content.Attributes["from"]; ok {
+		traversal, travDiags := hcl.AbsTraversalForExpr(attr.Expr)
+		diags = append(diags, travDiags...)
+		if traversal != nil {
+			moved.From = traversal
+		}
+	}
+
+	if attr, ok := content.Attributes["to"]; ok {
+		traversal, travDiags := hcl.AbsTraversalForExpr(attr.Expr)
+		diags = append(diags, travDiags...)
+		if traversal != nil {
+			moved.To = traversal
+		}
+	}
+
+	config.Moved = append(config.Moved, moved)
+	return diags
+}
+
+// parseImportBlock parses an import block.
+func (p *Parser) parseImportBlock(config *ast.Config, block *hcl.Block) hcl.Diagnostics {
+	content, diags := block.Body.Content(importSchema)
+
+	imp := &ast.Import{
+		DeclRange: block.DefRange,
+	}
+
+	if attr, ok := content.Attributes["to"]; ok {
+		traversal, travDiags := hcl.AbsTraversalForExpr(attr.Expr)
+		diags = append(diags, travDiags...)
+		if traversal != nil {
+			imp.To = traversal
+		}
+	}
+
+	if attr, ok := content.Attributes["id"]; ok {
+		val, valDiags := attr.Expr.Value(nil)
+		diags = append(diags, valDiags...)
+		if val.Type() == cty.String {
+			imp.Id = val.AsString()
+		}
+	}
+
+	if attr, ok := content.Attributes["provider"]; ok {
+		ref, refDiags := p.parseProviderRef(attr.Expr)
+		diags = append(diags, refDiags...)
+		imp.Provider = ref
+	}
+
+	config.Imports = append(config.Imports, imp)
 	return diags
 }

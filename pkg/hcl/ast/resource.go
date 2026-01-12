@@ -18,6 +18,29 @@ import (
 	"github.com/hashicorp/hcl/v2"
 )
 
+// Timeouts represents resource operation timeout configuration.
+//
+// Terraform syntax:
+//
+//	resource "aws_instance" "example" {
+//	  timeouts {
+//	    create = "60m"
+//	    delete = "2h"
+//	  }
+//	}
+type Timeouts struct {
+	// Create is the timeout for create operations.
+	Create string
+	// Read is the timeout for read operations.
+	Read string
+	// Update is the timeout for update operations.
+	Update string
+	// Delete is the timeout for delete operations.
+	Delete string
+	// DeclRange is the source range of the timeouts block.
+	DeclRange hcl.Range
+}
+
 // Resource represents a resource or data block in HCL.
 //
 // Terraform syntax:
@@ -55,6 +78,9 @@ type Resource struct {
 
 	// Lifecycle contains lifecycle configuration, if present.
 	Lifecycle *Lifecycle
+
+	// Timeouts contains timeout configuration, if present.
+	Timeouts *Timeouts
 
 	// Connection contains connection configuration for provisioners, if present.
 	Connection *Connection
@@ -111,9 +137,6 @@ type Lifecycle struct {
 
 	// ReplaceTriggeredBy lists expressions that trigger resource replacement.
 	ReplaceTriggeredBy []hcl.Expression
-
-	// Aliases contains resource aliases (Pulumi-specific).
-	Aliases []string
 
 	// DeclRange is the source range of the lifecycle block.
 	DeclRange hcl.Range

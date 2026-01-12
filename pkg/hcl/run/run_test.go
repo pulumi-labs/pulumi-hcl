@@ -1193,3 +1193,187 @@ output "vpc_id" {
 		t.Error("expected 'cidr_block' input to be set")
 	}
 }
+
+func TestEngine_Timeouts(t *testing.T) {
+	src := []byte(`
+resource "aws_instance" "web" {
+  ami           = "ami-12345"
+  instance_type = "t3.micro"
+
+  timeouts {
+    create = "60m"
+    update = "30m"
+    delete = "2h"
+  }
+}
+`)
+
+	p := parser.NewParser()
+	config, diags := p.ParseSource("test.hcl", src)
+	if diags.HasErrors() {
+		t.Fatalf("parse error: %s", diags.Error())
+	}
+
+	mock := &mockResourceMonitor{}
+	engine := NewEngine(config, &EngineOptions{
+		ProjectName:     "test-project",
+		StackName:       "dev",
+		ResourceMonitor: mock,
+		TestMode:        true,
+	})
+
+	ctx := context.Background()
+	err := engine.Run(ctx)
+	if err != nil {
+		t.Fatalf("run error: %v", err)
+	}
+
+	// Find the instance resource
+	var instanceReq *RegisterResourceRequest
+	for i := range mock.registeredResources {
+		if strings.Contains(mock.registeredResources[i].Name, "aws_instance") {
+			instanceReq = &mock.registeredResources[i]
+			break
+		}
+	}
+
+	if instanceReq == nil {
+		t.Fatal("expected aws_instance resource to be registered")
+	}
+
+	// Check that timeouts were set
+	if instanceReq.CustomTimeouts == nil {
+		t.Fatal("expected CustomTimeouts to be set")
+	}
+
+	// 60m = 3600 seconds
+	if instanceReq.CustomTimeouts.Create != 3600 {
+		t.Errorf("expected Create timeout 3600, got %f", instanceReq.CustomTimeouts.Create)
+	}
+
+	// 30m = 1800 seconds
+	if instanceReq.CustomTimeouts.Update != 1800 {
+		t.Errorf("expected Update timeout 1800, got %f", instanceReq.CustomTimeouts.Update)
+	}
+
+	// 2h = 7200 seconds
+	if instanceReq.CustomTimeouts.Delete != 7200 {
+		t.Errorf("expected Delete timeout 7200, got %f", instanceReq.CustomTimeouts.Delete)
+	}
+}
+
+func TestEngine_MovedBlock(t *testing.T) {
+	src := []byte(`
+moved {
+  from = aws_instance.old_server
+  to   = aws_instance.web
+}
+
+resource "aws_instance" "web" {
+  ami           = "ami-12345"
+  instance_type = "t3.micro"
+}
+`)
+
+	p := parser.NewParser()
+	config, diags := p.ParseSource("test.hcl", src)
+	if diags.HasErrors() {
+		t.Fatalf("parse error: %s", diags.Error())
+	}
+
+	mock := &mockResourceMonitor{}
+	engine := NewEngine(config, &EngineOptions{
+		ProjectName:     "test-project",
+		StackName:       "dev",
+		ResourceMonitor: mock,
+		TestMode:        true,
+	})
+
+	ctx := context.Background()
+	err := engine.Run(ctx)
+	if err != nil {
+		t.Fatalf("run error: %v", err)
+	}
+
+	// Find the instance resource
+	var instanceReq *RegisterResourceRequest
+	for i := range mock.registeredResources {
+		if strings.Contains(mock.registeredResources[i].Name, "aws_instance") {
+			instanceReq = &mock.registeredResources[i]
+			break
+		}
+	}
+
+	if instanceReq == nil {
+		t.Fatal("expected aws_instance resource to be registered")
+	}
+
+	// Check that aliases include the old resource address
+	if len(instanceReq.Aliases) == 0 {
+		t.Fatal("expected Aliases to contain the moved 'from' address")
+	}
+
+	found := false
+	for _, alias := range instanceReq.Aliases {
+		if alias == "aws_instance.old_server" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("expected alias 'aws_instance.old_server', got %v", instanceReq.Aliases)
+	}
+}
+
+func TestEngine_ImportBlock(t *testing.T) {
+	src := []byte(`
+import {
+  to = aws_instance.imported
+  id = "i-1234567890abcdef0"
+}
+
+resource "aws_instance" "imported" {
+  ami           = "ami-12345"
+  instance_type = "t3.micro"
+}
+`)
+
+	p := parser.NewParser()
+	config, diags := p.ParseSource("test.hcl", src)
+	if diags.HasErrors() {
+		t.Fatalf("parse error: %s", diags.Error())
+	}
+
+	mock := &mockResourceMonitor{}
+	engine := NewEngine(config, &EngineOptions{
+		ProjectName:     "test-project",
+		StackName:       "dev",
+		ResourceMonitor: mock,
+		TestMode:        true,
+	})
+
+	ctx := context.Background()
+	err := engine.Run(ctx)
+	if err != nil {
+		t.Fatalf("run error: %v", err)
+	}
+
+	// Find the instance resource
+	var instanceReq *RegisterResourceRequest
+	for i := range mock.registeredResources {
+		if strings.Contains(mock.registeredResources[i].Name, "aws_instance") {
+			instanceReq = &mock.registeredResources[i]
+			break
+		}
+	}
+
+	if instanceReq == nil {
+		t.Fatal("expected aws_instance resource to be registered")
+	}
+
+	// Check that ImportId was set
+	if instanceReq.ImportId != "i-1234567890abcdef0" {
+		t.Errorf("expected ImportId 'i-1234567890abcdef0', got %q", instanceReq.ImportId)
+	}
+}
+

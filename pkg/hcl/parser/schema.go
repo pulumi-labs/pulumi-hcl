@@ -30,6 +30,8 @@ var rootSchema = &hcl.BodySchema{
 		{Type: "data", LabelNames: []string{"type", "name"}},
 		{Type: "output", LabelNames: []string{"name"}},
 		{Type: "module", LabelNames: []string{"name"}},
+		{Type: "moved"},
+		{Type: "import"},
 	},
 }
 
@@ -111,8 +113,6 @@ var lifecycleSchema = &hcl.BodySchema{
 		{Name: "prevent_destroy"},
 		{Name: "ignore_changes"},
 		{Name: "replace_triggered_by"},
-		// Pulumi-specific
-		{Name: "aliases"},
 	},
 	Blocks: []hcl.BlockHeaderSchema{
 		{Type: "precondition"},
@@ -180,5 +180,32 @@ var preconditionSchema = &hcl.BodySchema{
 	Attributes: []hcl.AttributeSchema{
 		{Name: "condition", Required: true},
 		{Name: "error_message", Required: true},
+	},
+}
+
+// timeoutsSchema defines the structure of a timeouts block.
+var timeoutsSchema = &hcl.BodySchema{
+	Attributes: []hcl.AttributeSchema{
+		{Name: "create"},
+		{Name: "read"},
+		{Name: "update"},
+		{Name: "delete"},
+	},
+}
+
+// movedSchema defines the structure of a moved block.
+var movedSchema = &hcl.BodySchema{
+	Attributes: []hcl.AttributeSchema{
+		{Name: "from", Required: true},
+		{Name: "to", Required: true},
+	},
+}
+
+// importSchema defines the structure of an import block.
+var importSchema = &hcl.BodySchema{
+	Attributes: []hcl.AttributeSchema{
+		{Name: "to", Required: true},
+		{Name: "id", Required: true},
+		{Name: "provider"},
 	},
 }

@@ -20,6 +20,7 @@ import (
 	"fmt"
 	"net"
 	"strings"
+	"time"
 
 	"github.com/pulumi/pulumi-language-hcl/pkg/hcl/parser"
 	"github.com/pulumi/pulumi-language-hcl/pkg/hcl/run"
@@ -458,6 +459,16 @@ func (r *resourceMonitorAdapter) RegisterResource(
 		SupportsPartialValues:      true,
 		DeleteBeforeReplace:        req.DeleteBeforeReplace,
 		DeleteBeforeReplaceDefined: req.DeleteBeforeReplaceDef,
+		ImportId:                   req.ImportId,
+	}
+
+	// Add custom timeouts if specified
+	if req.CustomTimeouts != nil {
+		registerReq.CustomTimeouts = &pulumirpc.RegisterResourceRequest_CustomTimeouts{
+			Create: formatTimeoutSeconds(req.CustomTimeouts.Create),
+			Update: formatTimeoutSeconds(req.CustomTimeouts.Update),
+			Delete: formatTimeoutSeconds(req.CustomTimeouts.Delete),
+		}
 	}
 
 	// Call the resource monitor
@@ -559,3 +570,12 @@ func (r *resourceMonitorAdapter) RegisterResourceOutputs(
 
 // Ensure resourceMonitorAdapter implements the interface.
 var _ run.ResourceMonitor = (*resourceMonitorAdapter)(nil)
+
+// formatTimeoutSeconds converts a timeout in seconds to a duration string.
+// Returns empty string if seconds is 0.
+func formatTimeoutSeconds(seconds float64) string {
+	if seconds == 0 {
+		return ""
+	}
+	return time.Duration(seconds * float64(time.Second)).String()
+}

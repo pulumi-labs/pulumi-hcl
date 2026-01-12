@@ -47,6 +47,12 @@ type Config struct {
 	// Modules maps module name to module call definition.
 	Modules map[string]*Module
 
+	// Moved contains moved blocks for resource renaming.
+	Moved []*Moved
+
+	// Imports contains import blocks for importing existing resources.
+	Imports []*Import
+
 	// Files contains the parsed HCL files.
 	Files map[string]*hcl.File
 

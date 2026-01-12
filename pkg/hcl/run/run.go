@@ -21,6 +21,7 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/hashicorp/hcl/v2"
 	"github.com/pulumi/pulumi-language-hcl/pkg/hcl/ast"
@@ -48,6 +49,13 @@ type ResourceMonitor interface {
 	RegisterResourceOutputs(ctx context.Context, urn string, outputs resource.PropertyMap) error
 }
 
+// CustomTimeouts contains custom timeout values for resource operations.
+type CustomTimeouts struct {
+	Create float64 // Timeout in seconds for create operations
+	Update float64 // Timeout in seconds for update operations
+	Delete float64 // Timeout in seconds for delete operations
+}
+
 // RegisterResourceRequest contains the parameters for registering a resource.
 type RegisterResourceRequest struct {
 	Type                    string
@@ -61,6 +69,8 @@ type RegisterResourceRequest struct {
 	Parent                  string
 	DeleteBeforeReplace     bool
 	DeleteBeforeReplaceDef  bool // True if DeleteBeforeReplace was explicitly set
+	CustomTimeouts          *CustomTimeouts
+	ImportId                string // Resource ID to import
 }
 
 // RegisterResourceResponse contains the result of registering a resource.
@@ -826,8 +836,6 @@ func (e *Engine) buildResourceOptions(res *ast.Resource, instance *graph.Expande
 		if res.Lifecycle.IgnoreAllChanges {
 			opts.IgnoreChanges = []string{"*"}
 		}
-		// Aliases
-		opts.Aliases = res.Lifecycle.Aliases
 		// create_before_destroy controls replacement order:
 		// - true: create new, then delete old (Pulumi's default behavior)
 		// - false: delete old, then create new (Terraform's default behavior)
@@ -857,7 +865,80 @@ func (e *Engine) buildResourceOptions(res *ast.Resource, instance *graph.Expande
 		}
 	}
 
+	// Handle timeouts
+	if res.Timeouts != nil {
+		ct := &CustomTimeouts{}
+		hasTimeouts := false
+		if res.Timeouts.Create != "" {
+			if d, err := time.ParseDuration(res.Timeouts.Create); err == nil {
+				ct.Create = d.Seconds()
+				hasTimeouts = true
+			}
+		}
+		if res.Timeouts.Update != "" {
+			if d, err := time.ParseDuration(res.Timeouts.Update); err == nil {
+				ct.Update = d.Seconds()
+				hasTimeouts = true
+			}
+		}
+		if res.Timeouts.Delete != "" {
+			if d, err := time.ParseDuration(res.Timeouts.Delete); err == nil {
+				ct.Delete = d.Seconds()
+				hasTimeouts = true
+			}
+		}
+		if hasTimeouts {
+			opts.CustomTimeouts = ct
+		}
+	}
+
+	// Handle moved blocks - resolve aliases from moved blocks that target this resource
+	movedAliases := e.resolveMovedAliases(res)
+	opts.Aliases = append(opts.Aliases, movedAliases...)
+
+	// Handle import blocks - resolve import ID from import blocks that target this resource
+	opts.ImportId = e.resolveImportId(res)
+
 	return opts
+}
+
+// resolveMovedAliases finds any moved blocks that target this resource and returns
+// the source addresses as aliases.
+func (e *Engine) resolveMovedAliases(res *ast.Resource) []string {
+	var aliases []string
+	resourceAddr := res.Type + "." + res.Name
+
+	for _, moved := range e.config.Moved {
+		// Check if this moved block targets the current resource
+		toAddr := graph.FormatTraversal(moved.To)
+		if toAddr == resourceAddr {
+			// Convert the "from" address to a URN-style alias
+			fromAddr := graph.FormatTraversal(moved.From)
+			if fromAddr != "" {
+				// For Pulumi aliases, we use the resource name from the "from" address
+				// The alias tells Pulumi this resource may have been known by a different name
+				aliases = append(aliases, fromAddr)
+			}
+		}
+	}
+
+	return aliases
+}
+
+// resolveImportId finds any import blocks that target this resource and returns
+// the import ID.
+func (e *Engine) resolveImportId(res *ast.Resource) string {
+	resourceAddr := res.Type + "." + res.Name
+
+	for _, imp := range e.config.Imports {
+		// Check if this import block targets the current resource
+		toAddr := graph.FormatTraversal(imp.To)
+		if toAddr == resourceAddr {
+			return imp.Id
+		}
+	}
+
+	return ""
 }
 
 // formatTraversalForIgnoreChanges formats a traversal for ignore_changes.
@@ -901,6 +982,8 @@ type ResourceOptions struct {
 	Parent                  string
 	DeleteBeforeReplace     bool
 	DeleteBeforeReplaceDef  bool // True if DeleteBeforeReplace was explicitly set
+	CustomTimeouts          *CustomTimeouts
+	ImportId                string
 }
 
 // registerResource registers a resource with the Pulumi engine.
@@ -934,6 +1017,8 @@ func (e *Engine) registerResource(
 		Parent:                 opts.Parent,
 		DeleteBeforeReplace:    opts.DeleteBeforeReplace,
 		DeleteBeforeReplaceDef: opts.DeleteBeforeReplaceDef,
+		CustomTimeouts:         opts.CustomTimeouts,
+		ImportId:               opts.ImportId,
 	})
 	if err != nil {
 		return "", "", nil, err

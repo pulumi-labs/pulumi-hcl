@@ -197,6 +197,61 @@ variable "database_password" {
 }
 ```
 
+### Timeouts
+
+Resource timeout configuration is fully supported:
+
+```hcl
+resource "aws_instance" "web" {
+  ami           = "ami-12345"
+  instance_type = "t3.micro"
+
+  timeouts {
+    create = "60m"
+    update = "30m"
+    delete = "2h"
+  }
+}
+```
+
+Timeouts map to Pulumi's [`CustomTimeouts`](https://www.pulumi.com/docs/iac/concepts/resources/options/customtimeouts/) resource option. Duration strings use Go's format (`60m`, `2h`, `1h30m`).
+
+### Moved Blocks
+
+The `moved` block allows renaming resources without recreation:
+
+```hcl
+moved {
+  from = aws_instance.old_name
+  to   = aws_instance.new_name
+}
+
+resource "aws_instance" "new_name" {
+  ami           = "ami-12345"
+  instance_type = "t3.micro"
+}
+```
+
+This maps to Pulumi's [`aliases`](https://www.pulumi.com/docs/iac/concepts/resources/options/aliases/) resource option. When Pulumi sees a resource with an alias matching an existing resource in the state, it understands this is a rename rather than a replacement.
+
+### Import Blocks
+
+The `import` block allows importing existing resources:
+
+```hcl
+import {
+  to = aws_instance.imported
+  id = "i-1234567890abcdef0"
+}
+
+resource "aws_instance" "imported" {
+  ami           = "ami-12345"
+  instance_type = "t3.micro"
+}
+```
+
+This maps to Pulumi's import resource option. On first deployment, Pulumi will import the existing resource by ID instead of creating a new one.
+
 ## Platform Differences
 
 These are expected differences when using Pulumi instead of Terraform. They reflect fundamental differences in how the engines work.
@@ -277,28 +332,6 @@ These features cannot be supported due to fundamental differences between Pulumi
 
 Terraform's `replace_triggered_by` cascades replacement when *other* resources change. Pulumi's [`replaceOnChanges`](https://www.pulumi.com/docs/iac/concepts/resources/options/replaceonchanges/) triggers replacement when properties on *this* resource change—different semantics that don't map directly.
 
-### `moved` and `import` Blocks
-
-Use `pulumi state rename` and `pulumi import` CLI commands instead.
-
-## Not Yet Implemented
-
-These features are parsed for compatibility but not yet functional. They represent temporary gaps.
-
-### Timeouts Block
-
-Resource timeout configuration is parsed but not yet enforced:
-
-```hcl
-resource "aws_instance" "web" {
-  timeouts {
-    create = "60m"
-    delete = "2h"
-  }
-}
-# Timeouts are ignored
-```
-
 ## Quick Reference
 
 | Feature | Status | Notes |
@@ -321,9 +354,10 @@ resource "aws_instance" "web" {
 | Provisioners | Yes | Maps to Command provider |
 | Multi-language components | Yes | Via RunPlugin |
 | `replace_triggered_by` | No | No direct Pulumi equivalent |
-| `moved` / `import` blocks | No | Use CLI commands |
+| `moved` blocks | Yes | Maps to `aliases` |
+| `import` blocks | Yes | Maps to `ImportId` option |
 | Functions | Yes | 80+ including `rsadecrypt` |
-| Timeouts | Pending | Parsed but not enforced |
+| Timeouts | Yes | Maps to `CustomTimeouts` |
 
 ## Getting Help
 
