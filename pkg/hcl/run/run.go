@@ -426,6 +426,16 @@ func (e *Engine) processNodesInParallel(ctx context.Context, nodes []*graph.Node
 		pendingDeps[node.Key] = count
 	}
 
+	// Send initial signals for nodes with no dependencies (before starting goroutines)
+	for _, node := range nodes {
+		if pendingDeps[node.Key] == 0 {
+			select {
+			case done <- "":
+			default:
+			}
+		}
+	}
+
 	// Start a goroutine for each node
 	var wg sync.WaitGroup
 	for _, node := range nodes {
@@ -477,16 +487,6 @@ func (e *Engine) processNodesInParallel(ctx context.Context, nodes []*graph.Node
 			default:
 			}
 		}(node)
-	}
-
-	// Also send initial signals for nodes with no dependencies
-	for _, node := range nodes {
-		if pendingDeps[node.Key] == 0 {
-			select {
-			case done <- "":
-			default:
-			}
-		}
 	}
 
 	wg.Wait()

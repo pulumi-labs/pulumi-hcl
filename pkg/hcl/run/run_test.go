@@ -18,6 +18,7 @@ import (
 	"context"
 	"os"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/pulumi/pulumi-language-hcl/pkg/hcl/parser"
@@ -26,6 +27,7 @@ import (
 
 // mockResourceMonitor is a mock implementation of ResourceMonitor for testing.
 type mockResourceMonitor struct {
+	mu                  sync.Mutex
 	registeredResources []RegisterResourceRequest
 	invokedFunctions    []InvokeRequest
 	stackOutputs        resource.PropertyMap
@@ -33,6 +35,8 @@ type mockResourceMonitor struct {
 }
 
 func (m *mockResourceMonitor) RegisterResource(ctx context.Context, req RegisterResourceRequest) (*RegisterResourceResponse, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	m.registeredResources = append(m.registeredResources, req)
 	urn := "urn:pulumi:test::project::" + req.Type + "::" + req.Name
 	// Track the stack URN for output registration
@@ -47,6 +51,8 @@ func (m *mockResourceMonitor) RegisterResource(ctx context.Context, req Register
 }
 
 func (m *mockResourceMonitor) Invoke(ctx context.Context, req InvokeRequest) (*InvokeResponse, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	m.invokedFunctions = append(m.invokedFunctions, req)
 	return &InvokeResponse{
 		Return: resource.PropertyMap{
@@ -56,6 +62,8 @@ func (m *mockResourceMonitor) Invoke(ctx context.Context, req InvokeRequest) (*I
 }
 
 func (m *mockResourceMonitor) RegisterResourceOutputs(ctx context.Context, urn string, outputs resource.PropertyMap) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	// Capture stack outputs
 	if urn == m.stackURN {
 		m.stackOutputs = outputs
