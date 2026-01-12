@@ -1,7 +1,5 @@
 # Build output
 bin/
-pulumi-language-hcl
-pulumi-converter-hcl
 
 # Go
 *.exe
