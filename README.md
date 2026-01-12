@@ -144,6 +144,93 @@ resource "aws_instance" "web" {
     create_before_destroy = true
     ignore_changes        = [tags["Timestamp"]]
   }
+
+  timeouts {
+    create = "60m"
+    update = "30m"
+    delete = "2h"
+  }
+}
+```
+
+### Modules
+
+```hcl
+# Local module
+module "vpc" {
+  source = "./modules/vpc"
+  cidr_block = "10.0.0.0/16"
+}
+
+# Git source
+module "eks" {
+  source = "git::https://github.com/org/terraform-aws-eks.git?ref=v1.0.0"
+}
+
+# Terraform Registry
+module "rds" {
+  source  = "terraform-aws-modules/rds/aws"
+  version = "6.0.0"
+}
+
+# GitHub shorthand
+module "lambda" {
+  source = "github.com/org/terraform-aws-lambda"
+}
+```
+
+Modules map to Pulumi component resources. All source types are supported: local paths, Git URLs, GitHub/BitBucket shorthand, Terraform Registry, and HTTP archives. Remote modules are cached in `~/.pulumi/modules/`.
+
+### Provisioners
+
+```hcl
+resource "aws_instance" "web" {
+  ami           = "ami-12345678"
+  instance_type = "t3.micro"
+
+  provisioner "local-exec" {
+    command = "echo ${self.public_ip} >> hosts.txt"
+  }
+
+  provisioner "remote-exec" {
+    inline = [
+      "sudo apt-get update",
+      "sudo apt-get install -y nginx"
+    ]
+  }
+
+  provisioner "file" {
+    source      = "config.txt"
+    destination = "/tmp/config.txt"
+  }
+
+  connection {
+    type        = "ssh"
+    user        = "ubuntu"
+    private_key = file("~/.ssh/id_rsa")
+    host        = self.public_ip
+  }
+}
+```
+
+Provisioners map to the [Pulumi Command provider](https://www.pulumi.com/registry/packages/command/):
+- `local-exec` → `command:local:Command`
+- `remote-exec` → `command:remote:Command`
+- `file` → `command:remote:CopyToRemote`
+
+### Moved and Import Blocks
+
+```hcl
+# Rename a resource without recreating it
+moved {
+  from = aws_instance.old_name
+  to   = aws_instance.new_name
+}
+
+# Import an existing resource
+import {
+  to = aws_instance.web
+  id = "i-1234567890abcdef0"
 }
 ```
 
@@ -304,31 +391,33 @@ Terraform uses `snake_case` for attribute names, while Pulumi uses `camelCase`. 
 
 ## Terraform Compatibility
 
+This plugin provides full compatibility with Terraform's HCL syntax. For detailed compatibility information, see [docs/terraform-compatibility.md](docs/terraform-compatibility.md).
+
 ### Supported
 
-- `resource` blocks with all meta-arguments (`count`, `for_each`, `depends_on`, `lifecycle`)
+- `resource` blocks with all meta-arguments (`count`, `for_each`, `depends_on`, `lifecycle`, `timeouts`)
 - `data` source blocks
 - `variable` blocks with defaults and types
 - `locals` blocks
 - `output` blocks
 - `provider` blocks
 - `terraform.required_providers` block
+- `module` blocks (local, Git, Terraform Registry, HTTP sources)
+- `provisioner` blocks (`local-exec`, `remote-exec`, `file`)
+- `moved` blocks (map to Pulumi aliases)
+- `import` blocks (map to Pulumi import option)
 - Most Terraform built-in functions
 - Resource and data source references
 - Splat expressions (`resource.name[*].attr`)
 
-### Not Yet Supported
+### Not Supported
 
-- `module` blocks (planned - will map to Pulumi components)
-- `provisioner` blocks (planned - will map to Command provider)
-- `moved` blocks
-- `import` blocks
-- Some complex type constraints
+- `replace_triggered_by` lifecycle option (different semantics from Pulumi's `replaceOnChanges`)
 
 ### Pulumi-Specific Extensions
 
 ```hcl
-# Stack references (planned)
+# Stack references
 data "pulumi_stack_reference" "network" {
   name = "myorg/networking/prod"
 }
@@ -342,22 +431,24 @@ output "vpc_id" {
 
 ```
 pulumi-language-hcl/
-├── cmd/
-│   └── pulumi-language-hcl/     # Main entry point
+├── docs/
+│   └── terraform-compatibility.md  # Detailed compatibility documentation
+├── examples/
+│   ├── simple/                     # Basic random_pet example
+│   └── aws-webserver/              # AWS EC2 example
 ├── pkg/
 │   ├── hcl/
-│   │   ├── ast/                 # AST types
-│   │   ├── eval/                # Expression evaluator
-│   │   ├── graph/               # Dependency graph
-│   │   ├── packages/            # Provider schema loading
-│   │   ├── parser/              # HCL parser
-│   │   ├── run/                 # Execution engine
-│   │   └── transform/           # Type conversions
-│   ├── server/                  # gRPC server
-│   └── version/                 # Version info
-├── examples/
-│   ├── simple/                  # Basic random_pet example
-│   └── aws-webserver/           # AWS EC2 example
+│   │   ├── ast/                    # AST types
+│   │   ├── eval/                   # Expression evaluator
+│   │   ├── graph/                  # Dependency graph
+│   │   ├── modules/                # Module loading (local/remote)
+│   │   ├── packages/               # Provider schema loading
+│   │   ├── parser/                 # HCL parser
+│   │   ├── run/                    # Execution engine
+│   │   ├── schema/                 # Schema generation
+│   │   └── transform/              # Type conversions
+│   ├── server/                     # gRPC server
+│   └── version/                    # Version info
 ├── go.mod
 ├── Makefile
 └── README.md
