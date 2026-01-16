@@ -16,6 +16,7 @@ package parser
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/hashicorp/hcl/v2"
 	"github.com/pulumi/pulumi-language-hcl/pkg/hcl/ast"
@@ -191,7 +192,24 @@ func (p *Parser) parseRequiredProviders(terraform *ast.Terraform, block *hcl.Blo
 			provider.Version = val.AsString()
 		} else if val.Type().IsObjectType() {
 			if sourceVal := val.GetAttr("source"); !sourceVal.IsNull() {
-				provider.Source = sourceVal.AsString()
+				source := sourceVal.AsString()
+				// Auto-map hashicorp/ namespace to pulumi/ for Terraform compatibility
+				// Case-insensitive comparison for better compatibility with various capitalizations
+				lowerSource := strings.ToLower(source)
+				if providerName, found := strings.CutPrefix(lowerSource, "hashicorp/"); found {
+					normalized := "pulumi/" + providerName
+					diags = append(diags, &hcl.Diagnostic{
+						Severity: hcl.DiagWarning,
+						Summary:  "Provider source automatically mapped",
+						Detail: fmt.Sprintf(
+							"Changed %q to %q. Pulumi HCL uses the pulumi/ namespace for providers. "+
+								"To suppress this warning, update the source to %q in your configuration.",
+							source, normalized, normalized),
+						Subject: &attr.Range,
+					})
+					source = normalized
+				}
+				provider.Source = source
 			}
 			if versionVal := val.GetAttr("version"); !versionVal.IsNull() {
 				provider.Version = versionVal.AsString()

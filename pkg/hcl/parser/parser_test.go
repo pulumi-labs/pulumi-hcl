@@ -16,6 +16,8 @@ package parser
 
 import (
 	"testing"
+
+	"github.com/hashicorp/hcl/v2"
 )
 
 func TestParseBasicConfig(t *testing.T) {
@@ -326,5 +328,236 @@ resource "aws_instance" "app" {
 		t.Error("Expected lifecycle block")
 	} else if !r2.Lifecycle.IgnoreAllChanges {
 		t.Error("Expected ignore_changes = all")
+	}
+}
+
+func TestHashicorpToPublumiSourceMapping(t *testing.T) {
+	tests := []struct {
+		name           string
+		source         string
+		expectedSource string
+		expectWarning  bool
+	}{
+		{
+			name:           "hashicorp source auto-mapped",
+			source:         "hashicorp/aws",
+			expectedSource: "pulumi/aws",
+			expectWarning:  true,
+		},
+		{
+			name:           "pulumi source unchanged",
+			source:         "pulumi/aws",
+			expectedSource: "pulumi/aws",
+			expectWarning:  false,
+		},
+		{
+			name:           "hashicorp random provider",
+			source:         "hashicorp/random",
+			expectedSource: "pulumi/random",
+			expectWarning:  true,
+		},
+		{
+			name:           "other namespace unchanged",
+			source:         "example/custom",
+			expectedSource: "example/custom",
+			expectWarning:  false,
+		},
+		// Case-insensitive tests
+		{
+			name:           "HashiCorp capitalized",
+			source:         "HashiCorp/aws",
+			expectedSource: "pulumi/aws",
+			expectWarning:  true,
+		},
+		{
+			name:           "HASHICORP uppercase",
+			source:         "HASHICORP/aws",
+			expectedSource: "pulumi/aws",
+			expectWarning:  true,
+		},
+		{
+			name:           "Hashicorp titlecase",
+			source:         "Hashicorp/AWS",
+			expectedSource: "pulumi/aws",
+			expectWarning:  true,
+		},
+		// Edge cases
+		{
+			name:           "empty source",
+			source:         "",
+			expectedSource: "",
+			expectWarning:  false,
+		},
+		{
+			name:           "namespace only no provider",
+			source:         "hashicorp/",
+			expectedSource: "pulumi/",
+			expectWarning:  true,
+		},
+		{
+			name:           "registry hostname prefix unchanged",
+			source:         "registry.terraform.io/hashicorp/aws",
+			expectedSource: "registry.terraform.io/hashicorp/aws",
+			expectWarning:  false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			src := []byte(`
+terraform {
+  required_providers {
+    test = {
+      source  = "` + tt.source + `"
+      version = ">= 1.0"
+    }
+  }
+}
+`)
+
+			p := NewParser()
+			config, diags := p.ParseSource("test.hcl", src)
+
+			if diags.HasErrors() {
+				for _, d := range diags {
+					t.Errorf("Unexpected error: %s: %s", d.Summary, d.Detail)
+				}
+				t.FailNow()
+			}
+
+			// Verify source was mapped correctly
+			rp, ok := config.Terraform.RequiredProviders["test"]
+			if !ok {
+				t.Fatal("Expected 'test' in required providers")
+			}
+
+			if rp.Source != tt.expectedSource {
+				t.Errorf("Expected source %q, got %q", tt.expectedSource, rp.Source)
+			}
+
+			// Check for warning diagnostic
+			hasWarning := false
+			for _, d := range diags {
+				if d.Severity == hcl.DiagWarning && d.Summary == "Provider source automatically mapped" {
+					hasWarning = true
+					break
+				}
+			}
+
+			if tt.expectWarning && !hasWarning {
+				t.Error("Expected warning diagnostic for hashicorp/ source mapping")
+			}
+			if !tt.expectWarning && hasWarning {
+				t.Error("Did not expect warning diagnostic")
+			}
+		})
+	}
+}
+
+func TestHashicorpSourceMappingMixedProviders(t *testing.T) {
+	src := []byte(`
+terraform {
+  required_providers {
+    aws = {
+      source  = "hashicorp/aws"
+      version = ">= 6.0"
+    }
+    random = {
+      source  = "pulumi/random"
+      version = ">= 4.0"
+    }
+    gcp = {
+      source  = "hashicorp/google"
+      version = ">= 5.0"
+    }
+  }
+}
+`)
+
+	p := NewParser()
+	config, diags := p.ParseSource("test.hcl", src)
+
+	if diags.HasErrors() {
+		for _, d := range diags {
+			t.Errorf("Unexpected error: %s: %s", d.Summary, d.Detail)
+		}
+		t.FailNow()
+	}
+
+	// Verify aws was mapped
+	if aws, ok := config.Terraform.RequiredProviders["aws"]; ok {
+		if aws.Source != "pulumi/aws" {
+			t.Errorf("Expected aws source 'pulumi/aws', got %q", aws.Source)
+		}
+	} else {
+		t.Error("Expected 'aws' in required providers")
+	}
+
+	// Verify random was unchanged
+	if random, ok := config.Terraform.RequiredProviders["random"]; ok {
+		if random.Source != "pulumi/random" {
+			t.Errorf("Expected random source 'pulumi/random', got %q", random.Source)
+		}
+	} else {
+		t.Error("Expected 'random' in required providers")
+	}
+
+	// Verify gcp was mapped
+	if gcp, ok := config.Terraform.RequiredProviders["gcp"]; ok {
+		if gcp.Source != "pulumi/google" {
+			t.Errorf("Expected gcp source 'pulumi/google', got %q", gcp.Source)
+		}
+	} else {
+		t.Error("Expected 'gcp' in required providers")
+	}
+
+	// Count warning diagnostics - should have 2 (aws and gcp)
+	warningCount := 0
+	for _, d := range diags {
+		if d.Severity == hcl.DiagWarning && d.Summary == "Provider source automatically mapped" {
+			warningCount++
+		}
+	}
+
+	if warningCount != 2 {
+		t.Errorf("Expected 2 warning diagnostics, got %d", warningCount)
+	}
+}
+
+func TestHashicorpMappingWithVersionOnly(t *testing.T) {
+	// Version-only syntax has no source field, so no mapping should occur
+	src := []byte(`
+terraform {
+  required_providers {
+    aws = ">= 6.0"
+  }
+}
+`)
+	p := NewParser()
+	config, diags := p.ParseSource("test.hcl", src)
+
+	if diags.HasErrors() {
+		t.Fatalf("Unexpected error: %v", diags)
+	}
+
+	rp, ok := config.Terraform.RequiredProviders["aws"]
+	if !ok {
+		t.Fatal("Expected 'aws' in required providers")
+	}
+
+	// Version-only declarations have no source
+	if rp.Source != "" {
+		t.Errorf("Expected empty source, got %q", rp.Source)
+	}
+
+	if rp.Version != ">= 6.0" {
+		t.Errorf("Expected version '>= 6.0', got %q", rp.Version)
+	}
+
+	// No warning should be emitted
+	for _, d := range diags {
+		if d.Severity == hcl.DiagWarning && d.Summary == "Provider source automatically mapped" {
+			t.Error("Did not expect warning for version-only declaration")
+		}
 	}
 }

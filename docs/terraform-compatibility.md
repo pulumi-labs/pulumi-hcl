@@ -4,22 +4,32 @@ Pulumi HCL supports [Terraform's HCL syntax](https://developer.hashicorp.com/ter
 
 This document covers only what's different.
 
-## The One Required Change
+## Provider Sources
 
-Provider sources must use the `pulumi/` namespace instead of `hashicorp/`:
+Pulumi HCL uses the `pulumi/` namespace for providers. If your configuration uses
+`hashicorp/` sources, they are **automatically mapped** to `pulumi/`:
 
 ```hcl
 terraform {
   required_providers {
     aws = {
-      source  = "pulumi/aws"  # not "hashicorp/aws"
+      source  = "hashicorp/aws"  # automatically becomes "pulumi/aws"
       version = ">= 6.0"
     }
   }
 }
 ```
 
-Terraform-style resource type names (like `aws_instance`) work unchanged—they're automatically mapped to their Pulumi equivalents.
+**Mapping behavior:**
+
+- Case-insensitive: `hashicorp/`, `HashiCorp/`, and `HASHICORP/` are all mapped
+- A warning is emitted showing both the original and mapped source
+- Update to `pulumi/` in your configuration to suppress the warning
+- Registry hostnames are not stripped: `registry.terraform.io/hashicorp/aws`
+  is passed through unchanged
+
+Terraform-style resource type names (like `aws_instance`) work unchanged—they're
+automatically mapped to their Pulumi equivalents.
 
 ## Behavioral Differences
 
