@@ -24,3 +24,7 @@ coverage.html
 # OS
 .DS_Store
 Thumbs.db
+# AI
+.claude/workflows/
+.claude/settings.local.json
+PR_MESSAGE.md
