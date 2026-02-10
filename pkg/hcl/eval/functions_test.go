@@ -550,9 +550,9 @@ func TestTypeFunctions(t *testing.T) {
 
 func TestDateTimeFunctions(t *testing.T) {
 	tests := []struct {
-		name     string
-		expr     string
-		check    func(cty.Value) bool
+		name  string
+		expr  string
+		check func(cty.Value) bool
 	}{
 		{
 			"timestamp format",
@@ -630,12 +630,7 @@ func TestUUIDV5Function(t *testing.T) {
 }
 
 func TestFileFunctions(t *testing.T) {
-	// Create a temp directory with test files
-	tmpDir, err := os.MkdirTemp("", "hcl-test-*")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer os.RemoveAll(tmpDir)
+	tmpDir := t.TempDir()
 
 	// Create test file
 	testFile := filepath.Join(tmpDir, "test.txt")

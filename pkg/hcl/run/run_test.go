@@ -16,13 +16,18 @@ package run
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"strings"
 	"sync"
 	"testing"
 
+	"github.com/blang/semver"
+	"github.com/pulumi/pulumi-language-hcl/pkg/hcl/packages"
 	"github.com/pulumi/pulumi-language-hcl/pkg/hcl/parser"
+	"github.com/pulumi/pulumi/pkg/v3/codegen/schema"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/resource"
+	"github.com/stretchr/testify/require"
 )
 
 // mockResourceMonitor is a mock implementation of ResourceMonitor for testing.
@@ -71,7 +76,76 @@ func (m *mockResourceMonitor) RegisterResourceOutputs(ctx context.Context, urn s
 	return nil
 }
 
+var _ schema.ReferenceLoader = mockReferenceLoader{}
+
+type mockReferenceLoader map[string]schema.Package
+
+func (m mockReferenceLoader) LoadPackage(pkg string, version *semver.Version) (*schema.Package, error) {
+	return m.LoadPackageV2(context.Background(), &schema.PackageDescriptor{
+		Name:    pkg,
+		Version: version,
+	})
+}
+
+func (m mockReferenceLoader) LoadPackageV2(ctx context.Context, descriptor *schema.PackageDescriptor) (*schema.Package, error) {
+	p, ok := m[descriptor.String()]
+	if ok {
+		return &p, nil
+	}
+	return nil, packages.ErrNotFound
+}
+
+func (m mockReferenceLoader) LoadPackageReference(pkg string, version *semver.Version) (schema.PackageReference, error) {
+	return m.LoadPackageReferenceV2(context.Background(), &schema.PackageDescriptor{
+		Name:    pkg,
+		Version: version,
+	})
+}
+
+func (m mockReferenceLoader) LoadPackageReferenceV2(ctx context.Context, descriptor *schema.PackageDescriptor) (schema.PackageReference, error) {
+	p, ok := m[descriptor.String()]
+	if ok {
+		return p.Reference(), nil
+	}
+	fmt.Printf("Looking for %s\n", descriptor.String())
+	for k := range m {
+		fmt.Printf("Found: %s\n", k)
+	}
+	return nil, packages.ErrNotFound
+}
+
+func newMockReferenceLoader(t testing.TB, schemas ...schema.PackageSpec) schema.ReferenceLoader {
+	loader := mockReferenceLoader{}
+	for _, spec := range schemas {
+		pkg, diag, err := schema.BindSpec(spec, loader, schema.ValidationOptions{})
+		require.NoError(t, err)
+		require.Len(t, diag, 0)
+		d, err := pkg.Descriptor(t.Context())
+		require.NoError(t, err)
+
+		params := func() *schema.ParameterizationDescriptor {
+			if d.Parameterization == nil {
+				return nil
+			}
+			return &schema.ParameterizationDescriptor{
+				Name:    d.Parameterization.Name,
+				Version: d.Parameterization.Version,
+				Value:   d.Parameterization.Value,
+			}
+		}
+		loader[(&schema.PackageDescriptor{
+			Name:             d.Name,
+			Version:          d.Version,
+			DownloadURL:      d.PluginDownloadURL,
+			Parameterization: params(),
+		}).String()] = *pkg
+	}
+	return loader
+}
+
 func TestEngine_BasicResource(t *testing.T) {
+	t.Parallel()
+
 	src := []byte(`
 variable "name" {
   type    = string
@@ -95,11 +169,16 @@ resource "aws_instance" "web" {
 		ProjectName:     "test-project",
 		StackName:       "dev",
 		ResourceMonitor: mock,
-		TestMode:        true, // Skip provider validation
+		WorkDir:         t.TempDir(),
+		SchemaLoader: newMockReferenceLoader(t, schema.PackageSpec{
+			Name: "aws",
+			Resources: map[string]schema.ResourceSpec{
+				"aws:index:Instance": schema.ResourceSpec{},
+			},
+		}),
 	})
 
-	ctx := context.Background()
-	err := engine.Run(ctx)
+	err := engine.Run(t.Context())
 	if err != nil {
 		t.Fatalf("run error: %v", err)
 	}
@@ -127,6 +206,8 @@ resource "aws_instance" "web" {
 }
 
 func TestEngine_LocalsAndVariables(t *testing.T) {
+	t.Parallel()
+
 	src := []byte(`
 variable "env" {
   type    = string
@@ -153,11 +234,16 @@ resource "aws_s3_bucket" "mybucket" {
 		ProjectName:     "test-project",
 		StackName:       "dev",
 		ResourceMonitor: mock,
-		TestMode:        true,
+		WorkDir:         t.TempDir(),
+		SchemaLoader: newMockReferenceLoader(t, schema.PackageSpec{
+			Name: "aws",
+			Resources: map[string]schema.ResourceSpec{
+				"aws:s3:Bucket": schema.ResourceSpec{},
+			},
+		}),
 	})
 
-	ctx := context.Background()
-	err := engine.Run(ctx)
+	err := engine.Run(t.Context())
 	if err != nil {
 		t.Fatalf("run error: %v", err)
 	}
@@ -174,6 +260,8 @@ resource "aws_s3_bucket" "mybucket" {
 }
 
 func TestEngine_ResourceDependencies(t *testing.T) {
+	t.Parallel()
+
 	src := []byte(`
 resource "aws_vpc" "main" {
   cidr_block = "10.0.0.0/16"
@@ -196,11 +284,17 @@ resource "aws_subnet" "main" {
 		ProjectName:     "test-project",
 		StackName:       "dev",
 		ResourceMonitor: mock,
-		TestMode:        true,
+		WorkDir:         t.TempDir(),
+		SchemaLoader: newMockReferenceLoader(t, schema.PackageSpec{
+			Name: "aws",
+			Resources: map[string]schema.ResourceSpec{
+				"aws:index:Vpc":    schema.ResourceSpec{},
+				"aws:index:Subnet": schema.ResourceSpec{},
+			},
+		}),
 	})
 
-	ctx := context.Background()
-	err := engine.Run(ctx)
+	err := engine.Run(t.Context())
 	if err != nil {
 		t.Fatalf("run error: %v", err)
 	}
@@ -222,6 +316,8 @@ resource "aws_subnet" "main" {
 }
 
 func TestEngine_NoResourceMonitor(t *testing.T) {
+	t.Parallel()
+
 	// Test that engine works without a resource monitor (for validation/testing)
 	src := []byte(`
 variable "name" {
@@ -242,20 +338,29 @@ resource "aws_instance" "web" {
 
 	// No resource monitor - should still work
 	engine := NewEngine(config, &EngineOptions{
-		ProjectName: "test-project",
-		StackName:   "dev",
-		TestMode:    true,
+		ProjectName:  "test-project",
+		StackName:    "dev",
+		WorkDir:      t.TempDir(),
+		SchemaLoader: newMockReferenceLoader(t, schema.PackageSpec{
+			Name: "aws",
+			Resources: map[string]schema.ResourceSpec{
+				"aws:index:Instance": schema.ResourceSpec{},
+			},
+		}),
 	})
 
-	ctx := context.Background()
-	err := engine.Run(ctx)
+	err := engine.Run(t.Context())
 	if err != nil {
 		t.Fatalf("run error: %v", err)
 	}
 }
 
 func TestValidate(t *testing.T) {
+	t.Parallel()
+
 	t.Run("valid config", func(t *testing.T) {
+		t.Parallel()
+
 		src := []byte(`
 variable "name" {
   type = string
@@ -298,6 +403,8 @@ resource "aws_instance" "web" {
 }
 
 func TestEngine_DependsOn(t *testing.T) {
+	t.Parallel()
+
 	src := []byte(`
 resource "aws_s3_bucket" "mybucket" {
   bucket = "my-bucket"
@@ -321,11 +428,17 @@ resource "aws_instance" "web" {
 		ProjectName:     "test-project",
 		StackName:       "dev",
 		ResourceMonitor: mock,
-		TestMode:        true,
+		WorkDir:         t.TempDir(),
+		SchemaLoader: newMockReferenceLoader(t, schema.PackageSpec{
+			Name: "aws",
+			Resources: map[string]schema.ResourceSpec{
+				"aws:index:Instance": schema.ResourceSpec{},
+				"aws:s3:Bucket":      schema.ResourceSpec{},
+			},
+		}),
 	})
 
-	ctx := context.Background()
-	err := engine.Run(ctx)
+	err := engine.Run(t.Context())
 	if err != nil {
 		t.Fatalf("run error: %v", err)
 	}
@@ -347,6 +460,8 @@ resource "aws_instance" "web" {
 }
 
 func TestEngine_Lifecycle(t *testing.T) {
+	t.Parallel()
+
 	src := []byte(`
 resource "aws_instance" "web" {
   ami = "ami-12345"
@@ -369,11 +484,16 @@ resource "aws_instance" "web" {
 		ProjectName:     "test-project",
 		StackName:       "dev",
 		ResourceMonitor: mock,
-		TestMode:        true,
+		WorkDir:         t.TempDir(),
+		SchemaLoader: newMockReferenceLoader(t, schema.PackageSpec{
+			Name: "aws",
+			Resources: map[string]schema.ResourceSpec{
+				"aws:index:Instance": schema.ResourceSpec{},
+			},
+		}),
 	})
 
-	ctx := context.Background()
-	err := engine.Run(ctx)
+	err := engine.Run(t.Context())
 	if err != nil {
 		t.Fatalf("run error: %v", err)
 	}
@@ -396,6 +516,8 @@ resource "aws_instance" "web" {
 }
 
 func TestEngine_CreateBeforeDestroy(t *testing.T) {
+	t.Parallel()
+
 	src := []byte(`
 resource "aws_instance" "web" {
   ami = "ami-12345"
@@ -417,11 +539,16 @@ resource "aws_instance" "web" {
 		ProjectName:     "test-project",
 		StackName:       "dev",
 		ResourceMonitor: mock,
-		TestMode:        true,
+		WorkDir:         t.TempDir(),
+		SchemaLoader: newMockReferenceLoader(t, schema.PackageSpec{
+			Name: "aws",
+			Resources: map[string]schema.ResourceSpec{
+				"aws:index:Instance": schema.ResourceSpec{},
+			},
+		}),
 	})
 
-	ctx := context.Background()
-	err := engine.Run(ctx)
+	err := engine.Run(t.Context())
 	if err != nil {
 		t.Fatalf("run error: %v", err)
 	}
@@ -443,6 +570,8 @@ resource "aws_instance" "web" {
 }
 
 func TestEngine_CreateBeforeDestroyFalse(t *testing.T) {
+	t.Parallel()
+
 	// Explicit create_before_destroy = false should enable Terraform's default
 	// behavior (delete-then-create), which maps to Pulumi's deleteBeforeReplace = true
 	src := []byte(`
@@ -466,11 +595,16 @@ resource "aws_instance" "web" {
 		ProjectName:     "test-project",
 		StackName:       "dev",
 		ResourceMonitor: mock,
-		TestMode:        true,
+		WorkDir:         t.TempDir(),
+		SchemaLoader: newMockReferenceLoader(t, schema.PackageSpec{
+			Name: "aws",
+			Resources: map[string]schema.ResourceSpec{
+				"aws:index:Instance": schema.ResourceSpec{},
+			},
+		}),
 	})
 
-	ctx := context.Background()
-	err := engine.Run(ctx)
+	err := engine.Run(t.Context())
 	if err != nil {
 		t.Fatalf("run error: %v", err)
 	}
@@ -492,6 +626,8 @@ resource "aws_instance" "web" {
 }
 
 func TestEngine_VariableFromConfig(t *testing.T) {
+	t.Parallel()
+
 	src := []byte(`
 variable "region" {
   type    = string
@@ -514,14 +650,19 @@ output "region_value" {
 		ProjectName:     "test-project",
 		StackName:       "dev",
 		ResourceMonitor: mock,
-		TestMode:        true,
+		WorkDir:         t.TempDir(),
+		SchemaLoader: newMockReferenceLoader(t, schema.PackageSpec{
+			Name: "aws",
+			Resources: map[string]schema.ResourceSpec{
+				"aws:index:Instance": schema.ResourceSpec{},
+			},
+		}),
 		Config: map[string]string{
 			"test-project:region": "us-west-2",
 		},
 	})
 
-	ctx := context.Background()
-	err := engine.Run(ctx)
+	err := engine.Run(t.Context())
 	if err != nil {
 		t.Fatalf("run error: %v", err)
 	}
@@ -565,14 +706,19 @@ output "region_value" {
 		ProjectName:     "test-project",
 		StackName:       "dev",
 		ResourceMonitor: mock,
-		TestMode:        true,
+		WorkDir:         t.TempDir(),
+		SchemaLoader: newMockReferenceLoader(t, schema.PackageSpec{
+			Name: "aws",
+			Resources: map[string]schema.ResourceSpec{
+				"aws:index:Instance": schema.ResourceSpec{},
+			},
+		}),
 		Config: map[string]string{
 			"test-project:region": "us-west-2", // This should be ignored
 		},
 	})
 
-	ctx := context.Background()
-	err := engine.Run(ctx)
+	err := engine.Run(t.Context())
 	if err != nil {
 		t.Fatalf("run error: %v", err)
 	}
@@ -591,6 +737,8 @@ output "region_value" {
 }
 
 func TestEngine_VariableRequired(t *testing.T) {
+	t.Parallel()
+
 	src := []byte(`
 variable "required_var" {
   type     = string
@@ -609,11 +757,16 @@ variable "required_var" {
 		ProjectName:     "test-project",
 		StackName:       "dev",
 		ResourceMonitor: mock,
-		TestMode:        true,
+		WorkDir:         t.TempDir(),
+		SchemaLoader: newMockReferenceLoader(t, schema.PackageSpec{
+			Name: "aws",
+			Resources: map[string]schema.ResourceSpec{
+				"aws:index:Instance": schema.ResourceSpec{},
+			},
+		}),
 	})
 
-	ctx := context.Background()
-	err := engine.Run(ctx)
+	err := engine.Run(t.Context())
 
 	// Should error because required_var has no value
 	if err == nil {
@@ -625,6 +778,8 @@ variable "required_var" {
 }
 
 func TestEngine_VariableValidationPass(t *testing.T) {
+	t.Parallel()
+
 	src := []byte(`
 variable "instance_type" {
   type    = string
@@ -652,11 +807,16 @@ output "instance_type" {
 		ProjectName:     "test-project",
 		StackName:       "dev",
 		ResourceMonitor: mock,
-		TestMode:        true,
+		WorkDir:         t.TempDir(),
+		SchemaLoader: newMockReferenceLoader(t, schema.PackageSpec{
+			Name: "aws",
+			Resources: map[string]schema.ResourceSpec{
+				"aws:index:Instance": schema.ResourceSpec{},
+			},
+		}),
 	})
 
-	ctx := context.Background()
-	err := engine.Run(ctx)
+	err := engine.Run(t.Context())
 	if err != nil {
 		t.Fatalf("run error: %v", err)
 	}
@@ -672,6 +832,8 @@ output "instance_type" {
 }
 
 func TestEngine_VariableValidationFail(t *testing.T) {
+	t.Parallel()
+
 	src := []byte(`
 variable "instance_type" {
   type    = string
@@ -695,11 +857,16 @@ variable "instance_type" {
 		ProjectName:     "test-project",
 		StackName:       "dev",
 		ResourceMonitor: mock,
-		TestMode:        true,
+		WorkDir:         t.TempDir(),
+		SchemaLoader: newMockReferenceLoader(t, schema.PackageSpec{
+			Name: "aws",
+			Resources: map[string]schema.ResourceSpec{
+				"aws:index:Instance": schema.ResourceSpec{},
+			},
+		}),
 	})
 
-	ctx := context.Background()
-	err := engine.Run(ctx)
+	err := engine.Run(t.Context())
 
 	// Should error because validation fails
 	if err == nil {
@@ -711,6 +878,8 @@ variable "instance_type" {
 }
 
 func TestEngine_PreconditionPass(t *testing.T) {
+	t.Parallel()
+
 	src := []byte(`
 variable "ami_id" {
   type    = string
@@ -740,11 +909,16 @@ resource "aws_instance" "web" {
 		ProjectName:     "test-project",
 		StackName:       "dev",
 		ResourceMonitor: mock,
-		TestMode:        true,
+		WorkDir:         t.TempDir(),
+		SchemaLoader: newMockReferenceLoader(t, schema.PackageSpec{
+			Name: "aws",
+			Resources: map[string]schema.ResourceSpec{
+				"aws:index:Instance": schema.ResourceSpec{},
+			},
+		}),
 	})
 
-	ctx := context.Background()
-	err := engine.Run(ctx)
+	err := engine.Run(t.Context())
 
 	// Should pass - precondition is satisfied
 	if err != nil {
@@ -765,6 +939,8 @@ resource "aws_instance" "web" {
 }
 
 func TestEngine_PreconditionFail(t *testing.T) {
+	t.Parallel()
+
 	src := []byte(`
 variable "ami_id" {
   type    = string
@@ -794,11 +970,16 @@ resource "aws_instance" "web" {
 		ProjectName:     "test-project",
 		StackName:       "dev",
 		ResourceMonitor: mock,
-		TestMode:        true,
+		WorkDir:         t.TempDir(),
+		SchemaLoader: newMockReferenceLoader(t, schema.PackageSpec{
+			Name: "aws",
+			Resources: map[string]schema.ResourceSpec{
+				"aws:index:Instance": schema.ResourceSpec{},
+			},
+		}),
 	})
 
-	ctx := context.Background()
-	err := engine.Run(ctx)
+	err := engine.Run(t.Context())
 
 	// Should error because precondition fails
 	if err == nil {
@@ -817,6 +998,8 @@ resource "aws_instance" "web" {
 }
 
 func TestEngine_PostconditionPass(t *testing.T) {
+	t.Parallel()
+
 	src := []byte(`
 resource "aws_instance" "web" {
   ami = "ami-12345"
@@ -841,11 +1024,16 @@ resource "aws_instance" "web" {
 		ProjectName:     "test-project",
 		StackName:       "dev",
 		ResourceMonitor: mock,
-		TestMode:        true,
+		WorkDir:         t.TempDir(),
+		SchemaLoader: newMockReferenceLoader(t, schema.PackageSpec{
+			Name: "aws",
+			Resources: map[string]schema.ResourceSpec{
+				"aws:index:Instance": schema.ResourceSpec{},
+			},
+		}),
 	})
 
-	ctx := context.Background()
-	err := engine.Run(ctx)
+	err := engine.Run(t.Context())
 
 	// Should pass - postcondition is satisfied (id is set by mock)
 	if err != nil {
@@ -854,6 +1042,8 @@ resource "aws_instance" "web" {
 }
 
 func TestEngine_PostconditionFail(t *testing.T) {
+	t.Parallel()
+
 	src := []byte(`
 resource "aws_instance" "web" {
   ami = "ami-12345"
@@ -878,11 +1068,16 @@ resource "aws_instance" "web" {
 		ProjectName:     "test-project",
 		StackName:       "dev",
 		ResourceMonitor: mock,
-		TestMode:        true,
+		WorkDir:         t.TempDir(),
+		SchemaLoader: newMockReferenceLoader(t, schema.PackageSpec{
+			Name: "aws",
+			Resources: map[string]schema.ResourceSpec{
+				"aws:index:Instance": schema.ResourceSpec{},
+			},
+		}),
 	})
 
-	ctx := context.Background()
-	err := engine.Run(ctx)
+	err := engine.Run(t.Context())
 
 	// Should error because postcondition fails
 	if err == nil {
@@ -894,6 +1089,8 @@ resource "aws_instance" "web" {
 }
 
 func TestEngine_LocalExecProvisioner(t *testing.T) {
+	t.Parallel()
+
 	src := []byte(`
 resource "aws_instance" "web" {
   ami = "ami-12345"
@@ -916,11 +1113,16 @@ resource "aws_instance" "web" {
 		ProjectName:     "test-project",
 		StackName:       "dev",
 		ResourceMonitor: mock,
-		TestMode:        true,
+		WorkDir:         t.TempDir(),
+		SchemaLoader: newMockReferenceLoader(t, schema.PackageSpec{
+			Name: "aws",
+			Resources: map[string]schema.ResourceSpec{
+				"aws:index:Instance": schema.ResourceSpec{},
+			},
+		}),
 	})
 
-	ctx := context.Background()
-	err := engine.Run(ctx)
+	err := engine.Run(t.Context())
 
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -964,6 +1166,8 @@ resource "aws_instance" "web" {
 }
 
 func TestEngine_MultipleProvisioners(t *testing.T) {
+	t.Parallel()
+
 	src := []byte(`
 resource "aws_instance" "web" {
   ami = "ami-12345"
@@ -989,11 +1193,16 @@ resource "aws_instance" "web" {
 		ProjectName:     "test-project",
 		StackName:       "dev",
 		ResourceMonitor: mock,
-		TestMode:        true,
+		WorkDir:         t.TempDir(),
+		SchemaLoader: newMockReferenceLoader(t, schema.PackageSpec{
+			Name: "aws",
+			Resources: map[string]schema.ResourceSpec{
+				"aws:index:Instance": schema.ResourceSpec{},
+			},
+		}),
 	})
 
-	ctx := context.Background()
-	err := engine.Run(ctx)
+	err := engine.Run(t.Context())
 
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -1013,6 +1222,8 @@ resource "aws_instance" "web" {
 }
 
 func TestEngine_ProvisionerWithSelf(t *testing.T) {
+	t.Parallel()
+
 	src := []byte(`
 resource "aws_instance" "web" {
   ami = "ami-12345"
@@ -1034,11 +1245,16 @@ resource "aws_instance" "web" {
 		ProjectName:     "test-project",
 		StackName:       "dev",
 		ResourceMonitor: mock,
-		TestMode:        true,
+		WorkDir:         t.TempDir(),
+		SchemaLoader: newMockReferenceLoader(t, schema.PackageSpec{
+			Name: "aws",
+			Resources: map[string]schema.ResourceSpec{
+				"aws:index:Instance": schema.ResourceSpec{},
+			},
+		}),
 	})
 
-	ctx := context.Background()
-	err := engine.Run(ctx)
+	err := engine.Run(t.Context())
 
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -1069,12 +1285,9 @@ resource "aws_instance" "web" {
 }
 
 func TestEngine_SimpleModule(t *testing.T) {
-	// Create a temporary directory for the module
-	tmpDir, err := os.MkdirTemp("", "hcl-module-test")
-	if err != nil {
-		t.Fatalf("creating temp dir: %v", err)
-	}
-	defer os.RemoveAll(tmpDir)
+	t.Parallel()
+
+	tmpDir := t.TempDir()
 
 	// Create module directory
 	moduleDir := tmpDir + "/modules/vpc"
@@ -1140,12 +1353,15 @@ output "vpc_id" {
 		StackName:       "dev",
 		ResourceMonitor: mock,
 		WorkDir:         tmpDir,
-		TestMode:        true,
+		SchemaLoader: newMockReferenceLoader(t, schema.PackageSpec{
+			Name: "aws",
+			Resources: map[string]schema.ResourceSpec{
+				"aws:index:Vpc": schema.ResourceSpec{},
+			},
+		}),
 	})
 
-	ctx := context.Background()
-	err = engine.Run(ctx)
-
+	err := engine.Run(t.Context())
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1203,6 +1419,8 @@ output "vpc_id" {
 }
 
 func TestEngine_Timeouts(t *testing.T) {
+	t.Parallel()
+
 	src := []byte(`
 resource "aws_instance" "web" {
   ami           = "ami-12345"
@@ -1227,11 +1445,16 @@ resource "aws_instance" "web" {
 		ProjectName:     "test-project",
 		StackName:       "dev",
 		ResourceMonitor: mock,
-		TestMode:        true,
+		WorkDir:         t.TempDir(),
+		SchemaLoader: newMockReferenceLoader(t, schema.PackageSpec{
+			Name: "aws",
+			Resources: map[string]schema.ResourceSpec{
+				"aws:index:Instance": schema.ResourceSpec{},
+			},
+		}),
 	})
 
-	ctx := context.Background()
-	err := engine.Run(ctx)
+	err := engine.Run(t.Context())
 	if err != nil {
 		t.Fatalf("run error: %v", err)
 	}
@@ -1271,6 +1494,8 @@ resource "aws_instance" "web" {
 }
 
 func TestEngine_MovedBlock(t *testing.T) {
+	t.Parallel()
+
 	src := []byte(`
 moved {
   from = aws_instance.old_server
@@ -1294,11 +1519,16 @@ resource "aws_instance" "web" {
 		ProjectName:     "test-project",
 		StackName:       "dev",
 		ResourceMonitor: mock,
-		TestMode:        true,
+		WorkDir:         t.TempDir(),
+		SchemaLoader: newMockReferenceLoader(t, schema.PackageSpec{
+			Name: "aws",
+			Resources: map[string]schema.ResourceSpec{
+				"aws:index:Instance": schema.ResourceSpec{},
+			},
+		}),
 	})
 
-	ctx := context.Background()
-	err := engine.Run(ctx)
+	err := engine.Run(t.Context())
 	if err != nil {
 		t.Fatalf("run error: %v", err)
 	}
@@ -1334,6 +1564,8 @@ resource "aws_instance" "web" {
 }
 
 func TestEngine_ImportBlock(t *testing.T) {
+	t.Parallel()
+
 	src := []byte(`
 import {
   to = aws_instance.imported
@@ -1357,11 +1589,16 @@ resource "aws_instance" "imported" {
 		ProjectName:     "test-project",
 		StackName:       "dev",
 		ResourceMonitor: mock,
-		TestMode:        true,
+		WorkDir:         t.TempDir(),
+		SchemaLoader: newMockReferenceLoader(t, schema.PackageSpec{
+			Name: "aws",
+			Resources: map[string]schema.ResourceSpec{
+				"aws:index:Instance": schema.ResourceSpec{},
+			},
+		}),
 	})
 
-	ctx := context.Background()
-	err := engine.Run(ctx)
+	err := engine.Run(t.Context())
 	if err != nil {
 		t.Fatalf("run error: %v", err)
 	}
@@ -1384,4 +1621,3 @@ resource "aws_instance" "imported" {
 		t.Errorf("expected ImportId 'i-1234567890abcdef0', got %q", instanceReq.ImportId)
 	}
 }
-
