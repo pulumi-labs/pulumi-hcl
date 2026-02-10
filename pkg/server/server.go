@@ -25,6 +25,7 @@ import (
 	"github.com/pulumi/pulumi-language-hcl/pkg/hcl/parser"
 	"github.com/pulumi/pulumi-language-hcl/pkg/hcl/run"
 	"github.com/pulumi/pulumi-language-hcl/pkg/version"
+	"github.com/pulumi/pulumi/pkg/v3/codegen/schema"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/resource"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/resource/plugin"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/util/logging"
@@ -104,7 +105,7 @@ func (host *LanguageHost) Run(
 	req *pulumirpc.RunRequest,
 ) (*pulumirpc.RunResponse, error) {
 	logging.V(5).Infof("Run: program=%s, pwd=%s, stack=%s, project=%s",
-		req.Program, req.Pwd, req.Stack, req.Project)
+		req.Info.EntryPoint, req.Pwd, req.Stack, req.Project)
 
 	// Connect to the resource monitor
 	conn, err := grpc.Dial(
@@ -139,15 +140,21 @@ func (host *LanguageHost) Run(
 		configMap[k] = v
 	}
 
+	schemaLoader, err := schema.NewLoaderClient(req.LoaderTarget)
+	if err != nil {
+		return nil, fmt.Errorf("unable to aquire gRPC schema loader: %w", err)
+	}
+
 	// Create and run the engine
 	engine := run.NewEngine(config, &run.EngineOptions{
-		ProjectName:     req.Project,
-		StackName:       req.Stack,
-		Config:          configMap,
+		ProjectName:      req.Project,
+		StackName:        req.Stack,
+		Config:           configMap,
 		ConfigSecretKeys: req.ConfigSecretKeys,
-		DryRun:          req.DryRun,
-		ResourceMonitor: resmon,
-		WorkDir:         req.Program,
+		DryRun:           req.DryRun,
+		ResourceMonitor:  resmon,
+		SchemaLoader:     schema.NewCachedLoader(schemaLoader),
+		WorkDir:          req.Info.ProgramDirectory,
 	})
 
 	if err := engine.Run(ctx); err != nil {
@@ -273,7 +280,7 @@ func (host *LanguageHost) RunPlugin(
 	}
 
 	// Create the provider
-	provider, err := NewHCLProvider(modulePath, name, version)
+	provider, err := NewHCLProvider(modulePath, name, version, req.LoaderTarget)
 	if err != nil {
 		errBytes := []byte(fmt.Sprintf("Error creating provider: %v\n", err))
 		server.Send(&pulumirpc.RunPluginResponse{
@@ -448,7 +455,7 @@ func (r *resourceMonitorAdapter) RegisterResource(
 		Name:                       req.Name,
 		Custom:                     isCustom,
 		Object:                     inputsStruct,
-		Protect:                    req.Protect,
+		Protect:                    &req.Protect,
 		Dependencies:               req.Dependencies,
 		Provider:                   req.Provider,
 		Parent:                     req.Parent,
@@ -509,8 +516,8 @@ func (r *resourceMonitorAdapter) Invoke(
 
 	// Build the invoke request
 	invokeReq := &pulumirpc.ResourceInvokeRequest{
-		Tok:            req.Token,
-		Args:           argsStruct,
+		Tok:             req.Token,
+		Args:            argsStruct,
 		AcceptResources: true,
 	}
 

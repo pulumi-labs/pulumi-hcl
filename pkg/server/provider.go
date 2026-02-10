@@ -18,24 +18,18 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"net"
-	"os"
-	"os/signal"
-	"syscall"
 
 	"github.com/pulumi/pulumi-language-hcl/pkg/hcl/modules"
-	"github.com/pulumi/pulumi-language-hcl/pkg/hcl/packages"
 	"github.com/pulumi/pulumi-language-hcl/pkg/hcl/run"
 	"github.com/pulumi/pulumi-language-hcl/pkg/hcl/schema"
+	pulumiSchema "github.com/pulumi/pulumi/pkg/v3/codegen/schema"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/resource"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/resource/plugin"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/util/logging"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/util/rpcutil"
 	pulumirpc "github.com/pulumi/pulumi/sdk/v3/proto/go"
 	"google.golang.org/grpc"
-	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials/insecure"
-	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/emptypb"
 	"google.golang.org/protobuf/types/known/structpb"
 )
@@ -51,7 +45,7 @@ type HCLProvider struct {
 	moduleLoader *modules.Loader
 
 	// pkgLoader loads provider schemas.
-	pkgLoader *packages.PackageLoader
+	pkgLoader pulumiSchema.ReferenceLoader
 
 	// host is the host callback client.
 	host pulumirpc.EngineClient
@@ -67,9 +61,12 @@ type HCLProvider struct {
 }
 
 // NewHCLProvider creates a new HCL component provider.
-func NewHCLProvider(modulePath, name, version string) (*HCLProvider, error) {
+func NewHCLProvider(modulePath, name, version, addr string) (*HCLProvider, error) {
 	loader := modules.NewLoader()
-	pkgLoader := packages.NewPackageLoader()
+	pkgLoader, err := pulumiSchema.NewLoaderClient(addr)
+	if err != nil {
+		return nil, fmt.Errorf("unable to acquire schema loader: %w", err)
+	}
 
 	// Load the module to generate schema
 	loaded, err := loader.LoadModule(modulePath, ".")
@@ -86,7 +83,7 @@ func NewHCLProvider(modulePath, name, version string) (*HCLProvider, error) {
 	return &HCLProvider{
 		modulePath:   modulePath,
 		moduleLoader: loader,
-		pkgLoader:    pkgLoader,
+		pkgLoader:    pulumiSchema.NewCachedLoader(pkgLoader),
 		name:         name,
 		version:      version,
 		schema:       moduleSchema,
@@ -137,21 +134,6 @@ func (p *HCLProvider) Configure(ctx context.Context, req *pulumirpc.ConfigureReq
 	}, nil
 }
 
-// Invoke is not supported for component providers.
-func (p *HCLProvider) Invoke(ctx context.Context, req *pulumirpc.InvokeRequest) (*pulumirpc.InvokeResponse, error) {
-	return nil, status.Errorf(codes.Unimplemented, "Invoke not supported")
-}
-
-// StreamInvoke is not supported.
-func (p *HCLProvider) StreamInvoke(req *pulumirpc.InvokeRequest, server pulumirpc.ResourceProvider_StreamInvokeServer) error {
-	return status.Errorf(codes.Unimplemented, "StreamInvoke not supported")
-}
-
-// Call is not supported.
-func (p *HCLProvider) Call(ctx context.Context, req *pulumirpc.CallRequest) (*pulumirpc.CallResponse, error) {
-	return nil, status.Errorf(codes.Unimplemented, "Call not supported")
-}
-
 // Check validates resource inputs.
 func (p *HCLProvider) Check(ctx context.Context, req *pulumirpc.CheckRequest) (*pulumirpc.CheckResponse, error) {
 	return &pulumirpc.CheckResponse{Inputs: req.News}, nil
@@ -162,22 +144,12 @@ func (p *HCLProvider) Diff(ctx context.Context, req *pulumirpc.DiffRequest) (*pu
 	return &pulumirpc.DiffResponse{}, nil
 }
 
-// Create creates a new resource (not used for components).
-func (p *HCLProvider) Create(ctx context.Context, req *pulumirpc.CreateRequest) (*pulumirpc.CreateResponse, error) {
-	return nil, status.Errorf(codes.Unimplemented, "Create not supported for component providers")
-}
-
 // Read reads resource state.
 func (p *HCLProvider) Read(ctx context.Context, req *pulumirpc.ReadRequest) (*pulumirpc.ReadResponse, error) {
 	return &pulumirpc.ReadResponse{
 		Id:         req.Id,
 		Properties: req.Properties,
 	}, nil
-}
-
-// Update updates a resource (not used for components).
-func (p *HCLProvider) Update(ctx context.Context, req *pulumirpc.UpdateRequest) (*pulumirpc.UpdateResponse, error) {
-	return nil, status.Errorf(codes.Unimplemented, "Update not supported for component providers")
 }
 
 // Delete deletes a resource.
@@ -328,7 +300,7 @@ func (m *constructResourceMonitor) RegisterResource(
 		Object:              inputs,
 		Parent:              parent,
 		Dependencies:        req.Dependencies,
-		Protect:             req.Protect,
+		Protect:             &req.Protect,
 		DeleteBeforeReplace: req.DeleteBeforeReplace,
 		IgnoreChanges:       req.IgnoreChanges,
 		AcceptSecrets:       true,
@@ -438,37 +410,6 @@ func buildStateDependencies(outputs *structpb.Struct) map[string]*pulumirpc.Cons
 		}
 	}
 	return deps
-}
-
-// RunProvider runs the HCL component provider server.
-func RunProvider(modulePath, name, version string, port int) error {
-	provider, err := NewHCLProvider(modulePath, name, version)
-	if err != nil {
-		return err
-	}
-
-	// Create gRPC server
-	server := grpc.NewServer()
-	pulumirpc.RegisterResourceProviderServer(server, provider)
-
-	// Listen on the specified port
-	lis, err := net.Listen("tcp", fmt.Sprintf(":%d", port))
-	if err != nil {
-		return fmt.Errorf("failed to listen: %w", err)
-	}
-
-	// Handle shutdown
-	sigCh := make(chan os.Signal, 1)
-	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
-	go func() {
-		<-sigCh
-		server.GracefulStop()
-	}()
-
-	// Output the port for the engine to connect
-	fmt.Printf("%d\n", lis.Addr().(*net.TCPAddr).Port)
-
-	return server.Serve(lis)
 }
 
 // Ensure HCLProvider implements the interface.

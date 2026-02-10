@@ -31,7 +31,9 @@ import (
 	"github.com/pulumi/pulumi-language-hcl/pkg/hcl/packages"
 	"github.com/pulumi/pulumi-language-hcl/pkg/hcl/parser"
 	"github.com/pulumi/pulumi-language-hcl/pkg/hcl/transform"
+	"github.com/pulumi/pulumi/pkg/v3/codegen/schema"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/resource"
+	"github.com/pulumi/pulumi/sdk/v3/go/common/util/contract"
 	"github.com/zclconf/go-cty/cty"
 	"github.com/zclconf/go-cty/cty/json"
 )
@@ -58,19 +60,19 @@ type CustomTimeouts struct {
 
 // RegisterResourceRequest contains the parameters for registering a resource.
 type RegisterResourceRequest struct {
-	Type                    string
-	Name                    string
-	Inputs                  resource.PropertyMap
-	Dependencies            []string
-	Protect                 bool
-	IgnoreChanges           []string
-	Aliases                 []string
-	Provider                string
-	Parent                  string
-	DeleteBeforeReplace     bool
-	DeleteBeforeReplaceDef  bool // True if DeleteBeforeReplace was explicitly set
-	CustomTimeouts          *CustomTimeouts
-	ImportId                string // Resource ID to import
+	Type                   string
+	Name                   string
+	Inputs                 resource.PropertyMap
+	Dependencies           []string
+	Protect                bool
+	IgnoreChanges          []string
+	Aliases                []string
+	Provider               string
+	Parent                 string
+	DeleteBeforeReplace    bool
+	DeleteBeforeReplaceDef bool // True if DeleteBeforeReplace was explicitly set
+	CustomTimeouts         *CustomTimeouts
+	ImportId               string // Resource ID to import
 }
 
 // RegisterResourceResponse contains the result of registering a resource.
@@ -101,7 +103,7 @@ type Engine struct {
 	evaluator *eval.Evaluator
 
 	// pkgLoader loads Pulumi package schemas.
-	pkgLoader *packages.PackageLoader
+	pkgLoader schema.ReferenceLoader
 
 	// resmon is the resource monitor for registering resources.
 	resmon ResourceMonitor
@@ -169,26 +171,18 @@ type EngineOptions struct {
 	// WorkDir is the working directory.
 	WorkDir string
 
-	// TestMode skips provider/schema validation for unit testing.
-	TestMode bool
+	SchemaLoader schema.ReferenceLoader
 }
 
 // NewEngine creates a new execution engine.
 func NewEngine(config *ast.Config, opts *EngineOptions) *Engine {
-	workDir := opts.WorkDir
-	if workDir == "" {
-		workDir = "."
-	}
-
-	pkgLoader := packages.NewPackageLoader()
-	if opts.TestMode {
-		pkgLoader.SetTestMode(true)
-	}
+	contract.Assertf(opts.SchemaLoader != nil, "EngineOptions.SchemaLoader cannot be nil")
+	contract.Assertf(opts.WorkDir != "", "EngineOptions.WorkDir cannot be nil")
 
 	return &Engine{
 		config:            config,
-		evaluator:         eval.NewEvaluator(eval.NewContext(workDir)),
-		pkgLoader:         pkgLoader,
+		evaluator:         eval.NewEvaluator(eval.NewContext(opts.WorkDir)),
+		pkgLoader:         opts.SchemaLoader,
 		resmon:            opts.ResourceMonitor,
 		resourceOutputs:   make(map[string]cty.Value),
 		dataSourceOutputs: make(map[string]cty.Value),
@@ -196,7 +190,7 @@ func NewEngine(config *ast.Config, opts *EngineOptions) *Engine {
 		projectName:       opts.ProjectName,
 		stackName:         opts.StackName,
 		dryRun:            opts.DryRun,
-		workDir:           workDir,
+		workDir:           opts.WorkDir,
 		pulumiConfig:      opts.Config,
 		configSecretKeys:  opts.ConfigSecretKeys,
 		moduleLoader:      modules.NewLoader(),
@@ -210,10 +204,6 @@ func (e *Engine) Run(ctx context.Context) error {
 	if err := e.registerStack(ctx); err != nil {
 		return fmt.Errorf("registering stack: %w", err)
 	}
-
-	// Preload provider info in parallel for all providers used in the config.
-	// This avoids sequential provider invocations during type resolution.
-	e.preloadProviders()
 
 	// Build the dependency graph
 	g, err := graph.BuildFromConfig(e.config)
@@ -286,42 +276,6 @@ func (e *Engine) registerStackOutputs(ctx context.Context) error {
 	}
 
 	return e.resmon.RegisterResourceOutputs(ctx, e.stackURN, e.stackOutputs)
-}
-
-// preloadProviders extracts all unique provider names from the config and
-// loads their provider info in parallel. This speeds up type resolution
-// by avoiding sequential provider binary invocations.
-func (e *Engine) preloadProviders() {
-	// Collect unique provider names from resources and data sources
-	providers := make(map[string]bool)
-
-	for key := range e.config.Resources {
-		// Key format is "type.name", extract the type part
-		parts := strings.SplitN(key, ".", 2)
-		if len(parts) >= 1 {
-			if provider := packages.ExtractProviderFromType(parts[0]); provider != "" {
-				providers[provider] = true
-			}
-		}
-	}
-
-	for key := range e.config.DataSources {
-		parts := strings.SplitN(key, ".", 2)
-		if len(parts) >= 1 {
-			if provider := packages.ExtractProviderFromType(parts[0]); provider != "" {
-				providers[provider] = true
-			}
-		}
-	}
-
-	// Convert to slice
-	var providerList []string
-	for p := range providers {
-		providerList = append(providerList, p)
-	}
-
-	// Preload in parallel
-	e.pkgLoader.PreloadProviders(providerList)
 }
 
 // processNode processes a single node based on its type.
@@ -682,7 +636,7 @@ func (e *Engine) processResource(ctx context.Context, node *graph.Node) error {
 	}
 
 	// Resolve the resource type to a Pulumi type token
-	typeToken, err := e.pkgLoader.ResolveResourceType(res.Type)
+	resType, err := packages.ResolveResource(ctx, e.pkgLoader, res.Type)
 	if err != nil {
 		return fmt.Errorf("resolving resource type %s: %w", res.Type, err)
 	}
@@ -711,7 +665,7 @@ func (e *Engine) processResource(ctx context.Context, node *graph.Node) error {
 
 	// Register each instance
 	for _, instance := range result.Instances {
-		if err := e.registerResourceInstance(ctx, res, typeToken, instance); err != nil {
+		if err := e.registerResourceInstance(ctx, res, resType.Token, instance); err != nil {
 			return fmt.Errorf("registering %s: %w", instance.Key, err)
 		}
 	}
@@ -974,16 +928,16 @@ func formatTraversalForIgnoreChanges(traversal hcl.Traversal) string {
 
 // ResourceOptions contains resource registration options.
 type ResourceOptions struct {
-	DependsOn               []string
-	Protect                 bool
-	IgnoreChanges           []string
-	Aliases                 []string
-	Provider                string
-	Parent                  string
-	DeleteBeforeReplace     bool
-	DeleteBeforeReplaceDef  bool // True if DeleteBeforeReplace was explicitly set
-	CustomTimeouts          *CustomTimeouts
-	ImportId                string
+	DependsOn              []string
+	Protect                bool
+	IgnoreChanges          []string
+	Aliases                []string
+	Provider               string
+	Parent                 string
+	DeleteBeforeReplace    bool
+	DeleteBeforeReplaceDef bool // True if DeleteBeforeReplace was explicitly set
+	CustomTimeouts         *CustomTimeouts
+	ImportId               string
 }
 
 // registerResource registers a resource with the Pulumi engine.
@@ -1001,15 +955,12 @@ func (e *Engine) registerResource(
 		return urn, name, inputs, nil
 	}
 
-	// Build dependencies list
-	deps := opts.DependsOn
-
 	// Register with the resource monitor
 	resp, err := e.resmon.RegisterResource(ctx, RegisterResourceRequest{
 		Type:                   typeToken,
 		Name:                   name,
 		Inputs:                 inputs,
-		Dependencies:           deps,
+		Dependencies:           opts.DependsOn,
 		Protect:                opts.Protect,
 		IgnoreChanges:          opts.IgnoreChanges,
 		Aliases:                opts.Aliases,
@@ -1035,7 +986,7 @@ func (e *Engine) processDataSource(ctx context.Context, node *graph.Node) error 
 	}
 
 	// Resolve the data source type to a Pulumi function token
-	funcToken, err := e.pkgLoader.ResolveDataSourceType(ds.Type)
+	funcType, err := packages.ResolveFunction(ctx, e.pkgLoader, ds.Type)
 	if err != nil {
 		return fmt.Errorf("resolving data source type %s: %w", ds.Type, err)
 	}
@@ -1059,7 +1010,7 @@ func (e *Engine) processDataSource(ctx context.Context, node *graph.Node) error 
 	}
 
 	// Invoke the function
-	outputs, err := e.invokeFunction(ctx, funcToken, inputs)
+	outputs, err := e.invokeFunction(ctx, funcType.Token, inputs)
 	if err != nil {
 		return fmt.Errorf("invoking data source: %w", err)
 	}
@@ -1127,10 +1078,10 @@ func (e *Engine) processModule(ctx context.Context, node *graph.Node) error {
 
 // expandedModule represents an expanded module instance (for count/for_each).
 type expandedModule struct {
-	Key      string     // e.g., "module.vpc" or "module.vpc[0]"
-	Index    *int       // count index if using count
-	EachKey  *cty.Value // for_each key if using for_each
-	EachVal  *cty.Value // for_each value if using for_each
+	Key     string     // e.g., "module.vpc" or "module.vpc[0]"
+	Index   *int       // count index if using count
+	EachKey *cty.Value // for_each key if using for_each
+	EachVal *cty.Value // for_each value if using for_each
 }
 
 // expandModuleInstances expands a module for count/for_each.
