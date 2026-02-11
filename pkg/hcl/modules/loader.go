@@ -26,11 +26,11 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"regexp"
 	"strings"
 
 	"github.com/pulumi/pulumi-language-hcl/pkg/hcl/ast"
 	"github.com/pulumi/pulumi-language-hcl/pkg/hcl/parser"
+	"github.com/pulumi/pulumi/sdk/v3/go/common/util/contract"
 )
 
 // Loader loads and parses module configurations.
@@ -303,7 +303,7 @@ func (l *Loader) resolveHTTPSource(source string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("downloading module: %w", err)
 	}
-	defer resp.Body.Close()
+	defer contract.IgnoreClose(resp.Body)
 
 	if resp.StatusCode != http.StatusOK {
 		return "", fmt.Errorf("downloading module: HTTP %d", resp.StatusCode)
@@ -315,17 +315,19 @@ func (l *Loader) resolveHTTPSource(source string) (string, error) {
 		return "", fmt.Errorf("creating temp file: %w", err)
 	}
 	tmpPath := tmpFile.Name()
-	defer os.Remove(tmpPath)
+	defer func() { contract.IgnoreError(os.Remove(tmpPath)) }()
 
 	if _, err := io.Copy(tmpFile, resp.Body); err != nil {
-		tmpFile.Close()
+		contract.IgnoreError(tmpFile.Close())
 		return "", fmt.Errorf("downloading module: %w", err)
 	}
-	tmpFile.Close()
+	if err := tmpFile.Close(); err != nil {
+		return "", fmt.Errorf("closing temp file: %w", err)
+	}
 
 	// Extract the archive
 	if err := extractZip(tmpPath, cacheDir); err != nil {
-		os.RemoveAll(cacheDir)
+		contract.IgnoreError(os.RemoveAll(cacheDir))
 		return "", fmt.Errorf("extracting module: %w", err)
 	}
 
@@ -380,7 +382,7 @@ func (l *Loader) resolveRegistrySource(source string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("downloading module from registry: %w", err)
 	}
-	defer resp.Body.Close()
+	defer contract.IgnoreClose(resp.Body)
 
 	if resp.StatusCode != http.StatusOK {
 		return "", fmt.Errorf("downloading module from registry: HTTP %d", resp.StatusCode)
@@ -392,17 +394,19 @@ func (l *Loader) resolveRegistrySource(source string) (string, error) {
 		return "", fmt.Errorf("creating temp file: %w", err)
 	}
 	tmpPath := tmpFile.Name()
-	defer os.Remove(tmpPath)
+	defer func() { contract.IgnoreError(os.Remove(tmpPath)) }()
 
 	if _, err := io.Copy(tmpFile, resp.Body); err != nil {
-		tmpFile.Close()
+		contract.IgnoreError(tmpFile.Close())
 		return "", fmt.Errorf("downloading module: %w", err)
 	}
-	tmpFile.Close()
+	if err := tmpFile.Close(); err != nil {
+		return "", fmt.Errorf("closing temp file: %w", err)
+	}
 
 	// Extract the archive (registry uses tar.gz)
 	if err := extractTarGz(tmpPath, cacheDir); err != nil {
-		os.RemoveAll(cacheDir)
+		contract.IgnoreError(os.RemoveAll(cacheDir))
 		return "", fmt.Errorf("extracting module: %w", err)
 	}
 
@@ -432,7 +436,7 @@ func (l *Loader) getRegistryDownloadURL(namespace, name, provider, version strin
 		if err != nil {
 			return "", fmt.Errorf("querying registry versions: %w", err)
 		}
-		defer resp.Body.Close()
+		defer contract.IgnoreClose(resp.Body)
 
 		if resp.StatusCode == http.StatusNotFound {
 			return "", fmt.Errorf("module %s/%s/%s not found in registry", namespace, name, provider)
@@ -460,7 +464,7 @@ func (l *Loader) getRegistryDownloadURL(namespace, name, provider, version strin
 	if err != nil {
 		return "", fmt.Errorf("getting download URL: %w", err)
 	}
-	defer resp.Body.Close()
+	defer contract.IgnoreClose(resp.Body)
 
 	// The registry returns a 204 with X-Terraform-Get header containing the actual URL
 	if resp.StatusCode == http.StatusNoContent {
@@ -521,7 +525,7 @@ func extractZip(src, dest string) error {
 	if err != nil {
 		return err
 	}
-	defer r.Close()
+	defer contract.IgnoreClose(r)
 
 	for _, f := range r.File {
 		fpath := filepath.Join(dest, f.Name)
@@ -532,7 +536,9 @@ func extractZip(src, dest string) error {
 		}
 
 		if f.FileInfo().IsDir() {
-			os.MkdirAll(fpath, os.ModePerm)
+			if err := os.MkdirAll(fpath, os.ModePerm); err != nil {
+				return err
+			}
 			continue
 		}
 
@@ -547,15 +553,18 @@ func extractZip(src, dest string) error {
 
 		rc, err := f.Open()
 		if err != nil {
-			outFile.Close()
+			contract.IgnoreError(outFile.Close())
 			return err
 		}
 
 		_, err = io.Copy(outFile, rc)
-		outFile.Close()
-		rc.Close()
+		closeErr := outFile.Close()
+		contract.IgnoreError(rc.Close())
 		if err != nil {
 			return err
+		}
+		if closeErr != nil {
+			return closeErr
 		}
 	}
 
@@ -577,6 +586,3 @@ func extractTarGz(src, dest string) error {
 func (l *Loader) GetCallStack() []string {
 	return append([]string{}, l.callStack...)
 }
-
-// gitRefPattern matches common Git ref formats in URLs.
-var gitRefPattern = regexp.MustCompile(`\?ref=([^&]+)`)
