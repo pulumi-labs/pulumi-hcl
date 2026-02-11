@@ -25,6 +25,7 @@ import (
 	pulumiSchema "github.com/pulumi/pulumi/pkg/v3/codegen/schema"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/resource"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/resource/plugin"
+	"github.com/pulumi/pulumi/sdk/v3/go/common/util/contract"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/util/logging"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/util/rpcutil"
 	pulumirpc "github.com/pulumi/pulumi/sdk/v3/proto/go"
@@ -92,7 +93,7 @@ func NewHCLProvider(modulePath, name, version, addr string) (*HCLProvider, error
 
 // Attach configures the provider with a host callback.
 func (p *HCLProvider) Attach(ctx context.Context, req *pulumirpc.PluginAttach) (*emptypb.Empty, error) {
-	conn, err := grpc.Dial(
+	conn, err := grpc.NewClient(
 		req.Address,
 		grpc.WithTransportCredentials(insecure.NewCredentials()),
 		grpc.WithUnaryInterceptor(rpcutil.OpenTracingClientInterceptor()),
@@ -162,7 +163,7 @@ func (p *HCLProvider) Construct(ctx context.Context, req *pulumirpc.ConstructReq
 	logging.V(5).Infof("Construct: type=%s name=%s", req.Type, req.Name)
 
 	// Connect to the resource monitor
-	monitorConn, err := grpc.Dial(
+	monitorConn, err := grpc.NewClient(
 		req.MonitorEndpoint,
 		grpc.WithTransportCredentials(insecure.NewCredentials()),
 		grpc.WithUnaryInterceptor(rpcutil.OpenTracingClientInterceptor()),
@@ -171,7 +172,7 @@ func (p *HCLProvider) Construct(ctx context.Context, req *pulumirpc.ConstructReq
 	if err != nil {
 		return nil, fmt.Errorf("connecting to monitor: %w", err)
 	}
-	defer monitorConn.Close()
+	defer contract.IgnoreClose(monitorConn)
 
 	monitor := pulumirpc.NewResourceMonitorClient(monitorConn)
 

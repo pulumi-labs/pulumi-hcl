@@ -33,6 +33,7 @@ import (
 	"github.com/pulumi/pulumi/pkg/v3/codegen/schema"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/resource"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/resource/plugin"
+	"github.com/pulumi/pulumi/sdk/v3/go/common/util/contract"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/util/fsutil"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/util/logging"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/util/rpcutil"
@@ -60,11 +61,11 @@ func (host *LanguageHost) GetRequiredPlugins(
 	ctx context.Context,
 	req *pulumirpc.GetRequiredPluginsRequest,
 ) (*pulumirpc.GetRequiredPluginsResponse, error) {
-	logging.V(5).Infof("GetRequiredPlugins: program=%s", req.Program)
+	logging.V(5).Infof("GetRequiredPlugins: program=%s", req.Info.ProgramDirectory)
 
 	// Parse HCL files to extract required providers from terraform block
 	p := parser.NewParser()
-	config, diags := p.ParseDirectory(req.Program)
+	config, diags := p.ParseDirectory(req.Info.ProgramDirectory)
 	if diags.HasErrors() {
 		// Return empty list on parse errors - we'll report them during Run
 		return &pulumirpc.GetRequiredPluginsResponse{
@@ -115,7 +116,7 @@ func (host *LanguageHost) Run(
 		req.Info.EntryPoint, req.Pwd, req.Stack, req.Project)
 
 	// Connect to the resource monitor
-	conn, err := grpc.Dial(
+	conn, err := grpc.NewClient(
 		req.MonitorAddress,
 		grpc.WithTransportCredentials(insecure.NewCredentials()),
 		rpcutil.GrpcChannelOptions(),
@@ -123,7 +124,7 @@ func (host *LanguageHost) Run(
 	if err != nil {
 		return nil, fmt.Errorf("connecting to resource monitor: %w", err)
 	}
-	defer conn.Close()
+	defer contract.IgnoreClose(conn)
 
 	// Create the resource monitor client
 	monitorClient := pulumirpc.NewResourceMonitorClient(conn)
@@ -134,7 +135,7 @@ func (host *LanguageHost) Run(
 
 	// Parse the HCL program
 	p := parser.NewParser()
-	config, diags := p.ParseDirectory(req.Program)
+	config, diags := p.ParseDirectory(req.Info.ProgramDirectory)
 	if diags.HasErrors() {
 		return &pulumirpc.RunResponse{
 			Error: diags.Error(),
@@ -220,11 +221,11 @@ func (host *LanguageHost) GetProgramDependencies(
 	ctx context.Context,
 	req *pulumirpc.GetProgramDependenciesRequest,
 ) (*pulumirpc.GetProgramDependenciesResponse, error) {
-	logging.V(5).Infof("GetProgramDependencies: program=%s", req.Program)
+	logging.V(5).Infof("GetProgramDependencies: program=%s", req.Info.ProgramDirectory)
 
 	// Parse HCL files to extract provider dependencies
 	p := parser.NewParser()
-	config, diags := p.ParseDirectory(req.Program)
+	config, diags := p.ParseDirectory(req.Info.ProgramDirectory)
 	if diags.HasErrors() {
 		return &pulumirpc.GetProgramDependenciesResponse{
 			Dependencies: []*pulumirpc.DependencyInfo{},
@@ -290,13 +291,14 @@ func (host *LanguageHost) RunPlugin(
 	provider, err := NewHCLProvider(modulePath, name, version, "")
 	if err != nil {
 		errBytes := []byte(fmt.Sprintf("Error creating provider: %v\n", err))
-		server.Send(&pulumirpc.RunPluginResponse{
+		if err := server.Send(&pulumirpc.RunPluginResponse{
 			Output: &pulumirpc.RunPluginResponse_Stderr{Stderr: errBytes},
-		})
-		server.Send(&pulumirpc.RunPluginResponse{
+		}); err != nil {
+			return err
+		}
+		return server.Send(&pulumirpc.RunPluginResponse{
 			Output: &pulumirpc.RunPluginResponse_Exitcode{Exitcode: 1},
 		})
-		return nil
 	}
 
 	// Create gRPC server
@@ -307,21 +309,24 @@ func (host *LanguageHost) RunPlugin(
 	lis, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		errBytes := []byte(fmt.Sprintf("Error listening: %v\n", err))
-		server.Send(&pulumirpc.RunPluginResponse{
+		if err := server.Send(&pulumirpc.RunPluginResponse{
 			Output: &pulumirpc.RunPluginResponse_Stderr{Stderr: errBytes},
-		})
-		server.Send(&pulumirpc.RunPluginResponse{
+		}); err != nil {
+			return err
+		}
+		return server.Send(&pulumirpc.RunPluginResponse{
 			Output: &pulumirpc.RunPluginResponse_Exitcode{Exitcode: 1},
 		})
-		return nil
 	}
 
 	// Output the port for the engine to connect
 	port := lis.Addr().(*net.TCPAddr).Port
 	portMsg := fmt.Sprintf("%d\n", port)
-	server.Send(&pulumirpc.RunPluginResponse{
+	if err := server.Send(&pulumirpc.RunPluginResponse{
 		Output: &pulumirpc.RunPluginResponse_Stdout{Stdout: []byte(portMsg)},
-	})
+	}); err != nil {
+		return err
+	}
 
 	// Start serving in a goroutine
 	errCh := make(chan error, 1)
@@ -337,17 +342,17 @@ func (host *LanguageHost) RunPlugin(
 	case err := <-errCh:
 		if err != nil {
 			errBytes := []byte(fmt.Sprintf("Server error: %v\n", err))
-			server.Send(&pulumirpc.RunPluginResponse{
+			if err := server.Send(&pulumirpc.RunPluginResponse{
 				Output: &pulumirpc.RunPluginResponse_Stderr{Stderr: errBytes},
-			})
+			}); err != nil {
+				return err
+			}
 		}
 	}
 
-	server.Send(&pulumirpc.RunPluginResponse{
+	return server.Send(&pulumirpc.RunPluginResponse{
 		Output: &pulumirpc.RunPluginResponse_Exitcode{Exitcode: 0},
 	})
-
-	return nil
 }
 
 // GenerateProgram generates an HCL program from a PCL program.
