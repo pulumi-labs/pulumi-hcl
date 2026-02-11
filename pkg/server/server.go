@@ -17,25 +17,32 @@ package server
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"io/fs"
 	"net"
 	"strings"
 	"time"
 
+	"github.com/hashicorp/hcl/v2"
+	"github.com/pulumi/pulumi-converter-terraform/pkg/convert"
 	"github.com/pulumi/pulumi-language-hcl/pkg/hcl/parser"
 	"github.com/pulumi/pulumi-language-hcl/pkg/hcl/run"
 	"github.com/pulumi/pulumi-language-hcl/pkg/version"
+	"github.com/pulumi/pulumi-terraform-bridge/v3/pkg/tfbridge"
 	"github.com/pulumi/pulumi/pkg/v3/codegen/schema"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/resource"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/resource/plugin"
+	"github.com/pulumi/pulumi/sdk/v3/go/common/util/fsutil"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/util/logging"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/util/rpcutil"
 	pulumirpc "github.com/pulumi/pulumi/sdk/v3/proto/go"
+	"github.com/pulumi/terraform/pkg/configs"
+	"github.com/spf13/afero"
 	"google.golang.org/grpc"
-	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials/insecure"
-	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/emptypb"
+	"gopkg.in/yaml.v3"
 )
 
 // LanguageHost implements the LanguageRuntimeServer gRPC interface.
@@ -280,7 +287,7 @@ func (host *LanguageHost) RunPlugin(
 	}
 
 	// Create the provider
-	provider, err := NewHCLProvider(modulePath, name, version, req.LoaderTarget)
+	provider, err := NewHCLProvider(modulePath, name, version, "")
 	if err != nil {
 		errBytes := []byte(fmt.Sprintf("Error creating provider: %v\n", err))
 		server.Send(&pulumirpc.RunPluginResponse{
@@ -348,8 +355,34 @@ func (host *LanguageHost) GenerateProgram(
 	ctx context.Context,
 	req *pulumirpc.GenerateProgramRequest,
 ) (*pulumirpc.GenerateProgramResponse, error) {
-	// TODO: Implement PCL -> HCL conversion
-	return nil, status.Errorf(codes.Unimplemented, "GenerateProgram not yet implemented")
+	source := afero.NewMemMapFs()
+	for k, v := range req.Source {
+		f, err := source.Create(k)
+		if err != nil {
+			return nil, err
+		}
+		_, err = f.WriteString(v)
+		if err != nil {
+			return nil, err
+		}
+		err = f.Close()
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	dest := afero.NewMemMapFs()
+	diags := convertPCLToHCL(source, dest, "input", "output")
+
+	sourceMap, err := extractFilesFromFS(dest, "output")
+	if err != nil {
+		return nil, err
+	}
+
+	return &pulumirpc.GenerateProgramResponse{
+		Diagnostics: plugin.HclDiagnosticsToRPCDiagnostics(diags),
+		Source:      sourceMap,
+	}, nil
 }
 
 // GenerateProject generates a complete HCL project.
@@ -357,8 +390,21 @@ func (host *LanguageHost) GenerateProject(
 	ctx context.Context,
 	req *pulumirpc.GenerateProjectRequest,
 ) (*pulumirpc.GenerateProjectResponse, error) {
-	// TODO: Implement project generation
-	return nil, status.Errorf(codes.Unimplemented, "GenerateProject not yet implemented")
+	logging.V(5).Infof("GenerateProject: sourceDirectory=%s, targetDirectory=%s",
+		req.SourceDirectory, req.TargetDirectory)
+
+	source := afero.NewBasePathFs(afero.NewOsFs(), req.SourceDirectory)
+
+	destFS := afero.NewBasePathFs(afero.NewOsFs(), req.TargetDirectory)
+	diags := convertPCLToHCL(source, destFS, "/", "/")
+
+	if err := writePulumiYaml(destFS, req.Project); err != nil {
+		return nil, fmt.Errorf("writing Pulumi.yaml: %w", err)
+	}
+
+	return &pulumirpc.GenerateProjectResponse{
+		Diagnostics: plugin.HclDiagnosticsToRPCDiagnostics(diags),
+	}, nil
 }
 
 // GeneratePackage generates SDK bindings for a Pulumi package.
@@ -375,8 +421,16 @@ func (host *LanguageHost) Pack(
 	ctx context.Context,
 	req *pulumirpc.PackRequest,
 ) (*pulumirpc.PackResponse, error) {
-	// TODO: Implement packaging if needed
-	return nil, status.Errorf(codes.Unimplemented, "Pack not yet implemented")
+	logging.V(5).Infof("Pack: packageDirectory=%s, destinationDirectory=%s",
+		req.PackageDirectory, req.DestinationDirectory)
+
+	if err := fsutil.CopyFile(req.DestinationDirectory, req.PackageDirectory, nil); err != nil {
+		return nil, err
+	}
+
+	return &pulumirpc.PackResponse{
+		ArtifactPath: req.DestinationDirectory,
+	}, nil
 }
 
 // Ensure LanguageHost implements the interface.
@@ -577,6 +631,67 @@ func (r *resourceMonitorAdapter) RegisterResourceOutputs(
 
 // Ensure resourceMonitorAdapter implements the interface.
 var _ run.ResourceMonitor = (*resourceMonitorAdapter)(nil)
+
+// emptyProviderInfoSource is a ProviderInfoSource that always returns nil.
+type emptyProviderInfoSource struct{}
+
+func (e *emptyProviderInfoSource) GetProviderInfo(tfProvider string, requiredProvider *configs.RequiredProvider) (*tfbridge.ProviderInfo, error) {
+	return nil, nil
+}
+
+// convertPCLToHCL converts PCL source to HCL by running convert.TranslateModule.
+func convertPCLToHCL(source, dest afero.Fs, sourceDir, destDir string) hcl.Diagnostics {
+	providerInfoSource := &emptyProviderInfoSource{}
+	providerInfoResolver := convert.NewProviderInfoResolver()
+	return convert.TranslateModule(source, sourceDir, dest, providerInfoSource, providerInfoResolver, destDir)
+}
+
+// extractFilesFromFS walks a filesystem and extracts all files into a map.
+func extractFilesFromFS(filesystem afero.Fs, basePath string) (map[string][]byte, error) {
+	result := make(map[string][]byte)
+
+	err := afero.Walk(filesystem, basePath, func(path string, info fs.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+
+		if info == nil || info.IsDir() {
+			return nil
+		}
+
+		content, err := afero.ReadFile(filesystem, path)
+		if err != nil {
+			return fmt.Errorf("reading file %s: %w", path, err)
+		}
+
+		result[path] = content
+		return nil
+	})
+
+	return result, err
+}
+
+// writePulumiYaml writes the Pulumi.yaml file with runtime set to hcl.
+func writePulumiYaml(fs afero.Fs, projectJSON string) error {
+	var project map[string]interface{}
+	if err := json.Unmarshal([]byte(projectJSON), &project); err != nil {
+		return fmt.Errorf("parsing project JSON: %w", err)
+	}
+
+	project["runtime"] = "hcl"
+
+	yamlContent, err := yaml.Marshal(project)
+	if err != nil {
+		return fmt.Errorf("marshaling project to YAML: %w", err)
+	}
+
+	pulumiYamlPath := "Pulumi.yaml"
+	if err := afero.WriteFile(fs, pulumiYamlPath, yamlContent, 0644); err != nil {
+		return fmt.Errorf("writing Pulumi.yaml: %w", err)
+	}
+
+	return nil
+}
 
 // formatTimeoutSeconds converts a timeout in seconds to a duration string.
 // Returns empty string if seconds is 0.
