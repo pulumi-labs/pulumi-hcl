@@ -173,7 +173,6 @@ var expectedFailures = map[string]string{
 	"l2-resource-parent-inheritance":               "missing expected dependency",
 	"l2-resource-primitives":                       "missing expected dependency",
 	"l2-resource-secret":                           "missing expected dependency",
-	"l2-resource-simple":                           "missing expected dependency",
 	"l2-rtti":                                      "missing expected dependency",
 	"l2-target-up-with-new-dependency":             "missing expected dependency",
 	"l2-union":                                     "missing expected dependency",

@@ -16,12 +16,14 @@ package codegen
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/hashicorp/hcl/v2"
 	"github.com/hashicorp/hcl/v2/hclsyntax"
 	"github.com/hashicorp/hcl/v2/hclwrite"
 	"github.com/pulumi/pulumi/pkg/v3/codegen/hcl2/model"
 	"github.com/pulumi/pulumi/pkg/v3/codegen/pcl"
+	"github.com/zclconf/go-cty/cty"
 )
 
 // GenerateProgram generates HCL source code from a bound PCL program.
@@ -30,8 +32,13 @@ func GenerateProgram(program *pcl.Program) (map[string][]byte, hcl.Diagnostics, 
 	f := hclwrite.NewEmptyFile()
 	body := f.Body()
 
+	genRequiredProviders(body, program)
+
 	for _, node := range program.Nodes {
 		switch n := node.(type) {
+		case *pcl.Resource:
+			d := genResource(body, n)
+			diags = append(diags, d...)
 		case *pcl.OutputVariable:
 			d := genOutput(body, n)
 			diags = append(diags, d...)
@@ -45,6 +52,54 @@ func GenerateProgram(program *pcl.Program) (map[string][]byte, hcl.Diagnostics, 
 	}
 
 	return map[string][]byte{"main.hcl": f.Bytes()}, diags, nil
+}
+
+func genRequiredProviders(body *hclwrite.Body, program *pcl.Program) {
+	pkgRefs := program.PackageReferences()
+	if len(pkgRefs) == 0 {
+		return
+	}
+	terraform := body.AppendNewBlock("terraform", nil)
+	reqProviders := terraform.Body().AppendNewBlock("required_providers", nil)
+	for _, ref := range pkgRefs {
+		attrs := map[string]cty.Value{
+			"source": cty.StringVal("pulumi/" + ref.Name()),
+		}
+		if v := ref.Version(); v != nil {
+			attrs["version"] = cty.StringVal(v.String())
+		}
+		reqProviders.Body().SetAttributeValue(ref.Name(), cty.ObjectVal(attrs))
+	}
+	body.AppendNewline()
+}
+
+func genResource(body *hclwrite.Body, r *pcl.Resource) hcl.Diagnostics {
+	hclType, d := resourceHCLType(r)
+	if d.HasErrors() {
+		return d
+	}
+	block := body.AppendNewBlock("resource", []string{hclType, r.LogicalName()})
+	var diags hcl.Diagnostics
+	for _, attr := range r.Inputs {
+		d := genExpression(block.Body(), attr.Name, attr.Value)
+		diags = append(diags, d...)
+	}
+	return diags
+}
+
+// resourceHCLType converts a Pulumi resource token (e.g. "simple:index:Resource")
+// to an HCL resource type name (e.g. "simple_resource") that the runtime's
+// ResolveResource function can map back to the original token.
+func resourceHCLType(r *pcl.Resource) (string, hcl.Diagnostics) {
+	pkg, mod, name, diags := r.DecomposeToken()
+	if diags.HasErrors() {
+		return "", diags
+	}
+	// Strip the "index" module (standard Pulumi convention for the default module).
+	if mod == "index" {
+		mod = ""
+	}
+	return strings.ToLower(pkg + "_" + mod + name), nil
 }
 
 func genOutput(body *hclwrite.Body, ov *pcl.OutputVariable) hcl.Diagnostics {
