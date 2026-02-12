@@ -26,6 +26,19 @@ import (
 
 // CtyToPropertyValue converts a cty.Value to a Pulumi PropertyValue.
 func CtyToPropertyValue(val cty.Value) (resource.PropertyValue, error) {
+	// Handle sensitive-marked values by unwrapping, converting, and wrapping as secret.
+	if val.IsMarked() {
+		unmarked, marks := val.Unmark()
+		pv, err := CtyToPropertyValue(unmarked)
+		if err != nil {
+			return pv, err
+		}
+		if _, isSensitive := marks["sensitive"]; isSensitive {
+			return resource.MakeSecret(pv), nil
+		}
+		return pv, nil
+	}
+
 	if val.IsNull() {
 		return resource.NewNullProperty(), nil
 	}
@@ -268,8 +281,9 @@ func PropertyValueToCty(pv resource.PropertyValue) cty.Value {
 		return cty.ObjectVal(vals)
 
 	case pv.IsSecret():
-		// Unwrap the secret and convert the inner value
-		return PropertyValueToCty(pv.SecretValue().Element)
+		// Convert the inner value and mark it as sensitive
+		inner := PropertyValueToCty(pv.SecretValue().Element)
+		return inner.Mark("sensitive")
 
 	case pv.IsOutput():
 		// For outputs, try to get the known value if available

@@ -31,7 +31,7 @@ func parseExpr(t *testing.T, src string) hcl.Expression {
 }
 
 func TestEvaluateString(t *testing.T) {
-	ctx := NewContext("/tmp")
+	ctx := NewContext("/tmp", "/tmp")
 	ctx.SetVariable("name", cty.StringVal("test"))
 
 	eval := NewEvaluator(ctx)
@@ -61,7 +61,7 @@ func TestEvaluateString(t *testing.T) {
 }
 
 func TestEvaluateInt(t *testing.T) {
-	ctx := NewContext("/tmp")
+	ctx := NewContext("/tmp", "/tmp")
 	ctx.SetVariable("count", cty.NumberIntVal(5))
 
 	eval := NewEvaluator(ctx)
@@ -92,7 +92,7 @@ func TestEvaluateInt(t *testing.T) {
 }
 
 func TestEvaluateBool(t *testing.T) {
-	ctx := NewContext("/tmp")
+	ctx := NewContext("/tmp", "/tmp")
 	ctx.SetVariable("enabled", cty.BoolVal(true))
 
 	eval := NewEvaluator(ctx)
@@ -125,7 +125,7 @@ func TestEvaluateBool(t *testing.T) {
 }
 
 func TestEvaluateCount(t *testing.T) {
-	ctx := NewContext("/tmp")
+	ctx := NewContext("/tmp", "/tmp")
 	ctx.SetVariable("instance_count", cty.NumberIntVal(3))
 
 	eval := NewEvaluator(ctx)
@@ -163,7 +163,7 @@ func TestEvaluateCount(t *testing.T) {
 }
 
 func TestEvaluateCountNil(t *testing.T) {
-	ctx := NewContext("/tmp")
+	ctx := NewContext("/tmp", "/tmp")
 	eval := NewEvaluator(ctx)
 
 	result, diags := eval.EvaluateCount(nil)
@@ -176,7 +176,7 @@ func TestEvaluateCountNil(t *testing.T) {
 }
 
 func TestEvaluateForEach(t *testing.T) {
-	ctx := NewContext("/tmp")
+	ctx := NewContext("/tmp", "/tmp")
 	eval := NewEvaluator(ctx)
 
 	t.Run("map", func(t *testing.T) {
@@ -224,7 +224,7 @@ func TestEvaluateForEach(t *testing.T) {
 }
 
 func TestContextVariables(t *testing.T) {
-	ctx := NewContext("/tmp")
+	ctx := NewContext("/tmp", "/tmp")
 	ctx.SetVariable("name", cty.StringVal("test"))
 	ctx.SetVariable("count", cty.NumberIntVal(5))
 
@@ -242,7 +242,7 @@ func TestContextVariables(t *testing.T) {
 }
 
 func TestContextLocals(t *testing.T) {
-	ctx := NewContext("/tmp")
+	ctx := NewContext("/tmp", "/tmp")
 	ctx.SetLocal("common_tags", cty.ObjectVal(map[string]cty.Value{
 		"Environment": cty.StringVal("dev"),
 		"ManagedBy":   cty.StringVal("Pulumi"),
@@ -262,7 +262,7 @@ func TestContextLocals(t *testing.T) {
 }
 
 func TestContextCountIndex(t *testing.T) {
-	ctx := NewContext("/tmp")
+	ctx := NewContext("/tmp", "/tmp")
 	ctx.SetCount(2)
 
 	eval := NewEvaluator(ctx)
@@ -278,7 +278,7 @@ func TestContextCountIndex(t *testing.T) {
 }
 
 func TestContextEach(t *testing.T) {
-	ctx := NewContext("/tmp")
+	ctx := NewContext("/tmp", "/tmp")
 	ctx.SetEach(cty.StringVal("mykey"), cty.StringVal("myvalue"))
 
 	eval := NewEvaluator(ctx)
@@ -305,7 +305,7 @@ func TestContextEach(t *testing.T) {
 }
 
 func TestContextPath(t *testing.T) {
-	ctx := NewContext("/project/module")
+	ctx := NewContext("/project/module", "/project/module")
 
 	eval := NewEvaluator(ctx)
 
@@ -320,7 +320,7 @@ func TestContextPath(t *testing.T) {
 }
 
 func TestContextTerraform(t *testing.T) {
-	ctx := NewContext("/tmp")
+	ctx := NewContext("/tmp", "/tmp")
 	ctx.SetWorkspace("production")
 
 	eval := NewEvaluator(ctx)
@@ -336,7 +336,7 @@ func TestContextTerraform(t *testing.T) {
 }
 
 func TestContextClone(t *testing.T) {
-	ctx := NewContext("/tmp")
+	ctx := NewContext("/tmp", "/tmp")
 	ctx.SetVariable("name", cty.StringVal("original"))
 
 	clone := ctx.Clone()

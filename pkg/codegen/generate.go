@@ -59,9 +59,15 @@ func genRequiredProviders(body *hclwrite.Body, program *pcl.Program) {
 	if len(pkgRefs) == 0 {
 		return
 	}
+
+	var hasProviders bool
 	terraform := body.AppendNewBlock("terraform", nil)
 	reqProviders := terraform.Body().AppendNewBlock("required_providers", nil)
 	for _, ref := range pkgRefs {
+		// The "pulumi" package is built-in and should not be listed in required_providers.
+		if ref.Name() == "pulumi" {
+			continue
+		}
 		attrs := map[string]cty.Value{
 			"source": cty.StringVal("pulumi/" + ref.Name()),
 		}
@@ -69,6 +75,12 @@ func genRequiredProviders(body *hclwrite.Body, program *pcl.Program) {
 			attrs["version"] = cty.StringVal(v.String())
 		}
 		reqProviders.Body().SetAttributeValue(ref.Name(), cty.ObjectVal(attrs))
+		hasProviders = true
+	}
+
+	if !hasProviders {
+		body.RemoveBlock(terraform)
+		return
 	}
 	body.AppendNewline()
 }
@@ -96,7 +108,8 @@ func resourceHCLType(r *pcl.Resource) (string, hcl.Diagnostics) {
 		return "", diags
 	}
 	// Strip the "index" module (standard Pulumi convention for the default module).
-	if mod == "index" {
+	// Also strip the module when it equals the package name (e.g. pulumi:pulumi:StackReference).
+	if mod == "index" || mod == pkg {
 		mod = ""
 	}
 	return strings.ToLower(pkg + "_" + mod + name), nil
@@ -132,6 +145,8 @@ func exprTokens(expr model.Expression) (hclwrite.Tokens, hcl.Diagnostics) {
 		}}
 	case *model.FunctionCallExpression:
 		return funcCallTokens(e)
+	case *model.ScopeTraversalExpression:
+		return scopeTraversalTokens(e)
 	case *model.TupleConsExpression:
 		return tupleTokens(e)
 	case *model.ObjectConsExpression:
@@ -152,11 +167,18 @@ func funcCallTokens(expr *model.FunctionCallExpression) (hclwrite.Tokens, hcl.Di
 			hcl.TraverseRoot{Name: "path"},
 			hcl.TraverseAttr{Name: "cwd"},
 		}), nil
+	case "rootDirectory":
+		return hclwrite.TokensForTraversal(hcl.Traversal{
+			hcl.TraverseRoot{Name: "path"},
+			hcl.TraverseAttr{Name: "root"},
+		}), nil
 	case "stack":
 		return hclwrite.TokensForTraversal(hcl.Traversal{
 			hcl.TraverseRoot{Name: "terraform"},
 			hcl.TraverseAttr{Name: "workspace"},
 		}), nil
+	case "getOutput":
+		return getOutputTokens(expr)
 	default:
 		return nil, hcl.Diagnostics{{
 			Severity: hcl.DiagError,
@@ -164,6 +186,83 @@ func funcCallTokens(expr *model.FunctionCallExpression) (hclwrite.Tokens, hcl.Di
 			Detail:   fmt.Sprintf("function %q is not yet supported", expr.Name),
 		}}
 	}
+}
+
+// getOutputTokens generates tokens for getOutput(resource, "outputName").
+// This produces resource_type.name.outputs["outputName"].
+func getOutputTokens(expr *model.FunctionCallExpression) (hclwrite.Tokens, hcl.Diagnostics) {
+	if len(expr.Args) != 2 {
+		return nil, hcl.Diagnostics{{
+			Severity: hcl.DiagError,
+			Summary:  "invalid getOutput call",
+			Detail:   "getOutput requires exactly 2 arguments: resource reference and output name",
+		}}
+	}
+
+	// First arg is a scope traversal to the resource
+	resRef, ok := expr.Args[0].(*model.ScopeTraversalExpression)
+	if !ok {
+		return nil, hcl.Diagnostics{{
+			Severity: hcl.DiagError,
+			Summary:  "invalid getOutput call",
+			Detail:   "first argument must be a resource reference",
+		}}
+	}
+
+	// The resource reference should resolve to a pcl.Resource
+	res, ok := resRef.Parts[0].(*pcl.Resource)
+	if !ok {
+		return nil, hcl.Diagnostics{{
+			Severity: hcl.DiagError,
+			Summary:  "invalid getOutput call",
+			Detail:   "first argument must reference a resource",
+		}}
+	}
+
+	// Second arg is the output name (string literal, possibly wrapped in a template).
+	outputName, ok := extractStringLiteral(expr.Args[1])
+	if !ok {
+		return nil, hcl.Diagnostics{{
+			Severity: hcl.DiagError,
+			Summary:  "invalid getOutput call",
+			Detail:   "second argument must be a string literal",
+		}}
+	}
+
+	// Get the HCL resource type
+	hclType, diags := resourceHCLType(res)
+	if diags.HasErrors() {
+		return nil, diags
+	}
+
+	// Generate: resource_type.name.outputs["outputName"]
+	return hclwrite.TokensForTraversal(hcl.Traversal{
+		hcl.TraverseRoot{Name: hclType},
+		hcl.TraverseAttr{Name: res.LogicalName()},
+		hcl.TraverseAttr{Name: "outputs"},
+		hcl.TraverseIndex{Key: cty.StringVal(outputName)},
+	}), nil
+}
+
+// scopeTraversalTokens generates HCL tokens for a scope traversal expression.
+func scopeTraversalTokens(expr *model.ScopeTraversalExpression) (hclwrite.Tokens, hcl.Diagnostics) {
+	return hclwrite.TokensForTraversal(expr.Traversal), nil
+}
+
+// extractStringLiteral extracts a string from a literal expression,
+// unwrapping TemplateExpressions that contain a single literal part.
+func extractStringLiteral(expr model.Expression) (string, bool) {
+	switch e := expr.(type) {
+	case *model.LiteralValueExpression:
+		if e.Value.Type() == cty.String {
+			return e.Value.AsString(), true
+		}
+	case *model.TemplateExpression:
+		if len(e.Parts) == 1 {
+			return extractStringLiteral(e.Parts[0])
+		}
+	}
+	return "", false
 }
 
 func tupleTokens(expr *model.TupleConsExpression) (hclwrite.Tokens, hcl.Diagnostics) {

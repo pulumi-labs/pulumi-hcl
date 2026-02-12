@@ -164,6 +164,7 @@ func (host *LanguageHost) Run(
 		ResourceMonitor:  resmon,
 		SchemaLoader:     schema.NewCachedLoader(schemaLoader),
 		WorkDir:          req.Info.ProgramDirectory,
+		RootDir:          req.Info.RootDirectory,
 	})
 
 	if err := engine.Run(ctx); err != nil {
@@ -439,8 +440,22 @@ func (host *LanguageHost) GenerateProject(
 		return nil, fmt.Errorf("generating program: %w", err)
 	}
 
+	// Determine where to write program files. When the project specifies a
+	// "main" subdirectory, generated code goes into that subdirectory.
+	programDir := req.TargetDirectory
+	var project map[string]interface{}
+	if err := json.Unmarshal([]byte(req.Project), &project); err != nil {
+		return nil, fmt.Errorf("parsing project JSON: %w", err)
+	}
+	if main, ok := project["main"].(string); ok && main != "" {
+		programDir = filepath.Join(req.TargetDirectory, main)
+		if err := os.MkdirAll(programDir, 0755); err != nil {
+			return nil, fmt.Errorf("creating main directory: %w", err)
+		}
+	}
+
 	for name, content := range files {
-		path := filepath.Join(req.TargetDirectory, name)
+		path := filepath.Join(programDir, name)
 		if err := os.WriteFile(path, content, 0644); err != nil {
 			return nil, fmt.Errorf("writing %s: %w", name, err)
 		}

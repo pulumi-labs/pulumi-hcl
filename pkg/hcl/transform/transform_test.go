@@ -314,9 +314,15 @@ func TestPropertyValueToCty_Secret(t *testing.T) {
 
 	result := PropertyValueToCty(input)
 
-	// Secrets are unwrapped
-	if result.AsString() != "secret-value" {
-		t.Errorf("expected secret-value, got %v", result.AsString())
+	if !result.IsMarked() {
+		t.Fatal("expected value to be marked")
+	}
+	unmarked, marks := result.Unmark()
+	if unmarked.AsString() != "secret-value" {
+		t.Errorf("expected secret-value, got %v", unmarked.AsString())
+	}
+	if _, ok := marks["sensitive"]; !ok {
+		t.Error("expected sensitive mark")
 	}
 }
 

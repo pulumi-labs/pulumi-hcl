@@ -168,8 +168,11 @@ type EngineOptions struct {
 	// ResourceMonitor is the resource monitor for registering resources.
 	ResourceMonitor ResourceMonitor
 
-	// WorkDir is the working directory.
+	// WorkDir is the working directory (where the program files are).
 	WorkDir string
+
+	// RootDir is the project root directory (where Pulumi.yaml is).
+	RootDir string
 
 	SchemaLoader schema.ReferenceLoader
 }
@@ -177,11 +180,14 @@ type EngineOptions struct {
 // NewEngine creates a new execution engine.
 func NewEngine(config *ast.Config, opts *EngineOptions) *Engine {
 	contract.Assertf(opts.SchemaLoader != nil, "EngineOptions.SchemaLoader cannot be nil")
-	contract.Assertf(opts.WorkDir != "", "EngineOptions.WorkDir cannot be nil")
+	contract.Assertf(opts.WorkDir != "", "EngineOptions.WorkDir cannot be empty")
+	contract.Assertf(opts.RootDir != "", "EngineOptions.RootDir cannot be empty")
+
+	evalCtx := eval.NewContext(opts.WorkDir, opts.RootDir)
 
 	return &Engine{
 		config:            config,
-		evaluator:         eval.NewEvaluator(eval.NewContext(opts.WorkDir)),
+		evaluator:         eval.NewEvaluator(evalCtx),
 		pkgLoader:         opts.SchemaLoader,
 		resmon:            opts.ResourceMonitor,
 		resourceOutputs:   make(map[string]cty.Value),
@@ -628,6 +634,12 @@ func (e *Engine) processLocal(ctx context.Context, node *graph.Node) error {
 	return nil
 }
 
+// builtinResourceTypes maps HCL resource type names to Pulumi built-in type tokens.
+// These resources are handled by the Pulumi engine itself and don't need schema resolution.
+var builtinResourceTypes = map[string]string{
+	"pulumi_stackreference": "pulumi:pulumi:StackReference",
+}
+
 // processResource processes a resource definition.
 func (e *Engine) processResource(ctx context.Context, node *graph.Node) error {
 	res := node.Resource
@@ -635,10 +647,17 @@ func (e *Engine) processResource(ctx context.Context, node *graph.Node) error {
 		return fmt.Errorf("resource node missing Resource field")
 	}
 
-	// Resolve the resource type to a Pulumi type token
-	resType, err := packages.ResolveResource(ctx, e.pkgLoader, res.Type)
-	if err != nil {
-		return fmt.Errorf("resolving resource type %s: %w", res.Type, err)
+	// Resolve the resource type to a Pulumi type token.
+	// Check for built-in types first, then fall back to schema resolution.
+	var typeToken string
+	if token, ok := builtinResourceTypes[res.Type]; ok {
+		typeToken = token
+	} else {
+		resType, err := packages.ResolveResource(ctx, e.pkgLoader, res.Type)
+		if err != nil {
+			return fmt.Errorf("resolving resource type %s: %w", res.Type, err)
+		}
+		typeToken = resType.Token
 	}
 
 	// Check for count/for_each expansion
@@ -665,7 +684,7 @@ func (e *Engine) processResource(ctx context.Context, node *graph.Node) error {
 
 	// Register each instance
 	for _, instance := range result.Instances {
-		if err := e.registerResourceInstance(ctx, res, resType.Token, instance); err != nil {
+		if err := e.registerResourceInstance(ctx, res, typeToken, instance); err != nil {
 			return fmt.Errorf("registering %s: %w", instance.Key, err)
 		}
 	}
@@ -1280,7 +1299,7 @@ func (e *Engine) registerComponentResource(
 func (e *Engine) createChildEngine(config *ast.Config, parentURN string, moduleDir string) *Engine {
 	return &Engine{
 		config:            config,
-		evaluator:         eval.NewEvaluator(eval.NewContext(moduleDir)),
+		evaluator:         eval.NewEvaluator(eval.NewContext(moduleDir, moduleDir)),
 		pkgLoader:         e.pkgLoader,
 		resmon:            e.resmon,
 		resourceOutputs:   make(map[string]cty.Value),

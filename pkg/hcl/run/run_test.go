@@ -170,6 +170,7 @@ resource "aws_instance" "web" {
 		StackName:       "dev",
 		ResourceMonitor: mock,
 		WorkDir:         t.TempDir(),
+		RootDir:         t.TempDir(),
 		SchemaLoader: newMockReferenceLoader(t, schema.PackageSpec{
 			Name: "aws",
 			Resources: map[string]schema.ResourceSpec{
@@ -235,6 +236,7 @@ resource "aws_s3_bucket" "mybucket" {
 		StackName:       "dev",
 		ResourceMonitor: mock,
 		WorkDir:         t.TempDir(),
+		RootDir:         t.TempDir(),
 		SchemaLoader: newMockReferenceLoader(t, schema.PackageSpec{
 			Name: "aws",
 			Resources: map[string]schema.ResourceSpec{
@@ -285,6 +287,7 @@ resource "aws_subnet" "main" {
 		StackName:       "dev",
 		ResourceMonitor: mock,
 		WorkDir:         t.TempDir(),
+		RootDir:         t.TempDir(),
 		SchemaLoader: newMockReferenceLoader(t, schema.PackageSpec{
 			Name: "aws",
 			Resources: map[string]schema.ResourceSpec{
@@ -341,6 +344,7 @@ resource "aws_instance" "web" {
 		ProjectName:  "test-project",
 		StackName:    "dev",
 		WorkDir:      t.TempDir(),
+		RootDir:      t.TempDir(),
 		SchemaLoader: newMockReferenceLoader(t, schema.PackageSpec{
 			Name: "aws",
 			Resources: map[string]schema.ResourceSpec{
@@ -429,6 +433,7 @@ resource "aws_instance" "web" {
 		StackName:       "dev",
 		ResourceMonitor: mock,
 		WorkDir:         t.TempDir(),
+		RootDir:         t.TempDir(),
 		SchemaLoader: newMockReferenceLoader(t, schema.PackageSpec{
 			Name: "aws",
 			Resources: map[string]schema.ResourceSpec{
@@ -485,6 +490,7 @@ resource "aws_instance" "web" {
 		StackName:       "dev",
 		ResourceMonitor: mock,
 		WorkDir:         t.TempDir(),
+		RootDir:         t.TempDir(),
 		SchemaLoader: newMockReferenceLoader(t, schema.PackageSpec{
 			Name: "aws",
 			Resources: map[string]schema.ResourceSpec{
@@ -540,6 +546,7 @@ resource "aws_instance" "web" {
 		StackName:       "dev",
 		ResourceMonitor: mock,
 		WorkDir:         t.TempDir(),
+		RootDir:         t.TempDir(),
 		SchemaLoader: newMockReferenceLoader(t, schema.PackageSpec{
 			Name: "aws",
 			Resources: map[string]schema.ResourceSpec{
@@ -596,6 +603,7 @@ resource "aws_instance" "web" {
 		StackName:       "dev",
 		ResourceMonitor: mock,
 		WorkDir:         t.TempDir(),
+		RootDir:         t.TempDir(),
 		SchemaLoader: newMockReferenceLoader(t, schema.PackageSpec{
 			Name: "aws",
 			Resources: map[string]schema.ResourceSpec{
@@ -651,6 +659,7 @@ output "region_value" {
 		StackName:       "dev",
 		ResourceMonitor: mock,
 		WorkDir:         t.TempDir(),
+		RootDir:         t.TempDir(),
 		SchemaLoader: newMockReferenceLoader(t, schema.PackageSpec{
 			Name: "aws",
 			Resources: map[string]schema.ResourceSpec{
@@ -707,6 +716,7 @@ output "region_value" {
 		StackName:       "dev",
 		ResourceMonitor: mock,
 		WorkDir:         t.TempDir(),
+		RootDir:         t.TempDir(),
 		SchemaLoader: newMockReferenceLoader(t, schema.PackageSpec{
 			Name: "aws",
 			Resources: map[string]schema.ResourceSpec{
@@ -758,6 +768,7 @@ variable "required_var" {
 		StackName:       "dev",
 		ResourceMonitor: mock,
 		WorkDir:         t.TempDir(),
+		RootDir:         t.TempDir(),
 		SchemaLoader: newMockReferenceLoader(t, schema.PackageSpec{
 			Name: "aws",
 			Resources: map[string]schema.ResourceSpec{
@@ -808,6 +819,7 @@ output "instance_type" {
 		StackName:       "dev",
 		ResourceMonitor: mock,
 		WorkDir:         t.TempDir(),
+		RootDir:         t.TempDir(),
 		SchemaLoader: newMockReferenceLoader(t, schema.PackageSpec{
 			Name: "aws",
 			Resources: map[string]schema.ResourceSpec{
@@ -858,6 +870,7 @@ variable "instance_type" {
 		StackName:       "dev",
 		ResourceMonitor: mock,
 		WorkDir:         t.TempDir(),
+		RootDir:         t.TempDir(),
 		SchemaLoader: newMockReferenceLoader(t, schema.PackageSpec{
 			Name: "aws",
 			Resources: map[string]schema.ResourceSpec{
@@ -910,6 +923,7 @@ resource "aws_instance" "web" {
 		StackName:       "dev",
 		ResourceMonitor: mock,
 		WorkDir:         t.TempDir(),
+		RootDir:         t.TempDir(),
 		SchemaLoader: newMockReferenceLoader(t, schema.PackageSpec{
 			Name: "aws",
 			Resources: map[string]schema.ResourceSpec{
@@ -971,6 +985,7 @@ resource "aws_instance" "web" {
 		StackName:       "dev",
 		ResourceMonitor: mock,
 		WorkDir:         t.TempDir(),
+		RootDir:         t.TempDir(),
 		SchemaLoader: newMockReferenceLoader(t, schema.PackageSpec{
 			Name: "aws",
 			Resources: map[string]schema.ResourceSpec{
@@ -1025,6 +1040,7 @@ resource "aws_instance" "web" {
 		StackName:       "dev",
 		ResourceMonitor: mock,
 		WorkDir:         t.TempDir(),
+		RootDir:         t.TempDir(),
 		SchemaLoader: newMockReferenceLoader(t, schema.PackageSpec{
 			Name: "aws",
 			Resources: map[string]schema.ResourceSpec{
@@ -1069,6 +1085,7 @@ resource "aws_instance" "web" {
 		StackName:       "dev",
 		ResourceMonitor: mock,
 		WorkDir:         t.TempDir(),
+		RootDir:         t.TempDir(),
 		SchemaLoader: newMockReferenceLoader(t, schema.PackageSpec{
 			Name: "aws",
 			Resources: map[string]schema.ResourceSpec{
@@ -1114,6 +1131,7 @@ resource "aws_instance" "web" {
 		StackName:       "dev",
 		ResourceMonitor: mock,
 		WorkDir:         t.TempDir(),
+		RootDir:         t.TempDir(),
 		SchemaLoader: newMockReferenceLoader(t, schema.PackageSpec{
 			Name: "aws",
 			Resources: map[string]schema.ResourceSpec{
@@ -1194,6 +1212,7 @@ resource "aws_instance" "web" {
 		StackName:       "dev",
 		ResourceMonitor: mock,
 		WorkDir:         t.TempDir(),
+		RootDir:         t.TempDir(),
 		SchemaLoader: newMockReferenceLoader(t, schema.PackageSpec{
 			Name: "aws",
 			Resources: map[string]schema.ResourceSpec{
@@ -1246,6 +1265,7 @@ resource "aws_instance" "web" {
 		StackName:       "dev",
 		ResourceMonitor: mock,
 		WorkDir:         t.TempDir(),
+		RootDir:         t.TempDir(),
 		SchemaLoader: newMockReferenceLoader(t, schema.PackageSpec{
 			Name: "aws",
 			Resources: map[string]schema.ResourceSpec{
@@ -1353,6 +1373,7 @@ output "vpc_id" {
 		StackName:       "dev",
 		ResourceMonitor: mock,
 		WorkDir:         tmpDir,
+		RootDir:         tmpDir,
 		SchemaLoader: newMockReferenceLoader(t, schema.PackageSpec{
 			Name: "aws",
 			Resources: map[string]schema.ResourceSpec{
@@ -1446,6 +1467,7 @@ resource "aws_instance" "web" {
 		StackName:       "dev",
 		ResourceMonitor: mock,
 		WorkDir:         t.TempDir(),
+		RootDir:         t.TempDir(),
 		SchemaLoader: newMockReferenceLoader(t, schema.PackageSpec{
 			Name: "aws",
 			Resources: map[string]schema.ResourceSpec{
@@ -1520,6 +1542,7 @@ resource "aws_instance" "web" {
 		StackName:       "dev",
 		ResourceMonitor: mock,
 		WorkDir:         t.TempDir(),
+		RootDir:         t.TempDir(),
 		SchemaLoader: newMockReferenceLoader(t, schema.PackageSpec{
 			Name: "aws",
 			Resources: map[string]schema.ResourceSpec{
@@ -1590,6 +1613,7 @@ resource "aws_instance" "imported" {
 		StackName:       "dev",
 		ResourceMonitor: mock,
 		WorkDir:         t.TempDir(),
+		RootDir:         t.TempDir(),
 		SchemaLoader: newMockReferenceLoader(t, schema.PackageSpec{
 			Name: "aws",
 			Resources: map[string]schema.ResourceSpec{
