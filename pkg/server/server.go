@@ -384,6 +384,10 @@ func (host *LanguageHost) GenerateProgram(
 		return nil, err
 	}
 
+	if len(sourceMap) == 0 {
+		sourceMap = map[string][]byte{"main.hcl": {}}
+	}
+
 	return &pulumirpc.GenerateProgramResponse{
 		Diagnostics: plugin.HclDiagnosticsToRPCDiagnostics(diags),
 		Source:      sourceMap,
@@ -402,6 +406,16 @@ func (host *LanguageHost) GenerateProject(
 
 	destFS := afero.NewBasePathFs(afero.NewOsFs(), req.TargetDirectory)
 	diags := convertPCLToHCL(source, destFS, "/", "/")
+
+	hclFiles, err := extractFilesFromFS(destFS, "/")
+	if err != nil {
+		return nil, fmt.Errorf("checking generated files: %w", err)
+	}
+	if len(hclFiles) == 0 {
+		if err := afero.WriteFile(destFS, "main.hcl", []byte{}, 0644); err != nil {
+			return nil, fmt.Errorf("writing empty main.hcl: %w", err)
+		}
+	}
 
 	if err := writePulumiYaml(destFS, req.Project); err != nil {
 		return nil, fmt.Errorf("writing Pulumi.yaml: %w", err)
