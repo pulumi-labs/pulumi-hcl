@@ -19,17 +19,18 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io/fs"
 	"net"
+	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
-	"github.com/hashicorp/hcl/v2"
-	"github.com/pulumi/pulumi-converter-terraform/pkg/convert"
+	"github.com/pulumi/pulumi-language-hcl/pkg/codegen"
 	"github.com/pulumi/pulumi-language-hcl/pkg/hcl/parser"
 	"github.com/pulumi/pulumi-language-hcl/pkg/hcl/run"
 	"github.com/pulumi/pulumi-language-hcl/pkg/version"
-	"github.com/pulumi/pulumi-terraform-bridge/v3/pkg/tfbridge"
+	"github.com/pulumi/pulumi/pkg/v3/codegen/hcl2/syntax"
+	"github.com/pulumi/pulumi/pkg/v3/codegen/pcl"
 	"github.com/pulumi/pulumi/pkg/v3/codegen/schema"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/resource"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/resource/plugin"
@@ -38,8 +39,6 @@ import (
 	"github.com/pulumi/pulumi/sdk/v3/go/common/util/logging"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/util/rpcutil"
 	pulumirpc "github.com/pulumi/pulumi/sdk/v3/proto/go"
-	"github.com/pulumi/terraform/pkg/configs"
-	"github.com/spf13/afero"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/protobuf/types/known/emptypb"
@@ -360,37 +359,50 @@ func (host *LanguageHost) GenerateProgram(
 	ctx context.Context,
 	req *pulumirpc.GenerateProgramRequest,
 ) (*pulumirpc.GenerateProgramResponse, error) {
-	source := afero.NewMemMapFs()
+	if len(req.Source) == 0 {
+		return &pulumirpc.GenerateProgramResponse{
+			Source: map[string][]byte{"main.hcl": {}},
+		}, nil
+	}
+
+	p := syntax.NewParser()
 	for k, v := range req.Source {
-		f, err := source.Create(k)
-		if err != nil {
-			return nil, err
-		}
-		_, err = f.WriteString(v)
-		if err != nil {
-			return nil, err
-		}
-		err = f.Close()
-		if err != nil {
-			return nil, err
+		if err := p.ParseFile(strings.NewReader(v), k); err != nil {
+			return nil, fmt.Errorf("parsing %s: %w", k, err)
 		}
 	}
+	if p.Diagnostics.HasErrors() {
+		return &pulumirpc.GenerateProgramResponse{
+			Diagnostics: plugin.HclDiagnosticsToRPCDiagnostics(p.Diagnostics),
+		}, nil
+	}
 
-	dest := afero.NewMemMapFs()
-	diags := convertPCLToHCL(source, dest, "input", "output")
-
-	sourceMap, err := extractFilesFromFS(dest, "output")
+	loaderClient, err := schema.NewLoaderClient(req.LoaderTarget)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("unable to aquire loader: %w", err)
+	}
+	binderOpts := []pcl.BindOption{pcl.Loader(schema.NewCachedLoader(loaderClient))}
+	if !req.Strict {
+		binderOpts = append(binderOpts, pcl.NonStrictBindOptions()...)
+	}
+	program, bindDiags, err := pcl.BindProgram(p.Files, binderOpts...)
+	if err != nil {
+		return nil, fmt.Errorf("binding program: %w", err)
+	}
+	if bindDiags.HasErrors() {
+		return &pulumirpc.GenerateProgramResponse{
+			Diagnostics: plugin.HclDiagnosticsToRPCDiagnostics(bindDiags),
+		}, nil
 	}
 
-	if len(sourceMap) == 0 {
-		sourceMap = map[string][]byte{"main.hcl": {}}
+	files, genDiags, err := codegen.GenerateProgram(program)
+	if err != nil {
+		return nil, fmt.Errorf("generating program: %w", err)
 	}
 
 	return &pulumirpc.GenerateProgramResponse{
-		Diagnostics: plugin.HclDiagnosticsToRPCDiagnostics(diags),
-		Source:      sourceMap,
+		Diagnostics: plugin.HclDiagnosticsToRPCDiagnostics(genDiags),
+		Source:      files,
 	}, nil
 }
 
@@ -402,27 +414,42 @@ func (host *LanguageHost) GenerateProject(
 	logging.V(5).Infof("GenerateProject: sourceDirectory=%s, targetDirectory=%s",
 		req.SourceDirectory, req.TargetDirectory)
 
-	source := afero.NewBasePathFs(afero.NewOsFs(), req.SourceDirectory)
-
-	destFS := afero.NewBasePathFs(afero.NewOsFs(), req.TargetDirectory)
-	diags := convertPCLToHCL(source, destFS, "/", "/")
-
-	hclFiles, err := extractFilesFromFS(destFS, "/")
+	loaderClient, err := schema.NewLoaderClient(req.LoaderTarget)
 	if err != nil {
-		return nil, fmt.Errorf("checking generated files: %w", err)
+		return nil, fmt.Errorf("unable to aquire loader: %w", err)
 	}
-	if len(hclFiles) == 0 {
-		if err := afero.WriteFile(destFS, "main.hcl", []byte{}, 0644); err != nil {
-			return nil, fmt.Errorf("writing empty main.hcl: %w", err)
+	binderOpts := []pcl.BindOption{pcl.Loader(schema.NewCachedLoader(loaderClient))}
+	if !req.Strict {
+		binderOpts = append(binderOpts, pcl.NonStrictBindOptions()...)
+	}
+	program, bindDiags, err := pcl.BindDirectory(req.SourceDirectory, nil, binderOpts...)
+	if err != nil {
+		return nil, fmt.Errorf("binding directory: %w", err)
+	}
+	if bindDiags.HasErrors() {
+		return &pulumirpc.GenerateProjectResponse{
+			Diagnostics: plugin.HclDiagnosticsToRPCDiagnostics(bindDiags),
+		}, nil
+	}
+
+	files, genDiags, err := codegen.GenerateProgram(program)
+	if err != nil {
+		return nil, fmt.Errorf("generating program: %w", err)
+	}
+
+	for name, content := range files {
+		path := filepath.Join(req.TargetDirectory, name)
+		if err := os.WriteFile(path, content, 0644); err != nil {
+			return nil, fmt.Errorf("writing %s: %w", name, err)
 		}
 	}
 
-	if err := writePulumiYaml(destFS, req.Project); err != nil {
+	if err := writePulumiYaml(req.TargetDirectory, req.Project); err != nil {
 		return nil, fmt.Errorf("writing Pulumi.yaml: %w", err)
 	}
 
 	return &pulumirpc.GenerateProjectResponse{
-		Diagnostics: plugin.HclDiagnosticsToRPCDiagnostics(diags),
+		Diagnostics: plugin.HclDiagnosticsToRPCDiagnostics(genDiags),
 	}, nil
 }
 
@@ -651,47 +678,8 @@ func (r *resourceMonitorAdapter) RegisterResourceOutputs(
 // Ensure resourceMonitorAdapter implements the interface.
 var _ run.ResourceMonitor = (*resourceMonitorAdapter)(nil)
 
-// emptyProviderInfoSource is a ProviderInfoSource that always returns nil.
-type emptyProviderInfoSource struct{}
-
-func (e *emptyProviderInfoSource) GetProviderInfo(tfProvider string, requiredProvider *configs.RequiredProvider) (*tfbridge.ProviderInfo, error) {
-	return nil, nil
-}
-
-// convertPCLToHCL converts PCL source to HCL by running convert.TranslateModule.
-func convertPCLToHCL(source, dest afero.Fs, sourceDir, destDir string) hcl.Diagnostics {
-	providerInfoSource := &emptyProviderInfoSource{}
-	providerInfoResolver := convert.NewProviderInfoResolver()
-	return convert.TranslateModule(source, sourceDir, dest, providerInfoSource, providerInfoResolver, destDir)
-}
-
-// extractFilesFromFS walks a filesystem and extracts all files into a map.
-func extractFilesFromFS(filesystem afero.Fs, basePath string) (map[string][]byte, error) {
-	result := make(map[string][]byte)
-
-	err := afero.Walk(filesystem, basePath, func(path string, info fs.FileInfo, err error) error {
-		if err != nil {
-			return err
-		}
-
-		if info == nil || info.IsDir() {
-			return nil
-		}
-
-		content, err := afero.ReadFile(filesystem, path)
-		if err != nil {
-			return fmt.Errorf("reading file %s: %w", path, err)
-		}
-
-		result[path] = content
-		return nil
-	})
-
-	return result, err
-}
-
 // writePulumiYaml writes the Pulumi.yaml file with runtime set to hcl.
-func writePulumiYaml(fs afero.Fs, projectJSON string) error {
+func writePulumiYaml(dir string, projectJSON string) error {
 	var project map[string]interface{}
 	if err := json.Unmarshal([]byte(projectJSON), &project); err != nil {
 		return fmt.Errorf("parsing project JSON: %w", err)
@@ -704,8 +692,8 @@ func writePulumiYaml(fs afero.Fs, projectJSON string) error {
 		return fmt.Errorf("marshaling project to YAML: %w", err)
 	}
 
-	pulumiYamlPath := "Pulumi.yaml"
-	if err := afero.WriteFile(fs, pulumiYamlPath, yamlContent, 0644); err != nil {
+	path := filepath.Join(dir, "Pulumi.yaml")
+	if err := os.WriteFile(path, yamlContent, 0644); err != nil {
 		return fmt.Errorf("writing Pulumi.yaml: %w", err)
 	}
 

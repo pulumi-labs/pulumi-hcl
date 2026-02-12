@@ -96,7 +96,6 @@ func runTestingHost(t *testing.T) (string, testingrpc.LanguageTestClient) {
 
 var expectedFailures = map[string]string{
 	"l1-builtin-can":                               "program generation not yet implemented",
-	"l1-builtin-cwd":                               "program generation not yet implemented",
 	"l1-builtin-info":                              "program generation not yet implemented",
 	"l1-builtin-project-root":                      "program generation not yet implemented",
 	"l1-builtin-project-root-main":                 "program generation not yet implemented",
