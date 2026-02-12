@@ -12,6 +12,35 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+// Adding a new language test
+//
+// Language tests are defined in the pulumi/pulumi repo under
+// pkg/testing/pulumi-test-language/tests/. Each test has a Go file
+// defining the test configuration and a testdata directory containing
+// one or more .pp (PCL) source files.
+//
+// To enable a new language test for the HCL runtime:
+//
+//  1. Look up the test's .pp files in the pulumi repo to understand what
+//     PCL constructs the test uses (outputs, resources, function calls, etc.).
+//
+//  2. Ensure the HCL codegen (pkg/codegen/generate.go) can convert the PCL
+//     constructs to valid HCL. Add support for any missing expression types,
+//     function calls, or resource types.
+//
+//  3. Ensure the HCL runtime (pkg/hcl/run/, pkg/hcl/eval/, pkg/server/)
+//     can execute the generated HCL correctly. This may involve adding
+//     support for new built-in resource types, functions, or path handling.
+//
+//  4. Remove the test name from the expectedFailures map below.
+//
+//  5. Run the test with PULUMI_ACCEPT=1 to generate snapshot files:
+//     PULUMI_ACCEPT=1 go test ./cmd/pulumi-language-hcl/ -run 'TestLanguage/<test-name>' -count=1 -v
+//     This creates/updates files under testdata/projects/<test-name>/.
+//
+//  6. Run the test without PULUMI_ACCEPT to verify it passes:
+//     go test ./cmd/pulumi-language-hcl/ -run 'TestLanguage/<test-name>' -count=1 -v
+
 package main
 
 import (
@@ -97,17 +126,13 @@ func runTestingHost(t *testing.T) (string, testingrpc.LanguageTestClient) {
 var expectedFailures = map[string]string{
 	"l1-builtin-can":                               "program generation not yet implemented",
 	"l1-builtin-info":                              "program generation not yet implemented",
-	"l1-builtin-project-root":                      "program generation not yet implemented",
-	"l1-builtin-project-root-main":                 "program generation not yet implemented",
 	"l1-builtin-require-pulumi-version":            "program generation not yet implemented",
 	"l1-builtin-stash":                             "program generation not yet implemented",
 	"l1-builtin-try":                               "program generation not yet implemented",
 	"l1-config-types-object":                       "program generation not yet implemented",
 	"l1-config-types-primitive":                    "program generation not yet implemented",
 	"l1-keyword-overlap":                           "program generation not yet implemented",
-	"l1-main":                                      "program generation not yet implemented",
 	"l1-proxy-index":                               "program generation not yet implemented",
-	"l1-stack-reference":                           "program generation not yet implemented",
 	"l2-camel-names":                               "missing expected dependency",
 	"l2-component-call-simple":                     "missing expected dependency",
 	"l2-component-component-resource-ref":          "missing expected dependency",

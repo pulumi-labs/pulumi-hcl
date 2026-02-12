@@ -102,9 +102,10 @@ type EachContext struct {
 }
 
 // NewContext creates a new evaluation context.
-func NewContext(baseDir string) *Context {
+func NewContext(baseDir, rootDir string) *Context {
 	return &Context{
-		baseDir:     baseDir,
+		baseDir: baseDir,
+
 		variables:   make(map[string]cty.Value),
 		locals:      make(map[string]cty.Value),
 		resources:   make(map[string]cty.Value),
@@ -113,7 +114,7 @@ func NewContext(baseDir string) *Context {
 		providers:   make(map[string]cty.Value),
 		path: PathContext{
 			Module: baseDir,
-			Root:   baseDir,
+			Root:   rootDir,
 			Cwd:    baseDir,
 		},
 		terraform: TerraformContext{
@@ -303,8 +304,8 @@ func (c *Context) HCLContext() *hcl.EvalContext {
 }
 
 // ChildContext creates a child context for nested evaluation (e.g., inside a module).
-func (c *Context) ChildContext(baseDir string) *Context {
-	child := NewContext(baseDir)
+func (c *Context) ChildContext(baseDir, rootDir string) *Context {
+	child := NewContext(baseDir, rootDir)
 	child.path.Root = c.path.Root
 	child.terraform = c.terraform
 	return child
