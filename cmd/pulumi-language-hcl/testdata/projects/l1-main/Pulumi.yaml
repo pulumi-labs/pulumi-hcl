@@ -1,0 +1,3 @@
+main: subdir
+name: l1-main
+runtime: hcl
