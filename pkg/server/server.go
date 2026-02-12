@@ -25,6 +25,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/blang/semver"
 	"github.com/pulumi/pulumi-language-hcl/pkg/codegen"
 	"github.com/pulumi/pulumi-language-hcl/pkg/hcl/parser"
 	"github.com/pulumi/pulumi-language-hcl/pkg/hcl/run"
@@ -38,6 +39,7 @@ import (
 	"github.com/pulumi/pulumi/sdk/v3/go/common/util/fsutil"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/util/logging"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/util/rpcutil"
+	"github.com/pulumi/pulumi/sdk/v3/go/common/workspace"
 	pulumirpc "github.com/pulumi/pulumi/sdk/v3/proto/go"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
@@ -454,12 +456,72 @@ func (host *LanguageHost) GenerateProject(
 }
 
 // GeneratePackage generates SDK bindings for a Pulumi package.
+//
+// HCL doesn't need generated SDKs — it uses provider schemas directly. However,
+// we write an hcl.sdk.json file containing the package descriptor so that
+// GetRequiredPackages can discover which packages a project depends on.
 func (host *LanguageHost) GeneratePackage(
 	ctx context.Context,
 	req *pulumirpc.GeneratePackageRequest,
 ) (*pulumirpc.GeneratePackageResponse, error) {
-	// HCL doesn't need generated SDKs - it uses provider schemas directly
+	desc, err := packageDescriptorFromSchema([]byte(req.Schema))
+	if err != nil {
+		return nil, fmt.Errorf("parsing schema for package descriptor: %w", err)
+	}
+
+	data, err := json.MarshalIndent(desc, "", "  ")
+	if err != nil {
+		return nil, fmt.Errorf("marshaling package descriptor: %w", err)
+	}
+	data = append(data, '\n')
+
+	if err := os.WriteFile(filepath.Join(req.Directory, "hcl.sdk.json"), data, 0644); err != nil {
+		return nil, fmt.Errorf("writing hcl.sdk.json: %w", err)
+	}
+
 	return &pulumirpc.GeneratePackageResponse{}, nil
+}
+
+// packageDescriptorFromSchema extracts a workspace.PackageDescriptor from a JSON
+// schema blob. This mirrors the logic in the test framework's interface.go that
+// builds expected PackageDescriptors from schema Package definitions.
+func packageDescriptorFromSchema(schemaJSON []byte) (workspace.PackageDescriptor, error) {
+	var spec schema.PartialPackageSpec
+	if err := json.Unmarshal(schemaJSON, &spec); err != nil {
+		return workspace.PackageDescriptor{}, fmt.Errorf("unmarshaling schema: %w", err)
+	}
+
+	desc := workspace.PackageDescriptor{
+		PluginDescriptor: workspace.PluginDescriptor{
+			Name:              spec.Name,
+			PluginDownloadURL: spec.PluginDownloadURL,
+		},
+	}
+
+	if spec.Version != "" {
+		v, err := semver.Parse(spec.Version)
+		if err != nil {
+			return workspace.PackageDescriptor{}, fmt.Errorf("parsing version %q: %w", spec.Version, err)
+		}
+		desc.Version = &v
+	}
+
+	if spec.Parameterization != nil {
+		baseVersion, err := semver.Parse(spec.Parameterization.BaseProvider.Version)
+		if err != nil {
+			return workspace.PackageDescriptor{}, fmt.Errorf(
+				"parsing base provider version %q: %w", spec.Parameterization.BaseProvider.Version, err)
+		}
+		desc.Parameterization = &workspace.Parameterization{
+			Name:    desc.Name,
+			Version: *desc.Version,
+			Value:   spec.Parameterization.Parameter,
+		}
+		desc.Name = spec.Parameterization.BaseProvider.Name
+		desc.Version = &baseVersion
+	}
+
+	return desc, nil
 }
 
 // Pack packages an HCL program into a deployable artifact.
