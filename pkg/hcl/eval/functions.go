@@ -63,22 +63,22 @@ func Functions(baseDir string) map[string]function.Function {
 		"parseint": stdlib.ParseIntFunc,
 
 		// String functions
-		"chomp":      stdlib.ChompFunc,
-		"format":     stdlib.FormatFunc,
-		"formatlist": stdlib.FormatListFunc,
-		"indent":     indentFunc,
-		"join":       stdlib.JoinFunc,
-		"lower":      stdlib.LowerFunc,
-		"regex":      stdlib.RegexFunc,
-		"regexall":   stdlib.RegexAllFunc,
-		"replace":    stdlib.ReplaceFunc,
-		"split":      stdlib.SplitFunc,
-		"strrev":     stdlib.ReverseFunc,
-		"substr":     stdlib.SubstrFunc,
-		"title":      stdlib.TitleFunc,
-		"trim":       stdlib.TrimFunc,
-		"trimprefix": stdlib.TrimPrefixFunc,
-		"trimsuffix": stdlib.TrimSuffixFunc,
+		"chomp":       stdlib.ChompFunc,
+		"format":      stdlib.FormatFunc,
+		"formatlist":  stdlib.FormatListFunc,
+		"indent":      indentFunc,
+		"join":        stdlib.JoinFunc,
+		"lower":       stdlib.LowerFunc,
+		"regex":       stdlib.RegexFunc,
+		"regexall":    stdlib.RegexAllFunc,
+		"replace":     stdlib.ReplaceFunc,
+		"split":       stdlib.SplitFunc,
+		"strrev":      stdlib.ReverseFunc,
+		"substr":      stdlib.SubstrFunc,
+		"title":       stdlib.TitleFunc,
+		"trim":        stdlib.TrimFunc,
+		"trimprefix":  stdlib.TrimPrefixFunc,
+		"trimsuffix":  stdlib.TrimSuffixFunc,
 		"trimspace":   stdlib.TrimSpaceFunc,
 		"upper":       stdlib.UpperFunc,
 		"startswith":  startsWithFunc,
@@ -86,28 +86,28 @@ func Functions(baseDir string) map[string]function.Function {
 		"strcontains": strContainsFunc,
 
 		// Collection functions
-		"alltrue":    allTrueFunc,
-		"anytrue":    anyTrueFunc,
-		"chunklist":  stdlib.ChunklistFunc,
-		"coalesce":   stdlib.CoalesceFunc,
-		"coalescelist": coalesceListFunc,
-		"compact":    stdlib.CompactFunc,
-		"concat":     stdlib.ConcatFunc,
-		"contains":   stdlib.ContainsFunc,
-		"distinct":   stdlib.DistinctFunc,
-		"element":    stdlib.ElementFunc,
-		"flatten":    stdlib.FlattenFunc,
-		"index":      indexFunc,
-		"keys":       stdlib.KeysFunc,
-		"length":     stdlib.LengthFunc,
-		"list":       listFunc,
-		"lookup":     lookupFunc,
-		"map":        mapFunc,
-		"matchkeys":  matchkeysFunc,
-		"merge":      stdlib.MergeFunc,
-		"one":        oneFunc,
-		"range":      stdlib.RangeFunc,
-		"reverse":    stdlib.ReverseListFunc,
+		"alltrue":         allTrueFunc,
+		"anytrue":         anyTrueFunc,
+		"chunklist":       stdlib.ChunklistFunc,
+		"coalesce":        stdlib.CoalesceFunc,
+		"coalescelist":    coalesceListFunc,
+		"compact":         stdlib.CompactFunc,
+		"concat":          stdlib.ConcatFunc,
+		"contains":        stdlib.ContainsFunc,
+		"distinct":        stdlib.DistinctFunc,
+		"element":         stdlib.ElementFunc,
+		"flatten":         stdlib.FlattenFunc,
+		"index":           indexFunc,
+		"keys":            stdlib.KeysFunc,
+		"length":          stdlib.LengthFunc,
+		"list":            listFunc,
+		"lookup":          lookupFunc,
+		"map":             mapFunc,
+		"matchkeys":       matchkeysFunc,
+		"merge":           stdlib.MergeFunc,
+		"one":             oneFunc,
+		"range":           stdlib.RangeFunc,
+		"reverse":         stdlib.ReverseListFunc,
 		"setintersection": stdlib.SetIntersectionFunc,
 		"setproduct":      stdlib.SetProductFunc,
 		"setsubtract":     stdlib.SetSubtractFunc,
@@ -120,52 +120,52 @@ func Functions(baseDir string) map[string]function.Function {
 		"zipmap":          stdlib.ZipmapFunc,
 
 		// Encoding functions
-		"base64decode": base64DecodeFunc,
-		"base64encode": base64EncodeFunc,
-		"base64gzip":   base64GzipFunc,
-		"csvdecode":    stdlib.CSVDecodeFunc,
-		"jsondecode":   stdlib.JSONDecodeFunc,
-		"jsonencode":   stdlib.JSONEncodeFunc,
+		"base64decode":     base64DecodeFunc,
+		"base64encode":     base64EncodeFunc,
+		"base64gzip":       base64GzipFunc,
+		"csvdecode":        stdlib.CSVDecodeFunc,
+		"jsondecode":       stdlib.JSONDecodeFunc,
+		"jsonencode":       stdlib.JSONEncodeFunc,
 		"textdecodebase64": textDecodeBase64Func,
 		"textencodebase64": textEncodeBase64Func,
-		"urlencode":    urlEncodeFunc,
-		"yamldecode":   yamlDecodeFunc,
-		"yamlencode":   yamlEncodeFunc,
+		"urlencode":        urlEncodeFunc,
+		"yamldecode":       yamlDecodeFunc,
+		"yamlencode":       yamlEncodeFunc,
 
 		// Filesystem functions
-		"abspath":       abspathFunc(baseDir),
-		"dirname":       dirnameFunc,
-		"pathexpand":    pathExpandFunc,
-		"basename":      basenameFunc,
-		"file":          fileFunc(baseDir),
-		"fileexists":    fileExistsFunc(baseDir),
-		"fileset":       filesetFunc(baseDir),
-		"filebase64":    fileBase64Func(baseDir),
-		"templatefile":  templateFileFunc(baseDir),
+		"abspath":      abspathFunc(baseDir),
+		"dirname":      dirnameFunc,
+		"pathexpand":   pathExpandFunc,
+		"basename":     basenameFunc,
+		"file":         fileFunc(baseDir),
+		"fileexists":   fileExistsFunc(baseDir),
+		"fileset":      filesetFunc(baseDir),
+		"filebase64":   fileBase64Func(baseDir),
+		"templatefile": templateFileFunc(baseDir),
 
 		// Date and time functions
-		"formatdate":  formatDateFunc,
-		"timeadd":     timeAddFunc,
-		"timecmp":     timeCmpFunc,
-		"timestamp":   timestampFunc,
+		"formatdate": formatDateFunc,
+		"timeadd":    timeAddFunc,
+		"timecmp":    timeCmpFunc,
+		"timestamp":  timestampFunc,
 
 		// Hash and crypto functions
-		"base64sha256": base64Sha256Func,
-		"base64sha512": base64Sha512Func,
-		"bcrypt":       bcryptFunc,
+		"base64sha256":     base64Sha256Func,
+		"base64sha512":     base64Sha512Func,
+		"bcrypt":           bcryptFunc,
 		"filebase64sha256": fileBase64Sha256Func(baseDir),
 		"filebase64sha512": fileBase64Sha512Func(baseDir),
-		"filemd5":      fileMd5Func(baseDir),
-		"filesha1":     fileSha1Func(baseDir),
-		"filesha256":   fileSha256Func(baseDir),
-		"filesha512":   fileSha512Func(baseDir),
-		"md5":          md5Func,
-		"rsadecrypt":   rsaDecryptFunc,
-		"sha1":         sha1Func,
-		"sha256":       sha256Func,
-		"sha512":       sha512Func,
-		"uuid":         uuidFunc,
-		"uuidv5":       uuidv5Func,
+		"filemd5":          fileMd5Func(baseDir),
+		"filesha1":         fileSha1Func(baseDir),
+		"filesha256":       fileSha256Func(baseDir),
+		"filesha512":       fileSha512Func(baseDir),
+		"md5":              md5Func,
+		"rsadecrypt":       rsaDecryptFunc,
+		"sha1":             sha1Func,
+		"sha256":           sha256Func,
+		"sha512":           sha512Func,
+		"uuid":             uuidFunc,
+		"uuidv5":           uuidv5Func,
 
 		// IP network functions
 		"cidrhost":    cidrHostFunc,
@@ -174,17 +174,17 @@ func Functions(baseDir string) map[string]function.Function {
 		"cidrsubnets": cidrSubnetsFunc,
 
 		// Type conversion functions
-		"can":        canFunc,
+		"can":          canFunc,
 		"nonsensitive": nonsensitiveFunc,
-		"sensitive":  sensitiveFunc,
-		"tobool":     toBoolFunc,
-		"tolist":     toListFunc,
-		"tomap":      toMapFunc,
-		"tonumber":   toNumberFunc,
-		"toset":      toSetFunc,
-		"tostring":   toStringFunc,
-		"try":        tryFunc,
-		"type":       typeFunc,
+		"sensitive":    sensitiveFunc,
+		"tobool":       toBoolFunc,
+		"tolist":       toListFunc,
+		"tomap":        toMapFunc,
+		"tonumber":     toNumberFunc,
+		"toset":        toSetFunc,
+		"tostring":     toStringFunc,
+		"try":          tryFunc,
+		"type":         typeFunc,
 	}
 }
 
@@ -627,7 +627,7 @@ var yamlDecodeFunc = function.New(&function.Spec{
 	},
 	Type: function.StaticReturnType(cty.DynamicPseudoType),
 	Impl: func(args []cty.Value, retType cty.Type) (cty.Value, error) {
-		var data interface{}
+		var data any
 		if err := yaml.Unmarshal([]byte(args[0].AsString()), &data); err != nil {
 			return cty.NilVal, err
 		}
@@ -1643,8 +1643,8 @@ var typeFunc = function.New(&function.Spec{
 	},
 })
 
-// Helper to convert cty.Value to Go interface{}
-func ctyToGo(val cty.Value) interface{} {
+// Helper to convert cty.Value to Go any
+func ctyToGo(val cty.Value) any {
 	if val.IsNull() {
 		return nil
 	}
@@ -1659,14 +1659,14 @@ func ctyToGo(val cty.Value) interface{} {
 	case ty == cty.Bool:
 		return val.True()
 	case ty.IsListType() || ty.IsTupleType() || ty.IsSetType():
-		var result []interface{}
+		var result []any
 		for it := val.ElementIterator(); it.Next(); {
 			_, v := it.Element()
 			result = append(result, ctyToGo(v))
 		}
 		return result
 	case ty.IsMapType() || ty.IsObjectType():
-		result := make(map[string]interface{})
+		result := make(map[string]any)
 		for it := val.ElementIterator(); it.Next(); {
 			k, v := it.Element()
 			result[k.AsString()] = ctyToGo(v)
@@ -1677,8 +1677,8 @@ func ctyToGo(val cty.Value) interface{} {
 	}
 }
 
-// Helper to convert Go interface{} to cty.Value
-func goToCty(val interface{}) cty.Value {
+// Helper to convert Go any to cty.Value
+func goToCty(val any) cty.Value {
 	if val == nil {
 		return cty.NullVal(cty.DynamicPseudoType)
 	}
@@ -1694,7 +1694,7 @@ func goToCty(val interface{}) cty.Value {
 		return cty.NumberFloatVal(v)
 	case bool:
 		return cty.BoolVal(v)
-	case []interface{}:
+	case []any:
 		if len(v) == 0 {
 			return cty.ListValEmpty(cty.DynamicPseudoType)
 		}
@@ -1703,7 +1703,7 @@ func goToCty(val interface{}) cty.Value {
 			vals[i] = goToCty(item)
 		}
 		return cty.TupleVal(vals)
-	case map[string]interface{}:
+	case map[string]any:
 		if len(v) == 0 {
 			return cty.EmptyObjectVal
 		}

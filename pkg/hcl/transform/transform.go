@@ -20,19 +20,11 @@ import (
 	"fmt"
 	"math/big"
 
-	"github.com/pulumi/pulumi/pkg/v3/codegen/schema"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/resource"
 	"github.com/zclconf/go-cty/cty"
 )
 
-func CtyToResourceProperty(hclName string, val cty.Value, schema *schema.Resource) (resource.PropertyValue, error) {
-	return CtyToPropertyValue(val)
-}
-
 // CtyToPropertyValue converts a cty.Value to a Pulumi PropertyValue.
-//
-// TODO: This shouldn't really be exposed, since this transformation needs to be typed. See [CtyToResourceProperty] for
-// an example of a typed transformation.
 func CtyToPropertyValue(val cty.Value) (resource.PropertyValue, error) {
 	// Handle sensitive-marked values by unwrapping, converting, and wrapping as secret.
 	if val.IsMarked() {
@@ -147,7 +139,7 @@ func ctyToPropertyViaJSON(val cty.Value) (resource.PropertyValue, error) {
 		return resource.PropertyValue{}, fmt.Errorf("encoding value to JSON: %w", err)
 	}
 
-	var generic interface{}
+	var generic any
 	if err := json.Unmarshal(jsonVal, &generic); err != nil {
 		return resource.PropertyValue{}, fmt.Errorf("decoding JSON: %w", err)
 	}
@@ -155,7 +147,7 @@ func ctyToPropertyViaJSON(val cty.Value) (resource.PropertyValue, error) {
 	return goToPropertyValue(generic)
 }
 
-// ctyToGo converts a cty.Value to a Go interface{}.
+// ctyToGo converts a cty.Value to a Go any.
 func ctyToGo(val cty.Value) any {
 	if val.IsNull() {
 		return nil
@@ -184,7 +176,7 @@ func ctyToGo(val cty.Value) any {
 		return f64
 
 	case typ.IsListType() || typ.IsTupleType() || typ.IsSetType():
-		var arr []interface{}
+		var arr []any
 		for it := val.ElementIterator(); it.Next(); {
 			_, elemVal := it.Element()
 			arr = append(arr, ctyToGo(elemVal))
@@ -192,7 +184,7 @@ func ctyToGo(val cty.Value) any {
 		return arr
 
 	case typ.IsMapType() || typ.IsObjectType():
-		obj := make(map[string]interface{})
+		obj := make(map[string]any)
 		for it := val.ElementIterator(); it.Next(); {
 			keyVal, elemVal := it.Element()
 			obj[keyVal.AsString()] = ctyToGo(elemVal)
@@ -204,7 +196,7 @@ func ctyToGo(val cty.Value) any {
 	}
 }
 
-// goToPropertyValue converts a Go interface{} to a Pulumi PropertyValue.
+// goToPropertyValue converts a Go any to a Pulumi PropertyValue.
 func goToPropertyValue(v any) (resource.PropertyValue, error) {
 	if v == nil {
 		return resource.NewNullProperty(), nil
@@ -221,7 +213,7 @@ func goToPropertyValue(v any) (resource.PropertyValue, error) {
 		return resource.NewNumberProperty(float64(val)), nil
 	case int64:
 		return resource.NewNumberProperty(float64(val)), nil
-	case []interface{}:
+	case []any:
 		arr := make([]resource.PropertyValue, len(val))
 		for i, elem := range val {
 			pv, err := goToPropertyValue(elem)
@@ -231,7 +223,7 @@ func goToPropertyValue(v any) (resource.PropertyValue, error) {
 			arr[i] = pv
 		}
 		return resource.NewArrayProperty(arr), nil
-	case map[string]interface{}:
+	case map[string]any:
 		obj := make(resource.PropertyMap)
 		for k, elem := range val {
 			pv, err := goToPropertyValue(elem)

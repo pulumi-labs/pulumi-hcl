@@ -53,7 +53,7 @@ type PropertySpec struct {
 	Description string `json:"description,omitempty"`
 
 	// Default is the default value, if any.
-	Default interface{} `json:"default,omitempty"`
+	Default any `json:"default,omitempty"`
 
 	// Secret indicates if the property is secret.
 	Secret bool `json:"secret,omitempty"`
@@ -226,17 +226,17 @@ func (s *ModuleSchema) ToJSON() ([]byte, error) {
 
 // ToPulumiPackageSchema converts the module schema to a full Pulumi package schema format.
 // This is useful for generating SDKs or publishing to the Pulumi Registry.
-func (s *ModuleSchema) ToPulumiPackageSchema(namespace string) map[string]interface{} {
+func (s *ModuleSchema) ToPulumiPackageSchema(namespace string) map[string]any {
 	componentToken := fmt.Sprintf("%s:modules:%s", namespace, s.Name)
 
 	// Build input properties
-	inputProps := make(map[string]interface{})
+	inputProps := make(map[string]any)
 	for name, prop := range s.InputProperties {
 		inputProps[name] = propertySpecToSchemaProperty(prop)
 	}
 
 	// Build output properties (inputs + outputs)
-	outputProps := make(map[string]interface{})
+	outputProps := make(map[string]any)
 	for name, prop := range s.InputProperties {
 		outputProps[name] = propertySpecToSchemaProperty(prop)
 	}
@@ -244,26 +244,26 @@ func (s *ModuleSchema) ToPulumiPackageSchema(namespace string) map[string]interf
 		outputProps[name] = propertySpecToSchemaProperty(prop)
 	}
 
-	return map[string]interface{}{
+	return map[string]any{
 		"name":        s.Name,
 		"version":     s.Version,
 		"description": s.Description,
-		"resources": map[string]interface{}{
-			componentToken: map[string]interface{}{
-				"isComponent":      true,
-				"description":      s.Description,
-				"inputProperties":  inputProps,
-				"requiredInputs":   s.RequiredInputs,
-				"properties":       outputProps,
-				"type":             "object",
+		"resources": map[string]any{
+			componentToken: map[string]any{
+				"isComponent":     true,
+				"description":     s.Description,
+				"inputProperties": inputProps,
+				"requiredInputs":  s.RequiredInputs,
+				"properties":      outputProps,
+				"type":            "object",
 			},
 		},
 	}
 }
 
 // propertySpecToSchemaProperty converts a PropertySpec to a Pulumi schema property format.
-func propertySpecToSchemaProperty(prop *PropertySpec) map[string]interface{} {
-	result := make(map[string]interface{})
+func propertySpecToSchemaProperty(prop *PropertySpec) map[string]any {
+	result := make(map[string]any)
 
 	if prop.Type != "" {
 		result["type"] = prop.Type
@@ -284,7 +284,7 @@ func propertySpecToSchemaProperty(prop *PropertySpec) map[string]interface{} {
 		result["additionalProperties"] = propertySpecToSchemaProperty(prop.AdditionalProperties)
 	}
 	if len(prop.Properties) > 0 {
-		props := make(map[string]interface{})
+		props := make(map[string]any)
 		for name, p := range prop.Properties {
 			props[name] = propertySpecToSchemaProperty(p)
 		}
