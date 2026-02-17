@@ -41,6 +41,8 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/hashicorp/hcl/v2/ext/customdecode"
+	"github.com/hashicorp/hcl/v2/ext/tryfunc"
 	"github.com/zclconf/go-cty/cty"
 	"github.com/zclconf/go-cty/cty/function"
 	"github.com/zclconf/go-cty/cty/function/stdlib"
@@ -183,10 +185,41 @@ func Functions(baseDir string) map[string]function.Function {
 		"tonumber":     toNumberFunc,
 		"toset":        toSetFunc,
 		"tostring":     toStringFunc,
-		"try":          tryFunc,
+		"try":          tryfunc.TryFunc,
 		"type":         typeFunc,
 	}
 }
+
+var canFunc = function.New(&function.Spec{
+	Params: []function.Parameter{
+		{
+			Name: "expression",
+			Type: customdecode.ExpressionClosureType,
+		},
+	},
+	Type: function.StaticReturnType(cty.Bool),
+	Impl: func(args []cty.Value, retType cty.Type) (cty.Value, error) {
+		closure := customdecode.ExpressionClosureFromVal(args[0])
+		v, diags := closure.Value()
+		var marks cty.ValueMarks
+		if v.HasMark("sensitive") {
+			marks = cty.NewValueMarks("sensitive")
+		}
+
+		if diags.HasErrors() {
+			return cty.False.WithMarks(marks), nil
+		}
+
+		if !v.IsWhollyKnown() {
+			// If the value is not wholly known, we still cannot be certain that
+			// the expression was valid. There may be yet index expressions which
+			// will fail once values are completely known.
+			return cty.UnknownVal(cty.Bool).WithMarks(marks), nil
+		}
+
+		return cty.True.WithMarks(marks), nil
+	},
+})
 
 // String functions
 
@@ -1415,17 +1448,6 @@ var cidrSubnetsFunc = function.New(&function.Spec{
 
 // Type conversion functions
 
-var canFunc = function.New(&function.Spec{
-	Params: []function.Parameter{
-		{Name: "expression", Type: cty.DynamicPseudoType},
-	},
-	Type: function.StaticReturnType(cty.Bool),
-	Impl: func(args []cty.Value, retType cty.Type) (cty.Value, error) {
-		// The expression already evaluated successfully if we got here
-		return cty.True, nil
-	},
-})
-
 var nonsensitiveFunc = function.New(&function.Spec{
 	Params: []function.Parameter{
 		{Name: "value", Type: cty.DynamicPseudoType},
@@ -1613,24 +1635,6 @@ var toStringFunc = function.New(&function.Spec{
 			return cty.NilVal, err
 		}
 		return cty.StringVal(string(jsonBytes)), nil
-	},
-})
-
-var tryFunc = function.New(&function.Spec{
-	Params: []function.Parameter{},
-	VarParam: &function.Parameter{
-		Name: "expressions",
-		Type: cty.DynamicPseudoType,
-	},
-	Type: function.StaticReturnType(cty.DynamicPseudoType),
-	Impl: func(args []cty.Value, retType cty.Type) (cty.Value, error) {
-		// Return the first non-null value
-		for _, arg := range args {
-			if !arg.IsNull() {
-				return arg, nil
-			}
-		}
-		return cty.NilVal, fmt.Errorf("all expressions failed")
 	},
 })
 
