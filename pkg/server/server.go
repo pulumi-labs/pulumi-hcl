@@ -443,7 +443,7 @@ func (host *LanguageHost) GenerateProject(
 	// Determine where to write program files. When the project specifies a
 	// "main" subdirectory, generated code goes into that subdirectory.
 	programDir := req.TargetDirectory
-	var project map[string]interface{}
+	var project map[string]any
 	if err := json.Unmarshal([]byte(req.Project), &project); err != nil {
 		return nil, fmt.Errorf("parsing project JSON: %w", err)
 	}
@@ -757,7 +757,7 @@ var _ run.ResourceMonitor = (*resourceMonitorAdapter)(nil)
 
 // writePulumiYaml writes the Pulumi.yaml file with runtime set to hcl.
 func writePulumiYaml(dir string, projectJSON string) error {
-	var project map[string]interface{}
+	var project map[string]any
 	if err := json.Unmarshal([]byte(projectJSON), &project); err != nil {
 		return fmt.Errorf("parsing project JSON: %w", err)
 	}
