@@ -126,6 +126,7 @@ func runTestingHost(t *testing.T) (string, testingrpc.LanguageTestClient) {
 }
 
 var expectedFailures = map[string]string{
+	"l1-elide-index":                               "not yet implemented",
 	"l1-builtin-stash":                             "replicate the language specific parts of https://github.com/pulumi/pulumi/pull/20819",
 	"l2-enum":                                      "We don't have a type system, so just generate enums as their underlying values",
 	"l2-invoke-dependencies":                       "not yet implemented",
@@ -137,8 +138,6 @@ var expectedFailures = map[string]string{
 	"l2-invoke-secrets":                            "not yet implemented",
 	"l2-invoke-simple":                             "not yet implemented",
 	"l2-invoke-variants":                           "not yet implemented",
-	"l1-proxy-index":                               "not yet implemented",
-	"l1-elide-index":                               "not yet implemented",
 	"l1-builtin-try":                               "not yet implemented",
 	"l1-keyword-overlap":                           "not yet implemented",
 	"l2-camel-names":                               "not yet implemented",
