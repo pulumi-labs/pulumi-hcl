@@ -17,10 +17,10 @@ package run
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/hashicorp/hcl/v2"
@@ -31,6 +31,7 @@ import (
 	"github.com/pulumi/pulumi-language-hcl/pkg/hcl/packages"
 	"github.com/pulumi/pulumi-language-hcl/pkg/hcl/parser"
 	"github.com/pulumi/pulumi-language-hcl/pkg/hcl/transform"
+	"github.com/pulumi/pulumi-language-hcl/pkg/util"
 	"github.com/pulumi/pulumi/pkg/v3/codegen/schema"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/resource"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/util/contract"
@@ -68,6 +69,7 @@ type RegisterResourceRequest struct {
 	Name                   string
 	Inputs                 resource.PropertyMap
 	Dependencies           []string
+	PropertyDependencies   map[string][]string // Map from property key to list of URNs it depends on
 	Protect                bool
 	IgnoreChanges          []string
 	Aliases                []string
@@ -115,8 +117,8 @@ type Engine struct {
 	// resourceOutputs maps resource keys to their output values.
 	resourceOutputs map[string]cty.Value
 
-	// dataSourceOutputs maps data source keys to their output values.
-	dataSourceOutputs map[string]cty.Value
+	// dataSourceDependencies maps data source keys to their resource dependencies (URNs).
+	dataSourceDependencies *util.SyncMap[string, []resource.URN]
 
 	// stackOutputs collects outputs to be registered on the stack.
 	stackOutputs resource.PropertyMap
@@ -196,24 +198,26 @@ func NewEngine(config *ast.Config, opts *EngineOptions) *Engine {
 	evalCtx := eval.NewContext(opts.WorkDir, opts.RootDir,
 		opts.StackName, opts.ProjectName, opts.Organization)
 
-	return &Engine{
-		config:            config,
-		evaluator:         eval.NewEvaluator(evalCtx),
-		pkgLoader:         opts.SchemaLoader,
-		resmon:            opts.ResourceMonitor,
-		resourceOutputs:   make(map[string]cty.Value),
-		dataSourceOutputs: make(map[string]cty.Value),
-		stackOutputs:      make(resource.PropertyMap),
-		projectName:       opts.ProjectName,
-		stackName:         opts.StackName,
-		organization:      opts.Organization,
-		dryRun:            opts.DryRun,
-		workDir:           opts.WorkDir,
-		pulumiConfig:      opts.Config,
-		configSecretKeys:  opts.ConfigSecretKeys,
-		moduleLoader:      modules.NewLoader(),
-		moduleOutputs:     make(map[string]cty.Value),
+	engine := &Engine{
+		config:                 config,
+		evaluator:              eval.NewEvaluator(evalCtx),
+		pkgLoader:              opts.SchemaLoader,
+		resmon:                 opts.ResourceMonitor,
+		resourceOutputs:        make(map[string]cty.Value),
+		dataSourceDependencies: util.NewSyncMap[string, []resource.URN](),
+		stackOutputs:           make(resource.PropertyMap),
+		projectName:            opts.ProjectName,
+		stackName:              opts.StackName,
+		organization:           opts.Organization,
+		dryRun:                 opts.DryRun,
+		workDir:                opts.WorkDir,
+		pulumiConfig:           opts.Config,
+		configSecretKeys:       opts.ConfigSecretKeys,
+		moduleLoader:           modules.NewLoader(),
+		moduleOutputs:          make(map[string]cty.Value),
 	}
+
+	return engine
 }
 
 // Run executes the HCL program.
@@ -231,21 +235,11 @@ func (e *Engine) Run(ctx context.Context) error {
 
 	// Validate the graph
 	if errs := g.Validate(); len(errs) > 0 {
-		// For now, just log warnings for missing dependencies
-		// They might be external (e.g., module outputs)
-		for _, err := range errs {
-			fmt.Printf("Warning: %v\n", err)
-		}
-	}
-
-	// Topologically sort the nodes (we still need the sorted list for ordering)
-	nodes, err := g.TopologicalSort()
-	if err != nil {
-		return fmt.Errorf("topological sort: %w", err)
+		return errors.Join(errs...)
 	}
 
 	// Process nodes in parallel where possible
-	if err := e.processNodesParallel(ctx, nodes); err != nil {
+	if err := e.processGraph(ctx, g); err != nil {
 		return err
 	}
 
@@ -312,165 +306,25 @@ func (e *Engine) processNode(ctx context.Context, node *graph.Node) error {
 	case graph.NodeTypeProvider:
 		// Provider configurations are handled during resource registration
 		return nil
+	case graph.NodeTypeBuiltin:
+		// We don't need to evaluate builtins
+		return nil
+	case graph.NodeTypeUnknown:
+		return errors.New("unknown node type")
 	default:
 		return fmt.Errorf("unknown node type: %v", node.Type)
 	}
 }
 
-// processNodesParallel processes nodes in parallel where possible.
-// Variables and locals are processed first (sequentially, as they set up the eval context),
-// then resources and data sources are processed in parallel respecting dependencies.
-func (e *Engine) processNodesParallel(ctx context.Context, nodes []*graph.Node) error {
-
-	// Separate nodes by type for phased processing
-	var variables, locals, others []*graph.Node
-	for _, node := range nodes {
-		switch node.Type {
-		case graph.NodeTypeVariable:
-			variables = append(variables, node)
-		case graph.NodeTypeLocal:
-			locals = append(locals, node)
-		case graph.NodeTypeOutput, graph.NodeTypeProvider:
-			// Skip - handled elsewhere
-		default:
-			others = append(others, node)
-		}
-	}
-
-	// Phase 1: Process variables sequentially (they're fast and set up context)
-	for _, node := range variables {
-		if err := e.processNode(ctx, node); err != nil {
-			return fmt.Errorf("processing %s: %w", node.Key, err)
-		}
-	}
-
-	// Phase 2: Process locals sequentially (they may depend on variables)
-	// TODO: Could parallelize locals that don't depend on each other
-	for _, node := range locals {
-		if err := e.processNode(ctx, node); err != nil {
-			return fmt.Errorf("processing %s: %w", node.Key, err)
-		}
-	}
-
-	// Check Pulumi version requirement if specified
-	if err := e.checkPulumiVersion(ctx); err != nil {
+func (e *Engine) processGraph(ctx context.Context, g *graph.Graph) error {
+	if err := g.InjectAfter(e.checkPulumiVersion, graph.NodeTypeVariable); err != nil {
 		return err
 	}
-
-	// Phase 3: Process resources and data sources in parallel
-	if len(others) > 0 {
-		if err := e.processNodesInParallel(ctx, others); err != nil {
-			return err
-		}
-	}
-
-	return nil
-}
-
-// processNodesInParallel processes a set of nodes in parallel, respecting dependencies.
-func (e *Engine) processNodesInParallel(ctx context.Context, nodes []*graph.Node) error {
-	// Build a map of node keys for quick lookup
-	nodeSet := make(map[string]*graph.Node)
-	for _, node := range nodes {
-		nodeSet[node.Key] = node
-	}
-
-	// Track completion status
-	var mu sync.Mutex
-	completed := make(map[string]bool)
-	var firstErr error
-
-	// Create a channel to signal when nodes complete
-	done := make(chan string, len(nodes))
-
-	// Count pending dependencies for each node (only counting deps in our set)
-	pendingDeps := make(map[string]int)
-	dependents := make(map[string][]string) // node -> nodes that depend on it
-
-	for _, node := range nodes {
-		count := 0
-		for _, dep := range node.Dependencies {
-			// Only count dependencies that are in our processing set
-			// (variables and locals are already processed)
-			if _, inSet := nodeSet[dep]; inSet {
-				count++
-				dependents[dep] = append(dependents[dep], node.Key)
-			}
-		}
-		pendingDeps[node.Key] = count
-	}
-
-	// Send initial signals for nodes with no dependencies (before starting goroutines)
-	for _, node := range nodes {
-		if pendingDeps[node.Key] == 0 {
-			select {
-			case done <- "":
-			default:
-			}
-		}
-	}
-
-	// Start a goroutine for each node
-	var wg sync.WaitGroup
-	for _, node := range nodes {
-		wg.Add(1)
-		go func(n *graph.Node) {
-			defer wg.Done()
-
-			// Wait until all dependencies are satisfied
-			for {
-				mu.Lock()
-				if firstErr != nil {
-					mu.Unlock()
-					return // Abort if there's been an error
-				}
-				pending := pendingDeps[n.Key]
-				mu.Unlock()
-
-				if pending == 0 {
-					break
-				}
-
-				// Wait for a completion signal
-				select {
-				case <-ctx.Done():
-					return
-				case <-done:
-					// A node completed, check again
-				}
-			}
-
-			// Process this node
-			err := e.processNode(ctx, n)
-
-			mu.Lock()
-			if err != nil && firstErr == nil {
-				firstErr = fmt.Errorf("processing %s: %w", n.Key, err)
-			}
-			completed[n.Key] = true
-
-			// Decrement pending count for dependents
-			for _, depKey := range dependents[n.Key] {
-				pendingDeps[depKey]--
-			}
-			mu.Unlock()
-
-			// Signal completion (non-blocking)
-			select {
-			case done <- n.Key:
-			default:
-			}
-		}(node)
-	}
-
-	wg.Wait()
-	close(done)
-
-	return firstErr
+	return g.Walk(ctx, e.processNode)
 }
 
 // processVariable processes a variable definition.
-func (e *Engine) processVariable(ctx context.Context, node *graph.Node) error {
+func (e *Engine) processVariable(_ context.Context, node *graph.Node) error {
 	v := node.Variable
 	if v == nil {
 		return fmt.Errorf("variable node missing Variable field")
@@ -741,6 +595,7 @@ func (e *Engine) registerResourceInstance(
 	// Evaluate resource configuration
 	attrs, _ := res.Config.JustAttributes()
 	inputs := make(resource.PropertyMap)
+	propertyDeps := make(map[string][]string)
 
 	for name, attr := range attrs {
 		val, diags := e.evaluator.EvaluateExpression(attr.Expr)
@@ -754,10 +609,48 @@ func (e *Engine) registerResourceInstance(
 		}
 
 		inputs[resource.PropertyKey(name)] = pv
+
+		// Extract dependencies from this attribute's expression
+		deps := eval.ExtractDependencies(attr.Expr)
+		if len(deps) > 0 {
+			// Convert resource keys to URNs
+			var urns []string
+			for _, dep := range deps {
+				// Look up the URN for this dependency
+				if resOutputs, ok := e.resourceOutputs[dep]; ok {
+					if urnVal := resOutputs.GetAttr("urn"); urnVal.Type() == cty.String {
+						urns = append(urns, urnVal.AsString())
+					}
+				}
+				// For data source dependencies, inherit their dependencies transitively
+				if dsKey, ok := strings.CutPrefix(dep, "data."); ok {
+					if dsDeps, exists := e.dataSourceDependencies.Get(dsKey); exists {
+						for _, urn := range dsDeps {
+							urns = append(urns, string(urn))
+						}
+					}
+				}
+			}
+			if len(urns) > 0 {
+				propertyDeps[name] = urns
+			}
+		}
 	}
 
 	// Build resource options
 	opts := e.buildResourceOptions(res, instance)
+	opts.PropertyDependencies = propertyDeps
+
+	// Also add all property dependencies to the overall dependencies list
+	allDeps := make(map[string]bool)
+	for _, urns := range propertyDeps {
+		for _, urn := range urns {
+			allDeps[urn] = true
+		}
+	}
+	for urn := range allDeps {
+		opts.DependsOn = append(opts.DependsOn, urn)
+	}
 
 	// Evaluate preconditions before resource creation
 	if len(res.Preconditions) > 0 {
@@ -992,6 +885,7 @@ func formatTraversalForIgnoreChanges(traversal hcl.Traversal) string {
 // ResourceOptions contains resource registration options.
 type ResourceOptions struct {
 	DependsOn              []string
+	PropertyDependencies   map[string][]string
 	Protect                bool
 	IgnoreChanges          []string
 	Aliases                []string
@@ -1024,6 +918,7 @@ func (e *Engine) registerResource(
 		Name:                   name,
 		Inputs:                 inputs,
 		Dependencies:           opts.DependsOn,
+		PropertyDependencies:   opts.PropertyDependencies,
 		Protect:                opts.Protect,
 		IgnoreChanges:          opts.IgnoreChanges,
 		Aliases:                opts.Aliases,
@@ -1057,6 +952,7 @@ func (e *Engine) processDataSource(ctx context.Context, node *graph.Node) error 
 	// Evaluate data source configuration
 	attrs, _ := ds.Config.JustAttributes()
 	inputs := make(resource.PropertyMap)
+	var allDeps []resource.URN
 
 	for name, attr := range attrs {
 		val, diags := e.evaluator.EvaluateExpression(attr.Expr)
@@ -1070,6 +966,23 @@ func (e *Engine) processDataSource(ctx context.Context, node *graph.Node) error 
 		}
 
 		inputs[resource.PropertyKey(name)] = pv
+
+		// Extract dependencies from this attribute's expression
+		deps := eval.ExtractDependencies(attr.Expr)
+		for _, dep := range deps {
+			// Convert resource dependencies to URNs
+			if resOutputs, ok := e.resourceOutputs[dep]; ok {
+				if urnVal := resOutputs.GetAttr("urn"); urnVal.Type() == cty.String {
+					allDeps = append(allDeps, resource.URN(urnVal.AsString()))
+				}
+			}
+			// For data source dependencies, inherit their dependencies transitively
+			if dsKey, ok := strings.CutPrefix(dep, "data."); ok {
+				if dsDeps, exists := e.dataSourceDependencies.Get(dsKey); exists {
+					allDeps = append(allDeps, dsDeps...)
+				}
+			}
+		}
 	}
 
 	// Invoke the function
@@ -1082,8 +995,10 @@ func (e *Engine) processDataSource(ctx context.Context, node *graph.Node) error 
 	// Convert Pulumi camelCase property names to Terraform snake_case
 	outputCty := propertyMapToCtySnakeCase(outputs)
 	dsKey := node.Key[5:] // Remove "data." prefix
-	e.dataSourceOutputs[dsKey] = outputCty
 	e.evaluator.Context().SetDataSource(dsKey, outputCty)
+
+	// Store dependencies for this data source
+	e.dataSourceDependencies.Set(dsKey, allDeps)
 
 	return nil
 }
@@ -1345,21 +1260,20 @@ func (e *Engine) createChildEngine(config *ast.Config, parentURN string, moduleD
 		config: config,
 		evaluator: eval.NewEvaluator(eval.NewContext(moduleDir, moduleDir,
 			e.stackName, e.projectName, e.organization)),
-		pkgLoader:         e.pkgLoader,
-		resmon:            e.resmon,
-		resourceOutputs:   make(map[string]cty.Value),
-		dataSourceOutputs: make(map[string]cty.Value),
-		stackOutputs:      make(resource.PropertyMap),
-		projectName:       e.projectName,
-		stackName:         e.stackName,
-		organization:      e.organization,
-		dryRun:            e.dryRun,
-		workDir:           moduleDir,
-		pulumiConfig:      e.pulumiConfig,
-		configSecretKeys:  e.configSecretKeys,
-		moduleLoader:      e.moduleLoader, // Share the module loader for caching
-		moduleOutputs:     make(map[string]cty.Value),
-		parentURN:         parentURN,
+		pkgLoader:        e.pkgLoader,
+		resmon:           e.resmon,
+		resourceOutputs:  make(map[string]cty.Value),
+		stackOutputs:     make(resource.PropertyMap),
+		projectName:      e.projectName,
+		stackName:        e.stackName,
+		organization:     e.organization,
+		dryRun:           e.dryRun,
+		workDir:          moduleDir,
+		pulumiConfig:     e.pulumiConfig,
+		configSecretKeys: e.configSecretKeys,
+		moduleLoader:     e.moduleLoader,
+		moduleOutputs:    make(map[string]cty.Value),
+		parentURN:        parentURN,
 	}
 }
 
@@ -1381,20 +1295,7 @@ func (e *Engine) runModule(ctx context.Context) error {
 		return fmt.Errorf("building module graph: %w", err)
 	}
 
-	// Get execution order
-	order, err := g.TopologicalSort()
-	if err != nil {
-		return fmt.Errorf("calculating module execution order: %w", err)
-	}
-
-	// Process nodes in order
-	for _, node := range order {
-		if err := e.processNode(ctx, node); err != nil {
-			return fmt.Errorf("processing %s: %w", node.Key, err)
-		}
-	}
-
-	return nil
+	return e.processGraph(ctx, g)
 }
 
 // collectModuleOutputs collects the module's output values.
@@ -1416,7 +1317,7 @@ func (e *Engine) collectModuleOutputs() cty.Value {
 }
 
 // processOutput processes an output definition.
-func (e *Engine) processOutput(ctx context.Context, name string, output *ast.Output) error {
+func (e *Engine) processOutput(_ context.Context, name string, output *ast.Output) error {
 	// Evaluate the output value, intercepting can() calls.
 	val, diags := e.evaluator.EvaluateExpression(output.Value)
 	if diags.HasErrors() {

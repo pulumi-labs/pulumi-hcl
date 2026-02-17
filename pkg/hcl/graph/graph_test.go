@@ -15,104 +15,14 @@
 package graph
 
 import (
+	"context"
 	"testing"
 
 	"github.com/pulumi/pulumi-language-hcl/pkg/hcl/parser"
+	"github.com/pulumi/pulumi/pkg/v3/util/pdag"
+	"github.com/stretchr/testify/require"
 	"github.com/zclconf/go-cty/cty"
 )
-
-func TestTopologicalSort(t *testing.T) {
-	g := NewGraph()
-
-	// Add nodes: A -> B -> C (A depends on nothing, B depends on A, C depends on B)
-	g.AddNode(&Node{Key: "A", Type: NodeTypeVariable})
-	g.AddNode(&Node{Key: "B", Type: NodeTypeLocal, Dependencies: []string{"A"}})
-	g.AddNode(&Node{Key: "C", Type: NodeTypeResource, Dependencies: []string{"B"}})
-
-	sorted, err := g.TopologicalSort()
-	if err != nil {
-		t.Fatalf("Unexpected error: %v", err)
-	}
-
-	if len(sorted) != 3 {
-		t.Fatalf("Expected 3 nodes, got %d", len(sorted))
-	}
-
-	// Find positions
-	positions := make(map[string]int)
-	for i, node := range sorted {
-		positions[node.Key] = i
-	}
-
-	// Verify order: A before B, B before C
-	if positions["A"] >= positions["B"] {
-		t.Errorf("A should come before B")
-	}
-	if positions["B"] >= positions["C"] {
-		t.Errorf("B should come before C")
-	}
-}
-
-func TestTopologicalSortCycle(t *testing.T) {
-	g := NewGraph()
-
-	// Create a cycle: A -> B -> C -> A
-	g.AddNode(&Node{Key: "A", Type: NodeTypeLocal, Dependencies: []string{"C"}})
-	g.AddNode(&Node{Key: "B", Type: NodeTypeLocal, Dependencies: []string{"A"}})
-	g.AddNode(&Node{Key: "C", Type: NodeTypeLocal, Dependencies: []string{"B"}})
-
-	_, err := g.TopologicalSort()
-	if err == nil {
-		t.Fatal("Expected cycle error, got none")
-	}
-}
-
-func TestTopologicalSortDiamondDependency(t *testing.T) {
-	g := NewGraph()
-
-	// Diamond: A is depended on by B and C, D depends on both B and C
-	//     A
-	//    / \
-	//   B   C
-	//    \ /
-	//     D
-	g.AddNode(&Node{Key: "A", Type: NodeTypeVariable})
-	g.AddNode(&Node{Key: "B", Type: NodeTypeLocal, Dependencies: []string{"A"}})
-	g.AddNode(&Node{Key: "C", Type: NodeTypeLocal, Dependencies: []string{"A"}})
-	g.AddNode(&Node{Key: "D", Type: NodeTypeResource, Dependencies: []string{"B", "C"}})
-
-	sorted, err := g.TopologicalSort()
-	if err != nil {
-		t.Fatalf("Unexpected error: %v", err)
-	}
-
-	if len(sorted) != 4 {
-		t.Fatalf("Expected 4 nodes, got %d", len(sorted))
-	}
-
-	positions := make(map[string]int)
-	for i, node := range sorted {
-		positions[node.Key] = i
-	}
-
-	// A must be first
-	if positions["A"] != 0 {
-		t.Errorf("A should be first, was at position %d", positions["A"])
-	}
-
-	// B and C must come after A
-	if positions["B"] <= positions["A"] {
-		t.Errorf("B should come after A")
-	}
-	if positions["C"] <= positions["A"] {
-		t.Errorf("C should come after A")
-	}
-
-	// D must be last
-	if positions["D"] <= positions["B"] || positions["D"] <= positions["C"] {
-		t.Errorf("D should come after B and C")
-	}
-}
 
 func TestBuildFromConfig(t *testing.T) {
 	src := []byte(`
@@ -135,55 +45,31 @@ output "instance_id" {
 
 	p := parser.NewParser()
 	config, diags := p.ParseSource("test.hcl", src)
-	if diags.HasErrors() {
-		t.Fatalf("Parse error: %s", diags.Error())
-	}
+	require.Empty(t, diags)
 
 	g, err := BuildFromConfig(config)
-	if err != nil {
-		t.Fatalf("BuildFromConfig error: %v", err)
-	}
+	require.NoError(t, err)
 
-	// Should have 4 nodes
-	nodes := g.Nodes()
-	if len(nodes) != 4 {
-		t.Errorf("Expected 4 nodes, got %d", len(nodes))
-	}
+	nodes := g.seen
+	require.Len(t, nodes, 7, "4 explicit nodes + 3 builtins")
 
 	// Verify dependencies
-	localNode := g.GetNode("local.greeting")
+	localNode := g.seen["local.greeting"].n
 	if localNode == nil {
 		t.Fatal("Expected local.greeting node")
 	}
-	if len(localNode.Dependencies) != 1 || localNode.Dependencies[0] != "var.name" {
-		t.Errorf("local.greeting should depend on var.name, got %v", localNode.Dependencies)
-	}
-
-	resourceNode := g.GetNode("aws_instance.web")
-	if resourceNode == nil {
-		t.Fatal("Expected aws_instance.web node")
-	}
-	if len(resourceNode.Dependencies) != 1 || resourceNode.Dependencies[0] != "local.greeting" {
-		t.Errorf("aws_instance.web should depend on local.greeting, got %v", resourceNode.Dependencies)
-	}
-
-	outputNode := g.GetNode("output.instance_id")
-	if outputNode == nil {
-		t.Fatal("Expected output.instance_id node")
-	}
-	if len(outputNode.Dependencies) != 1 || outputNode.Dependencies[0] != "aws_instance.web" {
-		t.Errorf("output.instance_id should depend on aws_instance.web, got %v", outputNode.Dependencies)
-	}
 
 	// Verify topological sort works
-	sorted, err := g.TopologicalSort()
-	if err != nil {
-		t.Fatalf("TopologicalSort error: %v", err)
-	}
+	var sorted []string
+	err = g.dag.Walk(t.Context(), func(_ context.Context, n dagNode) error {
+		sorted = append(sorted, n.key)
+		return nil
+	}, pdag.MaxProcs(1))
+	require.NoError(t, err)
 
 	positions := make(map[string]int)
 	for i, node := range sorted {
-		positions[node.Key] = i
+		positions[node] = i
 	}
 
 	if positions["var.name"] >= positions["local.greeting"] {
@@ -197,81 +83,13 @@ output "instance_id" {
 	}
 }
 
-func TestGetDependents(t *testing.T) {
-	g := NewGraph()
-
-	g.AddNode(&Node{Key: "A", Type: NodeTypeVariable})
-	g.AddNode(&Node{Key: "B", Type: NodeTypeLocal, Dependencies: []string{"A"}})
-	g.AddNode(&Node{Key: "C", Type: NodeTypeLocal, Dependencies: []string{"A"}})
-	g.AddNode(&Node{Key: "D", Type: NodeTypeResource, Dependencies: []string{"B"}})
-
-	dependents := g.GetDependents("A")
-	if len(dependents) != 2 {
-		t.Errorf("A should have 2 dependents, got %d", len(dependents))
-	}
-
-	dependents = g.GetDependents("B")
-	if len(dependents) != 1 {
-		t.Errorf("B should have 1 dependent, got %d", len(dependents))
-	}
-
-	dependents = g.GetDependents("D")
-	if len(dependents) != 0 {
-		t.Errorf("D should have 0 dependents, got %d", len(dependents))
-	}
-}
-
-func TestGetTransitiveDependencies(t *testing.T) {
-	g := NewGraph()
-
-	g.AddNode(&Node{Key: "A", Type: NodeTypeVariable})
-	g.AddNode(&Node{Key: "B", Type: NodeTypeLocal, Dependencies: []string{"A"}})
-	g.AddNode(&Node{Key: "C", Type: NodeTypeResource, Dependencies: []string{"B"}})
-
-	deps := g.GetTransitiveDependencies("C")
-	if len(deps) != 2 {
-		t.Errorf("C should have 2 transitive dependencies, got %d", len(deps))
-	}
-
-	// Check that both A and B are in deps
-	found := make(map[string]bool)
-	for _, dep := range deps {
-		found[dep.Key] = true
-	}
-	if !found["A"] || !found["B"] {
-		t.Errorf("Expected A and B in dependencies, got %v", found)
-	}
-}
-
-func TestFilterByType(t *testing.T) {
-	g := NewGraph()
-
-	g.AddNode(&Node{Key: "var.a", Type: NodeTypeVariable})
-	g.AddNode(&Node{Key: "var.b", Type: NodeTypeVariable})
-	g.AddNode(&Node{Key: "local.x", Type: NodeTypeLocal})
-	g.AddNode(&Node{Key: "aws_instance.web", Type: NodeTypeResource})
-
-	vars := g.FilterByType(NodeTypeVariable)
-	if len(vars) != 2 {
-		t.Errorf("Expected 2 variables, got %d", len(vars))
-	}
-
-	locals := g.FilterByType(NodeTypeLocal)
-	if len(locals) != 1 {
-		t.Errorf("Expected 1 local, got %d", len(locals))
-	}
-
-	resources := g.FilterByType(NodeTypeResource)
-	if len(resources) != 1 {
-		t.Errorf("Expected 1 resource, got %d", len(resources))
-	}
-}
-
 func TestValidate(t *testing.T) {
 	g := NewGraph()
 
 	// Missing dependency
-	g.AddNode(&Node{Key: "A", Type: NodeTypeLocal, Dependencies: []string{"NonExistent"}})
+	_, i := g.newNode("NonExistent")
+	err := g.AddNode(&Node{Key: "A", Type: NodeTypeLocal}, []pdag.Node{i})
+	require.NoError(t, err)
 
 	errors := g.Validate()
 	if len(errors) != 1 {
@@ -373,22 +191,22 @@ func TestParseInstanceKey(t *testing.T) {
 		{
 			input:     "aws_instance.web[0]",
 			wantBase:  "aws_instance.web",
-			wantIndex: intPtr(0),
+			wantIndex: new(0),
 		},
 		{
 			input:     "aws_instance.web[42]",
 			wantBase:  "aws_instance.web",
-			wantIndex: intPtr(42),
+			wantIndex: new(42),
 		},
 		{
 			input:       `aws_instance.web["a"]`,
 			wantBase:    "aws_instance.web",
-			wantEachKey: strPtr("a"),
+			wantEachKey: new("a"),
 		},
 		{
 			input:       `aws_instance.web["my-key"]`,
 			wantBase:    "aws_instance.web",
-			wantEachKey: strPtr("my-key"),
+			wantEachKey: new("my-key"),
 		},
 	}
 
@@ -407,6 +225,3 @@ func TestParseInstanceKey(t *testing.T) {
 		})
 	}
 }
-
-func intPtr(i int) *int    { return &i }
-func strPtr(s string) *string { return &s }

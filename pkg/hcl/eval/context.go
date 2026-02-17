@@ -15,7 +15,9 @@
 package eval
 
 import (
+	"maps"
 	"strings"
+	"sync"
 
 	"github.com/hashicorp/hcl/v2"
 	"github.com/zclconf/go-cty/cty"
@@ -34,6 +36,9 @@ func splitResourceKey(key string) []string {
 // Context manages the evaluation context for HCL expressions.
 // It tracks variables, locals, resources, and other values that can be referenced.
 type Context struct {
+	// mu protects concurrent access to maps
+	mu sync.RWMutex
+
 	// baseDir is the base directory for file operations
 	baseDir string
 
@@ -131,33 +136,45 @@ func NewContext(baseDir, rootDir, stack, project, organization string) *Context 
 
 // SetVariable sets an input variable value.
 func (c *Context) SetVariable(name string, value cty.Value) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	c.variables[name] = value
 }
 
 // SetLocal sets a local value.
 func (c *Context) SetLocal(name string, value cty.Value) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	c.locals[name] = value
 }
 
 // SetResource sets a resource's output values.
 // The key should be "type.name" (e.g., "aws_instance.web").
 func (c *Context) SetResource(key string, value cty.Value) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	c.resources[key] = value
 }
 
 // SetDataSource sets a data source's output values.
 // The key should be "type.name" (e.g., "aws_ami.ubuntu").
 func (c *Context) SetDataSource(key string, value cty.Value) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	c.dataSources[key] = value
 }
 
 // SetModule sets a module's output values.
 func (c *Context) SetModule(name string, value cty.Value) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	c.modules[name] = value
 }
 
 // SetProvider sets a provider reference.
 func (c *Context) SetProvider(name string, value cty.Value) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	c.providers[name] = value
 }
 
@@ -193,6 +210,9 @@ func (c *Context) ClearSelf() {
 
 // HCLContext returns an hcl.EvalContext for evaluating expressions.
 func (c *Context) HCLContext() *hcl.EvalContext {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+
 	vars := make(map[string]cty.Value)
 
 	// Add var.* namespace
@@ -308,36 +328,20 @@ func (c *Context) HCLContext() *hcl.EvalContext {
 
 // Clone creates a copy of the context for isolated evaluation.
 func (c *Context) Clone() *Context {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+
 	clone := &Context{
 		baseDir:     c.baseDir,
-		variables:   make(map[string]cty.Value),
-		locals:      make(map[string]cty.Value),
-		resources:   make(map[string]cty.Value),
-		dataSources: make(map[string]cty.Value),
-		modules:     make(map[string]cty.Value),
-		providers:   make(map[string]cty.Value),
+		variables:   maps.Clone(c.variables),
+		locals:      maps.Clone(c.locals),
+		resources:   maps.Clone(c.resources),
+		dataSources: maps.Clone(c.dataSources),
+		modules:     maps.Clone(c.modules),
+		providers:   maps.Clone(c.providers),
 		path:        c.path,
 		pulumi:      c.pulumi,
 		self:        c.self,
-	}
-
-	for k, v := range c.variables {
-		clone.variables[k] = v
-	}
-	for k, v := range c.locals {
-		clone.locals[k] = v
-	}
-	for k, v := range c.resources {
-		clone.resources[k] = v
-	}
-	for k, v := range c.dataSources {
-		clone.dataSources[k] = v
-	}
-	for k, v := range c.modules {
-		clone.modules[k] = v
-	}
-	for k, v := range c.providers {
-		clone.providers[k] = v
 	}
 
 	if c.count != nil {

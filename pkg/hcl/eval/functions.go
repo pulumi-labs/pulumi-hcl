@@ -52,7 +52,7 @@ import (
 
 // Functions returns a map of all Terraform-compatible functions.
 func Functions(baseDir string) map[string]function.Function {
-	return map[string]function.Function{
+	funcs := map[string]function.Function{
 		// Numeric functions
 		"abs":      stdlib.AbsoluteFunc,
 		"ceil":     stdlib.CeilFunc,
@@ -188,6 +188,8 @@ func Functions(baseDir string) map[string]function.Function {
 		"try":          tryfunc.TryFunc,
 		"type":         typeFunc,
 	}
+
+	return funcs
 }
 
 var canFunc = function.New(&function.Spec{

@@ -144,62 +144,6 @@ func (e *ResourceExpander) Expand(node *Node) *ExpandResult {
 	}
 }
 
-// ExpandGraph expands all resources in a graph and returns a new graph with expanded nodes.
-func (e *ResourceExpander) ExpandGraph(g *Graph) (*Graph, error) {
-	expanded := NewGraph()
-
-	// First pass: expand all nodes
-	expansions := make(map[string]*ExpandResult)
-	for key, node := range g.nodes {
-		result := e.Expand(node)
-		expansions[key] = result
-
-		// Add expanded instances to new graph
-		for _, instance := range result.Instances {
-			newNode := &Node{
-				Key:          instance.Key,
-				Type:         node.Type,
-				Dependencies: make([]string, len(node.Dependencies)),
-				Resource:     node.Resource,
-				Local:        node.Local,
-				Variable:     node.Variable,
-				Output:       node.Output,
-				Module:       node.Module,
-			}
-			copy(newNode.Dependencies, node.Dependencies)
-			expanded.AddNode(newNode)
-		}
-	}
-
-	// Second pass: update dependencies to point to expanded instances
-	// This is a simplified version - real implementation would need to handle
-	// cases like resource.foo[count.index] referencing specific instances
-	for _, node := range expanded.nodes {
-		newDeps := make([]string, 0, len(node.Dependencies))
-		for _, dep := range node.Dependencies {
-			// Check if dependency was expanded
-			if result, ok := expansions[dep]; ok {
-				if result.IsSingle {
-					// Single instance - keep original dependency
-					newDeps = append(newDeps, dep)
-				} else {
-					// Multiple instances - depend on all of them
-					// This is conservative; real implementation would be smarter
-					for _, instance := range result.Instances {
-						newDeps = append(newDeps, instance.Key)
-					}
-				}
-			} else {
-				// Dependency not in expansion map - keep as is
-				newDeps = append(newDeps, dep)
-			}
-		}
-		node.Dependencies = newDeps
-	}
-
-	return expanded, nil
-}
-
 // InstanceKey generates an instance key for a resource with count or for_each.
 func InstanceKey(resourceKey string, index *int, eachKey *cty.Value) string {
 	if index != nil {
