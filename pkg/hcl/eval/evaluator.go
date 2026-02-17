@@ -18,6 +18,7 @@ import (
 	"fmt"
 
 	"github.com/hashicorp/hcl/v2"
+	"github.com/hashicorp/hcl/v2/hclsyntax"
 	"github.com/zclconf/go-cty/cty"
 	"github.com/zclconf/go-cty/cty/convert"
 )
@@ -393,6 +394,49 @@ func IsKnown(val cty.Value) bool {
 		}
 	}
 	return true
+}
+
+// EvaluateExpression evaluates an HCL expression, intercepting any `can()` function calls.
+//
+// HCL normally evaluates function arguments eagerly: if `can(expr)` is used and `expr`
+// produces an error, the error propagates before the `can` function body ever runs.
+// This method type-asserts to hclsyntax.FunctionCallExpr, detects `can()`, and evaluates
+// its argument directly — returning cty.True on success and cty.False on error.
+//
+// Sensitivity marks from the inner expression are propagated to the result.
+func (e *Evaluator) EvaluateExpression(expr hcl.Expression) (cty.Value, hcl.Diagnostics) {
+	ctx := e.ctx.HCLContext()
+	return evaluateWithCan(expr, ctx)
+}
+
+func evaluateWithCan(expr hcl.Expression, ctx *hcl.EvalContext) (cty.Value, hcl.Diagnostics) {
+	syntaxExpr, ok := expr.(hclsyntax.Expression)
+	if !ok {
+		return expr.Value(ctx)
+	}
+
+	fc, ok := syntaxExpr.(*hclsyntax.FunctionCallExpr)
+	if !ok || fc.Name != "can" || len(fc.Args) != 1 {
+		return expr.Value(ctx)
+	}
+
+	// Evaluate the inner argument; if it errors, return false.
+	val, diags := fc.Args[0].Value(ctx)
+	if diags.HasErrors() {
+		return cty.False, nil
+	}
+
+	// Propagate sensitivity: if the inner value is marked as sensitive, the
+	// boolean result should also be marked as sensitive.
+	result := cty.True
+	if val.IsKnown() {
+		_, marks := val.Unmark()
+		if len(marks) > 0 {
+			result = result.WithMarks(marks)
+		}
+	}
+
+	return result, nil
 }
 
 // UnknownValue creates an unknown value of the given type.

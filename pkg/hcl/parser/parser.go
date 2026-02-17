@@ -18,6 +18,7 @@ import (
 	"fmt"
 
 	"github.com/hashicorp/hcl/v2"
+	"github.com/hashicorp/hcl/v2/ext/typeexpr"
 	"github.com/pulumi/pulumi-language-hcl/pkg/hcl/ast"
 	"github.com/zclconf/go-cty/cty"
 )
@@ -266,7 +267,11 @@ func (p *Parser) parseVariableBlock(config *ast.Config, block *hcl.Block) hcl.Di
 
 	if attr, ok := content.Attributes["type"]; ok {
 		variable.Type = attr.Expr
-		// Type constraint parsing deferred to evaluation phase
+		ty, typeDiags := typeexpr.TypeConstraint(attr.Expr)
+		diags = append(diags, typeDiags...)
+		if !typeDiags.HasErrors() {
+			variable.TypeConstraint = ty
+		}
 	}
 
 	if attr, ok := content.Attributes["default"]; ok {

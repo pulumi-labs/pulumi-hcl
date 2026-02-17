@@ -2,15 +2,12 @@ module github.com/pulumi/pulumi-language-hcl
 
 go 1.25.7
 
-// Copy needed replace from https://github.com/pulumi/pulumi-terraform-bridge/blob/master/go.mod
-replace github.com/hashicorp/terraform-plugin-sdk/v2 => github.com/pulumi/terraform-plugin-sdk/v2 v2.0.0-20250530111747-935112552988
-
 require (
 	github.com/blang/semver v3.5.1+incompatible
 	github.com/google/uuid v1.6.0
 	github.com/hashicorp/hcl/v2 v2.23.0
-	github.com/pulumi/pulumi/pkg/v3 v3.220.0
-	github.com/pulumi/pulumi/sdk/v3 v3.220.0
+	github.com/pulumi/pulumi/pkg/v3 v3.220.1-0.20260217125757-8eaf053088fa
+	github.com/pulumi/pulumi/sdk/v3 v3.220.1-0.20260217125757-8eaf053088fa
 	github.com/spf13/cobra v1.10.1
 	github.com/stretchr/testify v1.10.0
 	github.com/zclconf/go-cty v1.16.2
@@ -74,7 +71,6 @@ require (
 	github.com/cheggaaa/pb v1.0.29 // indirect
 	github.com/cloudflare/circl v1.6.1 // indirect
 	github.com/containerd/console v1.0.4-0.20230313162750-1ae8d489ac81 // indirect
-	github.com/creack/pty v1.1.18 // indirect
 	github.com/cyphar/filepath-securejoin v0.4.1 // indirect
 	github.com/davecgh/go-spew v1.1.1 // indirect
 	github.com/deckarep/golang-set/v2 v2.5.0 // indirect
@@ -154,7 +150,6 @@ require (
 	github.com/pulumi/appdash v0.0.0-20231130102222-75f619a67231 // indirect
 	github.com/pulumi/esc v0.17.0 // indirect
 	github.com/pulumi/inflector v0.1.1 // indirect
-	github.com/pulumi/pulumi/cmd/pulumi-test-language v0.0.0-20260210142723-e8ecd95a5ecb // indirect
 	github.com/rivo/uniseg v0.4.4 // indirect
 	github.com/rogpeppe/go-internal v1.14.1 // indirect
 	github.com/ryanuber/go-glob v1.0.0 // indirect
@@ -203,5 +198,4 @@ require (
 	lukechampine.com/frand v1.4.2 // indirect
 )
 
-// The version of github.com/pulumi/pulumi/cmd/pulumi-test-language should be kept in sync with pulumi/pulumi.
-tool github.com/pulumi/pulumi/cmd/pulumi-test-language
+tool github.com/pulumi/pulumi/pkg/v3/testing/pulumi-test-language

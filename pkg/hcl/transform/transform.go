@@ -20,11 +20,19 @@ import (
 	"fmt"
 	"math/big"
 
+	"github.com/pulumi/pulumi/pkg/v3/codegen/schema"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/resource"
 	"github.com/zclconf/go-cty/cty"
 )
 
+func CtyToResourceProperty(hclName string, val cty.Value, schema *schema.Resource) (resource.PropertyValue, error) {
+	return CtyToPropertyValue(val)
+}
+
 // CtyToPropertyValue converts a cty.Value to a Pulumi PropertyValue.
+//
+// TODO: This shouldn't really be exposed, since this transformation needs to be typed. See [CtyToResourceProperty] for
+// an example of a typed transformation.
 func CtyToPropertyValue(val cty.Value) (resource.PropertyValue, error) {
 	// Handle sensitive-marked values by unwrapping, converting, and wrapping as secret.
 	if val.IsMarked() {
@@ -148,7 +156,7 @@ func ctyToPropertyViaJSON(val cty.Value) (resource.PropertyValue, error) {
 }
 
 // ctyToGo converts a cty.Value to a Go interface{}.
-func ctyToGo(val cty.Value) interface{} {
+func ctyToGo(val cty.Value) any {
 	if val.IsNull() {
 		return nil
 	}
@@ -197,7 +205,7 @@ func ctyToGo(val cty.Value) interface{} {
 }
 
 // goToPropertyValue converts a Go interface{} to a Pulumi PropertyValue.
-func goToPropertyValue(v interface{}) (resource.PropertyValue, error) {
+func goToPropertyValue(v any) (resource.PropertyValue, error) {
 	if v == nil {
 		return resource.NewNullProperty(), nil
 	}
