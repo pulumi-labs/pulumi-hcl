@@ -127,6 +127,9 @@ type Engine struct {
 	// stackName is the current stack name.
 	stackName string
 
+	// organization is the current organization name.
+	organization string
+
 	// dryRun indicates if this is a preview operation.
 	dryRun bool
 
@@ -157,6 +160,9 @@ type EngineOptions struct {
 	// StackName is the Pulumi stack name.
 	StackName string
 
+	// Organization is the Pulumi organization name.
+	Organization string
+
 	// Config contains the Pulumi configuration values.
 	Config map[string]string
 
@@ -184,7 +190,8 @@ func NewEngine(config *ast.Config, opts *EngineOptions) *Engine {
 	contract.Assertf(opts.WorkDir != "", "EngineOptions.WorkDir cannot be empty")
 	contract.Assertf(opts.RootDir != "", "EngineOptions.RootDir cannot be empty")
 
-	evalCtx := eval.NewContext(opts.WorkDir, opts.RootDir)
+	evalCtx := eval.NewContext(opts.WorkDir, opts.RootDir,
+		opts.StackName, opts.ProjectName, opts.Organization)
 
 	return &Engine{
 		config:            config,
@@ -196,6 +203,7 @@ func NewEngine(config *ast.Config, opts *EngineOptions) *Engine {
 		stackOutputs:      make(resource.PropertyMap),
 		projectName:       opts.ProjectName,
 		stackName:         opts.StackName,
+		organization:      opts.Organization,
 		dryRun:            opts.DryRun,
 		workDir:           opts.WorkDir,
 		pulumiConfig:      opts.Config,
@@ -232,9 +240,6 @@ func (e *Engine) Run(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("topological sort: %w", err)
 	}
-
-	// Initialize the evaluation context
-	e.evaluator.Context().SetWorkspace(e.stackName)
 
 	// Process nodes in parallel where possible
 	if err := e.processNodesParallel(ctx, nodes); err != nil {
@@ -1314,8 +1319,9 @@ func (e *Engine) registerComponentResource(
 // createChildEngine creates a child engine for executing a module.
 func (e *Engine) createChildEngine(config *ast.Config, parentURN string, moduleDir string) *Engine {
 	return &Engine{
-		config:            config,
-		evaluator:         eval.NewEvaluator(eval.NewContext(moduleDir, moduleDir)),
+		config: config,
+		evaluator: eval.NewEvaluator(eval.NewContext(moduleDir, moduleDir,
+			e.stackName, e.projectName, e.organization)),
 		pkgLoader:         e.pkgLoader,
 		resmon:            e.resmon,
 		resourceOutputs:   make(map[string]cty.Value),
@@ -1323,6 +1329,7 @@ func (e *Engine) createChildEngine(config *ast.Config, parentURN string, moduleD
 		stackOutputs:      make(resource.PropertyMap),
 		projectName:       e.projectName,
 		stackName:         e.stackName,
+		organization:      e.organization,
 		dryRun:            e.dryRun,
 		workDir:           moduleDir,
 		pulumiConfig:      e.pulumiConfig,

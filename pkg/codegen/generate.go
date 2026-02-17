@@ -209,8 +209,18 @@ func funcCallTokens(expr *model.FunctionCallExpression) (hclwrite.Tokens, hcl.Di
 		}), nil
 	case "stack":
 		return hclwrite.TokensForTraversal(hcl.Traversal{
-			hcl.TraverseRoot{Name: "terraform"},
-			hcl.TraverseAttr{Name: "workspace"},
+			hcl.TraverseRoot{Name: "pulumi"},
+			hcl.TraverseAttr{Name: "stack"},
+		}), nil
+	case "project":
+		return hclwrite.TokensForTraversal(hcl.Traversal{
+			hcl.TraverseRoot{Name: "pulumi"},
+			hcl.TraverseAttr{Name: "project"},
+		}), nil
+	case "organization":
+		return hclwrite.TokensForTraversal(hcl.Traversal{
+			hcl.TraverseRoot{Name: "pulumi"},
+			hcl.TraverseAttr{Name: "organization"},
 		}), nil
 	case "getOutput":
 		return getOutputTokens(expr)
@@ -581,4 +591,3 @@ func unaryOpTokens(expr *model.UnaryOpExpression) (hclwrite.Tokens, hcl.Diagnost
 	tokens = append(tokens, operandTokens...)
 	return tokens, diags
 }
-
