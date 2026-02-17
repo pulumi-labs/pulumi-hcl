@@ -16,6 +16,7 @@ package codegen
 
 import (
 	"fmt"
+	"regexp"
 	"strings"
 
 	"github.com/hashicorp/hcl/v2"
@@ -130,8 +131,9 @@ func genConfigVariable(body *hclwrite.Body, cv *pcl.ConfigVariable) hcl.Diagnost
 	// Set the type constraint if the config has a type label.
 	if len(cv.SyntaxNode().(*hclsyntax.Block).Labels) == 2 {
 		typeStr := cv.SyntaxNode().(*hclsyntax.Block).Labels[1]
+		hclTypeStr := convertPCLTypeToHCL(typeStr)
 		block.Body().SetAttributeRaw("type", hclwrite.Tokens{
-			{Type: hclsyntax.TokenIdent, Bytes: []byte(typeStr)},
+			{Type: hclsyntax.TokenIdent, Bytes: []byte(hclTypeStr)},
 		})
 	}
 
@@ -145,6 +147,17 @@ func genConfigVariable(body *hclwrite.Body, cv *pcl.ConfigVariable) hcl.Diagnost
 	}
 
 	return nil
+}
+
+// convertPCLTypeToHCL converts a PCL type string to an HCL type string.
+// The main difference is that PCL uses "int" but HCL uses "number".
+// Uses word boundaries to only replace complete "int" tokens, not substrings.
+func convertPCLTypeToHCL(pclType string) string {
+	// Replace "int" only when it's a complete word/token, not part of another word.
+	// This handles cases like "int", "map(int)", "list(int)", "object({prop=list(int)})", etc.
+	// while avoiding incorrect replacements like "integer" -> "numberer".
+	re := regexp.MustCompile(`\bint\b`)
+	return re.ReplaceAllString(pclType, "number")
 }
 
 func genLocalVariable(body *hclwrite.Body, lv *pcl.LocalVariable) hcl.Diagnostics {
@@ -495,7 +508,7 @@ func templateTokens(expr *model.TemplateExpression) (hclwrite.Tokens, hcl.Diagno
 			if p.Value.Type() == cty.String {
 				buf.WriteString(p.Value.AsString())
 			} else {
-				buf.WriteString(fmt.Sprintf("${%s}", p.Value.GoString()))
+				fmt.Fprintf(&buf, "${%s}", p.Value.GoString())
 			}
 		default:
 			partTokens, d := exprTokens(part)

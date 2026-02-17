@@ -354,6 +354,7 @@ func TestRsaDecrypt(t *testing.T) {
 	message := "secret message"
 
 	// Encrypt the message with the public key
+	//nolint:staticcheck // SA1019: Using deprecated function for Terraform compatibility testing
 	ciphertext, err := rsa.EncryptPKCS1v15(rand.Reader, &privateKey.PublicKey, []byte(message))
 	if err != nil {
 		t.Fatalf("Failed to encrypt: %v", err)
@@ -408,6 +409,7 @@ func TestRsaDecryptPKCS8(t *testing.T) {
 	message := "another secret"
 
 	// Encrypt the message with the public key
+	//nolint:staticcheck // SA1019: Using deprecated function for Terraform compatibility testing
 	ciphertext, err := rsa.EncryptPKCS1v15(rand.Reader, &privateKey.PublicKey, []byte(message))
 	if err != nil {
 		t.Fatalf("Failed to encrypt: %v", err)

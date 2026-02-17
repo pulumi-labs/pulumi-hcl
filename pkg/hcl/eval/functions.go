@@ -614,7 +614,7 @@ var urlEncodeFunc = function.New(&function.Spec{
 				r == '-' || r == '_' || r == '.' || r == '~' {
 				result.WriteRune(r)
 			} else {
-				result.WriteString(fmt.Sprintf("%%%02X", r))
+				fmt.Fprintf(&result, "%%%02X", r)
 			}
 		}
 		return cty.StringVal(result.String()), nil
@@ -1248,6 +1248,7 @@ var rsaDecryptFunc = function.New(&function.Spec{
 		}
 
 		// Decrypt using PKCS1v15 (Terraform's default)
+		//nolint:staticcheck // SA1019: Using deprecated function for Terraform compatibility
 		plaintext, err := rsa.DecryptPKCS1v15(rand.Reader, privKey, ciphertext)
 		if err != nil {
 			return cty.NilVal, fmt.Errorf("decryption failed: %w", err)
