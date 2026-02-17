@@ -200,8 +200,8 @@ resource "aws_instance" "web" {
 	}
 
 	req := mock.registeredResources[1]
-	if req.Name != "aws_instance.web" {
-		t.Errorf("expected resource name 'aws_instance.web', got %s", req.Name)
+	if req.Name != "web" {
+		t.Errorf("expected resource name 'web', got %s", req.Name)
 	}
 	if req.Inputs["ami"].StringValue() != "ami-12345" {
 		t.Errorf("expected ami 'ami-12345', got %v", req.Inputs["ami"])
@@ -313,13 +313,13 @@ resource "aws_subnet" "main" {
 	}
 
 	// VPC should be registered first (after stack)
-	if mock.registeredResources[1].Name != "aws_vpc.main" {
-		t.Errorf("expected aws_vpc.main first, got %s", mock.registeredResources[1].Name)
+	if mock.registeredResources[1].Name != "main" {
+		t.Errorf("expected main first, got %s", mock.registeredResources[1].Name)
 	}
 
 	// Subnet should be registered second
-	if mock.registeredResources[2].Name != "aws_subnet.main" {
-		t.Errorf("expected aws_subnet.main second, got %s", mock.registeredResources[2].Name)
+	if mock.registeredResources[2].Name != "main" {
+		t.Errorf("expected main second, got %s", mock.registeredResources[2].Name)
 	}
 }
 
@@ -459,7 +459,7 @@ resource "aws_instance" "web" {
 	}
 
 	// Bucket should be first (after stack)
-	if mock.registeredResources[1].Name != "aws_s3_bucket.mybucket" {
+	if mock.registeredResources[1].Name != "mybucket" {
 		t.Errorf("expected bucket first, got %s", mock.registeredResources[1].Name)
 	}
 
@@ -947,13 +947,13 @@ resource "aws_instance" "web" {
 	// Resource should be registered
 	found := false
 	for _, r := range mock.registeredResources {
-		if r.Name == "aws_instance.web" {
+		if r.Name == "web" {
 			found = true
 			break
 		}
 	}
 	if !found {
-		t.Fatal("expected resource aws_instance.web to be registered")
+		t.Fatal("expected resource web to be registered")
 	}
 }
 
@@ -1011,7 +1011,7 @@ resource "aws_instance" "web" {
 
 	// Resource should not be registered (only stack)
 	for _, r := range mock.registeredResources {
-		if r.Name == "aws_instance.web" {
+		if r.Name == "web" {
 			t.Fatal("resource should not be registered when precondition fails")
 		}
 	}
@@ -1301,7 +1301,7 @@ resource "aws_instance" "web" {
 	// Check that self.id was resolved
 	if create, ok := provisionerReq.Inputs["create"]; ok {
 		// The id should be set to the resource name + "-id" by the mock
-		if !strings.Contains(create.StringValue(), "aws_instance.web-id") {
+		if !strings.Contains(create.StringValue(), "web-id") {
 			t.Errorf("expected self.id to be resolved, got: %s", create.StringValue())
 		}
 	} else {
@@ -1424,14 +1424,14 @@ output "vpc_id" {
 	// Find the VPC resource
 	var vpcResource *RegisterResourceRequest
 	for i := range mock.registeredResources {
-		if strings.Contains(mock.registeredResources[i].Name, "aws_vpc") {
+		if mock.registeredResources[i].Type == "aws:index:Vpc" {
 			vpcResource = &mock.registeredResources[i]
 			break
 		}
 	}
 
 	if vpcResource == nil {
-		t.Fatal("expected aws_vpc resource to be registered")
+		t.Fatal("expected aws:index:Vpc resource to be registered")
 	}
 
 	// Check that the VPC has the correct cidr_block
@@ -1489,14 +1489,14 @@ resource "aws_instance" "web" {
 	// Find the instance resource
 	var instanceReq *RegisterResourceRequest
 	for i := range mock.registeredResources {
-		if strings.Contains(mock.registeredResources[i].Name, "aws_instance") {
+		if mock.registeredResources[i].Type == "aws:index:Instance" {
 			instanceReq = &mock.registeredResources[i]
 			break
 		}
 	}
 
 	if instanceReq == nil {
-		t.Fatal("expected aws_instance resource to be registered")
+		t.Fatal("expected aws:index:Instance resource to be registered")
 	}
 
 	// Check that timeouts were set
@@ -1564,14 +1564,14 @@ resource "aws_instance" "web" {
 	// Find the instance resource
 	var instanceReq *RegisterResourceRequest
 	for i := range mock.registeredResources {
-		if strings.Contains(mock.registeredResources[i].Name, "aws_instance") {
+		if mock.registeredResources[i].Type == "aws:index:Instance" {
 			instanceReq = &mock.registeredResources[i]
 			break
 		}
 	}
 
 	if instanceReq == nil {
-		t.Fatal("expected aws_instance resource to be registered")
+		t.Fatal("expected aws:index:Instance resource to be registered")
 	}
 
 	// Check that aliases include the old resource address
@@ -1635,14 +1635,14 @@ resource "aws_instance" "imported" {
 	// Find the instance resource
 	var instanceReq *RegisterResourceRequest
 	for i := range mock.registeredResources {
-		if strings.Contains(mock.registeredResources[i].Name, "aws_instance") {
+		if mock.registeredResources[i].Type == "aws:index:Instance" {
 			instanceReq = &mock.registeredResources[i]
 			break
 		}
 	}
 
 	if instanceReq == nil {
-		t.Fatal("expected aws_instance resource to be registered")
+		t.Fatal("expected aws:index:Instance resource to be registered")
 	}
 
 	// Check that ImportId was set

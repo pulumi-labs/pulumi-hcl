@@ -767,7 +767,9 @@ func (e *Engine) registerResourceInstance(
 	}
 
 	// Register the resource
-	urn, id, outputs, err := e.registerResource(ctx, typeToken, instance.Key, inputs, opts)
+	// Extract the resource name from the instance key (e.g., "pulumi_stash.myStash" -> "myStash")
+	resourceName := extractResourceName(instance.Key)
+	urn, id, outputs, err := e.registerResource(ctx, typeToken, resourceName, inputs, opts)
 	if err != nil {
 		return fmt.Errorf("registering resource: %w", err)
 	}
@@ -941,6 +943,19 @@ func (e *Engine) resolveImportId(res *ast.Resource) string {
 	}
 
 	return ""
+}
+
+// extractResourceName extracts the resource name from an instance key.
+// For example: "pulumi_stash.myStash" -> "myStash", "aws_instance.web[0]" -> "web[0]".
+func extractResourceName(key string) string {
+	// Find the first dot to split type from name
+	dotIndex := strings.Index(key, ".")
+	if dotIndex == -1 {
+		// No dot found, return the whole key
+		return key
+	}
+	// Return everything after the dot
+	return key[dotIndex+1:]
 }
 
 // formatTraversalForIgnoreChanges formats a traversal for ignore_changes.

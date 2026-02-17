@@ -314,23 +314,34 @@ func getOutputTokens(expr *model.FunctionCallExpression) (hclwrite.Tokens, hcl.D
 }
 
 // scopeTraversalTokens generates HCL tokens for a scope traversal expression.
-// PCL config variables become HCL `var.<name>`, and local variables become `local.<name>`.
+// PCL config variables become HCL `var.<name>`, local variables become `local.<name>`,
+// and resource references become `<resource_type>.<name>.<property>`.
 func scopeTraversalTokens(expr *model.ScopeTraversalExpression) (hclwrite.Tokens, hcl.Diagnostics) {
 	traversal := expr.Traversal
 	if len(expr.Parts) > 0 {
-		var prefix string
-		switch expr.Parts[0].(type) {
+		switch part := expr.Parts[0].(type) {
 		case *pcl.ConfigVariable:
-			prefix = "var"
-		case *pcl.LocalVariable:
-			prefix = "local"
-		}
-		if prefix != "" {
-			// Rewrite "aMap.x" → "var.aMap.x" (or "local.aMap.x").
-			// The original traversal starts with TraverseRoot{Name: "aMap"}.
-			// We replace that with TraverseRoot{Name: "var"}, TraverseAttr{Name: "aMap"}.
+			// Rewrite "aMap.x" → "var.aMap.x".
 			rewritten := make(hcl.Traversal, 0, len(traversal)+1)
-			rewritten = append(rewritten, hcl.TraverseRoot{Name: prefix})
+			rewritten = append(rewritten, hcl.TraverseRoot{Name: "var"})
+			rewritten = append(rewritten, hcl.TraverseAttr{Name: traversal.RootName()})
+			rewritten = append(rewritten, traversal[1:]...)
+			traversal = rewritten
+		case *pcl.LocalVariable:
+			// Rewrite "myLocal.x" → "local.myLocal.x".
+			rewritten := make(hcl.Traversal, 0, len(traversal)+1)
+			rewritten = append(rewritten, hcl.TraverseRoot{Name: "local"})
+			rewritten = append(rewritten, hcl.TraverseAttr{Name: traversal.RootName()})
+			rewritten = append(rewritten, traversal[1:]...)
+			traversal = rewritten
+		case *pcl.Resource:
+			// Rewrite "myResource.property" → "resource_type.myResource.property".
+			hclType, diags := resourceHCLType(part)
+			if diags.HasErrors() {
+				return nil, diags
+			}
+			rewritten := make(hcl.Traversal, 0, len(traversal)+1)
+			rewritten = append(rewritten, hcl.TraverseRoot{Name: hclType})
 			rewritten = append(rewritten, hcl.TraverseAttr{Name: traversal.RootName()})
 			rewritten = append(rewritten, traversal[1:]...)
 			traversal = rewritten
