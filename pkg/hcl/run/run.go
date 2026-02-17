@@ -50,6 +50,9 @@ type ResourceMonitor interface {
 
 	// RegisterResourceOutputs registers outputs on a resource (used for stack outputs).
 	RegisterResourceOutputs(ctx context.Context, urn string, outputs resource.PropertyMap) error
+
+	// CheckPulumiVersion checks if the Pulumi CLI version satisfies the given version range.
+	CheckPulumiVersion(ctx context.Context, versionRange string) error
 }
 
 // CustomTimeouts contains custom timeout values for resource operations.
@@ -347,6 +350,11 @@ func (e *Engine) processNodesParallel(ctx context.Context, nodes []*graph.Node) 
 		if err := e.processNode(ctx, node); err != nil {
 			return fmt.Errorf("processing %s: %w", node.Key, err)
 		}
+	}
+
+	// Check Pulumi version requirement if specified
+	if err := e.checkPulumiVersion(ctx); err != nil {
+		return err
 	}
 
 	// Phase 3: Process resources and data sources in parallel
@@ -1528,4 +1536,32 @@ func (e *Engine) evaluateCheckRules(
 	}
 
 	return nil
+}
+
+// checkPulumiVersion checks if the Pulumi CLI version satisfies the required version range.
+// The version requirement is specified via the pulumi block's requiredVersionRange attribute.
+func (e *Engine) checkPulumiVersion(ctx context.Context) error {
+	// Check if the pulumi block exists and has a version requirement
+	if e.config.Pulumi == nil || e.config.Pulumi.RequiredVersionRange == nil {
+		// No version requirement specified
+		return nil
+	}
+
+	// Evaluate the requiredVersionRange expression
+	versionVal, diags := e.config.Pulumi.RequiredVersionRange.Value(e.evaluator.Context().HCLContext())
+	if diags.HasErrors() {
+		return fmt.Errorf("evaluating requiredVersionRange: %s", diags.Error())
+	}
+
+	// Get the version range string
+	if versionVal.Type() != cty.String {
+		return fmt.Errorf("requiredVersionRange must be a string, got %s", versionVal.Type().FriendlyName())
+	}
+
+	versionRange := versionVal.AsString()
+	if versionRange == "" {
+		return nil
+	}
+
+	return e.resmon.CheckPulumiVersion(ctx, versionRange)
 }

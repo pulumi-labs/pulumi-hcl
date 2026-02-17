@@ -18,7 +18,9 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"net"
 	"os"
 	"path/filepath"
@@ -50,11 +52,35 @@ import (
 // LanguageHost implements the LanguageRuntimeServer gRPC interface.
 type LanguageHost struct {
 	pulumirpc.UnimplementedLanguageRuntimeServer
+	engine  pulumirpc.EngineClient
+	closers []io.Closer
 }
 
 // NewLanguageHost creates a new HCL language host.
-func NewLanguageHost() (*LanguageHost, error) {
-	return &LanguageHost{}, nil
+//
+// The returned [LanguageHost] should be closed.
+func NewLanguageHost(engineAddress string) (*LanguageHost, error) {
+	engineConn, err := grpc.NewClient(
+		engineAddress,
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+		rpcutil.GrpcChannelOptions(),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("connecting to engine: %w", err)
+	}
+
+	return &LanguageHost{
+		engine:  pulumirpc.NewEngineClient(engineConn),
+		closers: []io.Closer{engineConn},
+	}, nil
+}
+
+func (host *LanguageHost) Close() error {
+	errs := make([]error, len(host.closers))
+	for i, v := range host.closers {
+		errs[i] = v.Close()
+	}
+	return errors.Join(errs...)
 }
 
 // GetRequiredPlugins returns the plugins required to run an HCL program.
@@ -117,7 +143,7 @@ func (host *LanguageHost) Run(
 		req.Info.EntryPoint, req.Pwd, req.Stack, req.Project)
 
 	// Connect to the resource monitor
-	conn, err := grpc.NewClient(
+	monitorConn, err := grpc.NewClient(
 		req.MonitorAddress,
 		grpc.WithTransportCredentials(insecure.NewCredentials()),
 		rpcutil.GrpcChannelOptions(),
@@ -125,13 +151,14 @@ func (host *LanguageHost) Run(
 	if err != nil {
 		return nil, fmt.Errorf("connecting to resource monitor: %w", err)
 	}
-	defer contract.IgnoreClose(conn)
+	defer contract.IgnoreClose(monitorConn)
 
-	// Create the resource monitor client
-	monitorClient := pulumirpc.NewResourceMonitorClient(conn)
+	// Create the resource monitor and engine clients
+	monitorClient := pulumirpc.NewResourceMonitorClient(monitorConn)
 	resmon := &resourceMonitorAdapter{
-		client: monitorClient,
-		ctx:    ctx,
+		monitorClient: monitorClient,
+		engineClient:  host.engine,
+		ctx:           ctx,
 	}
 
 	// Parse the HCL program
@@ -597,8 +624,9 @@ func extractSemverFromConstraint(constraint string) string {
 
 // resourceMonitorAdapter adapts the Pulumi gRPC resource monitor to our interface.
 type resourceMonitorAdapter struct {
-	client pulumirpc.ResourceMonitorClient
-	ctx    context.Context
+	monitorClient pulumirpc.ResourceMonitorClient
+	engineClient  pulumirpc.EngineClient
+	ctx           context.Context
 }
 
 // RegisterResource registers a resource with Pulumi.
@@ -657,7 +685,7 @@ func (r *resourceMonitorAdapter) RegisterResource(
 	}
 
 	// Call the resource monitor
-	resp, err := r.client.RegisterResource(ctx, registerReq)
+	resp, err := r.monitorClient.RegisterResource(ctx, registerReq)
 	if err != nil {
 		return nil, fmt.Errorf("registering resource: %w", err)
 	}
@@ -700,7 +728,7 @@ func (r *resourceMonitorAdapter) Invoke(
 	}
 
 	// Call the resource monitor
-	resp, err := r.client.Invoke(ctx, invokeReq)
+	resp, err := r.monitorClient.Invoke(ctx, invokeReq)
 	if err != nil {
 		return nil, fmt.Errorf("invoking function: %w", err)
 	}
@@ -742,7 +770,7 @@ func (r *resourceMonitorAdapter) RegisterResourceOutputs(
 	}
 
 	// Call the resource monitor
-	_, err = r.client.RegisterResourceOutputs(ctx, &pulumirpc.RegisterResourceOutputsRequest{
+	_, err = r.monitorClient.RegisterResourceOutputs(ctx, &pulumirpc.RegisterResourceOutputsRequest{
 		Urn:     urn,
 		Outputs: outputsStruct,
 	})
@@ -751,6 +779,15 @@ func (r *resourceMonitorAdapter) RegisterResourceOutputs(
 	}
 
 	return nil
+}
+
+// CheckPulumiVersion checks if the Pulumi CLI version satisfies the given version range.
+func (r *resourceMonitorAdapter) CheckPulumiVersion(ctx context.Context, versionRange string) error {
+	// Call the engine's RequirePulumiVersion RPC method
+	_, err := r.engineClient.RequirePulumiVersion(ctx, &pulumirpc.RequirePulumiVersionRequest{
+		PulumiVersionRange: versionRange,
+	})
+	return err
 }
 
 // Ensure resourceMonitorAdapter implements the interface.

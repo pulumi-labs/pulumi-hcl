@@ -25,6 +25,9 @@ type Config struct {
 	// Terraform contains the terraform block configuration (provider requirements, etc.)
 	Terraform *Terraform
 
+	// Pulumi contains the pulumi block configuration (program-level options).
+	Pulumi *Pulumi
+
 	// Providers maps provider alias to provider configuration.
 	// The key is the provider local name (e.g., "aws") or alias (e.g., "aws.west").
 	Providers map[string]*Provider

@@ -402,6 +402,11 @@ func (m *constructResourceMonitor) Invoke(
 	}, nil
 }
 
+// CheckPulumiVersion checks if the Pulumi CLI version satisfies the given version range.
+func (m *constructResourceMonitor) CheckPulumiVersion(ctx context.Context, versionRange string) error {
+	return nil
+}
+
 // buildStateDependencies builds the state dependencies map from outputs.
 func buildStateDependencies(outputs *structpb.Struct) map[string]*pulumirpc.ConstructResponse_PropertyDependencies {
 	deps := make(map[string]*pulumirpc.ConstructResponse_PropertyDependencies)

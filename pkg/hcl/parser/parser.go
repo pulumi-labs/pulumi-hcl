@@ -93,6 +93,8 @@ func (p *Parser) parseBlock(config *ast.Config, block *hcl.Block) hcl.Diagnostic
 	switch block.Type {
 	case "terraform":
 		return p.parseTerraformBlock(config, block)
+	case "pulumi":
+		return p.parsePulumiBlock(config, block)
 	case "provider":
 		return p.parseProviderBlock(config, block)
 	case "variable":
@@ -168,6 +170,45 @@ func (p *Parser) parseTerraformBlock(config *ast.Config, block *hcl.Block) hcl.D
 	}
 
 	config.Terraform = terraform
+	return diags
+}
+
+// parsePulumiBlock parses a pulumi block.
+func (p *Parser) parsePulumiBlock(config *ast.Config, block *hcl.Block) hcl.Diagnostics {
+	var diags hcl.Diagnostics
+
+	if config.Pulumi != nil {
+		diags = append(diags, &hcl.Diagnostic{
+			Severity: hcl.DiagError,
+			Summary:  "Duplicate pulumi block",
+			Detail:   "Only one pulumi block is allowed per configuration.",
+			Subject:  &block.DefRange,
+		})
+		return diags
+	}
+
+	content, contentDiags := block.Body.Content(pulumiSchema)
+	diags = append(diags, contentDiags...)
+
+	if len(block.Labels) != 0 {
+		diags = append(diags, &hcl.Diagnostic{
+			Severity: hcl.DiagError,
+			Summary:  "Invalid pulumi block",
+			Detail:   "The pulumi block does not accept any labels.",
+			Subject:  &block.DefRange,
+		})
+		return diags
+	}
+
+	pulumi := &ast.Pulumi{
+		DeclRange: block.DefRange,
+	}
+
+	if attr, ok := content.Attributes["requiredVersionRange"]; ok {
+		pulumi.RequiredVersionRange = attr.Expr
+	}
+
+	config.Pulumi = pulumi
 	return diags
 }
 
