@@ -217,10 +217,13 @@ func (p *HCLProvider) Construct(ctx context.Context, req *pulumirpc.ConstructReq
 	engineOpts := &run.EngineOptions{
 		ProjectName:     req.Project,
 		StackName:       req.Stack,
+		Organization:    req.Organization,
 		DryRun:          req.DryRun,
 		WorkDir:         p.modulePath,
+		RootDir:         p.modulePath,
 		Config:          config,
 		ResourceMonitor: resmon,
+		SchemaLoader:    p.pkgLoader,
 	}
 
 	// Create and run the engine

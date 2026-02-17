@@ -58,8 +58,8 @@ type Context struct {
 	// path contains path information
 	path PathContext
 
-	// terraform contains terraform metadata
-	terraform TerraformContext
+	// pulumi contains pulumi metadata
+	pulumi PulumiContext
 
 	// count contains count context for count iteration
 	count *CountContext
@@ -81,10 +81,14 @@ type PathContext struct {
 	Cwd string
 }
 
-// TerraformContext contains terraform metadata.
-type TerraformContext struct {
-	// Workspace is the current workspace name
-	Workspace string
+// PulumiContext contains pulumi metadata.
+type PulumiContext struct {
+	// Stack is the current stack name
+	Stack string
+	// Project is the current project name
+	Project string
+	// Organization is the current organization name
+	Organization string
 }
 
 // CountContext contains count iteration context.
@@ -102,7 +106,7 @@ type EachContext struct {
 }
 
 // NewContext creates a new evaluation context.
-func NewContext(baseDir, rootDir string) *Context {
+func NewContext(baseDir, rootDir, stack, project, organization string) *Context {
 	return &Context{
 		baseDir: baseDir,
 
@@ -117,8 +121,10 @@ func NewContext(baseDir, rootDir string) *Context {
 			Root:   rootDir,
 			Cwd:    baseDir,
 		},
-		terraform: TerraformContext{
-			Workspace: "default",
+		pulumi: PulumiContext{
+			Stack:        stack,
+			Project:      project,
+			Organization: organization,
 		},
 	}
 }
@@ -183,11 +189,6 @@ func (c *Context) SetSelf(value cty.Value) {
 // ClearSelf clears the self reference.
 func (c *Context) ClearSelf() {
 	c.self = cty.NilVal
-}
-
-// SetWorkspace sets the terraform workspace name.
-func (c *Context) SetWorkspace(name string) {
-	c.terraform.Workspace = name
 }
 
 // HCLContext returns an hcl.EvalContext for evaluating expressions.
@@ -272,9 +273,11 @@ func (c *Context) HCLContext() *hcl.EvalContext {
 		"cwd":    cty.StringVal(c.path.Cwd),
 	})
 
-	// Add terraform.* namespace
-	vars["terraform"] = cty.ObjectVal(map[string]cty.Value{
-		"workspace": cty.StringVal(c.terraform.Workspace),
+	// Add pulumi.* namespace
+	vars["pulumi"] = cty.ObjectVal(map[string]cty.Value{
+		"stack":        cty.StringVal(c.pulumi.Stack),
+		"project":      cty.StringVal(c.pulumi.Project),
+		"organization": cty.StringVal(c.pulumi.Organization),
 	})
 
 	// Add count.* if in count context
@@ -303,14 +306,6 @@ func (c *Context) HCLContext() *hcl.EvalContext {
 	}
 }
 
-// ChildContext creates a child context for nested evaluation (e.g., inside a module).
-func (c *Context) ChildContext(baseDir, rootDir string) *Context {
-	child := NewContext(baseDir, rootDir)
-	child.path.Root = c.path.Root
-	child.terraform = c.terraform
-	return child
-}
-
 // Clone creates a copy of the context for isolated evaluation.
 func (c *Context) Clone() *Context {
 	clone := &Context{
@@ -322,7 +317,7 @@ func (c *Context) Clone() *Context {
 		modules:     make(map[string]cty.Value),
 		providers:   make(map[string]cty.Value),
 		path:        c.path,
-		terraform:   c.terraform,
+		pulumi:      c.pulumi,
 		self:        c.self,
 	}
 

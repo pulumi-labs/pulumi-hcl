@@ -126,7 +126,6 @@ func runTestingHost(t *testing.T) (string, testingrpc.LanguageTestClient) {
 }
 
 var expectedFailures = map[string]string{
-	"l1-builtin-info":                              "program generation not yet implemented",
 	"l1-builtin-require-pulumi-version":            "program generation not yet implemented",
 	"l1-builtin-stash":                             "program generation not yet implemented",
 	"l1-builtin-try":                               "program generation not yet implemented",

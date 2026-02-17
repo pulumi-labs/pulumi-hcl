@@ -158,6 +158,7 @@ func (host *LanguageHost) Run(
 	engine := run.NewEngine(config, &run.EngineOptions{
 		ProjectName:      req.Project,
 		StackName:        req.Stack,
+		Organization:     req.Organization,
 		Config:           configMap,
 		ConfigSecretKeys: req.ConfigSecretKeys,
 		DryRun:           req.DryRun,
