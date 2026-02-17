@@ -169,14 +169,7 @@ func exprTokens(expr model.Expression) (hclwrite.Tokens, hcl.Diagnostics) {
 	case *model.LiteralValueExpression:
 		return hclwrite.TokensForValue(e.Value), nil
 	case *model.TemplateExpression:
-		if len(e.Parts) == 1 {
-			return exprTokens(e.Parts[0])
-		}
-		return nil, hcl.Diagnostics{{
-			Severity: hcl.DiagError,
-			Summary:  "unsupported expression type",
-			Detail:   fmt.Sprintf("expression type %T is not yet supported", expr),
-		}}
+		return templateTokens(e)
 	case *model.FunctionCallExpression:
 		return funcCallTokens(e)
 	case *model.ScopeTraversalExpression:
@@ -189,6 +182,10 @@ func exprTokens(expr model.Expression) (hclwrite.Tokens, hcl.Diagnostics) {
 		return indexExprTokens(e)
 	case *model.RelativeTraversalExpression:
 		return relativeTraversalTokens(e)
+	case *model.BinaryOpExpression:
+		return binaryOpTokens(e)
+	case *model.UnaryOpExpression:
+		return unaryOpTokens(e)
 	default:
 		return nil, hcl.Diagnostics{{
 			Severity: hcl.DiagError,
@@ -450,6 +447,138 @@ func objectTokens(expr *model.ObjectConsExpression) (hclwrite.Tokens, hcl.Diagno
 		tokens = append(tokens, &hclwrite.Token{Type: hclsyntax.TokenNewline, Bytes: []byte("\n")})
 	}
 	tokens = append(tokens, &hclwrite.Token{Type: hclsyntax.TokenCBrace, Bytes: []byte("}")})
+	return tokens, diags
+}
+
+// templateTokens generates HCL tokens for a template expression.
+// For a single literal part, it returns the literal value directly.
+// For multiple parts, it generates a template string like "${expr}suffix".
+func templateTokens(expr *model.TemplateExpression) (hclwrite.Tokens, hcl.Diagnostics) {
+	// If template has a single literal part, just return that literal.
+	if len(expr.Parts) == 1 {
+		if lit, ok := expr.Parts[0].(*model.LiteralValueExpression); ok {
+			return hclwrite.TokensForValue(lit.Value), nil
+		}
+	}
+
+	// Build an interpolated string: "prefix${expr}suffix"
+	var buf strings.Builder
+	buf.WriteString(`"`)
+	var diags hcl.Diagnostics
+
+	for _, part := range expr.Parts {
+		switch p := part.(type) {
+		case *model.LiteralValueExpression:
+			if p.Value.Type() == cty.String {
+				buf.WriteString(p.Value.AsString())
+			} else {
+				buf.WriteString(fmt.Sprintf("${%s}", p.Value.GoString()))
+			}
+		default:
+			partTokens, d := exprTokens(part)
+			diags = append(diags, d...)
+			if d.HasErrors() {
+				return nil, diags
+			}
+			buf.WriteString("${")
+			for _, tok := range partTokens {
+				buf.Write(tok.Bytes)
+			}
+			buf.WriteString("}")
+		}
+	}
+	buf.WriteString(`"`)
+
+	return hclwrite.Tokens{
+		{Type: hclsyntax.TokenQuotedLit, Bytes: []byte(buf.String())},
+	}, diags
+}
+
+// binaryOpTokens generates HCL tokens for a binary operation expression.
+func binaryOpTokens(expr *model.BinaryOpExpression) (hclwrite.Tokens, hcl.Diagnostics) {
+	leftTokens, diags := exprTokens(expr.LeftOperand)
+	if diags.HasErrors() {
+		return nil, diags
+	}
+
+	rightTokens, d := exprTokens(expr.RightOperand)
+	diags = append(diags, d...)
+	if d.HasErrors() {
+		return nil, diags
+	}
+
+	var opStr string
+	switch expr.Operation {
+	case hclsyntax.OpLogicalOr:
+		opStr = "||"
+	case hclsyntax.OpLogicalAnd:
+		opStr = "&&"
+	case hclsyntax.OpEqual:
+		opStr = "=="
+	case hclsyntax.OpNotEqual:
+		opStr = "!="
+	case hclsyntax.OpGreaterThan:
+		opStr = ">"
+	case hclsyntax.OpGreaterThanOrEqual:
+		opStr = ">="
+	case hclsyntax.OpLessThan:
+		opStr = "<"
+	case hclsyntax.OpLessThanOrEqual:
+		opStr = "<="
+	case hclsyntax.OpAdd:
+		opStr = "+"
+	case hclsyntax.OpSubtract:
+		opStr = "-"
+	case hclsyntax.OpMultiply:
+		opStr = "*"
+	case hclsyntax.OpDivide:
+		opStr = "/"
+	case hclsyntax.OpModulo:
+		opStr = "%"
+	default:
+		return nil, hcl.Diagnostics{{
+			Severity: hcl.DiagError,
+			Summary:  "unsupported binary operation",
+			Detail:   fmt.Sprintf("binary operation %v is not yet supported", expr.Operation),
+		}}
+	}
+
+	tokens := leftTokens
+	tokens = append(tokens, &hclwrite.Token{
+		Type: hclsyntax.TokenIdent, Bytes: []byte(opStr), SpacesBefore: 1,
+	})
+	if len(rightTokens) > 0 {
+		rightTokens[0].SpacesBefore = 1
+	}
+	tokens = append(tokens, rightTokens...)
+	return tokens, diags
+}
+
+// unaryOpTokens generates HCL tokens for a unary operation expression.
+func unaryOpTokens(expr *model.UnaryOpExpression) (hclwrite.Tokens, hcl.Diagnostics) {
+	operandTokens, diags := exprTokens(expr.Operand)
+	if diags.HasErrors() {
+		return nil, diags
+	}
+
+	var opStr string
+	switch expr.Operation {
+	case hclsyntax.OpLogicalNot:
+		opStr = "!"
+	case hclsyntax.OpNegate:
+		opStr = "-"
+	default:
+		return nil, hcl.Diagnostics{{
+			Severity: hcl.DiagError,
+			Summary:  "unsupported unary operation",
+			Detail:   fmt.Sprintf("unary operation %v is not yet supported", expr.Operation),
+		}}
+	}
+
+	tokens := hclwrite.Tokens{
+		{Type: hclsyntax.TokenIdent, Bytes: []byte(opStr)},
+	}
+	tokens = append(tokens, operandTokens...)
 	return tokens, diags
 }
 
