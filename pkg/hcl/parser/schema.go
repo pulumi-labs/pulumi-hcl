@@ -23,6 +23,7 @@ import (
 var rootSchema = &hcl.BodySchema{
 	Blocks: []hcl.BlockHeaderSchema{
 		{Type: "terraform"},
+		{Type: "pulumi"},
 		{Type: "provider", LabelNames: []string{"name"}},
 		{Type: "variable", LabelNames: []string{"name"}},
 		{Type: "locals"},
@@ -44,6 +45,13 @@ var terraformSchema = &hcl.BodySchema{
 		{Type: "required_providers"},
 		{Type: "backend", LabelNames: []string{"type"}},
 		{Type: "cloud"},
+	},
+}
+
+// pulumiSchema defines the structure of a pulumi block.
+var pulumiSchema = &hcl.BodySchema{
+	Attributes: []hcl.AttributeSchema{
+		{Name: "requiredVersionRange"},
 	},
 }
 

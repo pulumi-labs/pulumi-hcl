@@ -48,6 +48,9 @@ func GenerateProgram(program *pcl.Program) (map[string][]byte, hcl.Diagnostics, 
 		case *pcl.LocalVariable:
 			d := genLocalVariable(body, n)
 			diags = append(diags, d...)
+		case *pcl.PulumiBlock:
+			d := genPulumiBlock(body, n)
+			diags = append(diags, d...)
 		default:
 			diags = append(diags, &hcl.Diagnostic{
 				Severity: hcl.DiagError,
@@ -152,6 +155,16 @@ func genLocalVariable(body *hclwrite.Body, lv *pcl.LocalVariable) hcl.Diagnostic
 func genOutput(body *hclwrite.Body, ov *pcl.OutputVariable) hcl.Diagnostics {
 	block := body.AppendNewBlock("output", []string{ov.LogicalName()})
 	return genExpression(block.Body(), "value", ov.Value)
+}
+
+func genPulumiBlock(body *hclwrite.Body, pb *pcl.PulumiBlock) hcl.Diagnostics {
+	if pb.RequiredVersion == nil {
+		return nil
+	}
+
+	// Generate a top-level "pulumi" block with requiredVersionRange property
+	block := body.AppendNewBlock("pulumi", nil)
+	return genExpression(block.Body(), "requiredVersionRange", pb.RequiredVersion)
 }
 
 func genExpression(body *hclwrite.Body, name string, expr model.Expression) hcl.Diagnostics {

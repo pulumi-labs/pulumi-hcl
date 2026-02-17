@@ -126,13 +126,13 @@ func runTestingHost(t *testing.T) (string, testingrpc.LanguageTestClient) {
 }
 
 var expectedFailures = map[string]string{
-	"l1-builtin-require-pulumi-version":            "program generation not yet implemented",
-	"l1-builtin-stash":                             "program generation not yet implemented",
-	"l1-builtin-try":                               "program generation not yet implemented",
 	"l1-config-types-object":                       "program generation not yet implemented",
-	"l1-elide-index":                               "program generation not yet implemented",
-	"l1-keyword-overlap":                           "program generation not yet implemented",
+	"l1-builtin-stash":                             "replicate the language specific parts of https://github.com/pulumi/pulumi/pull/20819",
+	"l2-enum":                                      "We don't have a type system, so just generate enums as their underlying values",
 	"l1-proxy-index":                               "program generation not yet implemented",
+	"l1-elide-index":                               "program generation not yet implemented",
+	"l1-builtin-try":                               "program generation not yet implemented",
+	"l1-keyword-overlap":                           "program generation not yet implemented",
 	"l2-camel-names":                               "missing expected dependency",
 	"l2-component-call-simple":                     "missing expected dependency",
 	"l2-component-component-resource-ref":          "missing expected dependency",
@@ -142,7 +142,6 @@ var expectedFailures = map[string]string{
 	"l2-discriminated-union":                       "missing expected dependency",
 	"l2-elide-index":                               "missing expected dependency",
 	"l2-engine-update-options":                     "missing expected dependency",
-	"l2-enum":                                      "missing expected dependency",
 	"l2-explicit-parameterized-provider":           "missing expected dependency",
 	"l2-explicit-provider":                         "missing expected dependency",
 	"l2-explicit-providers":                        "missing expected dependency",
@@ -219,7 +218,7 @@ func log(t *testing.T, name, message string) {
 func TestLanguage(t *testing.T) {
 	t.Parallel()
 
-	_, engine := runTestingHost(t)
+	engineAddress, engine := runTestingHost(t)
 
 	tests, err := engine.GetLanguageTests(t.Context(), &testingrpc.GetLanguageTestsRequest{})
 	require.NoError(t, err)
@@ -228,10 +227,11 @@ func TestLanguage(t *testing.T) {
 
 	handle, err := rpcutil.ServeWithOptions(rpcutil.ServeOptions{
 		Init: func(srv *grpc.Server) error {
-			host, err := server.NewLanguageHost()
+			host, err := server.NewLanguageHost(engineAddress)
 			if err != nil {
 				return err
 			}
+			t.Cleanup(func() { contract.IgnoreClose(host) })
 			pulumirpc.RegisterLanguageRuntimeServer(srv, host)
 			return nil
 		},

@@ -76,6 +76,11 @@ func (m *mockResourceMonitor) RegisterResourceOutputs(ctx context.Context, urn s
 	return nil
 }
 
+func (m *mockResourceMonitor) CheckPulumiVersion(ctx context.Context, versionRange string) error {
+	// Mock implementation - always succeeds
+	return nil
+}
+
 var _ schema.ReferenceLoader = mockReferenceLoader{}
 
 type mockReferenceLoader map[string]schema.Package

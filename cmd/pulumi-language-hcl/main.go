@@ -27,6 +27,7 @@ import (
 	"github.com/pulumi/pulumi-language-hcl/pkg/server"
 	"github.com/pulumi/pulumi-language-hcl/pkg/version"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/util/cmdutil"
+	"github.com/pulumi/pulumi/sdk/v3/go/common/util/contract"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/util/logging"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/util/rpcutil"
 	pulumirpc "github.com/pulumi/pulumi/sdk/v3/proto/go"
@@ -101,11 +102,18 @@ func run(p *runParams) error {
 		}
 	}
 
+	var host *server.LanguageHost
+	defer func() {
+		if host != nil {
+			contract.IgnoreClose(host)
+		}
+	}()
 	// Create the gRPC server
 	handle, err := rpcutil.ServeWithOptions(rpcutil.ServeOptions{
 		Cancel: cancelChannel,
 		Init: func(srv *grpc.Server) error {
-			host, err := server.NewLanguageHost()
+			var err error
+			host, err = server.NewLanguageHost(p.engineAddress)
 			if err != nil {
 				return err
 			}
