@@ -1,0 +1,7 @@
+[tools]
+go = "1.26"
+gofumpt = "latest"
+golangci-lint = "2.9.0"
+jq = "latest"
+
+[plugins]

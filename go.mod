@@ -1,13 +1,13 @@
 module github.com/pulumi/pulumi-language-hcl
 
-go 1.25.7
+go 1.26
 
 require (
 	github.com/blang/semver v3.5.1+incompatible
 	github.com/google/uuid v1.6.0
 	github.com/hashicorp/hcl/v2 v2.23.0
-	github.com/pulumi/pulumi/pkg/v3 v3.220.1-0.20260217125757-8eaf053088fa
-	github.com/pulumi/pulumi/sdk/v3 v3.220.1-0.20260217125757-8eaf053088fa
+	github.com/pulumi/pulumi/pkg/v3 v3.220.1-0.20260217140001-b936af1fd185
+	github.com/pulumi/pulumi/sdk/v3 v3.220.1-0.20260217140001-b936af1fd185
 	github.com/spf13/cobra v1.10.1
 	github.com/stretchr/testify v1.10.0
 	github.com/zclconf/go-cty v1.16.2
