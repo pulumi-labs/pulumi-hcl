@@ -17,12 +17,18 @@
 package graph
 
 import (
+	"cmp"
+	"context"
+	"errors"
 	"fmt"
-	"sort"
+	"maps"
+	"slices"
 
 	"github.com/hashicorp/hcl/v2"
 	"github.com/pulumi/pulumi-language-hcl/pkg/hcl/ast"
 	"github.com/pulumi/pulumi-language-hcl/pkg/hcl/eval"
+	"github.com/pulumi/pulumi/pkg/v3/util/pdag"
+	"github.com/pulumi/pulumi/sdk/v3/go/common/util/contract"
 )
 
 // Node represents a node in the dependency graph.
@@ -32,9 +38,6 @@ type Node struct {
 
 	// Type indicates what kind of node this is
 	Type NodeType
-
-	// Dependencies are the keys of nodes this node depends on
-	Dependencies []string
 
 	// Resource is set for resource/data nodes
 	Resource *ast.Resource
@@ -56,13 +59,15 @@ type Node struct {
 type NodeType int
 
 const (
-	NodeTypeVariable NodeType = iota
+	NodeTypeUnknown NodeType = iota
+	NodeTypeVariable
 	NodeTypeLocal
 	NodeTypeResource
 	NodeTypeDataSource
 	NodeTypeModule
 	NodeTypeOutput
 	NodeTypeProvider
+	NodeTypeBuiltin
 )
 
 func (t NodeType) String() string {
@@ -81,6 +86,8 @@ func (t NodeType) String() string {
 		return "output"
 	case NodeTypeProvider:
 		return "provider"
+	case NodeTypeBuiltin:
+		return "builtin"
 	default:
 		return "unknown"
 	}
@@ -88,222 +95,278 @@ func (t NodeType) String() string {
 
 // Graph represents a dependency graph of configuration elements.
 type Graph struct {
-	nodes map[string]*Node
+	seen map[string]internedNode
+	dag  *pdag.DAG[dagNode]
+}
+
+type dagNode struct {
+	key  string
+	exec func(context.Context) error
+}
+
+type internedNode struct {
+	i pdag.Node
+	n *Node
 }
 
 // NewGraph creates a new empty graph.
 func NewGraph() *Graph {
 	return &Graph{
-		nodes: make(map[string]*Node),
+		seen: make(map[string]internedNode),
+		dag:  pdag.New[dagNode](),
 	}
+}
+
+func (g *Graph) Walk(ctx context.Context, apply func(context.Context, *Node) error) error {
+	return g.dag.Walk(ctx, func(ctx context.Context, n dagNode) error {
+		if n.exec != nil {
+			return n.exec(ctx)
+		}
+		node, ok := g.seen[n.key]
+		contract.Assertf(ok, "invalid graph - key not interned")
+		return apply(ctx, node.n)
+	})
+}
+
+// Inject a step to run after all nodes of kind nodeType, and before any other kind of node.
+//
+// This creates an inflection point in the graph. All nodes of type nodeType *must* come before all nodes of other
+// types.
+func (g *Graph) InjectAfter(f func(context.Context) error, nodeType NodeType) error {
+	n, done := g.dag.NewNode(dagNode{exec: f})
+	done()
+	for _, node := range g.seen {
+		var err error
+		switch node.n.Type {
+		case nodeType:
+			err = g.dag.NewEdge(node.i, n)
+		default:
+			err = g.dag.NewEdge(n, node.i)
+		}
+		if err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (g *Graph) newNode(key string) (*Node, pdag.Node) {
+	if n, ok := g.seen[key]; ok {
+		contract.Assertf(n.n.Key == key, "key should not be changed")
+		return n.n, n.i
+	}
+	i, done := g.dag.NewNode(dagNode{key: key})
+	n := &Node{Key: key}
+	done() // We don't execute the graph as we build - so this is always safe
+	g.seen[key] = internedNode{
+		i: i,
+		n: n,
+	}
+	return n, i
 }
 
 // AddNode adds a node to the graph.
-func (g *Graph) AddNode(node *Node) {
-	g.nodes[node.Key] = node
-}
-
-// GetNode returns a node by its key.
-func (g *Graph) GetNode(key string) *Node {
-	return g.nodes[key]
-}
-
-// Nodes returns all nodes in the graph.
-func (g *Graph) Nodes() []*Node {
-	nodes := make([]*Node, 0, len(g.nodes))
-	for _, node := range g.nodes {
-		nodes = append(nodes, node)
+func (g *Graph) AddNode(node *Node, deps []pdag.Node) error {
+	n, i := g.newNode(node.Key)
+	*n = *node
+	for _, dep := range deps {
+		err := g.dag.NewEdge(dep, i)
+		if err != nil {
+			return err
+		}
 	}
-	return nodes
+	return nil
 }
 
 // BuildFromConfig builds a dependency graph from an HCL configuration.
 func BuildFromConfig(config *ast.Config) (*Graph, error) {
 	g := NewGraph()
 
+	contract.AssertNoErrorf(errors.Join(
+		g.AddNode(&Node{
+			Key:  "pulumi.stack",
+			Type: NodeTypeBuiltin,
+		}, nil),
+		g.AddNode(&Node{
+			Key:  "pulumi.project",
+			Type: NodeTypeBuiltin,
+		}, nil),
+		g.AddNode(&Node{
+			Key:  "pulumi.organization",
+			Type: NodeTypeBuiltin,
+		}, nil),
+	), "nodes without dependencies cannot error")
+
 	// Add variable nodes (no dependencies, they come from outside)
 	for name, v := range config.Variables {
-		g.AddNode(&Node{
-			Key:          "var." + name,
-			Type:         NodeTypeVariable,
-			Dependencies: nil,
-			Variable:     v,
-		})
+		err := g.AddNode(&Node{
+			Key:      "var." + name,
+			Type:     NodeTypeVariable,
+			Variable: v,
+		}, nil)
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	// Add local value nodes
 	for name, local := range config.Locals {
-		deps := extractDependenciesFromExpression(local.Value)
-		g.AddNode(&Node{
-			Key:          "local." + name,
-			Type:         NodeTypeLocal,
-			Dependencies: deps,
-			Local:        local,
-		})
+		deps := g.extractDependenciesFromExpression(local.Value)
+		err := g.AddNode(&Node{
+			Key:   "local." + name,
+			Type:  NodeTypeLocal,
+			Local: local,
+		}, deps)
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	// Add resource nodes
 	for key, resource := range config.Resources {
-		deps := extractResourceDependencies(resource)
-		g.AddNode(&Node{
-			Key:          key,
-			Type:         NodeTypeResource,
-			Dependencies: deps,
-			Resource:     resource,
-		})
+		deps := g.extractResourceDependencies(resource)
+		err := g.AddNode(&Node{
+			Key:      key,
+			Type:     NodeTypeResource,
+			Resource: resource,
+		}, deps)
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	// Add data source nodes
 	for key, dataSource := range config.DataSources {
-		deps := extractResourceDependencies(dataSource)
-		g.AddNode(&Node{
-			Key:          "data." + key,
-			Type:         NodeTypeDataSource,
-			Dependencies: deps,
-			Resource:     dataSource,
-		})
+		deps := g.extractResourceDependencies(dataSource)
+		err := g.AddNode(&Node{
+			Key:      "data." + key,
+			Type:     NodeTypeDataSource,
+			Resource: dataSource,
+		}, deps)
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	// Add module nodes
 	for name, module := range config.Modules {
-		deps := extractModuleDependencies(module)
-		g.AddNode(&Node{
-			Key:          "module." + name,
-			Type:         NodeTypeModule,
-			Dependencies: deps,
-			Module:       module,
-		})
+		deps := g.extractModuleDependencies(module)
+		err := g.AddNode(&Node{
+			Key:    "module." + name,
+			Type:   NodeTypeModule,
+			Module: module,
+		}, deps)
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	// Add output nodes
 	for name, output := range config.Outputs {
-		deps := extractDependenciesFromExpression(output.Value)
-		g.AddNode(&Node{
-			Key:          "output." + name,
-			Type:         NodeTypeOutput,
-			Dependencies: deps,
-			Output:       output,
-		})
+		deps := g.extractDependenciesFromExpression(output.Value)
+		err := g.AddNode(&Node{
+			Key:    "output." + name,
+			Type:   NodeTypeOutput,
+			Output: output,
+		}, deps)
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	return g, nil
 }
 
 // extractResourceDependencies extracts all dependencies from a resource.
-func extractResourceDependencies(resource *ast.Resource) []string {
-	var deps []string
-	seen := make(map[string]bool)
+func (g *Graph) extractResourceDependencies(resource *ast.Resource) []pdag.Node {
+	seen := make(map[pdag.Node]bool)
 
 	// Extract from count expression
-	for _, dep := range extractDependenciesFromExpression(resource.Count) {
-		if !seen[dep] {
-			deps = append(deps, dep)
-			seen[dep] = true
-		}
+	for _, dep := range g.extractDependenciesFromExpression(resource.Count) {
+		seen[dep] = true
 	}
 
 	// Extract from for_each expression
-	for _, dep := range extractDependenciesFromExpression(resource.ForEach) {
-		if !seen[dep] {
-			deps = append(deps, dep)
-			seen[dep] = true
-		}
+	for _, dep := range g.extractDependenciesFromExpression(resource.ForEach) {
+		seen[dep] = true
 	}
 
 	// Extract from explicit depends_on
 	for _, traversal := range resource.DependsOn {
 		dep := formatTraversal(traversal)
-		if dep != "" && !seen[dep] {
-			deps = append(deps, dep)
-			seen[dep] = true
+		if dep != "" {
+			_, idx := g.newNode(dep)
+			seen[idx] = true
 		}
 	}
 
 	// Extract from resource body (config block)
 	if resource.Config != nil {
-		bodyDeps := extractDependenciesFromBody(resource.Config)
+		bodyDeps := g.extractDependenciesFromBody(resource.Config)
 		for _, dep := range bodyDeps {
-			if !seen[dep] {
-				deps = append(deps, dep)
-				seen[dep] = true
-			}
+			seen[dep] = true
 		}
 	}
 
-	return deps
+	return slices.Collect(maps.Keys(seen))
 }
 
 // extractModuleDependencies extracts all dependencies from a module block.
-func extractModuleDependencies(module *ast.Module) []string {
-	var deps []string
-	seen := make(map[string]bool)
+func (g *Graph) extractModuleDependencies(module *ast.Module) []pdag.Node {
+	seen := make(map[pdag.Node]bool)
 
 	// Extract from count expression
-	for _, dep := range extractDependenciesFromExpression(module.Count) {
-		if !seen[dep] {
-			deps = append(deps, dep)
-			seen[dep] = true
-		}
+	for _, dep := range g.extractDependenciesFromExpression(module.Count) {
+		seen[dep] = true
 	}
 
 	// Extract from for_each expression
-	for _, dep := range extractDependenciesFromExpression(module.ForEach) {
-		if !seen[dep] {
-			deps = append(deps, dep)
-			seen[dep] = true
-		}
+	for _, dep := range g.extractDependenciesFromExpression(module.ForEach) {
+		seen[dep] = true
 	}
 
 	// Extract from explicit depends_on
 	for _, traversal := range module.DependsOn {
 		dep := formatTraversal(traversal)
-		if dep != "" && !seen[dep] {
-			deps = append(deps, dep)
-			seen[dep] = true
+		if dep != "" {
+			_, idx := g.newNode(dep)
+			seen[idx] = true
 		}
 	}
 
 	// Extract from module config body
 	if module.Config != nil {
-		bodyDeps := extractDependenciesFromBody(module.Config)
+		bodyDeps := g.extractDependenciesFromBody(module.Config)
 		for _, dep := range bodyDeps {
-			if !seen[dep] {
-				deps = append(deps, dep)
-				seen[dep] = true
-			}
+			seen[dep] = true
 		}
 	}
 
-	return deps
+	return slices.Collect(maps.Keys(seen))
 }
 
 // extractDependenciesFromBody extracts dependencies from an HCL body.
-func extractDependenciesFromBody(body hcl.Body) []string {
-	var deps []string
-	seen := make(map[string]bool)
+func (g *Graph) extractDependenciesFromBody(body hcl.Body) []pdag.Node {
+	seen := make(map[pdag.Node]bool)
 
 	attrs, _ := body.JustAttributes()
 	for _, attr := range attrs {
-		for _, dep := range extractDependenciesFromExpression(attr.Expr) {
-			if !seen[dep] {
-				deps = append(deps, dep)
-				seen[dep] = true
-			}
+		for _, dep := range g.extractDependenciesFromExpression(attr.Expr) {
+			seen[dep] = true
 		}
 	}
 
-	return deps
+	return slices.Collect(maps.Keys(seen))
 }
 
 // extractDependenciesFromExpression extracts ALL dependencies from an expression,
 // including var and local references (unlike eval.ExtractDependencies which only extracts resource deps).
-func extractDependenciesFromExpression(expr hcl.Expression) []string {
+func (g *Graph) extractDependenciesFromExpression(expr hcl.Expression) []pdag.Node {
 	if expr == nil {
 		return nil
 	}
 
 	var deps []string
-	seen := make(map[string]bool)
 
 	for _, traversal := range expr.Variables() {
 		namespace, parts := eval.ParseTraversal(traversal)
@@ -340,13 +403,18 @@ func extractDependenciesFromExpression(expr hcl.Expression) []string {
 			}
 		}
 
-		if dep != "" && !seen[dep] {
-			deps = append(deps, dep)
-			seen[dep] = true
+		if dep != "" {
+			addToSortedListAsSet(&deps, dep)
 		}
 	}
 
-	return deps
+	result := make([]pdag.Node, len(deps))
+	for i, dep := range deps {
+		_, n := g.newNode(dep)
+		result[i] = n
+	}
+
+	return result
 }
 
 // FormatTraversal converts a traversal to a dependency string.
@@ -391,168 +459,23 @@ func formatTraversal(traversal hcl.Traversal) string {
 	return ""
 }
 
-// TopologicalSort performs a topological sort on the graph.
-// Returns nodes in execution order (dependencies before dependents).
-// Returns an error if a cycle is detected.
-func (g *Graph) TopologicalSort() ([]*Node, error) {
-	// Create working data structures
-	inDegree := make(map[string]int)
-	adjacency := make(map[string][]string)
-
-	// Initialize in-degrees and adjacency list
-	for key := range g.nodes {
-		inDegree[key] = 0
-		adjacency[key] = nil
-	}
-
-	// Build adjacency list and calculate in-degrees
-	for key, node := range g.nodes {
-		for _, dep := range node.Dependencies {
-			// Only count dependencies that are in the graph
-			if _, exists := g.nodes[dep]; exists {
-				adjacency[dep] = append(adjacency[dep], key)
-				inDegree[key]++
-			}
-		}
-	}
-
-	// Find all nodes with no dependencies
-	var queue []string
-	for key, degree := range inDegree {
-		if degree == 0 {
-			queue = append(queue, key)
-		}
-	}
-
-	// Sort queue for deterministic ordering
-	sort.Strings(queue)
-
-	var result []*Node
-	for len(queue) > 0 {
-		// Take first item from queue
-		key := queue[0]
-		queue = queue[1:]
-
-		node := g.nodes[key]
-		result = append(result, node)
-
-		// Update in-degrees for dependents
-		dependents := adjacency[key]
-		sort.Strings(dependents) // For deterministic ordering
-		for _, dependent := range dependents {
-			inDegree[dependent]--
-			if inDegree[dependent] == 0 {
-				queue = append(queue, dependent)
-			}
-		}
-		sort.Strings(queue) // Maintain sorted order
-	}
-
-	// Check for cycle
-	if len(result) != len(g.nodes) {
-		// Find nodes in cycle
-		var cycleNodes []string
-		for key, degree := range inDegree {
-			if degree > 0 {
-				cycleNodes = append(cycleNodes, key)
-			}
-		}
-		return nil, fmt.Errorf("dependency cycle detected involving: %v", cycleNodes)
-	}
-
-	return result, nil
-}
-
-// ReverseTopologicalSort returns nodes in reverse topological order
-// (dependents before dependencies). Useful for destroy ordering.
-func (g *Graph) ReverseTopologicalSort() ([]*Node, error) {
-	sorted, err := g.TopologicalSort()
-	if err != nil {
-		return nil, err
-	}
-
-	// Reverse the slice
-	for i, j := 0, len(sorted)-1; i < j; i, j = i+1, j-1 {
-		sorted[i], sorted[j] = sorted[j], sorted[i]
-	}
-
-	return sorted, nil
-}
-
-// GetDependents returns all nodes that depend on the given node.
-func (g *Graph) GetDependents(key string) []*Node {
-	var dependents []*Node
-	for _, node := range g.nodes {
-		for _, dep := range node.Dependencies {
-			if dep == key {
-				dependents = append(dependents, node)
-				break
-			}
-		}
-	}
-	return dependents
-}
-
-// GetTransitiveDependencies returns all nodes that the given node depends on,
-// including indirect dependencies.
-func (g *Graph) GetTransitiveDependencies(key string) []*Node {
-	visited := make(map[string]bool)
-	var result []*Node
-
-	var visit func(k string)
-	visit = func(k string) {
-		if visited[k] {
-			return
-		}
-		visited[k] = true
-
-		node := g.nodes[k]
-		if node == nil {
-			return
-		}
-
-		for _, dep := range node.Dependencies {
-			visit(dep)
-		}
-
-		if k != key { // Don't include the starting node
-			result = append(result, node)
-		}
-	}
-
-	visit(key)
-	return result
-}
-
-// FilterByType returns all nodes of a specific type.
-func (g *Graph) FilterByType(nodeType NodeType) []*Node {
-	var result []*Node
-	for _, node := range g.nodes {
-		if node.Type == nodeType {
-			result = append(result, node)
-		}
-	}
-	return result
-}
-
 // Validate checks the graph for common issues.
 func (g *Graph) Validate() []error {
 	var errors []error
 
 	// Check for missing dependencies
-	for key, node := range g.nodes {
-		for _, dep := range node.Dependencies {
-			if _, exists := g.nodes[dep]; !exists {
-				errors = append(errors, fmt.Errorf("%s depends on unknown %s", key, dep))
-			}
+	for key, node := range g.seen {
+		if node.n.Type == NodeTypeUnknown {
+			errors = append(errors, fmt.Errorf("unknown node %q", key))
 		}
 	}
 
-	// Check for cycles
-	_, err := g.TopologicalSort()
-	if err != nil {
-		errors = append(errors, err)
-	}
-
 	return errors
+}
+
+func addToSortedListAsSet[S ~[]E, E cmp.Ordered](s *S, element E) {
+	idx, found := slices.BinarySearch(*s, element)
+	if !found {
+		*s = slices.Insert(*s, idx, element)
+	}
 }

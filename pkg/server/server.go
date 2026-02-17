@@ -655,6 +655,14 @@ func (r *resourceMonitorAdapter) RegisterResource(
 	// Stack and component resources are not custom; provider resources are
 	isCustom := req.Type != "pulumi:pulumi:Stack" && !strings.HasPrefix(req.Type, "pulumi:providers:")
 
+	// Convert PropertyDependencies to protobuf format
+	propDeps := make(map[string]*pulumirpc.RegisterResourceRequest_PropertyDependencies)
+	for prop, urns := range req.PropertyDependencies {
+		propDeps[prop] = &pulumirpc.RegisterResourceRequest_PropertyDependencies{
+			Urns: urns,
+		}
+	}
+
 	// Build the registration request
 	registerReq := &pulumirpc.RegisterResourceRequest{
 		Type:                       req.Type,
@@ -663,6 +671,7 @@ func (r *resourceMonitorAdapter) RegisterResource(
 		Object:                     inputsStruct,
 		Protect:                    &req.Protect,
 		Dependencies:               req.Dependencies,
+		PropertyDependencies:       propDeps,
 		Provider:                   req.Provider,
 		Parent:                     req.Parent,
 		IgnoreChanges:              req.IgnoreChanges,
