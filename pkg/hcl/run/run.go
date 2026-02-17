@@ -521,7 +521,7 @@ func (e *Engine) processVariable(ctx context.Context, node *graph.Node) error {
 	if valueSource == "" {
 		if v.Default != nil {
 			var diags hcl.Diagnostics
-			val, diags = v.Default.Value(e.evaluator.Context().HCLContext())
+			val, diags = e.evaluator.EvaluateExpression(v.Default)
 			if diags.HasErrors() {
 				return fmt.Errorf("evaluating variable default: %s", diags.Error())
 			}
@@ -564,7 +564,7 @@ func (e *Engine) processVariable(ctx context.Context, node *graph.Node) error {
 	// Run validations
 	for i, validation := range v.Validations {
 		// Evaluate condition
-		condVal, diags := validation.Condition.Value(e.evaluator.Context().HCLContext())
+		condVal, diags := e.evaluator.EvaluateExpression(validation.Condition)
 		if diags.HasErrors() {
 			return fmt.Errorf("evaluating validation condition %d for variable %q: %s", i+1, varName, diags.Error())
 		}
@@ -576,7 +576,7 @@ func (e *Engine) processVariable(ctx context.Context, node *graph.Node) error {
 
 		if condVal.False() {
 			// Get error message
-			errMsgVal, diags := validation.ErrorMessage.Value(e.evaluator.Context().HCLContext())
+			errMsgVal, diags := e.evaluator.EvaluateExpression(validation.ErrorMessage)
 			var errMsg string
 			if diags.HasErrors() || errMsgVal.Type() != cty.String {
 				errMsg = "validation failed"
@@ -743,7 +743,7 @@ func (e *Engine) registerResourceInstance(
 	inputs := make(resource.PropertyMap)
 
 	for name, attr := range attrs {
-		val, diags := attr.Expr.Value(e.evaluator.Context().HCLContext())
+		val, diags := e.evaluator.EvaluateExpression(attr.Expr)
 		if diags.HasErrors() {
 			return fmt.Errorf("evaluating attribute %s: %s", name, diags.Error())
 		}
@@ -1059,7 +1059,7 @@ func (e *Engine) processDataSource(ctx context.Context, node *graph.Node) error 
 	inputs := make(resource.PropertyMap)
 
 	for name, attr := range attrs {
-		val, diags := attr.Expr.Value(e.evaluator.Context().HCLContext())
+		val, diags := e.evaluator.EvaluateExpression(attr.Expr)
 		if diags.HasErrors() {
 			return fmt.Errorf("evaluating attribute %s: %s", name, diags.Error())
 		}
@@ -1153,7 +1153,7 @@ func (e *Engine) expandModuleInstances(mod *ast.Module) ([]*expandedModule, erro
 
 	// Handle count
 	if mod.Count != nil {
-		countVal, diags := mod.Count.Value(e.evaluator.Context().HCLContext())
+		countVal, diags := e.evaluator.EvaluateExpression(mod.Count)
 		if diags.HasErrors() {
 			return nil, fmt.Errorf("evaluating count: %s", diags.Error())
 		}
@@ -1180,7 +1180,7 @@ func (e *Engine) expandModuleInstances(mod *ast.Module) ([]*expandedModule, erro
 
 	// Handle for_each
 	if mod.ForEach != nil {
-		forEachVal, diags := mod.ForEach.Value(e.evaluator.Context().HCLContext())
+		forEachVal, diags := e.evaluator.EvaluateExpression(mod.ForEach)
 		if diags.HasErrors() {
 			return nil, fmt.Errorf("evaluating for_each: %s", diags.Error())
 		}
@@ -1229,7 +1229,7 @@ func (e *Engine) processModuleInstance(ctx context.Context, mod *ast.Module, ins
 	inputs := make(resource.PropertyMap)
 	attrs, _ := mod.Config.JustAttributes()
 	for name, attr := range attrs {
-		val, diags := attr.Expr.Value(e.evaluator.Context().HCLContext())
+		val, diags := e.evaluator.EvaluateExpression(attr.Expr)
 		if diags.HasErrors() {
 			return fmt.Errorf("evaluating module input %s: %s", name, diags.Error())
 		}
@@ -1402,7 +1402,7 @@ func (e *Engine) collectModuleOutputs() cty.Value {
 	outputMap := make(map[string]cty.Value)
 
 	for name, output := range e.config.Outputs {
-		val, diags := output.Value.Value(e.evaluator.Context().HCLContext())
+		val, diags := e.evaluator.EvaluateExpression(output.Value)
 		if !diags.HasErrors() {
 			outputMap[name] = val
 		}
@@ -1518,7 +1518,7 @@ func (e *Engine) evaluateCheckRules(
 ) error {
 	for i, rule := range rules {
 		// Evaluate the condition
-		condVal, diags := rule.Condition.Value(e.evaluator.Context().HCLContext())
+		condVal, diags := e.evaluator.EvaluateExpression(rule.Condition)
 		if diags.HasErrors() {
 			return fmt.Errorf("evaluating %s %d for %s: %s", phase, i+1, resourceName, diags.Error())
 		}
@@ -1534,7 +1534,7 @@ func (e *Engine) evaluateCheckRules(
 		}
 
 		// Condition failed - evaluate the error message
-		msgVal, msgDiags := rule.ErrorMessage.Value(e.evaluator.Context().HCLContext())
+		msgVal, msgDiags := e.evaluator.EvaluateExpression(rule.ErrorMessage)
 		if msgDiags.HasErrors() {
 			return fmt.Errorf("%s %d for %s failed (could not evaluate error message: %s)",
 				phase, i+1, resourceName, msgDiags.Error())
@@ -1563,7 +1563,7 @@ func (e *Engine) checkPulumiVersion(ctx context.Context) error {
 	}
 
 	// Evaluate the requiredVersionRange expression
-	versionVal, diags := e.config.Pulumi.RequiredVersionRange.Value(e.evaluator.Context().HCLContext())
+	versionVal, diags := e.evaluator.EvaluateExpression(e.config.Pulumi.RequiredVersionRange)
 	if diags.HasErrors() {
 		return fmt.Errorf("evaluating requiredVersionRange: %s", diags.Error())
 	}
