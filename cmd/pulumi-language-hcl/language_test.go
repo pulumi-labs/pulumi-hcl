@@ -131,7 +131,6 @@ var expectedFailures = map[string]string{
 	"l1-builtin-stash":                             "program generation not yet implemented",
 	"l1-builtin-try":                               "program generation not yet implemented",
 	"l1-config-types-object":                       "program generation not yet implemented",
-	"l1-config-types-primitive":                    "program generation not yet implemented",
 	"l1-elide-index":                               "program generation not yet implemented",
 	"l1-keyword-overlap":                           "program generation not yet implemented",
 	"l1-proxy-index":                               "program generation not yet implemented",
