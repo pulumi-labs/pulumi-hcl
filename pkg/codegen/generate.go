@@ -42,6 +42,12 @@ func GenerateProgram(program *pcl.Program) (map[string][]byte, hcl.Diagnostics, 
 		case *pcl.OutputVariable:
 			d := genOutput(body, n)
 			diags = append(diags, d...)
+		case *pcl.ConfigVariable:
+			d := genConfigVariable(body, n)
+			diags = append(diags, d...)
+		case *pcl.LocalVariable:
+			d := genLocalVariable(body, n)
+			diags = append(diags, d...)
 		default:
 			diags = append(diags, &hcl.Diagnostic{
 				Severity: hcl.DiagError,
@@ -115,6 +121,34 @@ func resourceHCLType(r *pcl.Resource) (string, hcl.Diagnostics) {
 	return strings.ToLower(pkg + "_" + mod + name), nil
 }
 
+func genConfigVariable(body *hclwrite.Body, cv *pcl.ConfigVariable) hcl.Diagnostics {
+	block := body.AppendNewBlock("variable", []string{cv.LogicalName()})
+
+	// Set the type constraint if the config has a type label.
+	if len(cv.SyntaxNode().(*hclsyntax.Block).Labels) == 2 {
+		typeStr := cv.SyntaxNode().(*hclsyntax.Block).Labels[1]
+		block.Body().SetAttributeRaw("type", hclwrite.Tokens{
+			{Type: hclsyntax.TokenIdent, Bytes: []byte(typeStr)},
+		})
+	}
+
+	// Set the default value if present.
+	if cv.DefaultValue != nil {
+		tokens, diags := exprTokens(cv.DefaultValue)
+		if diags.HasErrors() {
+			return diags
+		}
+		block.Body().SetAttributeRaw("default", tokens)
+	}
+
+	return nil
+}
+
+func genLocalVariable(body *hclwrite.Body, lv *pcl.LocalVariable) hcl.Diagnostics {
+	block := body.AppendNewBlock("locals", nil)
+	return genExpression(block.Body(), lv.LogicalName(), lv.Definition.Value)
+}
+
 func genOutput(body *hclwrite.Body, ov *pcl.OutputVariable) hcl.Diagnostics {
 	block := body.AppendNewBlock("output", []string{ov.LogicalName()})
 	return genExpression(block.Body(), "value", ov.Value)
@@ -151,6 +185,10 @@ func exprTokens(expr model.Expression) (hclwrite.Tokens, hcl.Diagnostics) {
 		return tupleTokens(e)
 	case *model.ObjectConsExpression:
 		return objectTokens(e)
+	case *model.IndexExpression:
+		return indexExprTokens(e)
+	case *model.RelativeTraversalExpression:
+		return relativeTraversalTokens(e)
 	default:
 		return nil, hcl.Diagnostics{{
 			Severity: hcl.DiagError,
@@ -179,12 +217,10 @@ func funcCallTokens(expr *model.FunctionCallExpression) (hclwrite.Tokens, hcl.Di
 		}), nil
 	case "getOutput":
 		return getOutputTokens(expr)
+	case "secret":
+		return passthroughFuncCallTokens("sensitive", expr.Args)
 	default:
-		return nil, hcl.Diagnostics{{
-			Severity: hcl.DiagError,
-			Summary:  "unsupported function",
-			Detail:   fmt.Sprintf("function %q is not yet supported", expr.Name),
-		}}
+		return passthroughFuncCallTokens(expr.Name, expr.Args)
 	}
 }
 
@@ -245,8 +281,99 @@ func getOutputTokens(expr *model.FunctionCallExpression) (hclwrite.Tokens, hcl.D
 }
 
 // scopeTraversalTokens generates HCL tokens for a scope traversal expression.
+// PCL config variables become HCL `var.<name>`, and local variables become `local.<name>`.
 func scopeTraversalTokens(expr *model.ScopeTraversalExpression) (hclwrite.Tokens, hcl.Diagnostics) {
-	return hclwrite.TokensForTraversal(expr.Traversal), nil
+	traversal := expr.Traversal
+	if len(expr.Parts) > 0 {
+		var prefix string
+		switch expr.Parts[0].(type) {
+		case *pcl.ConfigVariable:
+			prefix = "var"
+		case *pcl.LocalVariable:
+			prefix = "local"
+		}
+		if prefix != "" {
+			// Rewrite "aMap.x" → "var.aMap.x" (or "local.aMap.x").
+			// The original traversal starts with TraverseRoot{Name: "aMap"}.
+			// We replace that with TraverseRoot{Name: "var"}, TraverseAttr{Name: "aMap"}.
+			rewritten := make(hcl.Traversal, 0, len(traversal)+1)
+			rewritten = append(rewritten, hcl.TraverseRoot{Name: prefix})
+			rewritten = append(rewritten, hcl.TraverseAttr{Name: traversal.RootName()})
+			rewritten = append(rewritten, traversal[1:]...)
+			traversal = rewritten
+		}
+	}
+	return hclwrite.TokensForTraversal(traversal), nil
+}
+
+// passthroughFuncCallTokens generates tokens for a function call: name(arg1, arg2, ...).
+func passthroughFuncCallTokens(name string, args []model.Expression) (hclwrite.Tokens, hcl.Diagnostics) {
+	tokens := hclwrite.Tokens{
+		{Type: hclsyntax.TokenIdent, Bytes: []byte(name)},
+		{Type: hclsyntax.TokenOParen, Bytes: []byte("(")},
+	}
+	var diags hcl.Diagnostics
+	for i, arg := range args {
+		if i > 0 {
+			tokens = append(tokens, &hclwrite.Token{Type: hclsyntax.TokenComma, Bytes: []byte(",")})
+		}
+		argTokens, d := exprTokens(arg)
+		diags = append(diags, d...)
+		if d.HasErrors() {
+			return nil, diags
+		}
+		tokens = append(tokens, argTokens...)
+	}
+	tokens = append(tokens, &hclwrite.Token{Type: hclsyntax.TokenCParen, Bytes: []byte(")")})
+	return tokens, diags
+}
+
+// indexExprTokens generates tokens for an index expression: collection[key].
+func indexExprTokens(expr *model.IndexExpression) (hclwrite.Tokens, hcl.Diagnostics) {
+	collTokens, diags := exprTokens(expr.Collection)
+	if diags.HasErrors() {
+		return nil, diags
+	}
+	keyTokens, d := exprTokens(expr.Key)
+	diags = append(diags, d...)
+	if d.HasErrors() {
+		return nil, diags
+	}
+
+	tokens := append(collTokens,
+		&hclwrite.Token{Type: hclsyntax.TokenOBrack, Bytes: []byte("[")},
+	)
+	tokens = append(tokens, keyTokens...)
+	tokens = append(tokens, &hclwrite.Token{Type: hclsyntax.TokenCBrack, Bytes: []byte("]")})
+	return tokens, diags
+}
+
+// relativeTraversalTokens generates tokens for a relative traversal expression: source.attr.
+func relativeTraversalTokens(expr *model.RelativeTraversalExpression) (hclwrite.Tokens, hcl.Diagnostics) {
+	sourceTokens, diags := exprTokens(expr.Source)
+	if diags.HasErrors() {
+		return nil, diags
+	}
+	// Append traversal steps as attribute access tokens.
+	for _, step := range expr.Traversal {
+		switch s := step.(type) {
+		case hcl.TraverseAttr:
+			sourceTokens = append(sourceTokens,
+				&hclwrite.Token{Type: hclsyntax.TokenDot, Bytes: []byte(".")},
+				&hclwrite.Token{Type: hclsyntax.TokenIdent, Bytes: []byte(s.Name)},
+			)
+		case hcl.TraverseIndex:
+			keyTokens := hclwrite.TokensForValue(s.Key)
+			sourceTokens = append(sourceTokens,
+				&hclwrite.Token{Type: hclsyntax.TokenOBrack, Bytes: []byte("[")},
+			)
+			sourceTokens = append(sourceTokens, keyTokens...)
+			sourceTokens = append(sourceTokens,
+				&hclwrite.Token{Type: hclsyntax.TokenCBrack, Bytes: []byte("]")},
+			)
+		}
+	}
+	return sourceTokens, diags
 }
 
 // extractStringLiteral extracts a string from a literal expression,

@@ -35,6 +35,7 @@ import (
 	"github.com/pulumi/pulumi/sdk/v3/go/common/resource"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/util/contract"
 	"github.com/zclconf/go-cty/cty"
+	"github.com/zclconf/go-cty/cty/function/stdlib"
 	"github.com/zclconf/go-cty/cty/json"
 )
 
@@ -523,15 +524,19 @@ func (e *Engine) processVariable(ctx context.Context, node *graph.Node) error {
 		}
 	}
 
-	// Type conversion if type constraint is specified and value came from string source (env/config)
-	if v.TypeConstraint != cty.NilType && v.TypeConstraint != cty.DynamicPseudoType {
-		if valueSource == "environment" || valueSource == "config" {
-			// String values from config/env need type conversion
+	// Type conversion if value came from string source (env/config)
+	if valueSource == "environment" || valueSource == "config" {
+		if v.TypeConstraint != cty.NilType && v.TypeConstraint != cty.DynamicPseudoType {
 			converted, err := convertStringToType(val.AsString(), v.TypeConstraint)
 			if err != nil {
 				return fmt.Errorf("variable %q: %w", varName, err)
 			}
 			val = converted
+		} else {
+			// No type constraint: try JSON parsing for structured values.
+			if parsed, err := parseJSONAuto(val.AsString()); err == nil {
+				val = parsed
+			}
 		}
 	}
 
@@ -614,6 +619,17 @@ func parseJSONValue(s string, targetType cty.Type) (cty.Value, error) {
 	return val, nil
 }
 
+// parseJSONAuto parses a JSON string into a cty value, automatically inferring the type.
+// This uses cty's jsondecode function, which handles plain JSON (objects, arrays, strings, etc.)
+// without requiring a type descriptor.
+func parseJSONAuto(s string) (cty.Value, error) {
+	result, err := stdlib.JSONDecodeFunc.Call([]cty.Value{cty.StringVal(s)})
+	if err != nil {
+		return cty.NilVal, err
+	}
+	return result, nil
+}
+
 // processLocal processes a local value definition.
 func (e *Engine) processLocal(ctx context.Context, node *graph.Node) error {
 	local := node.Local
@@ -621,8 +637,8 @@ func (e *Engine) processLocal(ctx context.Context, node *graph.Node) error {
 		return fmt.Errorf("local node missing Local field")
 	}
 
-	// Evaluate the local value expression
-	val, diags := local.Value.Value(e.evaluator.Context().HCLContext())
+	// Evaluate the local value expression, intercepting can() calls.
+	val, diags := e.evaluator.EvaluateExpression(local.Value)
 	if diags.HasErrors() {
 		return fmt.Errorf("evaluating local value: %s", diags.Error())
 	}
@@ -1371,8 +1387,8 @@ func (e *Engine) collectModuleOutputs() cty.Value {
 
 // processOutput processes an output definition.
 func (e *Engine) processOutput(ctx context.Context, name string, output *ast.Output) error {
-	// Evaluate the output value
-	val, diags := output.Value.Value(e.evaluator.Context().HCLContext())
+	// Evaluate the output value, intercepting can() calls.
+	val, diags := e.evaluator.EvaluateExpression(output.Value)
 	if diags.HasErrors() {
 		return fmt.Errorf("evaluating output value: %s", diags.Error())
 	}

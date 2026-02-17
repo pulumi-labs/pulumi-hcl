@@ -69,12 +69,14 @@ func runTestingHost(t *testing.T) (string, testingrpc.LanguageTestClient) {
 	// We can't just go run the pulumi-test-language package because of
 	// https://github.com/golang/go/issues/39172, so we build it to a temp file then run that.
 	binary := t.TempDir() + "/pulumi-test-language"
-	cmd := exec.Command("go", "build", "-o", binary, "github.com/pulumi/pulumi/cmd/pulumi-test-language")
+	cmd := exec.CommandContext(t.Context(),
+		"go", "build", "-o", binary,
+		"github.com/pulumi/pulumi/pkg/v3/testing/pulumi-test-language")
 	output, err := cmd.CombinedOutput()
 	t.Logf("build output: %s", output)
 	require.NoError(t, err)
 
-	cmd = exec.Command(binary)
+	cmd = exec.CommandContext(t.Context(), binary)
 	stdout, err := cmd.StdoutPipe()
 	require.NoError(t, err)
 	stderr, err := cmd.StderrPipe()
@@ -124,13 +126,13 @@ func runTestingHost(t *testing.T) (string, testingrpc.LanguageTestClient) {
 }
 
 var expectedFailures = map[string]string{
-	"l1-builtin-can":                               "program generation not yet implemented",
 	"l1-builtin-info":                              "program generation not yet implemented",
 	"l1-builtin-require-pulumi-version":            "program generation not yet implemented",
 	"l1-builtin-stash":                             "program generation not yet implemented",
 	"l1-builtin-try":                               "program generation not yet implemented",
 	"l1-config-types-object":                       "program generation not yet implemented",
 	"l1-config-types-primitive":                    "program generation not yet implemented",
+	"l1-elide-index":                               "program generation not yet implemented",
 	"l1-keyword-overlap":                           "program generation not yet implemented",
 	"l1-proxy-index":                               "program generation not yet implemented",
 	"l2-camel-names":                               "missing expected dependency",
@@ -139,7 +141,10 @@ var expectedFailures = map[string]string{
 	"l2-component-program-resource-ref":            "missing expected dependency",
 	"l2-component-property-deps":                   "missing expected dependency",
 	"l2-destroy":                                   "missing expected dependency",
+	"l2-discriminated-union":                       "missing expected dependency",
+	"l2-elide-index":                               "missing expected dependency",
 	"l2-engine-update-options":                     "missing expected dependency",
+	"l2-enum":                                      "missing expected dependency",
 	"l2-explicit-parameterized-provider":           "missing expected dependency",
 	"l2-explicit-provider":                         "missing expected dependency",
 	"l2-explicit-providers":                        "missing expected dependency",
@@ -157,6 +162,7 @@ var expectedFailures = map[string]string{
 	"l2-keywords":                                  "missing expected dependency",
 	"l2-large-string":                              "missing expected dependency",
 	"l2-map-keys":                                  "missing expected dependency",
+	"l2-module-format":                             "missing expected dependency",
 	"l2-namespaced-provider":                       "missing expected dependency",
 	"l2-parallel-resources":                        "missing expected dependency",
 	"l2-parameterized-invoke":                      "missing expected dependency",
