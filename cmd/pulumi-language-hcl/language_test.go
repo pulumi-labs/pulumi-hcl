@@ -126,8 +126,7 @@ func runTestingHost(t *testing.T) (string, testingrpc.LanguageTestClient) {
 }
 
 var expectedFailures = map[string]string{
-	"l1-builtin-stash":                             "replicate the language specific parts of https://github.com/pulumi/pulumi/pull/20819",
-	"l2-enum":                                      "We don't have a type system, so just generate enums as their underlying values",
+	"l2-enum": "We don't have a type system, so just generate enums as their underlying values",
 	"l2-invoke-dependencies":                       "not yet implemented",
 	"l2-invoke-options":                            "not yet implemented",
 	"l2-invoke-options-depends-on":                 "not yet implemented",
