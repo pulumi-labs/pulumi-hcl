@@ -20,9 +20,14 @@ import (
 	"fmt"
 	"math/big"
 
+	"github.com/pulumi/pulumi/pkg/v3/codegen/schema"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/resource"
 	"github.com/zclconf/go-cty/cty"
 )
+
+func CtyToResourcePropertyValue(val cty.Value, field string, r *schema.Resource) (resource.PropertyValue, error) {
+	return CtyToPropertyValue(val)
+}
 
 // CtyToPropertyValue converts a cty.Value to a Pulumi PropertyValue.
 func CtyToPropertyValue(val cty.Value) (resource.PropertyValue, error) {
@@ -238,6 +243,10 @@ func goToPropertyValue(v any) (resource.PropertyValue, error) {
 	}
 }
 
+func ResourcePropertyToCty(pv resource.PropertyValue, field resource.PropertyKey, r *schema.Resource) (string, cty.Value) {
+	return string(field), PropertyValueToCty(pv)
+}
+
 // PropertyValueToCty converts a Pulumi PropertyValue to a cty.Value.
 func PropertyValueToCty(pv resource.PropertyValue) cty.Value {
 	if pv.IsNull() {
@@ -342,18 +351,4 @@ func MakeSecret(pv resource.PropertyValue) resource.PropertyValue {
 // MakeComputed wraps a PropertyValue as computed/unknown.
 func MakeComputed(pv resource.PropertyValue) resource.PropertyValue {
 	return resource.MakeComputed(pv)
-}
-
-// TransformPropertyName converts an HCL property name to a Pulumi property name.
-// Pulumi uses camelCase while Terraform uses snake_case.
-func TransformPropertyName(hclName string) string {
-	// For now, keep the original name.
-	// Bridged providers typically accept both forms.
-	return hclName
-}
-
-// TransformPropertyNameReverse converts a Pulumi property name to HCL property name.
-func TransformPropertyNameReverse(pulumiName string) string {
-	// For now, keep the original name.
-	return pulumiName
 }

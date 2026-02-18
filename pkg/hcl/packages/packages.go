@@ -23,6 +23,7 @@ import (
 	"strings"
 
 	"github.com/pulumi/pulumi/pkg/v3/codegen/schema"
+	"github.com/pulumi/pulumi/sdk/v3/go/common/util/contract"
 )
 
 var ErrNotFound = errors.New("not found")
@@ -51,16 +52,29 @@ func ResolveResource(ctx context.Context, loader schema.ReferenceLoader, token s
 		return nil, InvalidToken{token: token, reason: "Pulumi HCL tokens must have at least 2 parts"}
 	}
 
+	// transform the default provider token into something the
+	if provider, ok := strings.CutPrefix(token, "pulumi_providers_"); ok {
+		pkg, err := resolvePackage(ctx, loader, &schema.PackageDescriptor{Name: provider})
+		if err != nil {
+			return nil, err
+		}
+		return pkg.Provider()
+	}
+
 	// TODO: Thread through sufficient information to be deterministic:
 	// - Version
 	// - DownloadURL
 	// - Parameterization
-
-	descriptor := &schema.PackageDescriptor{Name: parts[0]}
-
-	pkg, err := loader.LoadPackageReferenceV2(ctx, descriptor)
+	pkg, err := resolvePackage(ctx, loader, &schema.PackageDescriptor{Name: parts[0]})
 	if err != nil {
-		return nil, fmt.Errorf("unable to load schema from %s: %w", descriptor, err)
+		return nil, err
+	}
+
+	// Prevent users from needing to write pulumi_pulumi_stackreference
+	if token == "pulumi_stackreference" {
+		r, ok, err := pkg.Resources().Get("pulumi:pulumi:StackReference")
+		contract.Assertf(ok, "stack references are there")
+		return r, err
 	}
 
 	key := strings.Join(parts[1:], "")
@@ -74,6 +88,19 @@ func ResolveResource(ctx context.Context, loader schema.ReferenceLoader, token s
 	return nil, ErrNotFound
 }
 
+func resolvePackage(ctx context.Context, loader schema.ReferenceLoader, descriptor *schema.PackageDescriptor) (schema.PackageReference, error) {
+	if descriptor.Name == "pulumi" {
+		return schema.DefaultPulumiPackage.Reference(), nil
+	}
+
+	pkg, err := loader.LoadPackageReferenceV2(ctx, descriptor)
+	if err != nil {
+		return nil, fmt.Errorf("unable to load schema from %s: %w", descriptor, err)
+	}
+	return pkg, nil
+
+}
+
 func ResolveFunction(ctx context.Context, loader schema.ReferenceLoader, token string) (*schema.Function, error) {
 	parts := strings.Split(token, "_")
 	if len(parts) < 2 {
@@ -84,9 +111,10 @@ func ResolveFunction(ctx context.Context, loader schema.ReferenceLoader, token s
 	// - Version
 	// - DownloadURL
 	// - Parameterization
-	pkg, err := loader.LoadPackageReferenceV2(ctx, &schema.PackageDescriptor{Name: parts[0]})
+
+	pkg, err := resolvePackage(ctx, loader, &schema.PackageDescriptor{Name: parts[0]})
 	if err != nil {
-		return nil, fmt.Errorf("unable to load schema from %q: %w", parts[0], err)
+		return nil, err
 	}
 
 	key := strings.Join(parts[1:], "")
@@ -97,5 +125,17 @@ func ResolveFunction(ctx context.Context, loader schema.ReferenceLoader, token s
 			return iter.Function()
 		}
 	}
+
+	// Allow omitting the "get" on Pulumi datasources.
+
+	key = parts[1] + "get" + strings.Join(parts[2:], "")
+	for iter := pkg.Functions().Range(); iter.Next(); {
+		mod := pkg.TokenToModule(iter.Token())
+		name := strings.Split(iter.Token(), ":")[2]
+		if strings.ToLower(mod+name) == key {
+			return iter.Function()
+		}
+	}
+
 	return nil, ErrNotFound
 }
