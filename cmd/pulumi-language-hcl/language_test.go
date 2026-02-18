@@ -126,7 +126,6 @@ func runTestingHost(t *testing.T) (string, testingrpc.LanguageTestClient) {
 }
 
 var expectedFailures = map[string]string{
-	"l2-enum":                                      "We don't have a type system, so just generate enums as their underlying values",
 	"l2-invoke-options":                            "not yet implemented - remember that invoke's in Pulumi are datasources in HCL",
 	"l2-invoke-options-depends-on":                 "not yet implemented - remember that invoke's in Pulumi are datasources in HCL",
 	"l2-invoke-output-only":                        "not yet implemented - remember that invoke's in Pulumi are datasources in HCL - this should be trivial since HCL is all outputs",
