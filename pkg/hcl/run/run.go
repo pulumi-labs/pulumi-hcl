@@ -517,26 +517,6 @@ func (e *Engine) processLocal(ctx context.Context, node *graph.Node) error {
 	return nil
 }
 
-// builtinResourceTypes maps HCL resource type names to Pulumi built-in type tokens.
-// These resources are handled by the Pulumi engine itself and don't need schema resolution.
-var builtinResourceTypes = map[string]string{
-	"pulumi_stackreference": "pulumi:pulumi:StackReference",
-}
-
-// isProviderResource checks if a resource type represents a provider resource.
-// Provider resources have types like "pulumi_providers_<name>".
-func isProviderResourceType(resType string) bool {
-	return strings.HasPrefix(resType, "pulumi_providers_")
-}
-
-// providerResourceTypeToToken converts a provider resource type to its Pulumi token.
-// E.g., "pulumi_providers_simple" -> "pulumi:providers:simple"
-func providerResourceTypeToToken(resType string) string {
-	// Strip "pulumi_providers_" prefix
-	name := strings.TrimPrefix(resType, "pulumi_providers_")
-	return "pulumi:providers:" + name
-}
-
 // processProvider processes a provider configuration and registers it as a provider resource.
 func (e *Engine) processProvider(ctx context.Context, node *graph.Node) error {
 	provider := node.Provider
@@ -613,19 +593,9 @@ func (e *Engine) processResource(ctx context.Context, node *graph.Node) error {
 	}
 
 	// Resolve the resource type to a Pulumi type token.
-	// Check for built-in types first, then provider resources, then fall back to schema resolution.
-	var typeToken string
-	if token, ok := builtinResourceTypes[res.Type]; ok {
-		typeToken = token
-	} else if isProviderResourceType(res.Type) {
-		// Provider resources don't need schema resolution
-		typeToken = providerResourceTypeToToken(res.Type)
-	} else {
-		resType, err := packages.ResolveResource(ctx, e.pkgLoader, res.Type)
-		if err != nil {
-			return fmt.Errorf("resolving resource type %s: %w", res.Type, err)
-		}
-		typeToken = resType.Token
+	resSchema, err := packages.ResolveResource(ctx, e.pkgLoader, res.Type)
+	if err != nil {
+		return fmt.Errorf("resolving resource type %s: %w", res.Type, err)
 	}
 
 	// Check for count/for_each expansion
@@ -652,7 +622,7 @@ func (e *Engine) processResource(ctx context.Context, node *graph.Node) error {
 
 	// Register each instance
 	for _, instance := range result.Instances {
-		if err := e.registerResourceInstance(ctx, res, typeToken, instance); err != nil {
+		if err := e.registerResourceInstance(ctx, res, resSchema, instance); err != nil {
 			return fmt.Errorf("registering %s: %w", instance.Key, err)
 		}
 	}
@@ -664,7 +634,7 @@ func (e *Engine) processResource(ctx context.Context, node *graph.Node) error {
 func (e *Engine) registerResourceInstance(
 	ctx context.Context,
 	res *ast.Resource,
-	typeToken string,
+	resSchema *schema.Resource,
 	instance *graph.ExpandedResource,
 ) error {
 	// Set up instance-specific context (count.index, each.key, etc.)
@@ -688,7 +658,7 @@ func (e *Engine) registerResourceInstance(
 			return fmt.Errorf("evaluating attribute %s: %s", name, diags.Error())
 		}
 
-		pv, err := transform.CtyToPropertyValue(val)
+		pv, err := transform.CtyToResourcePropertyValue(val, name, resSchema)
 		if err != nil {
 			return fmt.Errorf("converting attribute %s: %w", name, err)
 		}
@@ -747,7 +717,7 @@ func (e *Engine) registerResourceInstance(
 	// Register the resource
 	// Extract the resource name from the instance key (e.g., "pulumi_stash.myStash" -> "myStash")
 	resourceName := extractResourceName(instance.Key)
-	urn, id, outputs, err := e.registerResource(ctx, typeToken, resourceName, inputs, opts)
+	urn, id, outputs, err := e.registerResource(ctx, resSchema.Token, resourceName, inputs, opts)
 	if err != nil {
 		return fmt.Errorf("registering resource: %w", err)
 	}
@@ -760,8 +730,8 @@ func (e *Engine) registerResourceInstance(
 
 	for k, v := range outputs {
 		// Convert camelCase to snake_case for Terraform compatibility
-		snakeKey := camelToSnake(string(k))
-		outputObj[snakeKey] = transform.PropertyValueToCty(v)
+		tfKey, tfValue := transform.ResourcePropertyToCty(v, k, resSchema)
+		outputObj[tfKey] = tfValue
 	}
 
 	e.resourceOutputs.Set(instance.Key, cty.ObjectVal(outputObj))
