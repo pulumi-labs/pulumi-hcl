@@ -105,6 +105,7 @@ var resourceSchema = &hcl.BodySchema{
 		{Name: "for_each"},
 		{Name: "depends_on"},
 		{Name: "provider"},
+		{Name: "additional_secret_outputs"},
 	},
 	Blocks: []hcl.BlockHeaderSchema{
 		{Type: "lifecycle"},

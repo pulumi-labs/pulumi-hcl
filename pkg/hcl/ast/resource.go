@@ -76,6 +76,9 @@ type Resource struct {
 	// Provider is the provider configuration reference, if specified.
 	Provider *ProviderRef
 
+	// AdditionalSecretOutputs lists output properties that should be treated as secret.
+	AdditionalSecretOutputs hcl.Expression
+
 	// Lifecycle contains lifecycle configuration, if present.
 	Lifecycle *Lifecycle
 

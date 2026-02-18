@@ -469,6 +469,10 @@ func (p *Parser) parseResourceBlock(config *ast.Config, block *hcl.Block, isData
 		resource.Provider = providerRef
 	}
 
+	if attr, ok := content.Attributes["additional_secret_outputs"]; ok {
+		resource.AdditionalSecretOutputs = attr.Expr
+	}
+
 	// Parse nested blocks
 	for _, subBlock := range content.Blocks {
 		switch subBlock.Type {
