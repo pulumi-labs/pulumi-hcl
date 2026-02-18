@@ -53,6 +53,9 @@ type Node struct {
 
 	// Module is set for module nodes
 	Module *ast.Module
+
+	// Provider is set for provider nodes
+	Provider *ast.Provider
 }
 
 // NodeType indicates what type of configuration element a node represents.
@@ -222,6 +225,19 @@ func BuildFromConfig(config *ast.Config) (*Graph, error) {
 		}
 	}
 
+	// Add provider nodes (must come before resources since resources can reference them)
+	for key, provider := range config.Providers {
+		deps := g.extractProviderDependencies(provider)
+		err := g.AddNode(&Node{
+			Key:      key,
+			Type:     NodeTypeProvider,
+			Provider: provider,
+		}, deps)
+		if err != nil {
+			return nil, err
+		}
+	}
+
 	// Add resource nodes
 	for key, resource := range config.Resources {
 		deps := g.extractResourceDependencies(resource)
@@ -300,6 +316,16 @@ func (g *Graph) extractResourceDependencies(resource *ast.Resource) []pdag.Node 
 		}
 	}
 
+	// Extract from provider reference
+	if resource.Provider != nil {
+		providerKey := resource.Provider.Name
+		if resource.Provider.Alias != "" {
+			providerKey = resource.Provider.Name + "." + resource.Provider.Alias
+		}
+		_, idx := g.newNode(providerKey)
+		seen[idx] = true
+	}
+
 	// Extract from resource body (config block)
 	if resource.Config != nil {
 		bodyDeps := g.extractDependenciesFromBody(resource.Config)
@@ -337,6 +363,21 @@ func (g *Graph) extractModuleDependencies(module *ast.Module) []pdag.Node {
 	// Extract from module config body
 	if module.Config != nil {
 		bodyDeps := g.extractDependenciesFromBody(module.Config)
+		for _, dep := range bodyDeps {
+			seen[dep] = true
+		}
+	}
+
+	return slices.Collect(maps.Keys(seen))
+}
+
+// extractProviderDependencies extracts all dependencies from a provider block.
+func (g *Graph) extractProviderDependencies(provider *ast.Provider) []pdag.Node {
+	seen := make(map[pdag.Node]bool)
+
+	// Extract from provider config body
+	if provider.Config != nil {
+		bodyDeps := g.extractDependenciesFromBody(provider.Config)
 		for _, dep := range bodyDeps {
 			seen[dep] = true
 		}

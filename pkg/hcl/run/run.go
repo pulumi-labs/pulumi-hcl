@@ -304,8 +304,7 @@ func (e *Engine) processNode(ctx context.Context, node *graph.Node) error {
 		// Outputs are processed after the main loop
 		return nil
 	case graph.NodeTypeProvider:
-		// Provider configurations are handled during resource registration
-		return nil
+		return e.processProvider(ctx, node)
 	case graph.NodeTypeBuiltin:
 		// We don't need to evaluate builtins
 		return nil
@@ -523,6 +522,88 @@ var builtinResourceTypes = map[string]string{
 	"pulumi_stackreference": "pulumi:pulumi:StackReference",
 }
 
+// isProviderResource checks if a resource type represents a provider resource.
+// Provider resources have types like "pulumi_providers_<name>".
+func isProviderResourceType(resType string) bool {
+	return strings.HasPrefix(resType, "pulumi_providers_")
+}
+
+// providerResourceTypeToToken converts a provider resource type to its Pulumi token.
+// E.g., "pulumi_providers_simple" -> "pulumi:providers:simple"
+func providerResourceTypeToToken(resType string) string {
+	// Strip "pulumi_providers_" prefix
+	name := strings.TrimPrefix(resType, "pulumi_providers_")
+	return "pulumi:providers:" + name
+}
+
+// processProvider processes a provider configuration and registers it as a provider resource.
+func (e *Engine) processProvider(ctx context.Context, node *graph.Node) error {
+	provider := node.Provider
+	if provider == nil {
+		return fmt.Errorf("provider node missing Provider field")
+	}
+
+	// Construct the provider type token: "pulumi:providers:<provider-name>"
+	typeToken := "pulumi:providers:" + provider.Name
+
+	// Evaluate provider configuration
+	attrs, _ := provider.Config.JustAttributes()
+	inputs := make(resource.PropertyMap)
+
+	for name, attr := range attrs {
+		// Skip the alias attribute as it's not part of the provider configuration
+		if name == "alias" {
+			continue
+		}
+
+		val, diags := e.evaluator.EvaluateExpression(attr.Expr)
+		if diags.HasErrors() {
+			return fmt.Errorf("evaluating provider attribute %s: %s", name, diags.Error())
+		}
+
+		pv, err := transform.CtyToPropertyValue(val)
+		if err != nil {
+			return fmt.Errorf("converting provider attribute %s: %w", name, err)
+		}
+
+		inputs[resource.PropertyKey(name)] = pv
+	}
+
+	// Register the provider resource
+	// The logical name for the provider is its alias (stored in node.Key)
+	logicalName := provider.Alias
+	if logicalName == "" {
+		logicalName = provider.Name
+	}
+
+	resp, err := e.resmon.RegisterResource(ctx, RegisterResourceRequest{
+		Type:   typeToken,
+		Name:   logicalName,
+		Inputs: inputs,
+	})
+	if err != nil {
+		return fmt.Errorf("registering provider %s: %w", node.Key, err)
+	}
+
+	// Provider resources should return an ID from the engine
+	providerID := resp.ID
+
+	// Store the provider outputs in the same format as regular resources
+	outputObj := make(map[string]cty.Value)
+	outputObj["id"] = cty.StringVal(providerID)
+	outputObj["urn"] = cty.StringVal(resp.URN)
+
+	for k, v := range resp.Outputs {
+		snakeKey := camelToSnake(string(k))
+		outputObj[snakeKey] = transform.PropertyValueToCty(v)
+	}
+
+	e.resourceOutputs.Set(node.Key, cty.ObjectVal(outputObj))
+	e.evaluator.Context().SetResource(node.Key, cty.ObjectVal(outputObj))
+
+	return nil
+}
+
 // processResource processes a resource definition.
 func (e *Engine) processResource(ctx context.Context, node *graph.Node) error {
 	res := node.Resource
@@ -531,10 +612,13 @@ func (e *Engine) processResource(ctx context.Context, node *graph.Node) error {
 	}
 
 	// Resolve the resource type to a Pulumi type token.
-	// Check for built-in types first, then fall back to schema resolution.
+	// Check for built-in types first, then provider resources, then fall back to schema resolution.
 	var typeToken string
 	if token, ok := builtinResourceTypes[res.Type]; ok {
 		typeToken = token
+	} else if isProviderResourceType(res.Type) {
+		// Provider resources don't need schema resolution
+		typeToken = providerResourceTypeToToken(res.Type)
 	} else {
 		resType, err := packages.ResolveResource(ctx, e.pkgLoader, res.Type)
 		if err != nil {
@@ -756,9 +840,18 @@ func (e *Engine) buildResourceOptions(res *ast.Resource, instance *graph.Expande
 
 	// Handle provider reference
 	if res.Provider != nil {
-		opts.Provider = res.Provider.Name
+		providerKey := res.Provider.Name
 		if res.Provider.Alias != "" {
-			opts.Provider = res.Provider.Name + "." + res.Provider.Alias
+			providerKey = res.Provider.Name + "." + res.Provider.Alias
+		}
+		// Look up the provider URN and ID
+		if providerOutputs, ok := e.resourceOutputs.Get(providerKey); ok {
+			// Provider reference format: "<urn>::<id>"
+			urnVal := providerOutputs.GetAttr("urn")
+			idVal := providerOutputs.GetAttr("id")
+			if urnVal.Type() == cty.String && idVal.Type() == cty.String {
+				opts.Provider = urnVal.AsString() + "::" + idVal.AsString()
+			}
 		}
 	}
 

@@ -126,8 +126,7 @@ func runTestingHost(t *testing.T) (string, testingrpc.LanguageTestClient) {
 }
 
 var expectedFailures = map[string]string{
-	"l2-explicit-provider":                         "not yet implemented - explicit providers should be created as a normal resource (in the pulumi way)",
-	"l2-explicit-providers":                        "not yet implemented",
+	"l2-explicit-providers": "not yet implemented",
 	"l2-resource-option-additional-secret-outputs": "not yet implemented",
 	"l2-resource-option-alias":                     "not yet implemented",
 	"l2-resource-option-custom-timeouts":           "not yet implemented",
@@ -138,12 +137,12 @@ var expectedFailures = map[string]string{
 	"l2-resource-option-hide-diffs":                "not yet implemented",
 	"l2-resource-option-ignore-changes":            "not yet implemented",
 	"l2-resource-option-import":                    "not yet implemented",
-	"l2-resource-option-plugin-download-url":       "not yet implemented",
 	"l2-resource-option-protect":                   "not yet implemented",
 	"l2-resource-option-replace-on-changes":        "not yet implemented",
 	"l2-resource-option-replace-with":              "not yet implemented",
 	"l2-resource-option-replacement-trigger":       "not yet implemented",
 	"l2-resource-option-retain-on-delete":          "not yet implemented",
+	"l2-resource-option-plugin-download-url":       "not yet implemented",
 	"l2-resource-option-version":                   "not yet implemented",
 	"l2-resource-option-version-sdk":               "not yet implemented",
 	"l2-invoke-options":                            "not yet implemented - remember that invoke's in Pulumi are datasources in HCL",

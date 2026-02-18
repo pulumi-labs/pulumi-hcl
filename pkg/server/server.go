@@ -652,8 +652,9 @@ func (r *resourceMonitorAdapter) RegisterResource(
 	}
 
 	// Determine if this is a custom (provider-backed) resource
-	// Stack and component resources are not custom; provider resources are
-	isCustom := req.Type != "pulumi:pulumi:Stack" && !strings.HasPrefix(req.Type, "pulumi:providers:")
+	// Non-custom resources: Stack (pulumi:pulumi:Stack) and module components (*:modules:*)
+	// Custom resources: Provider resources (pulumi:providers:*) and regular resources
+	isCustom := req.Type != "pulumi:pulumi:Stack" && !strings.Contains(req.Type, ":modules:")
 
 	// Convert PropertyDependencies to protobuf format
 	propDeps := make(map[string]*pulumirpc.RegisterResourceRequest_PropertyDependencies)
