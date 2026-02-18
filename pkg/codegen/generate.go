@@ -36,8 +36,7 @@ func GenerateProgram(program *pcl.Program) (map[string][]byte, hcl.Diagnostics, 
 
 	// Create a generator context to track invoke data sources
 	gen := &generator{
-		program:           program,
-		invokeDataSources: make(map[*model.FunctionCallExpression]string),
+		program: program,
 	}
 
 	genRequiredProviders(body, program)
@@ -48,8 +47,8 @@ func GenerateProgram(program *pcl.Program) (map[string][]byte, hcl.Diagnostics, 
 	}
 
 	// Generate data source blocks for invokes
-	for invoke, dsName := range gen.invokeDataSources {
-		d := gen.genInvokeDataSource(body, invoke, dsName)
+	for _, ds := range gen.invokeDataSources {
+		d := gen.genInvokeDataSource(body, ds.expr, ds.name)
 		diags = append(diags, d...)
 	}
 
@@ -90,7 +89,12 @@ func GenerateProgram(program *pcl.Program) (map[string][]byte, hcl.Diagnostics, 
 // generator holds state during code generation, including invoke data sources.
 type generator struct {
 	program           *pcl.Program
-	invokeDataSources map[*model.FunctionCallExpression]string // maps invoke call -> data source name
+	invokeDataSources []spilledDataSource
+}
+
+type spilledDataSource struct {
+	expr *model.FunctionCallExpression
+	name string
 }
 
 func genRequiredProviders(body *hclwrite.Body, program *pcl.Program) {
@@ -143,9 +147,10 @@ func (g *generator) collectInvokesInExpr(expr model.Expression) {
 	_, diags := model.VisitExpression(expr, nil, func(expr model.Expression) (model.Expression, hcl.Diagnostics) {
 		if call, ok := expr.(*model.FunctionCallExpression); ok {
 			if call.Name == pcl.Invoke {
-				// Generate a unique data source name
-				dsName := fmt.Sprintf("invoke_%d", len(g.invokeDataSources))
-				g.invokeDataSources[call] = dsName
+				g.invokeDataSources = append(g.invokeDataSources, spilledDataSource{
+					expr: call,
+					name: fmt.Sprintf("invoke_%d", len(g.invokeDataSources)),
+				})
 			}
 		}
 		return expr, nil
@@ -306,7 +311,14 @@ func (g *generator) exprTokens(expr model.Expression) (hclwrite.Tokens, hcl.Diag
 	case *model.FunctionCallExpression:
 		// Check if this is an invoke call that we've replaced with a data source
 		if e.Name == pcl.Invoke {
-			if dsName, ok := g.invokeDataSources[e]; ok {
+			var dsName string
+			for _, v := range g.invokeDataSources {
+				if v.expr == e {
+					dsName = v.name
+					break
+				}
+			}
+			if dsName != "" {
 				// Generate reference to data source: data.type.name
 				token, ok := extractStringLiteral(e.Args[0])
 				if !ok {

@@ -126,6 +126,8 @@ func runTestingHost(t *testing.T) (string, testingrpc.LanguageTestClient) {
 }
 
 var expectedFailures = map[string]string{
+	"l2-explicit-provider":                         "not yet implemented",
+	"l2-explicit-providers":                        "not yet implemented",
 	"l2-invoke-options":                            "not yet implemented - remember that invoke's in Pulumi are datasources in HCL",
 	"l2-invoke-options-depends-on":                 "not yet implemented - remember that invoke's in Pulumi are datasources in HCL",
 	"l2-invoke-output-only":                        "not yet implemented - remember that invoke's in Pulumi are datasources in HCL - this should be trivial since HCL is all outputs",
@@ -143,8 +145,6 @@ var expectedFailures = map[string]string{
 	"l2-elide-index":                               "not yet implemented",
 	"l2-engine-update-options":                     "not yet implemented",
 	"l2-explicit-parameterized-provider":           "not yet implemented",
-	"l2-explicit-provider":                         "not yet implemented",
-	"l2-explicit-providers":                        "not yet implemented",
 	"l2-failed-create":                             "not yet implemented",
 	"l2-failed-create-continue-on-error":           "not yet implemented",
 	"l2-keywords":                                  "not yet implemented",

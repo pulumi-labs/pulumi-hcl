@@ -115,7 +115,7 @@ type Engine struct {
 	resmon ResourceMonitor
 
 	// resourceOutputs maps resource keys to their output values.
-	resourceOutputs map[string]cty.Value
+	resourceOutputs *util.SyncMap[string, cty.Value]
 
 	// dataSourceDependencies maps data source keys to their resource dependencies (URNs).
 	dataSourceDependencies *util.SyncMap[string, []resource.URN]
@@ -203,7 +203,7 @@ func NewEngine(config *ast.Config, opts *EngineOptions) *Engine {
 		evaluator:              eval.NewEvaluator(evalCtx),
 		pkgLoader:              opts.SchemaLoader,
 		resmon:                 opts.ResourceMonitor,
-		resourceOutputs:        make(map[string]cty.Value),
+		resourceOutputs:        util.NewSyncMap[string, cty.Value](),
 		dataSourceDependencies: util.NewSyncMap[string, []resource.URN](),
 		stackOutputs:           make(resource.PropertyMap),
 		projectName:            opts.ProjectName,
@@ -617,7 +617,7 @@ func (e *Engine) registerResourceInstance(
 			var urns []string
 			for _, dep := range deps {
 				// Look up the URN for this dependency
-				if resOutputs, ok := e.resourceOutputs[dep]; ok {
+				if resOutputs, ok := e.resourceOutputs.Get(dep); ok {
 					if urnVal := resOutputs.GetAttr("urn"); urnVal.Type() == cty.String {
 						urns = append(urns, urnVal.AsString())
 					}
@@ -679,7 +679,7 @@ func (e *Engine) registerResourceInstance(
 		outputObj[snakeKey] = transform.PropertyValueToCty(v)
 	}
 
-	e.resourceOutputs[instance.Key] = cty.ObjectVal(outputObj)
+	e.resourceOutputs.Set(instance.Key, cty.ObjectVal(outputObj))
 
 	// Also store in eval context for expression references
 	e.evaluator.Context().SetResource(instance.Key, cty.ObjectVal(outputObj))
@@ -971,7 +971,7 @@ func (e *Engine) processDataSource(ctx context.Context, node *graph.Node) error 
 		deps := eval.ExtractDependencies(attr.Expr)
 		for _, dep := range deps {
 			// Convert resource dependencies to URNs
-			if resOutputs, ok := e.resourceOutputs[dep]; ok {
+			if resOutputs, ok := e.resourceOutputs.Get(dep); ok {
 				if urnVal := resOutputs.GetAttr("urn"); urnVal.Type() == cty.String {
 					allDeps = append(allDeps, resource.URN(urnVal.AsString()))
 				}
@@ -1262,7 +1262,7 @@ func (e *Engine) createChildEngine(config *ast.Config, parentURN string, moduleD
 			e.stackName, e.projectName, e.organization)),
 		pkgLoader:        e.pkgLoader,
 		resmon:           e.resmon,
-		resourceOutputs:  make(map[string]cty.Value),
+		resourceOutputs:  util.NewSyncMap[string, cty.Value](),
 		stackOutputs:     make(resource.PropertyMap),
 		projectName:      e.projectName,
 		stackName:        e.stackName,
