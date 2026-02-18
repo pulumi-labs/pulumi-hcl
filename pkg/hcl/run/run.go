@@ -65,20 +65,21 @@ type CustomTimeouts struct {
 
 // RegisterResourceRequest contains the parameters for registering a resource.
 type RegisterResourceRequest struct {
-	Type                   string
-	Name                   string
-	Inputs                 resource.PropertyMap
-	Dependencies           []string
-	PropertyDependencies   map[string][]string // Map from property key to list of URNs it depends on
-	Protect                bool
-	IgnoreChanges          []string
-	Aliases                []string
-	Provider               string
-	Parent                 string
-	DeleteBeforeReplace    bool
-	DeleteBeforeReplaceDef bool // True if DeleteBeforeReplace was explicitly set
-	CustomTimeouts         *CustomTimeouts
-	ImportId               string // Resource ID to import
+	Type                    string
+	Name                    string
+	Inputs                  resource.PropertyMap
+	Dependencies            []string
+	PropertyDependencies    map[string][]string // Map from property key to list of URNs it depends on
+	Protect                 bool
+	IgnoreChanges           []string
+	Aliases                 []string
+	Provider                string
+	Parent                  string
+	DeleteBeforeReplace     bool
+	DeleteBeforeReplaceDef  bool // True if DeleteBeforeReplace was explicitly set
+	CustomTimeouts          *CustomTimeouts
+	ImportId                string // Resource ID to import
+	AdditionalSecretOutputs []string
 }
 
 // RegisterResourceResponse contains the result of registering a resource.
@@ -889,6 +890,20 @@ func (e *Engine) buildResourceOptions(res *ast.Resource, instance *graph.Expande
 	// Handle import blocks - resolve import ID from import blocks that target this resource
 	opts.ImportId = e.resolveImportId(res)
 
+	// Handle additional_secret_outputs
+	if res.AdditionalSecretOutputs != nil {
+		secretOutputsVal, diags := res.AdditionalSecretOutputs.Value(e.evaluator.Context().HCLContext())
+		if !diags.HasErrors() && (secretOutputsVal.Type().IsListType() || secretOutputsVal.Type().IsTupleType()) {
+			it := secretOutputsVal.ElementIterator()
+			for it.Next() {
+				_, elem := it.Element()
+				if elem.Type() == cty.String {
+					opts.AdditionalSecretOutputs = append(opts.AdditionalSecretOutputs, elem.AsString())
+				}
+			}
+		}
+	}
+
 	return opts
 }
 
@@ -977,17 +992,20 @@ func formatTraversalForIgnoreChanges(traversal hcl.Traversal) string {
 
 // ResourceOptions contains resource registration options.
 type ResourceOptions struct {
-	DependsOn              []string
-	PropertyDependencies   map[string][]string
-	Protect                bool
-	IgnoreChanges          []string
-	Aliases                []string
-	Provider               string
-	Parent                 string
-	DeleteBeforeReplace    bool
-	DeleteBeforeReplaceDef bool // True if DeleteBeforeReplace was explicitly set
-	CustomTimeouts         *CustomTimeouts
-	ImportId               string
+	Custom                  bool
+	Remote                  bool
+	DependsOn               []string
+	PropertyDependencies    map[string][]string
+	Protect                 bool
+	IgnoreChanges           []string
+	Aliases                 []string
+	Provider                string
+	Parent                  string
+	DeleteBeforeReplace     bool
+	DeleteBeforeReplaceDef  bool // True if DeleteBeforeReplace was explicitly set
+	CustomTimeouts          *CustomTimeouts
+	ImportId                string
+	AdditionalSecretOutputs []string
 }
 
 // registerResource registers a resource with the Pulumi engine.
@@ -1007,20 +1025,21 @@ func (e *Engine) registerResource(
 
 	// Register with the resource monitor
 	resp, err := e.resmon.RegisterResource(ctx, RegisterResourceRequest{
-		Type:                   typeToken,
-		Name:                   name,
-		Inputs:                 inputs,
-		Dependencies:           opts.DependsOn,
-		PropertyDependencies:   opts.PropertyDependencies,
-		Protect:                opts.Protect,
-		IgnoreChanges:          opts.IgnoreChanges,
-		Aliases:                opts.Aliases,
-		Provider:               opts.Provider,
-		Parent:                 opts.Parent,
-		DeleteBeforeReplace:    opts.DeleteBeforeReplace,
-		DeleteBeforeReplaceDef: opts.DeleteBeforeReplaceDef,
-		CustomTimeouts:         opts.CustomTimeouts,
-		ImportId:               opts.ImportId,
+		Type:                    typeToken,
+		Name:                    name,
+		Inputs:                  inputs,
+		Dependencies:            opts.DependsOn,
+		PropertyDependencies:    opts.PropertyDependencies,
+		Protect:                 opts.Protect,
+		IgnoreChanges:           opts.IgnoreChanges,
+		Aliases:                 opts.Aliases,
+		Provider:                opts.Provider,
+		Parent:                  opts.Parent,
+		DeleteBeforeReplace:     opts.DeleteBeforeReplace,
+		DeleteBeforeReplaceDef:  opts.DeleteBeforeReplaceDef,
+		CustomTimeouts:          opts.CustomTimeouts,
+		ImportId:                opts.ImportId,
+		AdditionalSecretOutputs: opts.AdditionalSecretOutputs,
 	})
 	if err != nil {
 		return "", "", nil, err

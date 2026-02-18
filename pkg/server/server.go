@@ -683,6 +683,7 @@ func (r *resourceMonitorAdapter) RegisterResource(
 		DeleteBeforeReplace:        req.DeleteBeforeReplace,
 		DeleteBeforeReplaceDefined: req.DeleteBeforeReplaceDef,
 		ImportId:                   req.ImportId,
+		AdditionalSecretOutputs:    req.AdditionalSecretOutputs,
 	}
 
 	// Add custom timeouts if specified

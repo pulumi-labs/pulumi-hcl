@@ -239,6 +239,15 @@ func (g *generator) genResource(body *hclwrite.Body, r *pcl.Resource) hcl.Diagno
 		}
 	}
 
+	// Handle additionalSecretOutputs option if present
+	if r.Options != nil && r.Options.AdditionalSecretOutputs != nil {
+		tokens, d := g.exprTokens(r.Options.AdditionalSecretOutputs)
+		diags = append(diags, d...)
+		if !d.HasErrors() {
+			block.Body().SetAttributeRaw("additional_secret_outputs", tokens)
+		}
+	}
+
 	for _, attr := range r.Inputs {
 		d := g.genExpression(block.Body(), attr.Name, attr.Value)
 		diags = append(diags, d...)
