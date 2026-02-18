@@ -152,7 +152,6 @@ var expectedFailures = map[string]string{
 	"l2-map-keys":                                  "not yet implemented",
 	"l2-module-format":                             "not yet implemented",
 	"l2-namespaced-provider":                       "not yet implemented",
-	"l2-parallel-resources":                        "not yet implemented",
 	"l2-parameterized-invoke":                      "not yet implemented",
 	"l2-parameterized-resource":                    "not yet implemented",
 	"l2-parameterized-resource-twice":              "not yet implemented",
@@ -242,9 +241,9 @@ func TestLanguage(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	//nolint:paralleltest // HCL runtime is not safe to run in parallel.
 	for _, tt := range tests.Tests {
 		t.Run(tt, func(t *testing.T) {
+			t.Parallel()
 			if strings.HasPrefix(tt, "l3-") {
 				t.Skip("HCL does not support level three tests")
 			}
