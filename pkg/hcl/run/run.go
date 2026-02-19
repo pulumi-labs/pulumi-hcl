@@ -648,22 +648,16 @@ func (e *Engine) registerResourceInstance(
 	}
 
 	// Evaluate resource configuration
-	attrs, _ := res.Config.JustAttributes()
-	inputs := make(resource.PropertyMap)
+	attrs, _ := res.Config.JustAttributes() // TODO: handle blocks
 	propertyDeps := make(map[string][]string)
 
+	resourceInputs := make(map[string]cty.Value, len(attrs))
 	for name, attr := range attrs {
 		val, diags := e.evaluator.EvaluateExpression(attr.Expr)
 		if diags.HasErrors() {
 			return fmt.Errorf("evaluating attribute %s: %s", name, diags.Error())
 		}
-
-		pv, err := transform.CtyToResourcePropertyValue(val, name, resSchema)
-		if err != nil {
-			return fmt.Errorf("converting attribute %s: %w", name, err)
-		}
-
-		inputs[resource.PropertyKey(name)] = pv
+		resourceInputs[name] = val
 
 		// Extract dependencies from this attribute's expression
 		deps := eval.ExtractDependencies(attr.Expr)
@@ -717,6 +711,12 @@ func (e *Engine) registerResourceInstance(
 	// Register the resource
 	// Extract the resource name from the instance key (e.g., "pulumi_stash.myStash" -> "myStash")
 	resourceName := extractResourceName(instance.Key)
+
+	inputs, err := transform.CtyToResourceInputs(cty.ObjectVal(resourceInputs), resSchema)
+	if err != nil {
+		return fmt.Errorf("converting resource to Pulumi types: %w", err)
+	}
+
 	urn, id, outputs, err := e.registerResource(ctx, resSchema.Token, resourceName, inputs, opts)
 	if err != nil {
 		return fmt.Errorf("registering resource: %w", err)
@@ -730,7 +730,7 @@ func (e *Engine) registerResourceInstance(
 
 	for k, v := range outputs {
 		// Convert camelCase to snake_case for Terraform compatibility
-		tfKey, tfValue := transform.ResourcePropertyToCty(v, k, resSchema)
+		tfKey, tfValue := transform.ResourceOutputToCty(v, k, resSchema)
 		outputObj[tfKey] = tfValue
 	}
 
