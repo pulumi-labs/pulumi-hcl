@@ -17,7 +17,6 @@ package transform
 
 import (
 	"fmt"
-	"math/big"
 	"os"
 	"strconv"
 	"strings"
@@ -147,6 +146,11 @@ strip:
 		return property.New(f).WithSecret(secret), nil
 	}
 
+	// We don't have any type info, so do a direct conversion.
+	if prop == schema.AnyType {
+		return ctyToPropertyValue(val)
+	}
+
 	// Handle complex types
 	switch prop := prop.(type) {
 	case *schema.ObjectType:
@@ -170,13 +174,13 @@ strip:
 		}
 		return property.New(arr), nil
 	case *schema.MapType:
-		if !val.Type().IsMapType() {
+		if !val.Type().IsMapType() && !val.Type().IsObjectType() {
 			return property.Value{}, fmt.Errorf("expected map at %q, found %v", path, val.Type())
 		}
 		m := make(map[string]property.Value, val.LengthInt())
 		for it := val.ElementIterator(); it.Next(); {
 			k, elem := it.Element()
-			convertedElem, err := ctyToResourceProperty(fmt.Sprintf("%s[%q]", path, k), elem, prop.ElementType, false)
+			convertedElem, err := ctyToResourceProperty(fmt.Sprintf("%s[%q]", path, k.AsString()), elem, prop.ElementType, false)
 			if err != nil {
 				return property.Value{}, err
 			}
@@ -184,7 +188,7 @@ strip:
 		}
 		return property.New(m), nil
 	default:
-		return property.Value{}, fmt.Errorf("%q: unknown schema type %T when converting %v", path, prop, val.Type())
+		return property.Value{}, fmt.Errorf("%q: unknown schema type %s when converting %#v", path, prop, val.Type())
 	}
 }
 
@@ -239,48 +243,40 @@ func snakeCaseFromCamelCase(s string) string {
 
 // CtyToPropertyValue converts a cty.Value to a Pulumi PropertyValue.
 func CtyToPropertyValue(val cty.Value) (resource.PropertyValue, error) {
+	v, err := ctyToPropertyValue(val)
+	return resource.ToResourcePropertyValue(v), err
+}
+
+func ctyToPropertyValue(val cty.Value) (property.Value, error) {
 	// Handle sensitive-marked values by unwrapping, converting, and wrapping as secret.
 	if val.IsMarked() {
 		unmarked, marks := val.Unmark()
-		pv, err := CtyToPropertyValue(unmarked)
-		if err != nil {
-			return pv, err
-		}
-		if _, isSensitive := marks["sensitive"]; isSensitive {
-			return resource.MakeSecret(pv), nil
-		}
-		return pv, nil
+		_, isSensitive := marks["sensitive"]
+		pv, err := ctyToPropertyValue(unmarked)
+		return pv.WithSecret(isSensitive), err
 	}
 
 	if val.IsNull() {
-		return resource.NewNullProperty(), nil
+		return property.New(property.Null), nil
 	}
 
 	if !val.IsKnown() {
 		// Unknown values are represented as computed in Pulumi
-		return resource.MakeComputed(resource.NewStringProperty("")), nil
+		return property.New(property.Computed), nil
 	}
 
 	typ := val.Type()
 
 	switch {
 	case typ == cty.Bool:
-		return resource.NewBoolProperty(val.True()), nil
+		return property.New(val.True()), nil
 
 	case typ == cty.String:
-		return resource.NewStringProperty(val.AsString()), nil
+		return property.New(val.AsString()), nil
 
 	case typ == cty.Number:
-		bf := val.AsBigFloat()
-		// Try to convert to int64 first
-		if bf.IsInt() {
-			if i64, acc := bf.Int64(); acc == big.Exact {
-				return resource.NewNumberProperty(float64(i64)), nil
-			}
-		}
-		// Fall back to float64
-		f64, _ := bf.Float64()
-		return resource.NewNumberProperty(f64), nil
+		f64, _ := val.AsBigFloat().Float64()
+		return property.New(f64), nil
 
 	case typ.IsListType() || typ.IsTupleType():
 		return ctyListToPropertyValue(val)
@@ -293,54 +289,54 @@ func CtyToPropertyValue(val cty.Value) (resource.PropertyValue, error) {
 
 	case typ == cty.DynamicPseudoType:
 		// Dynamic type - try to infer the type from the underlying value
-		return resource.NewNullProperty(), nil
+		return property.New(property.Null), nil
 
 	default:
-		return resource.PropertyValue{}, fmt.Errorf("unknown type %v", typ)
+		return property.Value{}, fmt.Errorf("unknown type %v", typ)
 	}
 }
 
 // ctyListToPropertyValue converts a cty list/tuple to a Pulumi array.
-func ctyListToPropertyValue(val cty.Value) (resource.PropertyValue, error) {
-	var arr []resource.PropertyValue
+func ctyListToPropertyValue(val cty.Value) (property.Value, error) {
+	arr := make([]property.Value, 0, val.LengthInt())
 	for it := val.ElementIterator(); it.Next(); {
 		_, elemVal := it.Element()
-		pv, err := CtyToPropertyValue(elemVal)
+		pv, err := ctyToPropertyValue(elemVal)
 		if err != nil {
-			return resource.PropertyValue{}, err
+			return property.Value{}, err
 		}
 		arr = append(arr, pv)
 	}
-	return resource.NewArrayProperty(arr), nil
+	return property.New(arr), nil
 }
 
 // ctySetToPropertyValue converts a cty set to a Pulumi array.
-func ctySetToPropertyValue(val cty.Value) (resource.PropertyValue, error) {
-	var arr []resource.PropertyValue
+func ctySetToPropertyValue(val cty.Value) (property.Value, error) {
+	var arr []property.Value
 	for it := val.ElementIterator(); it.Next(); {
 		_, elemVal := it.Element()
-		pv, err := CtyToPropertyValue(elemVal)
+		pv, err := ctyToPropertyValue(elemVal)
 		if err != nil {
-			return resource.PropertyValue{}, err
+			return property.Value{}, err
 		}
 		arr = append(arr, pv)
 	}
-	return resource.NewArrayProperty(arr), nil
+	return property.New(arr), nil
 }
 
 // ctyObjectToPropertyValue converts a cty map/object to a Pulumi object.
-func ctyObjectToPropertyValue(val cty.Value) (resource.PropertyValue, error) {
-	obj := make(resource.PropertyMap)
+func ctyObjectToPropertyValue(val cty.Value) (property.Value, error) {
+	obj := make(map[string]property.Value, val.LengthInt())
 	for it := val.ElementIterator(); it.Next(); {
 		keyVal, elemVal := it.Element()
 		key := keyVal.AsString()
-		pv, err := CtyToPropertyValue(elemVal)
+		pv, err := ctyToPropertyValue(elemVal)
 		if err != nil {
-			return resource.PropertyValue{}, err
+			return property.Value{}, err
 		}
-		obj[resource.PropertyKey(key)] = pv
+		obj[key] = pv
 	}
-	return resource.NewObjectProperty(obj), nil
+	return property.New(obj), nil
 }
 
 func ResourceOutputToCty(pv resource.PropertyValue, field resource.PropertyKey, r *schema.Resource) (string, cty.Value) {

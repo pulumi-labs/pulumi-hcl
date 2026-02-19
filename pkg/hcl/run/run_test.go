@@ -250,7 +250,11 @@ resource "aws_s3_bucket" "mybucket" {
 		SchemaLoader: newMockReferenceLoader(t, schema.PackageSpec{
 			Name: "aws",
 			Resources: map[string]schema.ResourceSpec{
-				"aws:s3:Bucket": schema.ResourceSpec{},
+				"aws:s3:Bucket": {
+					InputProperties: map[string]schema.PropertySpec{
+						"bucket": {TypeSpec: schema.TypeSpec{Type: "string"}},
+					},
+				},
 			},
 		}),
 	})
@@ -301,8 +305,17 @@ resource "aws_subnet" "main" {
 		SchemaLoader: newMockReferenceLoader(t, schema.PackageSpec{
 			Name: "aws",
 			Resources: map[string]schema.ResourceSpec{
-				"aws:index:Vpc":    schema.ResourceSpec{},
-				"aws:index:Subnet": schema.ResourceSpec{},
+				"aws:index:Vpc": {
+					InputProperties: map[string]schema.PropertySpec{
+						"cidrBlock": {TypeSpec: schema.TypeSpec{Type: "string"}},
+					},
+				},
+				"aws:index:Subnet": {
+					InputProperties: map[string]schema.PropertySpec{
+						"vpcId":     {TypeSpec: schema.TypeSpec{Type: "string"}},
+						"cidrBlock": {TypeSpec: schema.TypeSpec{Type: "string"}},
+					},
+				},
 			},
 		}),
 	})
@@ -358,7 +371,11 @@ resource "aws_instance" "web" {
 		SchemaLoader: newMockReferenceLoader(t, schema.PackageSpec{
 			Name: "aws",
 			Resources: map[string]schema.ResourceSpec{
-				"aws:index:Instance": schema.ResourceSpec{},
+				"aws:index:Instance": {
+					InputProperties: map[string]schema.PropertySpec{
+						"ami": {TypeSpec: schema.TypeSpec{Type: "string"}},
+					},
+				},
 			},
 		}),
 	})
@@ -447,8 +464,16 @@ resource "aws_instance" "web" {
 		SchemaLoader: newMockReferenceLoader(t, schema.PackageSpec{
 			Name: "aws",
 			Resources: map[string]schema.ResourceSpec{
-				"aws:index:Instance": schema.ResourceSpec{},
-				"aws:s3:Bucket":      schema.ResourceSpec{},
+				"aws:index:Instance": {
+					InputProperties: map[string]schema.PropertySpec{
+						"ami": {TypeSpec: schema.TypeSpec{Type: "string"}},
+					},
+				},
+				"aws:s3:Bucket": {
+					InputProperties: map[string]schema.PropertySpec{
+						"bucket": {TypeSpec: schema.TypeSpec{Type: "string"}},
+					},
+				},
 			},
 		}),
 	})
@@ -504,7 +529,11 @@ resource "aws_instance" "web" {
 		SchemaLoader: newMockReferenceLoader(t, schema.PackageSpec{
 			Name: "aws",
 			Resources: map[string]schema.ResourceSpec{
-				"aws:index:Instance": schema.ResourceSpec{},
+				"aws:index:Instance": {
+					InputProperties: map[string]schema.PropertySpec{
+						"ami": {TypeSpec: schema.TypeSpec{Type: "string"}},
+					},
+				},
 			},
 		}),
 	})
@@ -560,7 +589,11 @@ resource "aws_instance" "web" {
 		SchemaLoader: newMockReferenceLoader(t, schema.PackageSpec{
 			Name: "aws",
 			Resources: map[string]schema.ResourceSpec{
-				"aws:index:Instance": schema.ResourceSpec{},
+				"aws:index:Instance": {
+					InputProperties: map[string]schema.PropertySpec{
+						"ami": {TypeSpec: schema.TypeSpec{Type: "string"}},
+					},
+				},
 			},
 		}),
 	})
@@ -617,7 +650,11 @@ resource "aws_instance" "web" {
 		SchemaLoader: newMockReferenceLoader(t, schema.PackageSpec{
 			Name: "aws",
 			Resources: map[string]schema.ResourceSpec{
-				"aws:index:Instance": schema.ResourceSpec{},
+				"aws:index:Instance": {
+					InputProperties: map[string]schema.PropertySpec{
+						"ami": {TypeSpec: schema.TypeSpec{Type: "string"}},
+					},
+				},
 			},
 		}),
 	})
@@ -673,7 +710,11 @@ output "region_value" {
 		SchemaLoader: newMockReferenceLoader(t, schema.PackageSpec{
 			Name: "aws",
 			Resources: map[string]schema.ResourceSpec{
-				"aws:index:Instance": schema.ResourceSpec{},
+				"aws:index:Instance": {
+					InputProperties: map[string]schema.PropertySpec{
+						"ami": {TypeSpec: schema.TypeSpec{Type: "string"}},
+					},
+				},
 			},
 		}),
 		Config: map[string]string{
@@ -730,7 +771,11 @@ output "region_value" {
 		SchemaLoader: newMockReferenceLoader(t, schema.PackageSpec{
 			Name: "aws",
 			Resources: map[string]schema.ResourceSpec{
-				"aws:index:Instance": schema.ResourceSpec{},
+				"aws:index:Instance": {
+					InputProperties: map[string]schema.PropertySpec{
+						"ami": {TypeSpec: schema.TypeSpec{Type: "string"}},
+					},
+				},
 			},
 		}),
 		Config: map[string]string{
@@ -782,7 +827,11 @@ variable "required_var" {
 		SchemaLoader: newMockReferenceLoader(t, schema.PackageSpec{
 			Name: "aws",
 			Resources: map[string]schema.ResourceSpec{
-				"aws:index:Instance": schema.ResourceSpec{},
+				"aws:index:Instance": {
+					InputProperties: map[string]schema.PropertySpec{
+						"ami": {TypeSpec: schema.TypeSpec{Type: "string"}},
+					},
+				},
 			},
 		}),
 	})
@@ -833,7 +882,11 @@ output "instance_type" {
 		SchemaLoader: newMockReferenceLoader(t, schema.PackageSpec{
 			Name: "aws",
 			Resources: map[string]schema.ResourceSpec{
-				"aws:index:Instance": schema.ResourceSpec{},
+				"aws:index:Instance": {
+					InputProperties: map[string]schema.PropertySpec{
+						"ami": {TypeSpec: schema.TypeSpec{Type: "string"}},
+					},
+				},
 			},
 		}),
 	})
@@ -884,7 +937,11 @@ variable "instance_type" {
 		SchemaLoader: newMockReferenceLoader(t, schema.PackageSpec{
 			Name: "aws",
 			Resources: map[string]schema.ResourceSpec{
-				"aws:index:Instance": schema.ResourceSpec{},
+				"aws:index:Instance": {
+					InputProperties: map[string]schema.PropertySpec{
+						"ami": {TypeSpec: schema.TypeSpec{Type: "string"}},
+					},
+				},
 			},
 		}),
 	})
@@ -937,7 +994,11 @@ resource "aws_instance" "web" {
 		SchemaLoader: newMockReferenceLoader(t, schema.PackageSpec{
 			Name: "aws",
 			Resources: map[string]schema.ResourceSpec{
-				"aws:index:Instance": schema.ResourceSpec{},
+				"aws:index:Instance": {
+					InputProperties: map[string]schema.PropertySpec{
+						"ami": {TypeSpec: schema.TypeSpec{Type: "string"}},
+					},
+				},
 			},
 		}),
 	})
@@ -999,7 +1060,11 @@ resource "aws_instance" "web" {
 		SchemaLoader: newMockReferenceLoader(t, schema.PackageSpec{
 			Name: "aws",
 			Resources: map[string]schema.ResourceSpec{
-				"aws:index:Instance": schema.ResourceSpec{},
+				"aws:index:Instance": {
+					InputProperties: map[string]schema.PropertySpec{
+						"ami": {TypeSpec: schema.TypeSpec{Type: "string"}},
+					},
+				},
 			},
 		}),
 	})
@@ -1054,7 +1119,11 @@ resource "aws_instance" "web" {
 		SchemaLoader: newMockReferenceLoader(t, schema.PackageSpec{
 			Name: "aws",
 			Resources: map[string]schema.ResourceSpec{
-				"aws:index:Instance": schema.ResourceSpec{},
+				"aws:index:Instance": {
+					InputProperties: map[string]schema.PropertySpec{
+						"ami": {TypeSpec: schema.TypeSpec{Type: "string"}},
+					},
+				},
 			},
 		}),
 	})
@@ -1099,7 +1168,11 @@ resource "aws_instance" "web" {
 		SchemaLoader: newMockReferenceLoader(t, schema.PackageSpec{
 			Name: "aws",
 			Resources: map[string]schema.ResourceSpec{
-				"aws:index:Instance": schema.ResourceSpec{},
+				"aws:index:Instance": {
+					InputProperties: map[string]schema.PropertySpec{
+						"ami": {TypeSpec: schema.TypeSpec{Type: "string"}},
+					},
+				},
 			},
 		}),
 	})
@@ -1145,7 +1218,11 @@ resource "aws_instance" "web" {
 		SchemaLoader: newMockReferenceLoader(t, schema.PackageSpec{
 			Name: "aws",
 			Resources: map[string]schema.ResourceSpec{
-				"aws:index:Instance": schema.ResourceSpec{},
+				"aws:index:Instance": {
+					InputProperties: map[string]schema.PropertySpec{
+						"ami": {TypeSpec: schema.TypeSpec{Type: "string"}},
+					},
+				},
 			},
 		}),
 	})
@@ -1226,7 +1303,11 @@ resource "aws_instance" "web" {
 		SchemaLoader: newMockReferenceLoader(t, schema.PackageSpec{
 			Name: "aws",
 			Resources: map[string]schema.ResourceSpec{
-				"aws:index:Instance": schema.ResourceSpec{},
+				"aws:index:Instance": {
+					InputProperties: map[string]schema.PropertySpec{
+						"ami": {TypeSpec: schema.TypeSpec{Type: "string"}},
+					},
+				},
 			},
 		}),
 	})
@@ -1279,7 +1360,11 @@ resource "aws_instance" "web" {
 		SchemaLoader: newMockReferenceLoader(t, schema.PackageSpec{
 			Name: "aws",
 			Resources: map[string]schema.ResourceSpec{
-				"aws:index:Instance": schema.ResourceSpec{},
+				"aws:index:Instance": {
+					InputProperties: map[string]schema.PropertySpec{
+						"ami": {TypeSpec: schema.TypeSpec{Type: "string"}},
+					},
+				},
 			},
 		}),
 	})
@@ -1387,7 +1472,15 @@ output "vpc_id" {
 		SchemaLoader: newMockReferenceLoader(t, schema.PackageSpec{
 			Name: "aws",
 			Resources: map[string]schema.ResourceSpec{
-				"aws:index:Vpc": schema.ResourceSpec{},
+				"aws:index:Vpc": {
+					InputProperties: map[string]schema.PropertySpec{
+						"cidrBlock": {TypeSpec: schema.TypeSpec{Type: "string"}},
+						"tags": {TypeSpec: schema.TypeSpec{
+							Type:                 "object",
+							AdditionalProperties: &schema.TypeSpec{Type: "string"},
+						}},
+					},
+				},
 			},
 		}),
 	})
@@ -1440,7 +1533,7 @@ output "vpc_id" {
 	}
 
 	// Check that the VPC has the correct cidr_block
-	if cidr, ok := vpcResource.Inputs["cidr_block"]; ok {
+	if cidr, ok := vpcResource.Inputs["cidrBlock"]; ok {
 		if cidr.StringValue() != "10.0.0.0/16" {
 			t.Errorf("expected cidr_block '10.0.0.0/16', got %s", cidr.StringValue())
 		}
@@ -1481,7 +1574,12 @@ resource "aws_instance" "web" {
 		SchemaLoader: newMockReferenceLoader(t, schema.PackageSpec{
 			Name: "aws",
 			Resources: map[string]schema.ResourceSpec{
-				"aws:index:Instance": schema.ResourceSpec{},
+				"aws:index:Instance": {
+					InputProperties: map[string]schema.PropertySpec{
+						"ami":          {TypeSpec: schema.TypeSpec{Type: "string"}},
+						"instanceType": {TypeSpec: schema.TypeSpec{Type: "string"}},
+					},
+				},
 			},
 		}),
 	})
@@ -1556,7 +1654,12 @@ resource "aws_instance" "web" {
 		SchemaLoader: newMockReferenceLoader(t, schema.PackageSpec{
 			Name: "aws",
 			Resources: map[string]schema.ResourceSpec{
-				"aws:index:Instance": schema.ResourceSpec{},
+				"aws:index:Instance": {
+					InputProperties: map[string]schema.PropertySpec{
+						"ami":          {TypeSpec: schema.TypeSpec{Type: "string"}},
+						"instanceType": {TypeSpec: schema.TypeSpec{Type: "string"}},
+					},
+				},
 			},
 		}),
 	})
@@ -1627,7 +1730,12 @@ resource "aws_instance" "imported" {
 		SchemaLoader: newMockReferenceLoader(t, schema.PackageSpec{
 			Name: "aws",
 			Resources: map[string]schema.ResourceSpec{
-				"aws:index:Instance": schema.ResourceSpec{},
+				"aws:index:Instance": {
+					InputProperties: map[string]schema.PropertySpec{
+						"ami":          {TypeSpec: schema.TypeSpec{Type: "string"}},
+						"instanceType": {TypeSpec: schema.TypeSpec{Type: "string"}},
+					},
+				},
 			},
 		}),
 	})
