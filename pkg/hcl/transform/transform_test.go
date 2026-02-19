@@ -17,11 +17,385 @@ package transform
 import (
 	"testing"
 
+	"github.com/pulumi/pulumi/pkg/v3/codegen/schema"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/resource"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"github.com/zclconf/go-cty/cty"
 )
 
+func TestSnakeCaseFromCamelCase(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		input, expected string
+	}{
+		{"foo", "foo"},
+		{"fooBar", "foo_bar"},
+		{"FOO", "foo"},
+		{"ec2", "ec2"},
+		{"EC2", "ec2"},
+		{"fooBARBuzz", "foo_bar_buzz"},
+		{"e2e", "e2e"},
+	}
+
+	for _, tt := range tests {
+		t.Run("", func(t *testing.T) {
+			t.Parallel()
+			assert.Equalf(t, tt.expected, snakeCaseFromCamelCase(tt.input),
+				"snakeCaseFromCamelCase(%q)", tt.input)
+		})
+	}
+}
+
+func TestCtyToResourceInputs(t *testing.T) {
+	t.Setenv("TEST_ENV_PORT", "9000")
+	t.Setenv("TEST_ENV_ENABLED", "true")
+
+	tests := []struct {
+		name       string
+		properties []*schema.Property
+		input      cty.Value
+		expected   resource.PropertyMap
+	}{
+		{
+			name: "simple string property",
+			properties: []*schema.Property{
+				{
+					Name: "name",
+					Type: schema.StringType,
+				},
+			},
+			input: cty.ObjectVal(map[string]cty.Value{
+				"name": cty.StringVal("test-resource"),
+			}),
+			expected: resource.PropertyMap{
+				"name": resource.NewStringProperty("test-resource"),
+			},
+		},
+		{
+			name: "boolean and number primitives",
+			properties: []*schema.Property{
+				{Name: "enabled", Type: schema.BoolType},
+				{Name: "count", Type: schema.NumberType},
+			},
+			input: cty.ObjectVal(map[string]cty.Value{
+				"enabled": cty.BoolVal(true),
+				"count":   cty.NumberIntVal(42),
+			}),
+			expected: resource.PropertyMap{
+				"enabled": resource.NewBoolProperty(true),
+				"count":   resource.NewNumberProperty(42),
+			},
+		},
+		{
+			name: "object with name translation from snake_case",
+			properties: []*schema.Property{
+				{
+					Name: "containerPort",
+					Type: &schema.ObjectType{
+						Properties: []*schema.Property{
+							{Name: "portNumber", Type: schema.NumberType},
+							{Name: "protocol", Type: schema.StringType},
+						},
+					},
+				},
+			},
+			input: cty.ObjectVal(map[string]cty.Value{
+				"container_port": cty.ObjectVal(map[string]cty.Value{
+					"port_number": cty.NumberIntVal(8080),
+					"protocol":    cty.StringVal("TCP"),
+				}),
+			}),
+			expected: resource.PropertyMap{
+				"containerPort": resource.NewObjectProperty(resource.PropertyMap{
+					"portNumber": resource.NewNumberProperty(8080),
+					"protocol":   resource.NewStringProperty("TCP"),
+				}),
+			},
+		},
+		{
+			name: "map without name translation",
+			properties: []*schema.Property{
+				{
+					Name: "tags",
+					Type: &schema.MapType{ElementType: schema.StringType},
+				},
+			},
+			input: cty.ObjectVal(map[string]cty.Value{
+				"tags": cty.MapVal(map[string]cty.Value{
+					"snake_case_key": cty.StringVal("value1"),
+					"another_key":    cty.StringVal("value2"),
+				}),
+			}),
+			expected: resource.PropertyMap{
+				"tags": resource.NewObjectProperty(resource.PropertyMap{
+					"snake_case_key": resource.NewStringProperty("value1"),
+					"another_key":    resource.NewStringProperty("value2"),
+				}),
+			},
+		},
+		{
+			name: "array of primitives",
+			properties: []*schema.Property{
+				{
+					Name: "ports",
+					Type: &schema.ArrayType{ElementType: schema.NumberType},
+				},
+			},
+			input: cty.ObjectVal(map[string]cty.Value{
+				"ports": cty.ListVal([]cty.Value{
+					cty.NumberIntVal(80),
+					cty.NumberIntVal(443),
+					cty.NumberIntVal(8080),
+				}),
+			}),
+			expected: resource.PropertyMap{
+				"ports": resource.NewArrayProperty([]resource.PropertyValue{
+					resource.NewNumberProperty(80),
+					resource.NewNumberProperty(443),
+					resource.NewNumberProperty(8080),
+				}),
+			},
+		},
+		{
+			name: "array of objects with name translation",
+			properties: []*schema.Property{
+				{
+					Name: "endpoints",
+					Type: &schema.ArrayType{
+						ElementType: &schema.ObjectType{
+							Properties: []*schema.Property{
+								{Name: "hostName", Type: schema.StringType},
+								{Name: "portNumber", Type: schema.NumberType},
+							},
+						},
+					},
+				},
+			},
+			input: cty.ObjectVal(map[string]cty.Value{
+				"endpoints": cty.ListVal([]cty.Value{
+					cty.ObjectVal(map[string]cty.Value{
+						"host_name":   cty.StringVal("api.example.com"),
+						"port_number": cty.NumberIntVal(443),
+					}),
+					cty.ObjectVal(map[string]cty.Value{
+						"host_name":   cty.StringVal("db.example.com"),
+						"port_number": cty.NumberIntVal(5432),
+					}),
+				}),
+			}),
+			expected: resource.PropertyMap{
+				"endpoints": resource.NewArrayProperty([]resource.PropertyValue{
+					resource.NewObjectProperty(resource.PropertyMap{
+						"hostName":   resource.NewStringProperty("api.example.com"),
+						"portNumber": resource.NewNumberProperty(443),
+					}),
+					resource.NewObjectProperty(resource.PropertyMap{
+						"hostName":   resource.NewStringProperty("db.example.com"),
+						"portNumber": resource.NewNumberProperty(5432),
+					}),
+				}),
+			},
+		},
+		{
+			name: "static default value float64",
+			properties: []*schema.Property{
+				{Name: "name", Type: schema.StringType},
+				{
+					Name: "port",
+					Type: schema.NumberType,
+					DefaultValue: &schema.DefaultValue{
+						Value: 8080.0,
+					},
+				},
+			},
+			input: cty.ObjectVal(map[string]cty.Value{
+				"name": cty.StringVal("my-service"),
+			}),
+			expected: resource.PropertyMap{
+				"name": resource.NewStringProperty("my-service"),
+				"port": resource.NewNumberProperty(8080),
+			},
+		},
+		{
+			name: "static default value int",
+			properties: []*schema.Property{
+				{Name: "name", Type: schema.StringType},
+				{
+					Name: "maxConnections",
+					Type: schema.NumberType,
+					DefaultValue: &schema.DefaultValue{
+						Value: 100,
+					},
+				},
+			},
+			input: cty.ObjectVal(map[string]cty.Value{
+				"name": cty.StringVal("my-service"),
+			}),
+			expected: resource.PropertyMap{
+				"name":           resource.NewStringProperty("my-service"),
+				"maxConnections": resource.NewNumberProperty(100),
+			},
+		},
+		{
+			name: "static default value string",
+			properties: []*schema.Property{
+				{
+					Name: "region",
+					Type: schema.StringType,
+					DefaultValue: &schema.DefaultValue{
+						Value: "us-west-2",
+					},
+				},
+			},
+			input: cty.ObjectVal(map[string]cty.Value{}),
+			expected: resource.PropertyMap{
+				"region": resource.NewStringProperty("us-west-2"),
+			},
+		},
+		{
+			name: "static default value boolean",
+			properties: []*schema.Property{
+				{
+					Name: "autoScale",
+					Type: schema.BoolType,
+					DefaultValue: &schema.DefaultValue{
+						Value: true,
+					},
+				},
+			},
+			input: cty.ObjectVal(map[string]cty.Value{}),
+			expected: resource.PropertyMap{
+				"autoScale": resource.NewBoolProperty(true),
+			},
+		},
+		{
+			name: "environment variable default overrides static default",
+			properties: []*schema.Property{
+				{Name: "name", Type: schema.StringType},
+				{
+					Name: "port",
+					Type: schema.NumberType,
+					DefaultValue: &schema.DefaultValue{
+						Environment: []string{"TEST_ENV_PORT"},
+						Value:       8080,
+					},
+				},
+			},
+			input: cty.ObjectVal(map[string]cty.Value{
+				"name": cty.StringVal("my-service"),
+			}),
+			expected: resource.PropertyMap{
+				"name": resource.NewStringProperty("my-service"),
+				"port": resource.NewNumberProperty(9000),
+			},
+		},
+		{
+			name: "environment variable default for boolean",
+			properties: []*schema.Property{
+				{
+					Name: "enabled",
+					Type: schema.BoolType,
+					DefaultValue: &schema.DefaultValue{
+						Environment: []string{"TEST_ENV_ENABLED"},
+					},
+				},
+			},
+			input: cty.ObjectVal(map[string]cty.Value{}),
+			expected: resource.PropertyMap{
+				"enabled": resource.NewBoolProperty(true),
+			},
+		},
+		{
+			name: "secret property",
+			properties: []*schema.Property{
+				{Name: "password", Type: schema.StringType, Secret: true},
+			},
+			input: cty.ObjectVal(map[string]cty.Value{
+				"password": cty.StringVal("super-secret"),
+			}),
+			expected: resource.PropertyMap{
+				"password": resource.MakeSecret(resource.NewStringProperty("super-secret")),
+			},
+		},
+		{
+			name: "missing property without default not in output",
+			properties: []*schema.Property{
+				{Name: "name", Type: schema.StringType},
+				{Name: "optionalValue", Type: schema.StringType},
+			},
+			input: cty.ObjectVal(map[string]cty.Value{
+				"name": cty.StringVal("test"),
+			}),
+			expected: resource.PropertyMap{
+				"name": resource.NewStringProperty("test"),
+			},
+		},
+		{
+			name: "deeply nested objects with name translation",
+			properties: []*schema.Property{
+				{
+					Name: "metadata",
+					Type: &schema.ObjectType{
+						Properties: []*schema.Property{
+							{Name: "resourceName", Type: schema.StringType},
+							{
+								Name: "nestedConfig",
+								Type: &schema.ObjectType{
+									Properties: []*schema.Property{
+										{Name: "maxRetries", Type: schema.NumberType},
+										{Name: "timeoutSeconds", Type: schema.NumberType},
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+			input: cty.ObjectVal(map[string]cty.Value{
+				"metadata": cty.ObjectVal(map[string]cty.Value{
+					"resource_name": cty.StringVal("my-resource"),
+					"nested_config": cty.ObjectVal(map[string]cty.Value{
+						"max_retries":     cty.NumberIntVal(3),
+						"timeout_seconds": cty.NumberIntVal(30),
+					}),
+				}),
+			}),
+			expected: resource.PropertyMap{
+				"metadata": resource.NewObjectProperty(resource.PropertyMap{
+					"resourceName": resource.NewStringProperty("my-resource"),
+					"nestedConfig": resource.NewObjectProperty(resource.PropertyMap{
+						"maxRetries":     resource.NewNumberProperty(3),
+						"timeoutSeconds": resource.NewNumberProperty(30),
+					}),
+				}),
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			result, err := CtyToResourceInputs(tt.input, &schema.Resource{
+				Token:           "pkg:mod:Name",
+				InputProperties: tt.properties,
+			})
+			require.NoError(t, err)
+
+			// A map may not be reflect.DeepEqual equal, but still be semantically equivalent. If it's not
+			// semantically equivalent, we assert it's equal for a good debugging experience.
+			if !assert.True(t, tt.expected.DeepEquals(result)) {
+				assert.Equal(t, tt.expected, result)
+			}
+		})
+	}
+}
+
 func TestCtyToPropertyValue_Primitives(t *testing.T) {
+	t.Parallel()
+
 	tests := []struct {
 		name     string
 		input    cty.Value
@@ -73,7 +447,11 @@ func TestCtyToPropertyValue_Primitives(t *testing.T) {
 }
 
 func TestCtyToPropertyValue_Collections(t *testing.T) {
+	t.Parallel()
+
 	t.Run("list", func(t *testing.T) {
+		t.Parallel()
+
 		input := cty.ListVal([]cty.Value{
 			cty.StringVal("a"),
 			cty.StringVal("b"),
@@ -99,6 +477,8 @@ func TestCtyToPropertyValue_Collections(t *testing.T) {
 	})
 
 	t.Run("map", func(t *testing.T) {
+		t.Parallel()
+
 		// Maps in cty require homogeneous types, so use all strings
 		input := cty.MapVal(map[string]cty.Value{
 			"key1": cty.StringVal("value1"),
@@ -124,6 +504,8 @@ func TestCtyToPropertyValue_Collections(t *testing.T) {
 	})
 
 	t.Run("object", func(t *testing.T) {
+		t.Parallel()
+
 		input := cty.ObjectVal(map[string]cty.Value{
 			"name": cty.StringVal("test"),
 			"port": cty.NumberIntVal(8080),
@@ -148,6 +530,8 @@ func TestCtyToPropertyValue_Collections(t *testing.T) {
 	})
 
 	t.Run("tuple", func(t *testing.T) {
+		t.Parallel()
+
 		input := cty.TupleVal([]cty.Value{
 			cty.StringVal("a"),
 			cty.NumberIntVal(1),
@@ -170,6 +554,8 @@ func TestCtyToPropertyValue_Collections(t *testing.T) {
 	})
 
 	t.Run("set", func(t *testing.T) {
+		t.Parallel()
+
 		input := cty.SetVal([]cty.Value{
 			cty.StringVal("a"),
 			cty.StringVal("b"),
@@ -192,6 +578,8 @@ func TestCtyToPropertyValue_Collections(t *testing.T) {
 }
 
 func TestCtyToPropertyValue_Nested(t *testing.T) {
+	t.Parallel()
+
 	input := cty.ObjectVal(map[string]cty.Value{
 		"tags": cty.MapVal(map[string]cty.Value{
 			"env": cty.StringVal("prod"),
@@ -230,6 +618,8 @@ func TestCtyToPropertyValue_Nested(t *testing.T) {
 }
 
 func TestPropertyValueToCty_Primitives(t *testing.T) {
+	t.Parallel()
+
 	tests := []struct {
 		name     string
 		input    resource.PropertyValue
@@ -259,6 +649,8 @@ func TestPropertyValueToCty_Primitives(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
 			result := PropertyValueToCty(tt.input)
 			if !result.RawEquals(tt.expected) {
 				t.Errorf("expected %v, got %v", tt.expected, result)
@@ -268,7 +660,11 @@ func TestPropertyValueToCty_Primitives(t *testing.T) {
 }
 
 func TestPropertyValueToCty_Collections(t *testing.T) {
+	t.Parallel()
+
 	t.Run("array", func(t *testing.T) {
+		t.Parallel()
+
 		input := resource.NewArrayProperty([]resource.PropertyValue{
 			resource.NewStringProperty("a"),
 			resource.NewStringProperty("b"),
@@ -291,6 +687,8 @@ func TestPropertyValueToCty_Collections(t *testing.T) {
 	})
 
 	t.Run("object", func(t *testing.T) {
+		t.Parallel()
+
 		input := resource.NewObjectProperty(resource.PropertyMap{
 			"key": resource.NewStringProperty("value"),
 		})
@@ -309,6 +707,8 @@ func TestPropertyValueToCty_Collections(t *testing.T) {
 }
 
 func TestPropertyValueToCty_Secret(t *testing.T) {
+	t.Parallel()
+
 	inner := resource.NewStringProperty("secret-value")
 	input := resource.MakeSecret(inner)
 
@@ -327,6 +727,8 @@ func TestPropertyValueToCty_Secret(t *testing.T) {
 }
 
 func TestCtyToPropertyMap(t *testing.T) {
+	t.Parallel()
+
 	input := cty.ObjectVal(map[string]cty.Value{
 		"name":    cty.StringVal("test"),
 		"enabled": cty.BoolVal(true),
@@ -346,6 +748,8 @@ func TestCtyToPropertyMap(t *testing.T) {
 }
 
 func TestPropertyMapToCty(t *testing.T) {
+	t.Parallel()
+
 	input := resource.PropertyMap{
 		"name":    resource.NewStringProperty("test"),
 		"enabled": resource.NewBoolProperty(true),
@@ -366,9 +770,11 @@ func TestPropertyMapToCty(t *testing.T) {
 }
 
 func TestRoundTrip(t *testing.T) {
+	t.Parallel()
+
 	// Test that converting cty -> property -> cty preserves values
 	original := cty.ObjectVal(map[string]cty.Value{
-		"name": cty.StringVal("test"),
+		"name":  cty.StringVal("test"),
 		"count": cty.NumberIntVal(5),
 		"tags": cty.MapVal(map[string]cty.Value{
 			"env": cty.StringVal("prod"),

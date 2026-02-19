@@ -77,6 +77,14 @@ func ResolveResource(ctx context.Context, loader schema.ReferenceLoader, token s
 		return r, err
 	}
 
+	// Caveats:
+	//
+	// - Fails totally if '_' are in tokens
+	//
+	// - Looses information on where the separator between module & name are:
+	//
+	//	"ab:c" is the same as "a:bc"
+
 	key := strings.Join(parts[1:], "")
 	for iter := pkg.Resources().Range(); iter.Next(); {
 		mod := pkg.TokenToModule(iter.Token())

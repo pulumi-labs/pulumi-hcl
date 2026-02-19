@@ -179,7 +179,12 @@ resource "aws_instance" "web" {
 		SchemaLoader: newMockReferenceLoader(t, schema.PackageSpec{
 			Name: "aws",
 			Resources: map[string]schema.ResourceSpec{
-				"aws:index:Instance": schema.ResourceSpec{},
+				"aws:index:Instance": {
+					InputProperties: map[string]schema.PropertySpec{
+						"ami":          {TypeSpec: schema.TypeSpec{Type: "string"}},
+						"instanceType": {TypeSpec: schema.TypeSpec{Type: "string"}},
+					},
+				},
 			},
 		}),
 	})
@@ -206,8 +211,8 @@ resource "aws_instance" "web" {
 	if req.Inputs["ami"].StringValue() != "ami-12345" {
 		t.Errorf("expected ami 'ami-12345', got %v", req.Inputs["ami"])
 	}
-	if req.Inputs["instance_type"].StringValue() != "test" {
-		t.Errorf("expected instance_type 'test', got %v", req.Inputs["instance_type"])
+	if req.Inputs["instanceType"].StringValue() != "test" {
+		t.Errorf("expected instanceType 'test', got %v", req.Inputs["instanceType"])
 	}
 }
 
@@ -346,10 +351,10 @@ resource "aws_instance" "web" {
 
 	// No resource monitor - should still work
 	engine := NewEngine(config, &EngineOptions{
-		ProjectName:  "test-project",
-		StackName:    "dev",
-		WorkDir:      t.TempDir(),
-		RootDir:      t.TempDir(),
+		ProjectName: "test-project",
+		StackName:   "dev",
+		WorkDir:     t.TempDir(),
+		RootDir:     t.TempDir(),
 		SchemaLoader: newMockReferenceLoader(t, schema.PackageSpec{
 			Name: "aws",
 			Resources: map[string]schema.ResourceSpec{
