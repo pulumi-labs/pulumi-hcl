@@ -20,6 +20,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"slices"
 	"strings"
 	"time"
 
@@ -336,9 +337,20 @@ func (e *Engine) processVariable(_ context.Context, node *graph.Node) error {
 	var valueSource string
 
 	// Variable value precedence (highest to lowest):
+	// 0. Already there (as produced by the parent when this is a child module)
 	// 1. Environment variable TF_VAR_<name>
 	// 2. Pulumi stack config (projectName:<name>)
 	// 3. Default value
+
+	if e.evaluator.Context().HCLContext().Variables["var"].Type().HasAttribute(varName) {
+		// This would imply that there are multiple variables setting the same name.
+		if e.parentURN == "" {
+			return fmt.Errorf("%q already evaluated", varName)
+		}
+
+		// The variable is already set, so we don't need to do anything.
+		return nil
+	}
 
 	// Check environment variable first
 	envVarName := "TF_VAR_" + varName
@@ -362,11 +374,8 @@ func (e *Engine) processVariable(_ context.Context, node *graph.Node) error {
 			// Also check without project prefix
 			val = cty.StringVal(configVal)
 			valueSource = "config"
-			for _, secretKey := range e.configSecretKeys {
-				if secretKey == varName {
-					isSecret = true
-					break
-				}
+			if slices.Contains(e.configSecretKeys, varName) {
+				isSecret = true
 			}
 		}
 	}
@@ -1266,7 +1275,9 @@ func (e *Engine) processModuleInstance(ctx context.Context, mod *ast.Module, ins
 	childEngine := e.createChildEngine(loadedModule.Config, componentURN, loadedModule.SourcePath)
 
 	// Set up the child engine's variables with module inputs
-	childEngine.setModuleInputs(attrs, e.evaluator.Context())
+	if diags := childEngine.setModuleInputs(attrs, e.evaluator.Context()); diags.HasErrors() {
+		return diags
+	}
 
 	// Execute the module
 	if err := childEngine.runModule(ctx); err != nil {
@@ -1360,13 +1371,16 @@ func (e *Engine) createChildEngine(config *ast.Config, parentURN string, moduleD
 }
 
 // setModuleInputs sets up the module's variables with input values.
-func (e *Engine) setModuleInputs(inputs hcl.Attributes, parentContext *eval.Context) {
+func (e *Engine) setModuleInputs(inputs hcl.Attributes, parentContext *eval.Context) hcl.Diagnostics {
+	var diags hcl.Diagnostics
 	for name, attr := range inputs {
-		val, diags := attr.Expr.Value(parentContext.HCLContext())
-		if !diags.HasErrors() {
+		val, diag := attr.Expr.Value(parentContext.HCLContext())
+		if !diag.HasErrors() {
 			e.evaluator.Context().SetVariable(name, val)
 		}
+		diags = diags.Extend(diag)
 	}
+	return diags
 }
 
 // runModule executes a module's contents (without registering a stack).
