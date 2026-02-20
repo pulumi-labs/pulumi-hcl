@@ -669,12 +669,19 @@ func (g *generator) objectTokens(expr *model.ObjectConsExpression, typ schema.Ty
 	}
 	tokens = append(tokens, &hclwrite.Token{Type: hclsyntax.TokenNewline, Bytes: []byte("\n")})
 
-	getProp := func(key model.Expression) schema.Type {
+	keyName := func(key model.Expression) (hclwrite.Tokens, hcl.Diagnostics) {
+		return g.exprTokens(key, schema.StringType)
+	}
+	propType := func(key model.Expression) schema.Type {
 		return schema.AnyType
 	}
 	switch typ := codegen.UnwrapType(typ).(type) {
 	case *schema.ObjectType:
-		getProp = func(key model.Expression) schema.Type {
+		keyName = func(key model.Expression) (hclwrite.Tokens, hcl.Diagnostics) {
+			name, _ := extractStringLiteral(key)
+			return hclwrite.TokensForIdentifier(transform.SnakeCaseFromPulumiCase(name)), nil
+		}
+		propType = func(key model.Expression) schema.Type {
 			name, _ := extractStringLiteral(key)
 			if p, ok := typ.Property(name); ok {
 				return p.Type
@@ -682,19 +689,19 @@ func (g *generator) objectTokens(expr *model.ObjectConsExpression, typ schema.Ty
 			return schema.AnyType
 		}
 	case *schema.MapType:
-		getProp = func(model.Expression) schema.Type {
+		propType = func(model.Expression) schema.Type {
 			return typ.ElementType
 		}
 	}
 
 	var diags hcl.Diagnostics
 	for _, item := range expr.Items {
-		keyTokens, d := g.exprTokens(item.Key, schema.StringType)
+		keyTokens, d := keyName(item.Key)
 		diags = append(diags, d...)
 		if d.HasErrors() {
 			return nil, diags
 		}
-		valTokens, d := g.exprTokens(item.Value, getProp(item.Key))
+		valTokens, d := g.exprTokens(item.Value, propType(item.Key))
 		diags = append(diags, d...)
 		if d.HasErrors() {
 			return nil, diags
