@@ -179,7 +179,6 @@ var expectedFailures = map[string]string{
 	"l2-provider-grpc-config-secret":               "not yet implemented",
 	"l2-proxy-index":                               "not yet implemented",
 	"l2-ref-ref":                                   "not yet implemented",
-	"l2-resource-alpha":                            "not yet implemented",
 	"l2-resource-asset-archive":                    "not yet implemented",
 	"l2-resource-config":                           "not yet implemented",
 	"l2-resource-invoke-dynamic-function":          "not yet implemented",
