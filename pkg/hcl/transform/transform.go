@@ -37,6 +37,15 @@ func CtyToResourceInputs(val cty.Value, r *schema.Resource) (resource.PropertyMa
 	return resource.ToResourcePropertyMap(m), err
 }
 
+func CtyToFunctionInputs(val cty.Value, r *schema.Function) (resource.PropertyMap, error) {
+	var inputs []*schema.Property
+	if r.Inputs != nil {
+		inputs = r.Inputs.Properties
+	}
+	m, err := ctyToObject(r.Token, val, inputs)
+	return resource.ToResourcePropertyMap(m), err
+}
+
 func ctyToObject(path string, val cty.Value, properties []*schema.Property) (property.Map, error) {
 	seen := make(map[string]struct{})
 	result := map[string]property.Value{}

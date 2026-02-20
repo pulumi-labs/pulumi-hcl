@@ -204,7 +204,7 @@ func (p *Parser) parsePulumiBlock(config *ast.Config, block *hcl.Block) hcl.Diag
 		DeclRange: block.DefRange,
 	}
 
-	if attr, ok := content.Attributes["requiredVersionRange"]; ok {
+	if attr, ok := content.Attributes["required_version_range"]; ok {
 		pulumi.RequiredVersionRange = attr.Expr
 	}
 

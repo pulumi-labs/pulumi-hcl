@@ -2,5 +2,5 @@ variable "version" {
   type = string
 }
 pulumi {
-  requiredVersionRange = var.version
+  required_version_range = var.version
 }

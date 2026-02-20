@@ -51,7 +51,7 @@ var terraformSchema = &hcl.BodySchema{
 // pulumiSchema defines the structure of a pulumi block.
 var pulumiSchema = &hcl.BodySchema{
 	Attributes: []hcl.AttributeSchema{
-		{Name: "requiredVersionRange"},
+		{Name: "required_version_range"},
 	},
 }
 

@@ -22,8 +22,12 @@ import (
 	"github.com/hashicorp/hcl/v2"
 	"github.com/hashicorp/hcl/v2/hclsyntax"
 	"github.com/hashicorp/hcl/v2/hclwrite"
+	"github.com/pulumi/pulumi-language-hcl/pkg/hcl/transform"
+	"github.com/pulumi/pulumi/pkg/v3/codegen"
 	"github.com/pulumi/pulumi/pkg/v3/codegen/hcl2/model"
 	"github.com/pulumi/pulumi/pkg/v3/codegen/pcl"
+	"github.com/pulumi/pulumi/pkg/v3/codegen/schema"
+	"github.com/pulumi/pulumi/sdk/v3/go/common/tokens"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/util/contract"
 	"github.com/zclconf/go-cty/cty"
 )
@@ -178,6 +182,24 @@ func (g *generator) genInvokeDataSource(body *hclwrite.Body, invoke *model.Funct
 		}}
 	}
 
+	var invokeSchema *schema.Function
+	for _, p := range g.program.PackageReferences() {
+		if p.Name() == tokens.Type(token).Package().String() {
+			f, ok, err := p.Functions().Get(token)
+			if err != nil {
+				return hcl.Diagnostics{{
+					Severity: hcl.DiagError,
+					Summary:  "failed to get invoke " + token,
+					Detail:   err.Error(),
+				}}
+			}
+			if ok {
+				invokeSchema = f
+			}
+			break
+		}
+	}
+
 	dsType, diags := tokenToHCLType(token)
 	if diags.HasErrors() {
 		return diags
@@ -196,7 +218,13 @@ func (g *generator) genInvokeDataSource(body *hclwrite.Body, invoke *model.Funct
 					continue
 				}
 				keyName := keyLit.Value.AsString()
-				d := g.genExpression(block.Body(), keyName, item.Value)
+				var propType schema.Type
+				if invokeSchema != nil && invokeSchema.Inputs != nil {
+					if inputSchema, ok := invokeSchema.Inputs.Property(keyName); ok {
+						propType = inputSchema.Type
+					}
+				}
+				d := g.genExpression(block.Body(), transform.SnakeCaseFromPulumiCase(keyName), item.Value, propType)
 				diags = append(diags, d...)
 			}
 			return diags
@@ -232,7 +260,7 @@ func (g *generator) genResource(body *hclwrite.Body, r *pcl.Resource) hcl.Diagno
 
 	// Handle provider option if present
 	if r.Options != nil && r.Options.Provider != nil {
-		tokens, d := g.exprTokens(r.Options.Provider)
+		tokens, d := g.exprTokens(r.Options.Provider, schema.AnyType)
 		diags = append(diags, d...)
 		if !d.HasErrors() {
 			block.Body().SetAttributeRaw("provider", tokens)
@@ -241,15 +269,26 @@ func (g *generator) genResource(body *hclwrite.Body, r *pcl.Resource) hcl.Diagno
 
 	// Handle additionalSecretOutputs option if present
 	if r.Options != nil && r.Options.AdditionalSecretOutputs != nil {
-		tokens, d := g.exprTokens(r.Options.AdditionalSecretOutputs)
+		tokens, d := g.exprTokens(r.Options.AdditionalSecretOutputs, schema.AnyResourceType)
 		diags = append(diags, d...)
 		if !d.HasErrors() {
 			block.Body().SetAttributeRaw("additional_secret_outputs", tokens)
 		}
 	}
 
+	var inputs []*schema.Property
+	if r.Schema != nil {
+		inputs = r.Schema.InputProperties
+	}
+
 	for _, attr := range r.Inputs {
-		d := g.genExpression(block.Body(), attr.Name, attr.Value)
+		var inputType schema.Type
+		for _, prop := range inputs {
+			if attr.Name == prop.Name {
+				inputType = prop.Type
+			}
+		}
+		d := g.genExpression(block.Body(), transform.SnakeCaseFromPulumiCase(attr.Name), attr.Value, inputType)
 		diags = append(diags, d...)
 	}
 	return diags
@@ -269,7 +308,7 @@ func (g *generator) genConfigVariable(body *hclwrite.Body, cv *pcl.ConfigVariabl
 
 	// Set the default value if present.
 	if cv.DefaultValue != nil {
-		tokens, diags := g.exprTokens(cv.DefaultValue)
+		tokens, diags := g.exprTokens(cv.DefaultValue, schema.AnyType)
 		if diags.HasErrors() {
 			return diags
 		}
@@ -292,12 +331,12 @@ func convertPCLTypeToHCL(pclType string) string {
 
 func (g *generator) genLocalVariable(body *hclwrite.Body, lv *pcl.LocalVariable) hcl.Diagnostics {
 	block := body.AppendNewBlock("locals", nil)
-	return g.genExpression(block.Body(), lv.LogicalName(), lv.Definition.Value)
+	return g.genExpression(block.Body(), lv.LogicalName(), lv.Definition.Value, schema.AnyType)
 }
 
 func (g *generator) genOutput(body *hclwrite.Body, ov *pcl.OutputVariable) hcl.Diagnostics {
 	block := body.AppendNewBlock("output", []string{ov.LogicalName()})
-	return g.genExpression(block.Body(), "value", ov.Value)
+	return g.genExpression(block.Body(), "value", ov.Value, schema.AnyType)
 }
 
 func (g *generator) genPulumiBlock(body *hclwrite.Body, pb *pcl.PulumiBlock) hcl.Diagnostics {
@@ -307,11 +346,11 @@ func (g *generator) genPulumiBlock(body *hclwrite.Body, pb *pcl.PulumiBlock) hcl
 
 	// Generate a top-level "pulumi" block with requiredVersionRange property
 	block := body.AppendNewBlock("pulumi", nil)
-	return g.genExpression(block.Body(), "requiredVersionRange", pb.RequiredVersion)
+	return g.genExpression(block.Body(), "required_version_range", pb.RequiredVersion, schema.StringType)
 }
 
-func (g *generator) genExpression(body *hclwrite.Body, name string, expr model.Expression) hcl.Diagnostics {
-	tokens, diags := g.exprTokens(expr)
+func (g *generator) genExpression(body *hclwrite.Body, name string, expr model.Expression, typ schema.Type) hcl.Diagnostics {
+	tokens, diags := g.exprTokens(expr, typ)
 	if diags.HasErrors() {
 		return diags
 	}
@@ -321,7 +360,7 @@ func (g *generator) genExpression(body *hclwrite.Body, name string, expr model.E
 
 // exprTokens converts a PCL expression into HCL tokens.
 // Invoke calls are replaced with references to generated data sources.
-func (g *generator) exprTokens(expr model.Expression) (hclwrite.Tokens, hcl.Diagnostics) {
+func (g *generator) exprTokens(expr model.Expression, typ schema.Type) (hclwrite.Tokens, hcl.Diagnostics) {
 	switch e := expr.(type) {
 	case *model.LiteralValueExpression:
 		return hclwrite.TokensForValue(e.Value), nil
@@ -364,7 +403,7 @@ func (g *generator) exprTokens(expr model.Expression) (hclwrite.Tokens, hcl.Diag
 	case *model.TupleConsExpression:
 		return g.tupleTokens(e)
 	case *model.ObjectConsExpression:
-		return g.objectTokens(e)
+		return g.objectTokens(e, typ)
 	case *model.IndexExpression:
 		return g.indexExprTokens(e)
 	case *model.RelativeTraversalExpression:
@@ -522,7 +561,7 @@ func (g *generator) passthroughFuncCallTokens(name string, args []model.Expressi
 		if i > 0 {
 			tokens = append(tokens, &hclwrite.Token{Type: hclsyntax.TokenComma, Bytes: []byte(",")})
 		}
-		argTokens, d := g.exprTokens(arg)
+		argTokens, d := g.exprTokens(arg, schema.AnyType)
 		diags = append(diags, d...)
 		if d.HasErrors() {
 			return nil, diags
@@ -535,11 +574,11 @@ func (g *generator) passthroughFuncCallTokens(name string, args []model.Expressi
 
 // indexExprTokens generates tokens for an index expression: collection[key].
 func (g *generator) indexExprTokens(expr *model.IndexExpression) (hclwrite.Tokens, hcl.Diagnostics) {
-	collTokens, diags := g.exprTokens(expr.Collection)
+	collTokens, diags := g.exprTokens(expr.Collection, schema.AnyType)
 	if diags.HasErrors() {
 		return nil, diags
 	}
-	keyTokens, d := g.exprTokens(expr.Key)
+	keyTokens, d := g.exprTokens(expr.Key, schema.AnyType)
 	diags = append(diags, d...)
 	if d.HasErrors() {
 		return nil, diags
@@ -555,7 +594,7 @@ func (g *generator) indexExprTokens(expr *model.IndexExpression) (hclwrite.Token
 
 // relativeTraversalTokens generates tokens for a relative traversal expression: source.attr.
 func (g *generator) relativeTraversalTokens(expr *model.RelativeTraversalExpression) (hclwrite.Tokens, hcl.Diagnostics) {
-	sourceTokens, diags := g.exprTokens(expr.Source)
+	sourceTokens, diags := g.exprTokens(expr.Source, schema.AnyType)
 	if diags.HasErrors() {
 		return nil, diags
 	}
@@ -565,7 +604,7 @@ func (g *generator) relativeTraversalTokens(expr *model.RelativeTraversalExpress
 		case hcl.TraverseAttr:
 			sourceTokens = append(sourceTokens,
 				&hclwrite.Token{Type: hclsyntax.TokenDot, Bytes: []byte(".")},
-				&hclwrite.Token{Type: hclsyntax.TokenIdent, Bytes: []byte(s.Name)},
+				&hclwrite.Token{Type: hclsyntax.TokenIdent, Bytes: []byte(transform.SnakeCaseFromPulumiCase(s.Name))},
 			)
 		case hcl.TraverseIndex:
 			keyTokens := hclwrite.TokensForValue(s.Key)
@@ -606,7 +645,7 @@ func (g *generator) tupleTokens(expr *model.TupleConsExpression) (hclwrite.Token
 		if i > 0 {
 			tokens = append(tokens, &hclwrite.Token{Type: hclsyntax.TokenComma, Bytes: []byte(",")})
 		}
-		elemTokens, d := g.exprTokens(elem)
+		elemTokens, d := g.exprTokens(elem, schema.AnyType)
 		diags = append(diags, d...)
 		if d.HasErrors() {
 			return nil, diags
@@ -620,7 +659,7 @@ func (g *generator) tupleTokens(expr *model.TupleConsExpression) (hclwrite.Token
 	return tokens, diags
 }
 
-func (g *generator) objectTokens(expr *model.ObjectConsExpression) (hclwrite.Tokens, hcl.Diagnostics) {
+func (g *generator) objectTokens(expr *model.ObjectConsExpression, typ schema.Type) (hclwrite.Tokens, hcl.Diagnostics) {
 	tokens := hclwrite.Tokens{
 		{Type: hclsyntax.TokenOBrace, Bytes: []byte("{")},
 	}
@@ -629,14 +668,33 @@ func (g *generator) objectTokens(expr *model.ObjectConsExpression) (hclwrite.Tok
 		return tokens, nil
 	}
 	tokens = append(tokens, &hclwrite.Token{Type: hclsyntax.TokenNewline, Bytes: []byte("\n")})
+
+	getProp := func(key model.Expression) schema.Type {
+		return schema.AnyType
+	}
+	switch typ := codegen.UnwrapType(typ).(type) {
+	case *schema.ObjectType:
+		getProp = func(key model.Expression) schema.Type {
+			name, _ := extractStringLiteral(key)
+			if p, ok := typ.Property(name); ok {
+				return p.Type
+			}
+			return schema.AnyType
+		}
+	case *schema.MapType:
+		getProp = func(model.Expression) schema.Type {
+			return typ.ElementType
+		}
+	}
+
 	var diags hcl.Diagnostics
 	for _, item := range expr.Items {
-		keyTokens, d := g.exprTokens(item.Key)
+		keyTokens, d := g.exprTokens(item.Key, schema.StringType)
 		diags = append(diags, d...)
 		if d.HasErrors() {
 			return nil, diags
 		}
-		valTokens, d := g.exprTokens(item.Value)
+		valTokens, d := g.exprTokens(item.Value, getProp(item.Key))
 		diags = append(diags, d...)
 		if d.HasErrors() {
 			return nil, diags
@@ -683,7 +741,7 @@ func (g *generator) templateTokens(expr *model.TemplateExpression) (hclwrite.Tok
 				fmt.Fprintf(&buf, "${%s}", p.Value.GoString())
 			}
 		default:
-			partTokens, d := g.exprTokens(part)
+			partTokens, d := g.exprTokens(part, schema.AnyType)
 			diags = append(diags, d...)
 			if d.HasErrors() {
 				return nil, diags
@@ -704,12 +762,12 @@ func (g *generator) templateTokens(expr *model.TemplateExpression) (hclwrite.Tok
 
 // binaryOpTokens generates HCL tokens for a binary operation expression.
 func (g *generator) binaryOpTokens(expr *model.BinaryOpExpression) (hclwrite.Tokens, hcl.Diagnostics) {
-	leftTokens, diags := g.exprTokens(expr.LeftOperand)
+	leftTokens, diags := g.exprTokens(expr.LeftOperand, schema.AnyType)
 	if diags.HasErrors() {
 		return nil, diags
 	}
 
-	rightTokens, d := g.exprTokens(expr.RightOperand)
+	rightTokens, d := g.exprTokens(expr.RightOperand, schema.AnyType)
 	diags = append(diags, d...)
 	if d.HasErrors() {
 		return nil, diags
@@ -764,7 +822,7 @@ func (g *generator) binaryOpTokens(expr *model.BinaryOpExpression) (hclwrite.Tok
 
 // unaryOpTokens generates HCL tokens for a unary operation expression.
 func (g *generator) unaryOpTokens(expr *model.UnaryOpExpression) (hclwrite.Tokens, hcl.Diagnostics) {
-	operandTokens, diags := g.exprTokens(expr.Operand)
+	operandTokens, diags := g.exprTokens(expr.Operand, schema.AnyType)
 	if diags.HasErrors() {
 		return nil, diags
 	}
