@@ -1035,14 +1035,14 @@ func (e *Engine) processDataSource(ctx context.Context, node *graph.Node) error 
 	}
 
 	// Resolve the data source type to a Pulumi function token
-	funcType, err := packages.ResolveFunction(ctx, e.pkgLoader, ds.Type)
+	funcSchema, err := packages.ResolveFunction(ctx, e.pkgLoader, ds.Type)
 	if err != nil {
 		return fmt.Errorf("resolving data source type %s: %w", ds.Type, err)
 	}
 
 	// Evaluate data source configuration
 	attrs, _ := ds.Config.JustAttributes()
-	inputs := make(resource.PropertyMap)
+	functionInputs := make(map[string]cty.Value)
 	var allDeps []resource.URN
 
 	for name, attr := range attrs {
@@ -1050,13 +1050,7 @@ func (e *Engine) processDataSource(ctx context.Context, node *graph.Node) error 
 		if diags.HasErrors() {
 			return fmt.Errorf("evaluating attribute %s: %s", name, diags.Error())
 		}
-
-		pv, err := transform.CtyToPropertyValue(val)
-		if err != nil {
-			return fmt.Errorf("converting attribute %s: %w", name, err)
-		}
-
-		inputs[resource.PropertyKey(name)] = pv
+		functionInputs[name] = val
 
 		// Extract dependencies from this attribute's expression
 		deps := eval.ExtractDependencies(attr.Expr)
@@ -1076,8 +1070,13 @@ func (e *Engine) processDataSource(ctx context.Context, node *graph.Node) error 
 		}
 	}
 
+	inputs, err := transform.CtyToFunctionInputs(cty.ObjectVal(functionInputs), funcSchema)
+	if err != nil {
+		return fmt.Errorf("converting function to Pulumi types: %w", err)
+	}
+
 	// Invoke the function
-	outputs, err := e.invokeFunction(ctx, funcType.Token, inputs)
+	outputs, err := e.invokeFunction(ctx, funcSchema.Token, inputs)
 	if err != nil {
 		return fmt.Errorf("invoking data source: %w", err)
 	}

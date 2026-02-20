@@ -8,14 +8,14 @@ terraform {
 }
 
 resource "enum_res" "sink1" {
-  intEnum    = 1
-  stringEnum = "two"
+  int_enum    = 1
+  string_enum = "two"
 }
 resource "enum_mod_res" "sink2" {
-  intEnum    = 1
-  stringEnum = "two"
+  int_enum    = 1
+  string_enum = "two"
 }
 resource "enum_mod/nested_res" "sink3" {
-  intEnum    = 1
-  stringEnum = "two"
+  int_enum    = 1
+  string_enum = "two"
 }

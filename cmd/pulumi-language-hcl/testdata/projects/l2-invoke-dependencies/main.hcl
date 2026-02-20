@@ -12,8 +12,8 @@ terraform {
 }
 
 data "simple-invoke_secretinvoke" "invoke_0" {
-  value          = "hello"
-  secretResponse = simple_resource.first.value
+  value           = "hello"
+  secret_response = simple_resource.first.value
 }
 
 resource "simple_resource" "first" {
