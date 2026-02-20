@@ -73,7 +73,9 @@ func runTestingHost(t *testing.T) (string, testingrpc.LanguageTestClient) {
 		"go", "build", "-o", binary,
 		"github.com/pulumi/pulumi/pkg/v3/testing/pulumi-test-language")
 	output, err := cmd.CombinedOutput()
-	t.Logf("build output: %s", output)
+	if len(output) > 0 {
+		t.Logf("build output: %s", output)
+	}
 	require.NoError(t, err)
 
 	cmd = exec.CommandContext(t.Context(), binary)

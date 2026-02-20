@@ -731,17 +731,15 @@ func (e *Engine) registerResourceInstance(
 		return fmt.Errorf("registering resource: %w", err)
 	}
 
+	delete(outputs, "id")
+	delete(outputs, "urn")
 	// Store outputs for future references
-	// Convert Pulumi camelCase property names to Terraform snake_case
-	outputObj := make(map[string]cty.Value)
+	outputObj, err := transform.ResourceOutputToCty(outputs, resSchema, e.dryRun)
+	if err != nil {
+		return fmt.Errorf("converting resource outputs to HCL types: %w", err)
+	}
 	outputObj["id"] = cty.StringVal(id)
 	outputObj["urn"] = cty.StringVal(urn)
-
-	for k, v := range outputs {
-		// Convert camelCase to snake_case for Terraform compatibility
-		tfKey, tfValue := transform.ResourceOutputToCty(v, k, resSchema)
-		outputObj[tfKey] = tfValue
-	}
 
 	e.resourceOutputs.Set(instance.Key, cty.ObjectVal(outputObj))
 
@@ -1081,11 +1079,14 @@ func (e *Engine) processDataSource(ctx context.Context, node *graph.Node) error 
 		return fmt.Errorf("invoking data source: %w", err)
 	}
 
+	ctyOutputs, err := transform.FunctionOutputToCty(outputs, funcSchema, e.dryRun)
+	if err != nil {
+		return fmt.Errorf("converting function outputs to HCL types: %w", err)
+	}
+
 	// Store outputs for future references
-	// Convert Pulumi camelCase property names to Terraform snake_case
-	outputCty := propertyMapToCtySnakeCase(outputs)
 	dsKey := node.Key[5:] // Remove "data." prefix
-	e.evaluator.Context().SetDataSource(dsKey, outputCty)
+	e.evaluator.Context().SetDataSource(dsKey, cty.ObjectVal(ctyOutputs))
 
 	// Store dependencies for this data source
 	e.dataSourceDependencies.Set(dsKey, allDeps)
@@ -1451,20 +1452,6 @@ func camelToSnake(s string) string {
 		}
 	}
 	return result.String()
-}
-
-// propertyMapToCtySnakeCase converts a PropertyMap to cty.Value with snake_case keys.
-func propertyMapToCtySnakeCase(props resource.PropertyMap) cty.Value {
-	if len(props) == 0 {
-		return cty.EmptyObjectVal
-	}
-
-	result := make(map[string]cty.Value)
-	for k, v := range props {
-		snakeKey := camelToSnake(string(k))
-		result[snakeKey] = transform.PropertyValueToCty(v)
-	}
-	return cty.ObjectVal(result)
 }
 
 // RunFromDirectory parses and executes an HCL program from a directory.
