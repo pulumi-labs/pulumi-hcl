@@ -165,7 +165,6 @@ var expectedFailures = map[string]string{
 	"l2-failed-create":                             "not yet implemented",
 	"l2-failed-create-continue-on-error":           "not yet implemented",
 	"l2-keywords":                                  "not yet implemented",
-	"l2-map-keys":                                  "not yet implemented",
 	"l2-module-format":                             "not yet implemented",
 	"l2-namespaced-provider":                       "not yet implemented",
 	"l2-parameterized-invoke":                      "not yet implemented",

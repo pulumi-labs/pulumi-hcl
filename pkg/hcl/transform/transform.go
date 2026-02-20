@@ -164,13 +164,13 @@ strip:
 	switch prop := prop.(type) {
 	case *schema.ObjectType:
 		if !val.Type().IsObjectType() {
-			return property.Value{}, fmt.Errorf("expected object at %q, found %v", path, val.Type())
+			return property.Value{}, fmt.Errorf("expected object at %q, found %#v", path, val.Type())
 		}
 		m, err := ctyToObject(path, val, prop.Properties)
 		return property.New(m), err
 	case *schema.ArrayType:
-		if !val.Type().IsListType() && !val.Type().IsSetType() {
-			return property.Value{}, fmt.Errorf("expected list or set at %q, found %v", path, val.Type())
+		if !val.Type().IsListType() && !val.Type().IsSetType() && !val.Type().IsTupleType() {
+			return property.Value{}, fmt.Errorf("expected list or set at %q, found %#v", path, val.Type())
 		}
 		arr := make([]property.Value, 0, val.LengthInt())
 		for it := val.ElementIterator(); it.Next(); {
@@ -184,7 +184,7 @@ strip:
 		return property.New(arr), nil
 	case *schema.MapType:
 		if !val.Type().IsMapType() && !val.Type().IsObjectType() {
-			return property.Value{}, fmt.Errorf("expected map at %q, found %v", path, val.Type())
+			return property.Value{}, fmt.Errorf("expected map at %q, found %#v", path, val.Type())
 		}
 		m := make(map[string]property.Value, val.LengthInt())
 		for it := val.ElementIterator(); it.Next(); {
