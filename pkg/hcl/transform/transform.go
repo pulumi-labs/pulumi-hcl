@@ -18,10 +18,12 @@ package transform
 import (
 	"fmt"
 	"os"
+	"slices"
 	"strconv"
 	"strings"
 	"unicode"
 
+	"github.com/pulumi/pulumi/pkg/v3/codegen"
 	"github.com/pulumi/pulumi/pkg/v3/codegen/cgstrings"
 	"github.com/pulumi/pulumi/pkg/v3/codegen/schema"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/resource"
@@ -251,6 +253,8 @@ func snakeCaseFromCamelCase(s string) string {
 }
 
 // CtyToPropertyValue converts a cty.Value to a Pulumi PropertyValue.
+//
+// Because this conversion is untyped, it should be avoided when type information is available.
 func CtyToPropertyValue(val cty.Value) (resource.PropertyValue, error) {
 	v, err := ctyToPropertyValue(val)
 	return resource.ToResourcePropertyValue(v), err
@@ -260,7 +264,7 @@ func ctyToPropertyValue(val cty.Value) (property.Value, error) {
 	// Handle sensitive-marked values by unwrapping, converting, and wrapping as secret.
 	if val.IsMarked() {
 		unmarked, marks := val.Unmark()
-		_, isSensitive := marks["sensitive"]
+		_, isSensitive := marks[SensativeMark]
 		pv, err := ctyToPropertyValue(unmarked)
 		return pv.WithSecret(isSensitive), err
 	}
@@ -348,8 +352,182 @@ func ctyObjectToPropertyValue(val cty.Value) (property.Value, error) {
 	return property.New(obj), nil
 }
 
-func ResourceOutputToCty(pv resource.PropertyValue, field resource.PropertyKey, r *schema.Resource) (string, cty.Value) {
-	return string(field), PropertyValueToCty(pv)
+func ResourceOutputToCty(pv resource.PropertyMap, r *schema.Resource, dryRun bool) (map[string]cty.Value, error) {
+	properties := r.Properties
+	// Providers pass "version" as an output - even though it's not in the schema.
+	if r.IsProvider {
+		properties = append(slices.Clone(r.Properties), &schema.Property{
+			Name: "version",
+			Type: schema.StringType,
+		})
+	}
+	return propertyObjectToCtyMap("", resource.FromResourcePropertyMap(pv), properties, dryRun)
+}
+
+func FunctionOutputToCty(pv resource.PropertyMap, r *schema.Function, dryRun bool) (map[string]cty.Value, error) {
+	var props []*schema.Property
+	if r.Outputs != nil {
+		props = r.Outputs.Properties
+	}
+	return propertyObjectToCtyMap("", resource.FromResourcePropertyMap(pv), props, dryRun)
+}
+
+func propertyObjectToCtyMap(path string, m property.Map, properties []*schema.Property, dryRun bool) (map[string]cty.Value, error) {
+	result := make(map[string]cty.Value, m.Len())
+	for _, p := range properties {
+		hclName := snakeCaseFromCamelCase(p.Name)
+		v, ok := m.GetOk(p.Name)
+		if !ok {
+			result[hclName] = cty.UnknownVal(ctyTypeFromType(p.Type))
+			continue
+		}
+		var vPath string
+		if path == "" {
+			vPath = hclName
+		} else {
+			vPath = path + "." + hclName
+		}
+		convertedV, err := propertyValueToCty(fmt.Sprintf(vPath, path, hclName), v, p.Type, dryRun)
+		if err != nil {
+			return nil, err
+		}
+		result[hclName] = convertedV
+	}
+
+	return result, nil
+}
+
+func ctyTypeFromType(typ schema.Type) cty.Type {
+	typ = codegen.UnwrapType(typ)
+
+	switch typ {
+	case schema.StringType:
+		return cty.String
+	case schema.BoolType:
+		return cty.Bool
+	case schema.NumberType, schema.IntType:
+		return cty.Number
+	case schema.AnyType:
+		return cty.DynamicPseudoType
+	}
+
+	switch typ := typ.(type) {
+	case *schema.ArrayType:
+		return cty.List(ctyTypeFromType(typ.ElementType))
+	case *schema.MapType:
+		return cty.Map(ctyTypeFromType(typ.ElementType))
+	case *schema.EnumType:
+		return ctyTypeFromType(typ.ElementType)
+	case *schema.ObjectType:
+		attrs := make(map[string]cty.Type, len(typ.Properties))
+		var optional []string
+		for _, p := range typ.Properties {
+			key := snakeCaseFromCamelCase(p.Name)
+			if !p.IsRequired() {
+				optional = append(optional, key)
+			}
+			attrs[key] = ctyTypeFromType(p.Type)
+		}
+		return cty.ObjectWithOptionalAttrs(attrs, optional)
+	case *schema.InvalidType:
+		return cty.DynamicPseudoType
+	default:
+		panic(fmt.Sprintf("unknown schema type %s", typ))
+	}
+}
+
+func propertyValueToCty(path string, v property.Value, typ schema.Type, dryRun bool) (cty.Value, error) {
+	typ = codegen.UnwrapType(typ)
+	if v.Secret() {
+		computedV, err := propertyValueToCty(path, v.WithSecret(false), typ, dryRun)
+		return computedV.Mark(SensativeMark), err
+	}
+
+	switch {
+
+	// Primitive types
+
+	case v.IsComputed():
+		return cty.UnknownVal(ctyTypeFromType(typ)), nil
+	case v.IsString():
+		return cty.StringVal(v.AsString()), nil
+	case v.IsBool():
+		return cty.BoolVal(v.AsBool()), nil
+	case v.IsNumber():
+		return cty.NumberFloatVal(v.AsNumber()), nil
+	case v.IsNull():
+		return cty.NullVal(ctyTypeFromType(typ)), nil
+
+	// Collection types
+
+	case v.IsMap():
+		elemType := schema.AnyType
+		switch typ := typ.(type) {
+		case *schema.ObjectType:
+			m, err := propertyObjectToCtyMap(path, v.AsMap(), typ.Properties, dryRun)
+			if err != nil {
+				return cty.Value{}, err
+			}
+			return cty.ObjectVal(m), nil
+		case *schema.MapType:
+			elemType = typ.ElementType
+		}
+		m := make(map[string]cty.Value, v.AsMap().Len())
+		for k, v := range v.AsMap().All {
+			convertedV, err := propertyValueToCty(fmt.Sprintf("%s[%q]", path, k), v, elemType, dryRun)
+			if err != nil {
+				return cty.Value{}, err
+			}
+			m[k] = convertedV
+		}
+		if len(m) == 0 {
+			return cty.MapValEmpty(ctyTypeFromType(elemType)), nil
+		}
+
+		// If all elements are not the same - then cty requires an object type.
+		//
+		// This occurs when we have a non-homogeneous block not typed like an object. For example with the
+		// pulumi_stack resource:
+		//
+		//	 resource "pulumi_stash" "myStash" {
+		//	   input = {
+		//	     "key" = ["value", "s"]
+		//	     ""    = false
+		//	   }
+		//	 }
+		var t *cty.Type
+		for _, v := range m {
+			if t == nil {
+				t = new(v.Type())
+			}
+			if !v.Type().Equals(*t) {
+				return cty.ObjectVal(m), nil
+			}
+		}
+
+		return cty.MapVal(m), nil
+
+	case v.IsArray():
+		elemType := schema.AnyType
+		if arr, ok := typ.(*schema.ArrayType); ok {
+			elemType = arr.ElementType
+		}
+		arr := make([]cty.Value, v.AsArray().Len())
+		for i, v := range v.AsArray().All {
+			convertedV, err := propertyValueToCty(fmt.Sprintf("%s[%d]", path, i), v, elemType, dryRun)
+			if err != nil {
+				return cty.Value{}, err
+			}
+			arr[i] = convertedV
+		}
+		if len(arr) == 0 {
+			return cty.ListValEmpty(ctyTypeFromType(elemType)), nil
+		}
+		return cty.ListVal(arr), nil
+
+	default:
+		return cty.Value{}, fmt.Errorf("%s: unhandled property %s", path, v.GoString())
+	}
 }
 
 // PropertyValueToCty converts a Pulumi PropertyValue to a cty.Value.
@@ -397,7 +575,7 @@ func PropertyValueToCty(pv resource.PropertyValue) cty.Value {
 	case pv.IsSecret():
 		// Convert the inner value and mark it as sensitive
 		inner := PropertyValueToCty(pv.SecretValue().Element)
-		return inner.Mark("sensitive")
+		return inner.Mark(SensativeMark)
 
 	case pv.IsOutput():
 		// For outputs, try to get the known value if available

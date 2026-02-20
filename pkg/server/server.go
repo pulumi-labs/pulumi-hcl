@@ -21,6 +21,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"net"
 	"os"
 	"path/filepath"
@@ -170,11 +171,7 @@ func (host *LanguageHost) Run(
 		}, nil
 	}
 
-	// Build config map from request
-	configMap := make(map[string]string)
-	for k, v := range req.Config {
-		configMap[k] = v
-	}
+	configMap := maps.Clone(req.Config)
 
 	schemaLoader, err := schema.NewLoaderClient(req.LoaderTarget)
 	if err != nil {

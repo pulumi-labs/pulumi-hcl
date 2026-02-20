@@ -184,6 +184,12 @@ resource "aws_instance" "web" {
 						"ami":          {TypeSpec: schema.TypeSpec{Type: "string"}},
 						"instanceType": {TypeSpec: schema.TypeSpec{Type: "string"}},
 					},
+					ObjectTypeSpec: schema.ObjectTypeSpec{
+						Properties: map[string]schema.PropertySpec{
+							"ami":          {TypeSpec: schema.TypeSpec{Type: "string"}},
+							"instanceType": {TypeSpec: schema.TypeSpec{Type: "string"}},
+						},
+					},
 				},
 			},
 		}),
@@ -254,6 +260,11 @@ resource "aws_s3_bucket" "mybucket" {
 					InputProperties: map[string]schema.PropertySpec{
 						"bucket": {TypeSpec: schema.TypeSpec{Type: "string"}},
 					},
+					ObjectTypeSpec: schema.ObjectTypeSpec{
+						Properties: map[string]schema.PropertySpec{
+							"bucket": {TypeSpec: schema.TypeSpec{Type: "string"}},
+						},
+					},
 				},
 			},
 		}),
@@ -309,11 +320,22 @@ resource "aws_subnet" "main" {
 					InputProperties: map[string]schema.PropertySpec{
 						"cidrBlock": {TypeSpec: schema.TypeSpec{Type: "string"}},
 					},
+					ObjectTypeSpec: schema.ObjectTypeSpec{
+						Properties: map[string]schema.PropertySpec{
+							"cidrBlock": {TypeSpec: schema.TypeSpec{Type: "string"}},
+						},
+					},
 				},
 				"aws:index:Subnet": {
 					InputProperties: map[string]schema.PropertySpec{
 						"vpcId":     {TypeSpec: schema.TypeSpec{Type: "string"}},
 						"cidrBlock": {TypeSpec: schema.TypeSpec{Type: "string"}},
+					},
+					ObjectTypeSpec: schema.ObjectTypeSpec{
+						Properties: map[string]schema.PropertySpec{
+							"vpcId":     {TypeSpec: schema.TypeSpec{Type: "string"}},
+							"cidrBlock": {TypeSpec: schema.TypeSpec{Type: "string"}},
+						},
 					},
 				},
 			},
@@ -374,6 +396,11 @@ resource "aws_instance" "web" {
 				"aws:index:Instance": {
 					InputProperties: map[string]schema.PropertySpec{
 						"ami": {TypeSpec: schema.TypeSpec{Type: "string"}},
+					},
+					ObjectTypeSpec: schema.ObjectTypeSpec{
+						Properties: map[string]schema.PropertySpec{
+							"ami": {TypeSpec: schema.TypeSpec{Type: "string"}},
+						},
 					},
 				},
 			},
@@ -468,10 +495,20 @@ resource "aws_instance" "web" {
 					InputProperties: map[string]schema.PropertySpec{
 						"ami": {TypeSpec: schema.TypeSpec{Type: "string"}},
 					},
+					ObjectTypeSpec: schema.ObjectTypeSpec{
+						Properties: map[string]schema.PropertySpec{
+							"ami": {TypeSpec: schema.TypeSpec{Type: "string"}},
+						},
+					},
 				},
 				"aws:s3:Bucket": {
 					InputProperties: map[string]schema.PropertySpec{
 						"bucket": {TypeSpec: schema.TypeSpec{Type: "string"}},
+					},
+					ObjectTypeSpec: schema.ObjectTypeSpec{
+						Properties: map[string]schema.PropertySpec{
+							"bucket": {TypeSpec: schema.TypeSpec{Type: "string"}},
+						},
 					},
 				},
 			},
@@ -533,6 +570,11 @@ resource "aws_instance" "web" {
 					InputProperties: map[string]schema.PropertySpec{
 						"ami": {TypeSpec: schema.TypeSpec{Type: "string"}},
 					},
+					ObjectTypeSpec: schema.ObjectTypeSpec{
+						Properties: map[string]schema.PropertySpec{
+							"ami": {TypeSpec: schema.TypeSpec{Type: "string"}},
+						},
+					},
 				},
 			},
 		}),
@@ -592,6 +634,11 @@ resource "aws_instance" "web" {
 				"aws:index:Instance": {
 					InputProperties: map[string]schema.PropertySpec{
 						"ami": {TypeSpec: schema.TypeSpec{Type: "string"}},
+					},
+					ObjectTypeSpec: schema.ObjectTypeSpec{
+						Properties: map[string]schema.PropertySpec{
+							"ami": {TypeSpec: schema.TypeSpec{Type: "string"}},
+						},
 					},
 				},
 			},
@@ -654,6 +701,11 @@ resource "aws_instance" "web" {
 					InputProperties: map[string]schema.PropertySpec{
 						"ami": {TypeSpec: schema.TypeSpec{Type: "string"}},
 					},
+					ObjectTypeSpec: schema.ObjectTypeSpec{
+						Properties: map[string]schema.PropertySpec{
+							"ami": {TypeSpec: schema.TypeSpec{Type: "string"}},
+						},
+					},
 				},
 			},
 		}),
@@ -713,6 +765,11 @@ output "region_value" {
 				"aws:index:Instance": {
 					InputProperties: map[string]schema.PropertySpec{
 						"ami": {TypeSpec: schema.TypeSpec{Type: "string"}},
+					},
+					ObjectTypeSpec: schema.ObjectTypeSpec{
+						Properties: map[string]schema.PropertySpec{
+							"ami": {TypeSpec: schema.TypeSpec{Type: "string"}},
+						},
 					},
 				},
 			},
@@ -775,6 +832,11 @@ output "region_value" {
 					InputProperties: map[string]schema.PropertySpec{
 						"ami": {TypeSpec: schema.TypeSpec{Type: "string"}},
 					},
+					ObjectTypeSpec: schema.ObjectTypeSpec{
+						Properties: map[string]schema.PropertySpec{
+							"ami": {TypeSpec: schema.TypeSpec{Type: "string"}},
+						},
+					},
 				},
 			},
 		}),
@@ -831,6 +893,11 @@ variable "required_var" {
 					InputProperties: map[string]schema.PropertySpec{
 						"ami": {TypeSpec: schema.TypeSpec{Type: "string"}},
 					},
+					ObjectTypeSpec: schema.ObjectTypeSpec{
+						Properties: map[string]schema.PropertySpec{
+							"ami": {TypeSpec: schema.TypeSpec{Type: "string"}},
+						},
+					},
 				},
 			},
 		}),
@@ -886,6 +953,11 @@ output "instance_type" {
 					InputProperties: map[string]schema.PropertySpec{
 						"ami": {TypeSpec: schema.TypeSpec{Type: "string"}},
 					},
+					ObjectTypeSpec: schema.ObjectTypeSpec{
+						Properties: map[string]schema.PropertySpec{
+							"ami": {TypeSpec: schema.TypeSpec{Type: "string"}},
+						},
+					},
 				},
 			},
 		}),
@@ -940,6 +1012,11 @@ variable "instance_type" {
 				"aws:index:Instance": {
 					InputProperties: map[string]schema.PropertySpec{
 						"ami": {TypeSpec: schema.TypeSpec{Type: "string"}},
+					},
+					ObjectTypeSpec: schema.ObjectTypeSpec{
+						Properties: map[string]schema.PropertySpec{
+							"ami": {TypeSpec: schema.TypeSpec{Type: "string"}},
+						},
 					},
 				},
 			},
@@ -997,6 +1074,11 @@ resource "aws_instance" "web" {
 				"aws:index:Instance": {
 					InputProperties: map[string]schema.PropertySpec{
 						"ami": {TypeSpec: schema.TypeSpec{Type: "string"}},
+					},
+					ObjectTypeSpec: schema.ObjectTypeSpec{
+						Properties: map[string]schema.PropertySpec{
+							"ami": {TypeSpec: schema.TypeSpec{Type: "string"}},
+						},
 					},
 				},
 			},
@@ -1064,6 +1146,11 @@ resource "aws_instance" "web" {
 					InputProperties: map[string]schema.PropertySpec{
 						"ami": {TypeSpec: schema.TypeSpec{Type: "string"}},
 					},
+					ObjectTypeSpec: schema.ObjectTypeSpec{
+						Properties: map[string]schema.PropertySpec{
+							"ami": {TypeSpec: schema.TypeSpec{Type: "string"}},
+						},
+					},
 				},
 			},
 		}),
@@ -1123,6 +1210,11 @@ resource "aws_instance" "web" {
 					InputProperties: map[string]schema.PropertySpec{
 						"ami": {TypeSpec: schema.TypeSpec{Type: "string"}},
 					},
+					ObjectTypeSpec: schema.ObjectTypeSpec{
+						Properties: map[string]schema.PropertySpec{
+							"ami": {TypeSpec: schema.TypeSpec{Type: "string"}},
+						},
+					},
 				},
 			},
 		}),
@@ -1171,6 +1263,11 @@ resource "aws_instance" "web" {
 				"aws:index:Instance": {
 					InputProperties: map[string]schema.PropertySpec{
 						"ami": {TypeSpec: schema.TypeSpec{Type: "string"}},
+					},
+					ObjectTypeSpec: schema.ObjectTypeSpec{
+						Properties: map[string]schema.PropertySpec{
+							"ami": {TypeSpec: schema.TypeSpec{Type: "string"}},
+						},
 					},
 				},
 			},
@@ -1221,6 +1318,11 @@ resource "aws_instance" "web" {
 				"aws:index:Instance": {
 					InputProperties: map[string]schema.PropertySpec{
 						"ami": {TypeSpec: schema.TypeSpec{Type: "string"}},
+					},
+					ObjectTypeSpec: schema.ObjectTypeSpec{
+						Properties: map[string]schema.PropertySpec{
+							"ami": {TypeSpec: schema.TypeSpec{Type: "string"}},
+						},
 					},
 				},
 			},
@@ -1307,6 +1409,11 @@ resource "aws_instance" "web" {
 					InputProperties: map[string]schema.PropertySpec{
 						"ami": {TypeSpec: schema.TypeSpec{Type: "string"}},
 					},
+					ObjectTypeSpec: schema.ObjectTypeSpec{
+						Properties: map[string]schema.PropertySpec{
+							"ami": {TypeSpec: schema.TypeSpec{Type: "string"}},
+						},
+					},
 				},
 			},
 		}),
@@ -1363,6 +1470,11 @@ resource "aws_instance" "web" {
 				"aws:index:Instance": {
 					InputProperties: map[string]schema.PropertySpec{
 						"ami": {TypeSpec: schema.TypeSpec{Type: "string"}},
+					},
+					ObjectTypeSpec: schema.ObjectTypeSpec{
+						Properties: map[string]schema.PropertySpec{
+							"ami": {TypeSpec: schema.TypeSpec{Type: "string"}},
+						},
 					},
 				},
 			},
@@ -1480,6 +1592,15 @@ output "vpc_id" {
 							AdditionalProperties: &schema.TypeSpec{Type: "string"},
 						}},
 					},
+					ObjectTypeSpec: schema.ObjectTypeSpec{
+						Properties: map[string]schema.PropertySpec{
+							"cidrBlock": {TypeSpec: schema.TypeSpec{Type: "string"}},
+							"tags": {TypeSpec: schema.TypeSpec{
+								Type:                 "object",
+								AdditionalProperties: &schema.TypeSpec{Type: "string"},
+							}},
+						},
+					},
 				},
 			},
 		}),
@@ -1579,6 +1700,12 @@ resource "aws_instance" "web" {
 						"ami":          {TypeSpec: schema.TypeSpec{Type: "string"}},
 						"instanceType": {TypeSpec: schema.TypeSpec{Type: "string"}},
 					},
+					ObjectTypeSpec: schema.ObjectTypeSpec{
+						Properties: map[string]schema.PropertySpec{
+							"ami":          {TypeSpec: schema.TypeSpec{Type: "string"}},
+							"instanceType": {TypeSpec: schema.TypeSpec{Type: "string"}},
+						},
+					},
 				},
 			},
 		}),
@@ -1659,6 +1786,12 @@ resource "aws_instance" "web" {
 						"ami":          {TypeSpec: schema.TypeSpec{Type: "string"}},
 						"instanceType": {TypeSpec: schema.TypeSpec{Type: "string"}},
 					},
+					ObjectTypeSpec: schema.ObjectTypeSpec{
+						Properties: map[string]schema.PropertySpec{
+							"ami":          {TypeSpec: schema.TypeSpec{Type: "string"}},
+							"instanceType": {TypeSpec: schema.TypeSpec{Type: "string"}},
+						},
+					},
 				},
 			},
 		}),
@@ -1734,6 +1867,12 @@ resource "aws_instance" "imported" {
 					InputProperties: map[string]schema.PropertySpec{
 						"ami":          {TypeSpec: schema.TypeSpec{Type: "string"}},
 						"instanceType": {TypeSpec: schema.TypeSpec{Type: "string"}},
+					},
+					ObjectTypeSpec: schema.ObjectTypeSpec{
+						Properties: map[string]schema.PropertySpec{
+							"ami":          {TypeSpec: schema.TypeSpec{Type: "string"}},
+							"instanceType": {TypeSpec: schema.TypeSpec{Type: "string"}},
+						},
 					},
 				},
 			},
