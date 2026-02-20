@@ -363,56 +363,6 @@ resource "aws_subnet" "main" {
 	}
 }
 
-func TestEngine_NoResourceMonitor(t *testing.T) {
-	t.Parallel()
-
-	// Test that engine works without a resource monitor (for validation/testing)
-	src := []byte(`
-variable "name" {
-  type    = string
-  default = "test"
-}
-
-resource "aws_instance" "web" {
-  ami = var.name
-}
-`)
-
-	p := parser.NewParser()
-	config, diags := p.ParseSource("test.hcl", src)
-	if diags.HasErrors() {
-		t.Fatalf("parse error: %s", diags.Error())
-	}
-
-	// No resource monitor - should still work
-	engine := NewEngine(config, &EngineOptions{
-		ProjectName: "test-project",
-		StackName:   "dev",
-		WorkDir:     t.TempDir(),
-		RootDir:     t.TempDir(),
-		SchemaLoader: newMockReferenceLoader(t, schema.PackageSpec{
-			Name: "aws",
-			Resources: map[string]schema.ResourceSpec{
-				"aws:index:Instance": {
-					InputProperties: map[string]schema.PropertySpec{
-						"ami": {TypeSpec: schema.TypeSpec{Type: "string"}},
-					},
-					ObjectTypeSpec: schema.ObjectTypeSpec{
-						Properties: map[string]schema.PropertySpec{
-							"ami": {TypeSpec: schema.TypeSpec{Type: "string"}},
-						},
-					},
-				},
-			},
-		}),
-	})
-
-	err := engine.Run(t.Context())
-	if err != nil {
-		t.Fatalf("run error: %v", err)
-	}
-}
-
 func TestValidate(t *testing.T) {
 	t.Parallel()
 

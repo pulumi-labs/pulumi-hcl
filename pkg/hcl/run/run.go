@@ -540,6 +540,8 @@ func (e *Engine) processProvider(ctx context.Context, node *graph.Node) error {
 	attrs, _ := provider.Config.JustAttributes()
 	inputs := make(resource.PropertyMap)
 
+	// TODO: This needs to lookup a resource schema & then use transform methods
+
 	for name, attr := range attrs {
 		// Skip the alias attribute as it's not part of the provider configuration
 		if name == "alias" {
@@ -993,13 +995,6 @@ func (e *Engine) registerResource(
 	inputs resource.PropertyMap,
 	opts *ResourceOptions,
 ) (string, string, resource.PropertyMap, error) {
-	if e.resmon == nil {
-		// No resource monitor - return synthetic values for testing
-		urn := fmt.Sprintf("urn:pulumi:%s::%s::%s::%s",
-			e.stackName, e.projectName, typeToken, name)
-		return urn, name, inputs, nil
-	}
-
 	// Register with the resource monitor
 	resp, err := e.resmon.RegisterResource(ctx, RegisterResourceRequest{
 		Type:                    typeToken,
