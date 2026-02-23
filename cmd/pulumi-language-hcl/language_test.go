@@ -185,6 +185,7 @@ var expectedFailures = map[string]string{
 	"l2-resource-config":                           "not yet implemented",
 	"l2-resource-invoke-dynamic-function":          "not yet implemented",
 	"l2-resource-keyword-overlap":                  "not yet implemented",
+	"l2-resource-name-type":                         "not yet implemented - pulumiResourceName/pulumiResourceType functions",
 	"l2-resource-names":                            "not yet implemented",
 	"l2-resource-parent-inheritance":               "not yet implemented",
 	"l2-resource-primitives":                       "not yet implemented",

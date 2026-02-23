@@ -658,59 +658,57 @@ func (e *Engine) registerResourceInstance(
 		defer e.evaluator.Context().ClearEach()
 	}
 
-	// Evaluate resource configuration
-	attrs, _ := res.Config.JustAttributes() // TODO: handle blocks
-	propertyDeps := make(map[string][]string)
-
-	resourceInputs := make(map[string]cty.Value, len(attrs))
-	for name, attr := range attrs {
-		val, diags := e.evaluator.EvaluateExpression(attr.Expr)
-		if diags.HasErrors() {
-			return fmt.Errorf("evaluating attribute %s: %s", name, diags.Error())
+	dependsOn := make(map[string][]string)
+	addToDependsOn := func(prop, urn string) {
+		idx, found := slices.BinarySearch(dependsOn[prop], urn)
+		if found {
+			return
 		}
-		resourceInputs[name] = val
+		dependsOn[prop] = slices.Insert(dependsOn[prop], idx, urn)
+	}
 
-		// Extract dependencies from this attribute's expression
-		deps := eval.ExtractDependencies(attr.Expr)
-		if len(deps) > 0 {
-			// Convert resource keys to URNs
-			var urns []string
-			for _, dep := range deps {
+	resourceInputs, diags := transform.EvalResourceWithSchema(res.Config, resSchema,
+		func(propKey resource.PropertyKey, expr hcl.Expression) (cty.Value, hcl.Diagnostics) {
+			val, diags := e.evaluator.EvaluateExpression(expr)
+			if diags.HasErrors() {
+				return val, diags
+			}
+
+			// Extract dependencies from this attribute's expression
+			for _, dep := range eval.ExtractDependencies(expr) {
 				// Look up the URN for this dependency
 				if resOutputs, ok := e.resourceOutputs.Get(dep); ok {
 					if urnVal := resOutputs.GetAttr("urn"); urnVal.Type() == cty.String {
-						urns = append(urns, urnVal.AsString())
+						addToDependsOn(string(propKey), urnVal.AsString())
 					}
 				}
 				// For data source dependencies, inherit their dependencies transitively
 				if dsKey, ok := strings.CutPrefix(dep, "data."); ok {
 					if dsDeps, exists := e.dataSourceDependencies.Get(dsKey); exists {
 						for _, urn := range dsDeps {
-							urns = append(urns, string(urn))
+							addToDependsOn(string(propKey), string(urn))
 						}
 					}
 				}
 			}
-			if len(urns) > 0 {
-				propertyDeps[name] = urns
-			}
-		}
+
+			return val, diags
+		})
+	if diags.HasErrors() {
+		return diags
 	}
 
 	// Build resource options
 	opts := e.buildResourceOptions(res, instance)
-	opts.PropertyDependencies = propertyDeps
-
-	// Also add all property dependencies to the overall dependencies list
-	allDeps := make(map[string]bool)
-	for _, urns := range propertyDeps {
-		for _, urn := range urns {
-			allDeps[urn] = true
+	opts.PropertyDependencies = dependsOn
+	for _, deps := range dependsOn {
+		for _, dep := range deps {
+			if !slices.Contains(opts.DependsOn, dep) {
+				opts.DependsOn = append(opts.DependsOn, dep)
+			}
 		}
 	}
-	for urn := range allDeps {
-		opts.DependsOn = append(opts.DependsOn, urn)
-	}
+	slices.Sort(opts.DependsOn)
 
 	// Evaluate preconditions before resource creation
 	if len(res.Preconditions) > 0 {
@@ -723,12 +721,7 @@ func (e *Engine) registerResourceInstance(
 	// Extract the resource name from the instance key (e.g., "pulumi_stash.myStash" -> "myStash")
 	resourceName := extractResourceName(instance.Key)
 
-	inputs, err := transform.CtyToResourceInputs(cty.ObjectVal(resourceInputs), resSchema)
-	if err != nil {
-		return fmt.Errorf("converting resource to Pulumi types: %w", err)
-	}
-
-	urn, id, outputs, err := e.registerResource(ctx, resSchema.Token, resourceName, inputs, opts)
+	urn, id, outputs, err := e.registerResource(ctx, resSchema.Token, resourceName, resourceInputs, opts)
 	if err != nil {
 		return fmt.Errorf("registering resource: %w", err)
 	}
