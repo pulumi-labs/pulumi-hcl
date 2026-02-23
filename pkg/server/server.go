@@ -139,7 +139,7 @@ func (host *LanguageHost) GetRequiredPlugins(
 func (host *LanguageHost) Run(
 	ctx context.Context,
 	req *pulumirpc.RunRequest,
-) (_ *pulumirpc.RunResponse, err error) {
+) (*pulumirpc.RunResponse, error) {
 	logging.V(5).Infof("Run: program=%s, pwd=%s, stack=%s, project=%s",
 		req.Info.EntryPoint, req.Pwd, req.Stack, req.Project)
 
@@ -191,21 +191,6 @@ func (host *LanguageHost) Run(
 		WorkDir:          req.Info.ProgramDirectory,
 		RootDir:          req.Info.RootDirectory,
 	})
-
-	defer func() {
-		e := recover()
-		if e == nil {
-			return
-		}
-		switch e := e.(type) {
-		case error:
-			err = e
-		case string:
-			err = errors.New(e)
-		default:
-			err = fmt.Errorf("panic: %v", e)
-		}
-	}()
 
 	if err := engine.Run(ctx); err != nil {
 		return &pulumirpc.RunResponse{
@@ -655,12 +640,28 @@ func (r *resourceMonitorAdapter) RegisterResource(
 		return nil, fmt.Errorf("marshaling inputs: %w", err)
 	}
 
-	// Convert aliases from []string to []*pulumirpc.Alias
 	var aliases []*pulumirpc.Alias
 	for _, a := range req.Aliases {
-		aliases = append(aliases, &pulumirpc.Alias{
-			Alias: &pulumirpc.Alias_Urn{Urn: a},
-		})
+		if a.URN != "" {
+			aliases = append(aliases, &pulumirpc.Alias{
+				Alias: &pulumirpc.Alias_Urn{Urn: a.URN},
+			})
+		} else if a.Spec != nil {
+			spec := &pulumirpc.Alias_Spec{
+				Name:    a.Spec.Name,
+				Type:    a.Spec.Type,
+				Stack:   a.Spec.Stack,
+				Project: a.Spec.Project,
+			}
+			if a.Spec.NoParent {
+				spec.Parent = &pulumirpc.Alias_Spec_NoParent{NoParent: true}
+			} else if a.Spec.ParentURN != "" {
+				spec.Parent = &pulumirpc.Alias_Spec_ParentUrn{ParentUrn: a.Spec.ParentURN}
+			}
+			aliases = append(aliases, &pulumirpc.Alias{
+				Alias: &pulumirpc.Alias_Spec_{Spec: spec},
+			})
+		}
 	}
 
 	// Determine if this is a custom (provider-backed) resource
@@ -702,6 +703,8 @@ func (r *resourceMonitorAdapter) RegisterResource(
 		HideDiffs:                  req.HideDiffs,
 		ReplaceOnChanges:           req.ReplaceOnChanges,
 		EnvVarMappings:             req.EnvVarMappings,
+		Version:                    req.Version,
+		PluginDownloadURL:          req.PluginDownloadURL,
 	}
 
 	// Add custom timeouts if specified

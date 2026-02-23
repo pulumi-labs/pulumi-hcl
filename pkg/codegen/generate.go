@@ -323,6 +323,14 @@ func (g *generator) genResourceOptions(body *hclwrite.Body, r *pcl.Resource) hcl
 		return diags
 	}
 
+	if opts.Parent != nil {
+		tokens, d := g.exprTokens(opts.Parent, schema.AnyType)
+		diags = append(diags, d...)
+		if !d.HasErrors() {
+			body.SetAttributeRaw("parent", tokens)
+		}
+	}
+
 	if opts.Provider != nil {
 		tokens, d := g.exprTokens(opts.Provider, schema.AnyType)
 		diags = append(diags, d...)
@@ -451,7 +459,133 @@ func (g *generator) genResourceOptions(body *hclwrite.Body, r *pcl.Resource) hcl
 		}
 	}
 
+	// HCL doesn't bake versions into generated code, so always emit version when specified.
+	if opts.Version != nil {
+		tokens, d := g.exprTokens(opts.Version, schema.StringType)
+		diags = append(diags, d...)
+		if !d.HasErrors() {
+			body.SetAttributeRaw("version", tokens)
+		}
+	}
+
+	if opts.PluginDownloadURL != nil && pcl.NeedsPluginDownloadURLResourceOption(opts.PluginDownloadURL, r.Schema) {
+		tokens, d := g.exprTokens(opts.PluginDownloadURL, schema.StringType)
+		diags = append(diags, d...)
+		if !d.HasErrors() {
+			body.SetAttributeRaw("plugin_download_url", tokens)
+		}
+	}
+
+	if opts.Aliases != nil {
+		g.genAliases(body, opts.Aliases, &diags)
+	}
+
 	return diags
+}
+
+// genAliases generates the HCL `aliases` attribute from a PCL aliases expression.
+// PCL aliases can be URN strings or spec objects with fields like name, noParent, parent.
+// HCL uses snake_case keys (no_parent, parent_urn) and parent is a resource URN string.
+func (g *generator) genAliases(body *hclwrite.Body, aliases model.Expression, diags *hcl.Diagnostics) {
+	tuple, ok := aliases.(*model.TupleConsExpression)
+	if !ok {
+		// Fallback: emit as-is
+		t, d := g.exprTokens(aliases, schema.AnyType)
+		*diags = append(*diags, d...)
+		if !d.HasErrors() {
+			body.SetAttributeRaw("aliases", t)
+		}
+		return
+	}
+
+	tokens := hclwrite.Tokens{
+		{Type: hclsyntax.TokenOBrack, Bytes: []byte("[")},
+	}
+	for i, elem := range tuple.Expressions {
+		if i > 0 {
+			tokens = append(tokens, &hclwrite.Token{Type: hclsyntax.TokenComma, Bytes: []byte(",")})
+		}
+		elemTokens, d := g.aliasElemTokens(elem)
+		*diags = append(*diags, d...)
+		if d.HasErrors() {
+			return
+		}
+		if len(elemTokens) > 0 {
+			elemTokens[0].SpacesBefore = 1
+		}
+		tokens = append(tokens, elemTokens...)
+	}
+	tokens = append(tokens, &hclwrite.Token{Type: hclsyntax.TokenCBrack, Bytes: []byte("]")})
+	body.SetAttributeRaw("aliases", tokens)
+}
+
+// aliasElemTokens generates HCL tokens for a single alias element.
+// String elements are emitted as-is. Object elements have their keys renamed:
+// noParent → no_parent, parent (resource ref) → parent_urn (resource URN string).
+func (g *generator) aliasElemTokens(elem model.Expression) (hclwrite.Tokens, hcl.Diagnostics) {
+	obj, ok := elem.(*model.ObjectConsExpression)
+	if !ok {
+		return g.exprTokens(elem, schema.AnyType)
+	}
+
+	tokens := hclwrite.Tokens{
+		{Type: hclsyntax.TokenOBrace, Bytes: []byte("{")},
+	}
+	if len(obj.Items) == 0 {
+		tokens = append(tokens, &hclwrite.Token{Type: hclsyntax.TokenCBrace, Bytes: []byte("}")})
+		return tokens, nil
+	}
+	tokens = append(tokens, &hclwrite.Token{Type: hclsyntax.TokenNewline, Bytes: []byte("\n")})
+
+	var diags hcl.Diagnostics
+	for _, item := range obj.Items {
+		keyStr, _ := extractStringLiteral(item.Key)
+
+		var hclKey string
+		var valTokens hclwrite.Tokens
+		var d hcl.Diagnostics
+
+		switch keyStr {
+		case "noParent":
+			hclKey = "no_parent"
+			valTokens, d = g.exprTokens(item.Value, schema.BoolType)
+		case "parent":
+			// Transform resource reference to parent_urn = resource_type.name.urn
+			hclKey = "parent_urn"
+			baseTokens, d2 := g.exprTokens(item.Value, schema.AnyType)
+			diags = append(diags, d2...)
+			if d2.HasErrors() {
+				return nil, diags
+			}
+			// Append .urn to get the resource's URN
+			valTokens = append(baseTokens,
+				&hclwrite.Token{Type: hclsyntax.TokenDot, Bytes: []byte(".")},
+				&hclwrite.Token{Type: hclsyntax.TokenIdent, Bytes: []byte("urn")},
+			)
+		default:
+			hclKey = transform.SnakeCaseFromPulumiCase(keyStr)
+			valTokens, d = g.exprTokens(item.Value, schema.AnyType)
+		}
+
+		diags = append(diags, d...)
+		if d.HasErrors() {
+			return nil, diags
+		}
+
+		keyTokens := hclwrite.TokensForIdentifier(hclKey)
+		keyTokens[0].SpacesBefore = 2
+		tokens = append(tokens, keyTokens...)
+		tokens = append(tokens, &hclwrite.Token{
+			Type: hclsyntax.TokenEqual, Bytes: []byte("="), SpacesBefore: 1,
+		})
+		if len(valTokens) > 0 {
+			valTokens[0].SpacesBefore = 1
+		}
+		tokens = append(tokens, valTokens...)
+		tokens = append(tokens, &hclwrite.Token{Type: hclsyntax.TokenNewline, Bytes: []byte("\n")})
+	}
+	tokens = append(tokens, &hclwrite.Token{Type: hclsyntax.TokenCBrace, Bytes: []byte("}")})
+	return tokens, diags
 }
 
 // extractPropertyNames extracts camelCase property names from a PCL expression like [value, otherProp].

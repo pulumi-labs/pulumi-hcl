@@ -1769,13 +1769,13 @@ resource "aws_instance" "web" {
 
 	found := false
 	for _, alias := range instanceReq.Aliases {
-		if alias == "aws_instance.old_server" {
+		if alias.Spec != nil && alias.Spec.Name == "aws_instance.old_server" {
 			found = true
 			break
 		}
 	}
 	if !found {
-		t.Errorf("expected alias 'aws_instance.old_server', got %v", instanceReq.Aliases)
+		t.Errorf("expected alias with name 'aws_instance.old_server', got %v", instanceReq.Aliases)
 	}
 }
 

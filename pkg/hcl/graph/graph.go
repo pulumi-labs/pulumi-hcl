@@ -316,6 +316,15 @@ func (g *Graph) extractResourceDependencies(resource *ast.Resource) []pdag.Node 
 		}
 	}
 
+	// Extract from parent resource reference
+	if resource.ResourceParent != nil {
+		dep := formatTraversal(resource.ResourceParent)
+		if dep != "" {
+			_, idx := g.newNode(dep)
+			seen[idx] = true
+		}
+	}
+
 	// Extract from provider reference
 	if resource.Provider != nil {
 		providerKey := resource.Provider.Name
@@ -359,6 +368,11 @@ func (g *Graph) extractResourceDependencies(resource *ast.Resource) []pdag.Node 
 
 	// Extract from additional_secret_outputs expression
 	for _, dep := range g.extractDependenciesFromExpression(resource.AdditionalSecretOutputs) {
+		seen[dep] = true
+	}
+
+	// Extract from aliases expression
+	for _, dep := range g.extractDependenciesFromExpression(resource.Aliases) {
 		seen[dep] = true
 	}
 

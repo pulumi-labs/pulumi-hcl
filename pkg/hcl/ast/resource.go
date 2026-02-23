@@ -76,6 +76,10 @@ type Resource struct {
 	// Provider is the provider configuration reference, if specified.
 	Provider *ProviderRef
 
+	// ResourceParent is the parent resource reference, if specified.
+	// Unlike Terraform, Pulumi supports explicit parent resources.
+	ResourceParent hcl.Traversal
+
 	// AdditionalSecretOutputs lists output properties that should be treated as secret.
 	AdditionalSecretOutputs hcl.Expression
 
@@ -105,6 +109,15 @@ type Resource struct {
 	// EnvVarMappings specifies environment variable remappings for provider resources.
 	// Maps local environment variable names to provider-specific variable names.
 	EnvVarMappings hcl.Expression
+
+	// Version is the version of the provider plugin to use for this resource.
+	Version hcl.Expression
+
+	// PluginDownloadURL is the URL from which the provider plugin should be downloaded.
+	PluginDownloadURL hcl.Expression
+
+	// Aliases is a list of aliases for this resource (URN strings or spec objects).
+	Aliases hcl.Expression
 
 	// Lifecycle contains lifecycle configuration, if present.
 	Lifecycle *Lifecycle

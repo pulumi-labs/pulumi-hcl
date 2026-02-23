@@ -469,6 +469,14 @@ func (p *Parser) parseResourceBlock(config *ast.Config, block *hcl.Block, isData
 		resource.Provider = providerRef
 	}
 
+	if attr, ok := content.Attributes["parent"]; ok {
+		traversal, travDiags := hcl.AbsTraversalForExpr(attr.Expr)
+		diags = append(diags, travDiags...)
+		if traversal != nil {
+			resource.ResourceParent = traversal
+		}
+	}
+
 	if attr, ok := content.Attributes["additional_secret_outputs"]; ok {
 		resource.AdditionalSecretOutputs = attr.Expr
 	}
@@ -549,6 +557,18 @@ func (p *Parser) parseResourceBlock(config *ast.Config, block *hcl.Block, isData
 
 	if attr, ok := content.Attributes["env_var_mappings"]; ok {
 		resource.EnvVarMappings = attr.Expr
+	}
+
+	if attr, ok := content.Attributes["version"]; ok {
+		resource.Version = attr.Expr
+	}
+
+	if attr, ok := content.Attributes["plugin_download_url"]; ok {
+		resource.PluginDownloadURL = attr.Expr
+	}
+
+	if attr, ok := content.Attributes["aliases"]; ok {
+		resource.Aliases = attr.Expr
 	}
 
 	// Parse nested blocks
