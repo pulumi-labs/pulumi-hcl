@@ -139,7 +139,7 @@ func (host *LanguageHost) GetRequiredPlugins(
 func (host *LanguageHost) Run(
 	ctx context.Context,
 	req *pulumirpc.RunRequest,
-) (*pulumirpc.RunResponse, error) {
+) (_ *pulumirpc.RunResponse, err error) {
 	logging.V(5).Infof("Run: program=%s, pwd=%s, stack=%s, project=%s",
 		req.Info.EntryPoint, req.Pwd, req.Stack, req.Project)
 
@@ -191,6 +191,21 @@ func (host *LanguageHost) Run(
 		WorkDir:          req.Info.ProgramDirectory,
 		RootDir:          req.Info.RootDirectory,
 	})
+
+	defer func() {
+		e := recover()
+		if e == nil {
+			return
+		}
+		switch e := e.(type) {
+		case error:
+			err = e
+		case string:
+			err = errors.New(e)
+		default:
+			err = fmt.Errorf("panic: %v", e)
+		}
+	}()
 
 	if err := engine.Run(ctx); err != nil {
 		return &pulumirpc.RunResponse{
@@ -681,6 +696,11 @@ func (r *resourceMonitorAdapter) RegisterResource(
 		DeleteBeforeReplaceDefined: req.DeleteBeforeReplaceDef,
 		ImportId:                   req.ImportId,
 		AdditionalSecretOutputs:    req.AdditionalSecretOutputs,
+		RetainOnDelete:             req.RetainOnDelete,
+		DeletedWith:                req.DeletedWith,
+		ReplaceWith:                req.ReplaceWith,
+		HideDiffs:                  req.HideDiffs,
+		ReplaceOnChanges:           req.ReplaceOnChanges,
 	}
 
 	// Add custom timeouts if specified
@@ -690,6 +710,18 @@ func (r *resourceMonitorAdapter) RegisterResource(
 			Update: formatTimeoutSeconds(req.CustomTimeouts.Update),
 			Delete: formatTimeoutSeconds(req.CustomTimeouts.Delete),
 		}
+	}
+
+	// Add replacement trigger if specified
+	if !req.ReplacementTrigger.IsNull() {
+		trigger, err := plugin.MarshalPropertyValue("replacement_trigger", req.ReplacementTrigger, plugin.MarshalOptions{
+			KeepUnknowns: true,
+			KeepSecrets:  true,
+		})
+		if err != nil {
+			return nil, fmt.Errorf("marshaling replacement trigger: %w", err)
+		}
+		registerReq.ReplacementTrigger = trigger
 	}
 
 	// Call the resource monitor

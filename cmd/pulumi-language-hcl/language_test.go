@@ -128,20 +128,7 @@ func runTestingHost(t *testing.T) (string, testingrpc.LanguageTestClient) {
 }
 
 var expectedFailures = map[string]string{
-	"l2-resource-option-additional-secret-outputs": "not yet implemented",
-	"l2-resource-option-custom-timeouts":           "not yet implemented",
-	"l2-resource-option-delete-before-replace":     "not yet implemented",
-	"l2-resource-option-deleted-with":              "not yet implemented",
-	"l2-resource-option-depends-on":                "not yet implemented",
-	"l2-resource-option-env-var-mappings":          "not yet implemented",
-	"l2-resource-option-hide-diffs":                "not yet implemented",
-	"l2-resource-option-ignore-changes":            "not yet implemented",
-	"l2-resource-option-import":                    "not yet implemented",
-	"l2-resource-option-protect":                   "not yet implemented",
-	"l2-resource-option-replace-on-changes":        "not yet implemented",
-	"l2-resource-option-replace-with":              "not yet implemented",
-	"l2-resource-option-replacement-trigger":       "not yet implemented",
-	"l2-resource-option-retain-on-delete":          "not yet implemented",
+	"l2-resource-option-env-var-mappings": "not yet implemented",
 
 	"l2-explicit-providers":                  "not yet implemented",
 	"l2-resource-option-alias":               "not yet implemented",

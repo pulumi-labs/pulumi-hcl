@@ -79,6 +79,29 @@ type Resource struct {
 	// AdditionalSecretOutputs lists output properties that should be treated as secret.
 	AdditionalSecretOutputs hcl.Expression
 
+	// RetainOnDelete if true means the provider's Delete method will not be called for this resource.
+	RetainOnDelete hcl.Expression
+
+	// DeletedWith is the resource that, when deleted, causes this resource to be deleted without calling Delete.
+	DeletedWith hcl.Traversal
+
+	// ReplaceWith lists resources whose replacement should also trigger replacement of this resource.
+	ReplaceWith []hcl.Traversal
+
+	// HideDiff lists property paths whose diffs should not be displayed.
+	// Property names are in Pulumi camelCase format (e.g., "someProperty").
+	HideDiff []string
+
+	// ReplaceOnChanges lists property paths that if changed should force a replacement.
+	// Property names are in Pulumi camelCase format (e.g., "someProperty").
+	ReplaceOnChanges []string
+
+	// ReplacementTrigger is an expression whose change triggers resource replacement.
+	ReplacementTrigger hcl.Expression
+
+	// ImportID is the resource ID to import this resource as.
+	ImportID string
+
 	// Lifecycle contains lifecycle configuration, if present.
 	Lifecycle *Lifecycle
 

@@ -106,6 +106,14 @@ var resourceSchema = &hcl.BodySchema{
 		{Name: "depends_on"},
 		{Name: "provider"},
 		{Name: "additional_secret_outputs"},
+		// Pulumi-specific resource options
+		{Name: "retain_on_delete"},
+		{Name: "deleted_with"},
+		{Name: "replace_with"},
+		{Name: "hide_diffs"},
+		{Name: "replace_on_changes"},
+		{Name: "replacement_trigger"},
+		{Name: "import_id"},
 	},
 	Blocks: []hcl.BlockHeaderSchema{
 		{Type: "lifecycle"},

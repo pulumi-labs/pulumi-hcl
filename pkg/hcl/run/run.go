@@ -81,6 +81,12 @@ type RegisterResourceRequest struct {
 	CustomTimeouts          *CustomTimeouts
 	ImportId                string // Resource ID to import
 	AdditionalSecretOutputs []string
+	RetainOnDelete          *bool
+	DeletedWith             string // URN of the resource that, when deleted, causes this resource to be deleted
+	ReplaceWith             []string // URNs of resources whose replacement triggers replacement of this resource
+	HideDiffs               []string // Property paths whose diffs should not be displayed
+	ReplaceOnChanges        []string // Property paths that if changed should force a replacement
+	ReplacementTrigger      resource.PropertyValue // Value whose change triggers replacement
 }
 
 // RegisterResourceResponse contains the result of registering a resource.
@@ -765,11 +771,17 @@ func (e *Engine) registerResourceInstance(
 func (e *Engine) buildResourceOptions(res *ast.Resource, instance *graph.ExpandedResource) *ResourceOptions {
 	opts := &ResourceOptions{}
 
-	// Handle depends_on
+	// Handle depends_on - resolve to URNs
 	for _, dep := range res.DependsOn {
 		depKey := graph.FormatTraversal(dep)
-		if depKey != "" {
-			opts.DependsOn = append(opts.DependsOn, depKey)
+		if depKey == "" {
+			continue
+		}
+		if outputs, ok := e.resourceOutputs.Get(depKey); ok {
+			urnVal := outputs.GetAttr("urn")
+			if urnVal.Type() == cty.String {
+				opts.DependsOn = append(opts.DependsOn, urnVal.AsString())
+			}
 		}
 	}
 
@@ -876,6 +888,64 @@ func (e *Engine) buildResourceOptions(res *ast.Resource, instance *graph.Expande
 		}
 	}
 
+	// Handle retain_on_delete
+	if res.RetainOnDelete != nil {
+		val, diags := res.RetainOnDelete.Value(e.evaluator.Context().HCLContext())
+		if !diags.HasErrors() && val.Type() == cty.Bool {
+			b := val.True()
+			opts.RetainOnDelete = &b
+		}
+	}
+
+	// Handle deleted_with - resolve to URN
+	if res.DeletedWith != nil {
+		depKey := graph.FormatTraversal(res.DeletedWith)
+		if depKey != "" {
+			if outputs, ok := e.resourceOutputs.Get(depKey); ok {
+				urnVal := outputs.GetAttr("urn")
+				if urnVal.Type() == cty.String {
+					opts.DeletedWith = urnVal.AsString()
+				}
+			}
+		}
+	}
+
+	// Handle replace_with - resolve each resource reference to URN
+	for _, ref := range res.ReplaceWith {
+		depKey := graph.FormatTraversal(ref)
+		if depKey == "" {
+			continue
+		}
+		if outputs, ok := e.resourceOutputs.Get(depKey); ok {
+			urnVal := outputs.GetAttr("urn")
+			if urnVal.Type() == cty.String {
+				opts.ReplaceWith = append(opts.ReplaceWith, urnVal.AsString())
+			}
+		}
+	}
+
+	// Handle hide_diffs - property paths (already in camelCase)
+	opts.HideDiffs = append(opts.HideDiffs, res.HideDiff...)
+
+	// Handle replace_on_changes - property paths (already in camelCase)
+	opts.ReplaceOnChanges = append(opts.ReplaceOnChanges, res.ReplaceOnChanges...)
+
+	// Handle replacement_trigger
+	if res.ReplacementTrigger != nil {
+		val, diags := res.ReplacementTrigger.Value(e.evaluator.Context().HCLContext())
+		if !diags.HasErrors() {
+			pv, err := transform.CtyToPropertyValue(val)
+			if err == nil {
+				opts.ReplacementTrigger = pv
+			}
+		}
+	}
+
+	// Handle inline import_id attribute
+	if res.ImportID != "" {
+		opts.ImportId = res.ImportID
+	}
+
 	return opts
 }
 
@@ -978,6 +1048,12 @@ type ResourceOptions struct {
 	CustomTimeouts          *CustomTimeouts
 	ImportId                string
 	AdditionalSecretOutputs []string
+	RetainOnDelete          *bool
+	DeletedWith             string // URN of the resource that, when deleted, causes this resource to be deleted
+	ReplaceWith             []string // URNs of resources whose replacement triggers replacement of this resource
+	HideDiffs               []string // Property paths whose diffs should not be displayed
+	ReplaceOnChanges        []string // Property paths that if changed should force a replacement
+	ReplacementTrigger      resource.PropertyValue // Value whose change triggers replacement
 }
 
 // registerResource registers a resource with the Pulumi engine.
@@ -1005,6 +1081,12 @@ func (e *Engine) registerResource(
 		CustomTimeouts:          opts.CustomTimeouts,
 		ImportId:                opts.ImportId,
 		AdditionalSecretOutputs: opts.AdditionalSecretOutputs,
+		RetainOnDelete:          opts.RetainOnDelete,
+		DeletedWith:             opts.DeletedWith,
+		ReplaceWith:             opts.ReplaceWith,
+		HideDiffs:               opts.HideDiffs,
+		ReplaceOnChanges:        opts.ReplaceOnChanges,
+		ReplacementTrigger:      opts.ReplacementTrigger,
 	})
 	if err != nil {
 		return "", "", nil, err
