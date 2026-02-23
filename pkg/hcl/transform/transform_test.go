@@ -378,7 +378,7 @@ func TestCtyToResourceInputs(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			result, err := CtyToResourceInputs(tt.input, &schema.Resource{
+			result, err := ctyToResourceInputs(tt.input, &schema.Resource{
 				Token:           "pkg:mod:Name",
 				InputProperties: tt.properties,
 			})

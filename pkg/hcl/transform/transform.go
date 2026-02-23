@@ -23,18 +23,137 @@ import (
 	"strings"
 	"unicode"
 
+	"github.com/hashicorp/hcl/v2"
 	"github.com/pulumi/pulumi/pkg/v3/codegen"
 	"github.com/pulumi/pulumi/pkg/v3/codegen/cgstrings"
 	"github.com/pulumi/pulumi/pkg/v3/codegen/schema"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/resource"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/util/cmdutil"
+	"github.com/pulumi/pulumi/sdk/v3/go/common/util/contract"
 	"github.com/pulumi/pulumi/sdk/v3/go/property"
 	"github.com/zclconf/go-cty/cty"
 )
 
 const SensativeMark = "sensitive"
 
-func CtyToResourceInputs(val cty.Value, r *schema.Resource) (resource.PropertyMap, error) {
+type EvalFunc = func(resource.PropertyKey, hcl.Expression) (cty.Value, hcl.Diagnostics)
+
+func EvalResourceWithSchema(config hcl.Body, r *schema.Resource, eval EvalFunc) (resource.PropertyMap, hcl.Diagnostics) {
+	resourceInputs, diags := evalBlockWithSchema(config, r.InputProperties, eval)
+	if diags.HasErrors() {
+		return nil, diags
+	}
+
+	m, err := ctyToResourceInputs(resourceInputs, r)
+	if err != nil {
+		return nil, append(diags, &hcl.Diagnostic{
+			Severity: hcl.DiagError,
+			Summary:  "failed to convert HCL resource inputs to Pulumi inputs",
+			Detail:   err.Error(),
+		})
+	}
+	return m, diags
+}
+
+func evalBlocksWithSchema(config hcl.Blocks, props []*schema.Property, eval EvalFunc) ([]cty.Value, hcl.Diagnostics) {
+	out := make([]cty.Value, len(config))
+	var diags hcl.Diagnostics
+	for i, v := range config {
+		evaluated, diag := evalBlockWithSchema(v.Body, props, eval)
+		diags = diags.Extend(diag)
+		if diag.HasErrors() {
+			return nil, diags
+		}
+		out[i] = evaluated
+	}
+	return out, diags
+}
+
+func evalBlockWithSchema(config hcl.Body, props []*schema.Property, eval EvalFunc) (cty.Value, hcl.Diagnostics) {
+	body, diags := config.Content(inputBodyFromProperties(props))
+	if diags.HasErrors() {
+		return cty.Value{}, diags
+	}
+
+	if len(props) == 0 {
+		return cty.EmptyObjectVal, diags
+	}
+
+	resourceInputs := make(map[string]cty.Value, len(body.Attributes)+len(body.Blocks))
+	for name, attr := range body.Attributes {
+		_, prop := camelCaseFromSnakeCase(name, props)
+		contract.Assertf(prop != nil, "unable to find schema for validated property")
+
+		out, attrDiag := eval(resource.PropertyKey(prop.Name), attr.Expr)
+		diags = diags.Extend(attrDiag)
+		if attrDiag.HasErrors() {
+			return cty.Value{}, diags
+		}
+		resourceInputs[name] = conformCtyToType(out, ctyTypeFromType(prop.Type))
+	}
+
+	for name, blocks := range body.Blocks.ByType() {
+		var prop *schema.Property
+		for _, p := range props {
+			if snakeCaseFromCamelCase(p.Name) == name {
+				prop = p
+				break
+			}
+		}
+		contract.Assertf(prop != nil, "unable to find schema for validated property")
+
+		blockType := codegen.UnwrapType(codegen.UnwrapType(prop.Type).(*schema.ArrayType).ElementType).(*schema.ObjectType)
+		values, diags := evalBlocksWithSchema(blocks, blockType.Properties, eval)
+		if diags.HasErrors() {
+			return cty.Value{}, diags
+		}
+		resourceInputs[name] = cty.ListVal(values)
+	}
+
+	return cty.ObjectVal(resourceInputs), diags
+}
+
+func conformCtyToType(val cty.Value, typ cty.Type) cty.Value {
+	if val.Type().Equals(typ) {
+		return val
+	}
+
+	if val.Type().IsObjectType() && typ.IsMapType() {
+		m := make(map[string]cty.Value, val.LengthInt())
+		for attrs := val.ElementIterator(); attrs.Next(); {
+			k, v := attrs.Element()
+			m[k.AsString()] = conformCtyToType(v, typ.ElementType())
+		}
+		if len(m) == 0 {
+			return cty.MapValEmpty(typ.ElementType())
+		}
+		return cty.MapVal(m)
+	}
+
+	return val
+}
+
+func inputBodyFromProperties(r []*schema.Property) *hcl.BodySchema {
+	body := new(hcl.BodySchema)
+	for _, p := range r {
+		typeName := snakeCaseFromCamelCase(p.Name)
+		if list, ok := codegen.UnwrapType(p.Type).(*schema.ArrayType); ok {
+			if _, ok := codegen.UnwrapType(list.ElementType).(*schema.ObjectType); ok {
+				body.Blocks = append(body.Blocks, hcl.BlockHeaderSchema{
+					Type: typeName,
+				})
+				continue
+			}
+		}
+		body.Attributes = append(body.Attributes, hcl.AttributeSchema{
+			Name:     typeName,
+			Required: p.IsRequired(),
+		})
+	}
+	return body
+}
+
+func ctyToResourceInputs(val cty.Value, r *schema.Resource) (resource.PropertyMap, error) {
 	m, err := ctyToObject(r.Token, val, r.InputProperties)
 	return resource.ToResourcePropertyMap(m), err
 }
@@ -431,8 +550,20 @@ func ctyTypeFromType(typ schema.Type) cty.Type {
 		return cty.ObjectWithOptionalAttrs(attrs, optional)
 	case *schema.InvalidType:
 		return cty.DynamicPseudoType
+	case *schema.UnionType:
+		if typ.DefaultType != nil {
+			if t := ctyTypeFromType(typ.DefaultType); t != cty.NilType {
+				return t
+			}
+		}
+		for _, t := range typ.ElementTypes {
+			if t := ctyTypeFromType(t); t != cty.NilType {
+				return t
+			}
+		}
+		return cty.NilType
 	default:
-		panic(fmt.Sprintf("unknown schema type %s", typ))
+		return cty.NilType
 	}
 }
 
