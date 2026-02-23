@@ -1026,39 +1026,32 @@ func (e *Engine) processDataSource(ctx context.Context, node *graph.Node) error 
 		return fmt.Errorf("resolving data source type %s: %w", ds.Type, err)
 	}
 
-	// Evaluate data source configuration
-	attrs, _ := ds.Config.JustAttributes()
-	functionInputs := make(map[string]cty.Value)
 	var allDeps []resource.URN
 
-	for name, attr := range attrs {
-		val, diags := e.evaluator.EvaluateExpression(attr.Expr)
-		if diags.HasErrors() {
-			return fmt.Errorf("evaluating attribute %s: %s", name, diags.Error())
-		}
-		functionInputs[name] = val
+	inputs, diags := transform.EvalFunctionWithSchema(ds.Config, funcSchema,
+		func(propKey resource.PropertyKey, expr hcl.Expression) (cty.Value, hcl.Diagnostics) {
+			val, diags := e.evaluator.EvaluateExpression(expr)
+			if diags.HasErrors() {
+				return val, diags
+			}
 
-		// Extract dependencies from this attribute's expression
-		deps := eval.ExtractDependencies(attr.Expr)
-		for _, dep := range deps {
-			// Convert resource dependencies to URNs
-			if resOutputs, ok := e.resourceOutputs.Get(dep); ok {
-				if urnVal := resOutputs.GetAttr("urn"); urnVal.Type() == cty.String {
-					allDeps = append(allDeps, resource.URN(urnVal.AsString()))
+			for _, dep := range eval.ExtractDependencies(expr) {
+				if resOutputs, ok := e.resourceOutputs.Get(dep); ok {
+					if urnVal := resOutputs.GetAttr("urn"); urnVal.Type() == cty.String {
+						allDeps = append(allDeps, resource.URN(urnVal.AsString()))
+					}
+				}
+				if dsKey, ok := strings.CutPrefix(dep, "data."); ok {
+					if dsDeps, exists := e.dataSourceDependencies.Get(dsKey); exists {
+						allDeps = append(allDeps, dsDeps...)
+					}
 				}
 			}
-			// For data source dependencies, inherit their dependencies transitively
-			if dsKey, ok := strings.CutPrefix(dep, "data."); ok {
-				if dsDeps, exists := e.dataSourceDependencies.Get(dsKey); exists {
-					allDeps = append(allDeps, dsDeps...)
-				}
-			}
-		}
-	}
 
-	inputs, err := transform.CtyToFunctionInputs(cty.ObjectVal(functionInputs), funcSchema)
-	if err != nil {
-		return fmt.Errorf("converting function to Pulumi types: %w", err)
+			return val, diags
+		})
+	if diags.HasErrors() {
+		return diags
 	}
 
 	// Invoke the function

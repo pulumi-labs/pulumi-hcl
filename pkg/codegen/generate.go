@@ -186,6 +186,14 @@ func (g *generator) genInvokeDataSource(body *hclwrite.Body, invoke *model.Funct
 	for _, p := range g.program.PackageReferences() {
 		if p.Name() == tokens.Type(token).Package().String() {
 			f, ok, err := p.Functions().Get(token)
+			if !ok && err == nil {
+				// PCL normalizes "pkg:index:name" to "pkg::name", but schema
+				// stores the original token. Retry with "index" module.
+				pkg, mod, name, _ := pcl.DecomposeToken(token, hcl.Range{})
+				if mod == "" {
+					f, ok, err = p.Functions().Get(pkg + ":index:" + name)
+				}
+			}
 			if err != nil {
 				return hcl.Diagnostics{{
 					Severity: hcl.DiagError,
@@ -224,8 +232,14 @@ func (g *generator) genInvokeDataSource(body *hclwrite.Body, invoke *model.Funct
 						propType = inputSchema.Type
 					}
 				}
-				d := g.genExpression(block.Body(), transform.SnakeCaseFromPulumiCase(keyName), item.Value, propType)
-				diags = append(diags, d...)
+				hclName := transform.SnakeCaseFromPulumiCase(keyName)
+				if objType, ok := transform.AsHCLBlockType(propType); ok {
+					d := g.genBlocks(block.Body(), hclName, item.Value, objType)
+					diags = append(diags, d...)
+				} else {
+					d := g.genExpression(block.Body(), hclName, item.Value, propType)
+					diags = append(diags, d...)
+				}
 			}
 			return diags
 		}
@@ -378,7 +392,7 @@ func (g *generator) genBlock(body *hclwrite.Body, name string, expr model.Expres
 	for _, item := range obj.Items {
 		keyName, _ := extractStringLiteral(item.Key)
 		snakeName := transform.SnakeCaseFromPulumiCase(keyName)
-		var propType schema.Type = schema.AnyType
+		propType := schema.AnyType
 		if p, ok := objType.Property(keyName); ok {
 			propType = p.Type
 		}
