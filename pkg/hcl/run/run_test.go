@@ -44,7 +44,6 @@ func (m *mockResourceMonitor) RegisterResource(ctx context.Context, req Register
 	defer m.mu.Unlock()
 	m.registeredResources = append(m.registeredResources, req)
 	urn := "urn:pulumi:test::project::" + req.Type + "::" + req.Name
-	// Track the stack URN for output registration
 	if req.Type == "pulumi:pulumi:Stack" {
 		m.stackURN = urn
 	}
@@ -69,7 +68,6 @@ func (m *mockResourceMonitor) Invoke(ctx context.Context, req InvokeRequest) (*I
 func (m *mockResourceMonitor) RegisterResourceOutputs(ctx context.Context, urn string, outputs resource.PropertyMap) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	// Capture stack outputs
 	if urn == m.stackURN {
 		m.stackOutputs = outputs
 	}
@@ -77,7 +75,6 @@ func (m *mockResourceMonitor) RegisterResourceOutputs(ctx context.Context, urn s
 }
 
 func (m *mockResourceMonitor) CheckPulumiVersion(ctx context.Context, versionRange string) error {
-	// Mock implementation - always succeeds
 	return nil
 }
 

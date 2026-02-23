@@ -288,8 +288,14 @@ func (g *generator) genResource(body *hclwrite.Body, r *pcl.Resource) hcl.Diagno
 				inputType = prop.Type
 			}
 		}
-		d := g.genExpression(block.Body(), transform.SnakeCaseFromPulumiCase(attr.Name), attr.Value, inputType)
-		diags = append(diags, d...)
+		hclName := transform.SnakeCaseFromPulumiCase(attr.Name)
+		if objType, ok := transform.AsHCLBlockType(inputType); ok {
+			d := g.genBlocks(block.Body(), hclName, attr.Value, objType)
+			diags = append(diags, d...)
+		} else {
+			d := g.genExpression(block.Body(), hclName, attr.Value, inputType)
+			diags = append(diags, d...)
+		}
 	}
 	return diags
 }
@@ -347,6 +353,39 @@ func (g *generator) genPulumiBlock(body *hclwrite.Body, pb *pcl.PulumiBlock) hcl
 	// Generate a top-level "pulumi" block with requiredVersionRange property
 	block := body.AppendNewBlock("pulumi", nil)
 	return g.genExpression(block.Body(), "required_version_range", pb.RequiredVersion, schema.StringType)
+}
+
+func (g *generator) genBlocks(body *hclwrite.Body, name string, expr model.Expression, objType *schema.ObjectType) hcl.Diagnostics {
+	tuple, ok := expr.(*model.TupleConsExpression)
+	if !ok {
+		return g.genBlock(body, name, expr, objType)
+	}
+	var diags hcl.Diagnostics
+	for _, elem := range tuple.Expressions {
+		d := g.genBlock(body, name, elem, objType)
+		diags = append(diags, d...)
+	}
+	return diags
+}
+
+func (g *generator) genBlock(body *hclwrite.Body, name string, expr model.Expression, objType *schema.ObjectType) hcl.Diagnostics {
+	block := body.AppendNewBlock(name, nil)
+	obj, ok := expr.(*model.ObjectConsExpression)
+	if !ok {
+		return g.genExpression(block.Body(), "content", expr, objType)
+	}
+	var diags hcl.Diagnostics
+	for _, item := range obj.Items {
+		keyName, _ := extractStringLiteral(item.Key)
+		snakeName := transform.SnakeCaseFromPulumiCase(keyName)
+		var propType schema.Type = schema.AnyType
+		if p, ok := objType.Property(keyName); ok {
+			propType = p.Type
+		}
+		d := g.genExpression(block.Body(), snakeName, item.Value, propType)
+		diags = append(diags, d...)
+	}
+	return diags
 }
 
 func (g *generator) genExpression(body *hclwrite.Body, name string, expr model.Expression, typ schema.Type) hcl.Diagnostics {

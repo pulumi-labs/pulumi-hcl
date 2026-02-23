@@ -1,0 +1,71 @@
+// Copyright 2026, Pulumi Corporation.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+package testutil
+
+import (
+	"context"
+	"sync"
+
+	"github.com/pulumi/pulumi-language-hcl/pkg/hcl/run"
+	"github.com/pulumi/pulumi/sdk/v3/go/common/resource"
+)
+
+// MockResourceMonitor is a mock implementation of run.ResourceMonitor for testing.
+type MockResourceMonitor struct {
+	mu                  sync.Mutex
+	RegisteredResources []run.RegisterResourceRequest
+	InvokedFunctions    []run.InvokeRequest
+	StackOutputs        resource.PropertyMap
+	stackURN            string
+}
+
+func (m *MockResourceMonitor) RegisterResource(ctx context.Context, req run.RegisterResourceRequest) (*run.RegisterResourceResponse, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.RegisteredResources = append(m.RegisteredResources, req)
+	urn := "urn:pulumi:test::project::" + req.Type + "::" + req.Name
+	if req.Type == "pulumi:pulumi:Stack" {
+		m.stackURN = urn
+	}
+	return &run.RegisterResourceResponse{
+		URN:     urn,
+		ID:      req.Name + "-id",
+		Outputs: req.Inputs,
+	}, nil
+}
+
+func (m *MockResourceMonitor) Invoke(ctx context.Context, req run.InvokeRequest) (*run.InvokeResponse, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.InvokedFunctions = append(m.InvokedFunctions, req)
+	return &run.InvokeResponse{
+		Return: resource.PropertyMap{
+			"id": resource.NewStringProperty("mock-id"),
+		},
+	}, nil
+}
+
+func (m *MockResourceMonitor) RegisterResourceOutputs(ctx context.Context, urn string, outputs resource.PropertyMap) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if urn == m.stackURN {
+		m.StackOutputs = outputs
+	}
+	return nil
+}
+
+func (m *MockResourceMonitor) CheckPulumiVersion(ctx context.Context, versionRange string) error {
+	return nil
+}

@@ -102,7 +102,7 @@ func evalBlockWithSchema(config hcl.Body, props []*schema.Property, eval EvalFun
 		}
 		contract.Assertf(prop != nil, "unable to find schema for validated property")
 
-		blockType := codegen.UnwrapType(codegen.UnwrapType(prop.Type).(*schema.ArrayType).ElementType).(*schema.ObjectType)
+		blockType, _ := AsHCLBlockType(prop.Type)
 		values, diags := evalBlocksWithSchema(blocks, blockType.Properties, eval)
 		if diags.HasErrors() {
 			return cty.Value{}, diags
@@ -133,17 +133,27 @@ func conformCtyToType(val cty.Value, typ cty.Type) cty.Value {
 	return val
 }
 
+// AsHCLBlockType reports whether typ is a List<Object> type that should be
+// rendered as repeated HCL blocks rather than an attribute. If so it returns
+// the inner ObjectType.
+func AsHCLBlockType(typ schema.Type) (*schema.ObjectType, bool) {
+	arr, ok := codegen.UnwrapType(typ).(*schema.ArrayType)
+	if !ok {
+		return nil, false
+	}
+	obj, ok := codegen.UnwrapType(arr.ElementType).(*schema.ObjectType)
+	return obj, ok
+}
+
 func inputBodyFromProperties(r []*schema.Property) *hcl.BodySchema {
 	body := new(hcl.BodySchema)
 	for _, p := range r {
 		typeName := snakeCaseFromCamelCase(p.Name)
-		if list, ok := codegen.UnwrapType(p.Type).(*schema.ArrayType); ok {
-			if _, ok := codegen.UnwrapType(list.ElementType).(*schema.ObjectType); ok {
-				body.Blocks = append(body.Blocks, hcl.BlockHeaderSchema{
-					Type: typeName,
-				})
-				continue
-			}
+		if _, ok := AsHCLBlockType(p.Type); ok {
+			body.Blocks = append(body.Blocks, hcl.BlockHeaderSchema{
+				Type: typeName,
+			})
+			continue
 		}
 		body.Attributes = append(body.Attributes, hcl.AttributeSchema{
 			Name:     typeName,
