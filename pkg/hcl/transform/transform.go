@@ -38,6 +38,27 @@ const SensativeMark = "sensitive"
 
 type EvalFunc = func(resource.PropertyKey, hcl.Expression) (cty.Value, hcl.Diagnostics)
 
+func EvalFunctionWithSchema(config hcl.Body, r *schema.Function, eval EvalFunc) (resource.PropertyMap, hcl.Diagnostics) {
+	var props []*schema.Property
+	if r.Inputs != nil {
+		props = r.Inputs.Properties
+	}
+	functionInputs, diags := evalBlockWithSchema(config, props, eval)
+	if diags.HasErrors() {
+		return nil, diags
+	}
+
+	m, err := ctyToFunctionInputs(functionInputs, r)
+	if err != nil {
+		return nil, append(diags, &hcl.Diagnostic{
+			Severity: hcl.DiagError,
+			Summary:  "failed to convert HCL function inputs to Pulumi inputs",
+			Detail:   err.Error(),
+		})
+	}
+	return m, diags
+}
+
 func EvalResourceWithSchema(config hcl.Body, r *schema.Resource, eval EvalFunc) (resource.PropertyMap, hcl.Diagnostics) {
 	resourceInputs, diags := evalBlockWithSchema(config, r.InputProperties, eval)
 	if diags.HasErrors() {
@@ -168,7 +189,7 @@ func ctyToResourceInputs(val cty.Value, r *schema.Resource) (resource.PropertyMa
 	return resource.ToResourcePropertyMap(m), err
 }
 
-func CtyToFunctionInputs(val cty.Value, r *schema.Function) (resource.PropertyMap, error) {
+func ctyToFunctionInputs(val cty.Value, r *schema.Function) (resource.PropertyMap, error) {
 	var inputs []*schema.Property
 	if r.Inputs != nil {
 		inputs = r.Inputs.Properties

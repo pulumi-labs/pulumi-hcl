@@ -36,6 +36,80 @@ import (
 func TestHCL(t *testing.T) {
 	t.Parallel()
 
+	t.Run("function_blocks", func(t *testing.T) {
+		t.Parallel()
+
+		pclSource := `output filteredId {
+    value = invoke("test:index:getFiltered", {
+        name = "my-filter"
+        filters = [{
+            key = "tag:Name"
+            value = "production"
+        }, {
+            key = "tag:Env"
+            value = "prod"
+        }]
+    }).id
+}
+`
+
+		testSchema := schema.PackageSpec{
+			Name:    "test",
+			Version: "1.0.0",
+			Functions: map[string]schema.FunctionSpec{
+				"test:index:getFiltered": {
+					Inputs: &schema.ObjectTypeSpec{
+						Properties: map[string]schema.PropertySpec{
+							"name": {TypeSpec: schema.TypeSpec{Type: "string"}},
+							"filters": {
+								TypeSpec: schema.TypeSpec{
+									Type: "array",
+									Items: &schema.TypeSpec{
+										Ref: "#/types/test:index:Filter",
+									},
+								},
+							},
+						},
+					},
+					Outputs: &schema.ObjectTypeSpec{
+						Properties: map[string]schema.PropertySpec{
+							"id": {TypeSpec: schema.TypeSpec{Type: "string"}},
+						},
+					},
+				},
+			},
+			Types: map[string]schema.ComplexTypeSpec{
+				"test:index:Filter": {
+					ObjectTypeSpec: schema.ObjectTypeSpec{
+						Type: "object",
+						Properties: map[string]schema.PropertySpec{
+							"key":   {TypeSpec: schema.TypeSpec{Type: "string"}},
+							"value": {TypeSpec: schema.TypeSpec{Type: "string"}},
+						},
+					},
+				},
+			},
+		}
+
+		mock := testHCL(t, pclSource, testSchema)
+
+		require.Len(t, mock.InvokedFunctions, 1)
+		assert.Equal(t, "test:index:getFiltered", mock.InvokedFunctions[0].Token)
+		assert.Equal(t, resource.PropertyMap{
+			"name": resource.NewStringProperty("my-filter"),
+			"filters": resource.NewArrayProperty([]resource.PropertyValue{
+				resource.NewObjectProperty(resource.PropertyMap{
+					"key":   resource.NewStringProperty("tag:Name"),
+					"value": resource.NewStringProperty("production"),
+				}),
+				resource.NewObjectProperty(resource.PropertyMap{
+					"key":   resource.NewStringProperty("tag:Env"),
+					"value": resource.NewStringProperty("prod"),
+				}),
+			}),
+		}, mock.InvokedFunctions[0].Args)
+	})
+
 	t.Run("blocks", func(t *testing.T) {
 		t.Parallel()
 
