@@ -1,0 +1,8 @@
+{
+  "Name": "simple",
+  "Kind": "",
+  "Version": "27.0.0",
+  "PluginDownloadURL": "https://github.com/pulumi/pulumi-simple/releases/v${VERSION}",
+  "Checksums": null,
+  "Parameterization": null
+}

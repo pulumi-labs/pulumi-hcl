@@ -64,6 +64,24 @@ type CustomTimeouts struct {
 	Delete float64 // Timeout in seconds for delete operations
 }
 
+// Alias represents a resource alias - either a URN string or a spec object.
+type Alias struct {
+	// URN is set for URN-based aliases.
+	URN string
+	// Spec is set for spec-based aliases.
+	Spec *AliasSpec
+}
+
+// AliasSpec represents a resource alias specification.
+type AliasSpec struct {
+	Name      string
+	Type      string
+	Stack     string
+	Project   string
+	ParentURN string
+	NoParent  bool
+}
+
 // RegisterResourceRequest contains the parameters for registering a resource.
 type RegisterResourceRequest struct {
 	Type                    string
@@ -73,7 +91,7 @@ type RegisterResourceRequest struct {
 	PropertyDependencies    map[string][]string // Map from property key to list of URNs it depends on
 	Protect                 bool
 	IgnoreChanges           []string
-	Aliases                 []string
+	Aliases                 []Alias
 	Provider                string
 	Parent                  string
 	DeleteBeforeReplace     bool
@@ -88,6 +106,8 @@ type RegisterResourceRequest struct {
 	ReplaceOnChanges        []string // Property paths that if changed should force a replacement
 	ReplacementTrigger      resource.PropertyValue // Value whose change triggers replacement
 	EnvVarMappings          map[string]string
+	Version                 string
+	PluginDownloadURL       string
 }
 
 // RegisterResourceResponse contains the result of registering a resource.
@@ -772,6 +792,13 @@ func (e *Engine) registerResourceInstance(
 func (e *Engine) buildResourceOptions(res *ast.Resource, instance *graph.ExpandedResource) *ResourceOptions {
 	opts := &ResourceOptions{}
 
+	// Default parent: use the module component URN for child engines, or the stack URN for top-level.
+	if e.parentURN != "" {
+		opts.Parent = e.parentURN
+	} else {
+		opts.Parent = e.stackURN
+	}
+
 	// Handle depends_on - resolve to URNs
 	for _, dep := range res.DependsOn {
 		depKey := graph.FormatTraversal(dep)
@@ -824,6 +851,19 @@ func (e *Engine) buildResourceOptions(res *ast.Resource, instance *graph.Expande
 		}
 	}
 
+	// Handle parent resource reference
+	if res.ResourceParent != nil {
+		depKey := graph.FormatTraversal(res.ResourceParent)
+		if depKey != "" {
+			if outputs, ok := e.resourceOutputs.Get(depKey); ok {
+				urnVal := outputs.GetAttr("urn")
+				if urnVal.Type() == cty.String {
+					opts.Parent = urnVal.AsString()
+				}
+			}
+		}
+	}
+
 	// Handle provider reference
 	if res.Provider != nil {
 		providerKey := res.Provider.Name
@@ -871,6 +911,14 @@ func (e *Engine) buildResourceOptions(res *ast.Resource, instance *graph.Expande
 	// Handle moved blocks - resolve aliases from moved blocks that target this resource
 	movedAliases := e.resolveMovedAliases(res)
 	opts.Aliases = append(opts.Aliases, movedAliases...)
+
+	// Handle aliases attribute
+	if res.Aliases != nil {
+		aliases, err := e.evaluateAliases(res.Aliases)
+		if err == nil {
+			opts.Aliases = append(opts.Aliases, aliases...)
+		}
+	}
 
 	// Handle import blocks - resolve import ID from import blocks that target this resource
 	opts.ImportId = e.resolveImportId(res)
@@ -963,13 +1011,29 @@ func (e *Engine) buildResourceOptions(res *ast.Resource, instance *graph.Expande
 		}
 	}
 
+	// Handle version
+	if res.Version != nil {
+		val, diags := res.Version.Value(e.evaluator.Context().HCLContext())
+		if !diags.HasErrors() && val.Type() == cty.String {
+			opts.Version = val.AsString()
+		}
+	}
+
+	// Handle plugin_download_url
+	if res.PluginDownloadURL != nil {
+		val, diags := res.PluginDownloadURL.Value(e.evaluator.Context().HCLContext())
+		if !diags.HasErrors() && val.Type() == cty.String {
+			opts.PluginDownloadURL = val.AsString()
+		}
+	}
+
 	return opts
 }
 
 // resolveMovedAliases finds any moved blocks that target this resource and returns
 // the source addresses as aliases.
-func (e *Engine) resolveMovedAliases(res *ast.Resource) []string {
-	var aliases []string
+func (e *Engine) resolveMovedAliases(res *ast.Resource) []Alias {
+	var aliases []Alias
 	resourceAddr := res.Type + "." + res.Name
 
 	for _, moved := range e.config.Moved {
@@ -981,7 +1045,7 @@ func (e *Engine) resolveMovedAliases(res *ast.Resource) []string {
 			if fromAddr != "" {
 				// For Pulumi aliases, we use the resource name from the "from" address
 				// The alias tells Pulumi this resource may have been known by a different name
-				aliases = append(aliases, fromAddr)
+				aliases = append(aliases, Alias{Spec: &AliasSpec{Name: fromAddr}})
 			}
 		}
 	}
@@ -1003,6 +1067,61 @@ func (e *Engine) resolveImportId(res *ast.Resource) string {
 	}
 
 	return ""
+}
+
+// evaluateAliases evaluates the aliases expression and returns a list of Alias values.
+// Each alias can be a URN string or an object with spec fields.
+func (e *Engine) evaluateAliases(expr hcl.Expression) ([]Alias, error) {
+	val, diags := expr.Value(e.evaluator.Context().HCLContext())
+	if diags.HasErrors() {
+		return nil, diags
+	}
+	if !val.Type().IsListType() && !val.Type().IsTupleType() {
+		return nil, fmt.Errorf("aliases must be a list")
+	}
+	var aliases []Alias
+	it := val.ElementIterator()
+	for it.Next() {
+		_, elem := it.Element()
+		if elem.Type() == cty.String {
+			aliases = append(aliases, Alias{URN: elem.AsString()})
+		} else if elem.Type().IsObjectType() {
+			spec := &AliasSpec{}
+			objType := elem.Type()
+			if objType.HasAttribute("name") {
+				if v := elem.GetAttr("name"); v.Type() == cty.String {
+					spec.Name = v.AsString()
+				}
+			}
+			if objType.HasAttribute("type") {
+				if v := elem.GetAttr("type"); v.Type() == cty.String {
+					spec.Type = v.AsString()
+				}
+			}
+			if objType.HasAttribute("stack") {
+				if v := elem.GetAttr("stack"); v.Type() == cty.String {
+					spec.Stack = v.AsString()
+				}
+			}
+			if objType.HasAttribute("project") {
+				if v := elem.GetAttr("project"); v.Type() == cty.String {
+					spec.Project = v.AsString()
+				}
+			}
+			if objType.HasAttribute("parent_urn") {
+				if v := elem.GetAttr("parent_urn"); v.Type() == cty.String {
+					spec.ParentURN = v.AsString()
+				}
+			}
+			if objType.HasAttribute("no_parent") {
+				if v := elem.GetAttr("no_parent"); v.Type() == cty.Bool {
+					spec.NoParent = v.True()
+				}
+			}
+			aliases = append(aliases, Alias{Spec: spec})
+		}
+	}
+	return aliases, nil
 }
 
 // extractResourceName extracts the resource name from an instance key.
@@ -1057,7 +1176,7 @@ type ResourceOptions struct {
 	PropertyDependencies    map[string][]string
 	Protect                 bool
 	IgnoreChanges           []string
-	Aliases                 []string
+	Aliases                 []Alias
 	Provider                string
 	Parent                  string
 	DeleteBeforeReplace     bool
@@ -1072,6 +1191,8 @@ type ResourceOptions struct {
 	ReplaceOnChanges        []string // Property paths that if changed should force a replacement
 	ReplacementTrigger      resource.PropertyValue // Value whose change triggers replacement
 	EnvVarMappings          map[string]string
+	Version                 string
+	PluginDownloadURL       string
 }
 
 // registerResource registers a resource with the Pulumi engine.
@@ -1106,6 +1227,8 @@ func (e *Engine) registerResource(
 		ReplaceOnChanges:        opts.ReplaceOnChanges,
 		ReplacementTrigger:      opts.ReplacementTrigger,
 		EnvVarMappings:          opts.EnvVarMappings,
+		Version:                 opts.Version,
+		PluginDownloadURL:       opts.PluginDownloadURL,
 	})
 	if err != nil {
 		return "", "", nil, err

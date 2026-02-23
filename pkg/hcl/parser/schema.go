@@ -107,6 +107,7 @@ var resourceSchema = &hcl.BodySchema{
 		{Name: "provider"},
 		{Name: "additional_secret_outputs"},
 		// Pulumi-specific resource options
+		{Name: "parent"},
 		{Name: "retain_on_delete"},
 		{Name: "deleted_with"},
 		{Name: "replace_with"},
@@ -115,6 +116,9 @@ var resourceSchema = &hcl.BodySchema{
 		{Name: "replacement_trigger"},
 		{Name: "import_id"},
 		{Name: "env_var_mappings"},
+		{Name: "version"},
+		{Name: "plugin_download_url"},
+		{Name: "aliases"},
 	},
 	Blocks: []hcl.BlockHeaderSchema{
 		{Type: "lifecycle"},
