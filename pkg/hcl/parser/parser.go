@@ -547,6 +547,10 @@ func (p *Parser) parseResourceBlock(config *ast.Config, block *hcl.Block, isData
 		}
 	}
 
+	if attr, ok := content.Attributes["env_var_mappings"]; ok {
+		resource.EnvVarMappings = attr.Expr
+	}
+
 	// Parse nested blocks
 	for _, subBlock := range content.Blocks {
 		switch subBlock.Type {

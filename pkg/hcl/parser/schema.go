@@ -114,6 +114,7 @@ var resourceSchema = &hcl.BodySchema{
 		{Name: "replace_on_changes"},
 		{Name: "replacement_trigger"},
 		{Name: "import_id"},
+		{Name: "env_var_mappings"},
 	},
 	Blocks: []hcl.BlockHeaderSchema{
 		{Type: "lifecycle"},

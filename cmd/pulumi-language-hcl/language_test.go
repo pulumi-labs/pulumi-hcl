@@ -128,8 +128,6 @@ func runTestingHost(t *testing.T) (string, testingrpc.LanguageTestClient) {
 }
 
 var expectedFailures = map[string]string{
-	"l2-resource-option-env-var-mappings": "not yet implemented",
-
 	"l2-explicit-providers":                  "not yet implemented",
 	"l2-resource-option-alias":               "not yet implemented",
 	"l2-resource-option-plugin-download-url": "not yet implemented",
