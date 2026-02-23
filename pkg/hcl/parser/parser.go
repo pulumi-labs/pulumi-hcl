@@ -473,6 +473,80 @@ func (p *Parser) parseResourceBlock(config *ast.Config, block *hcl.Block, isData
 		resource.AdditionalSecretOutputs = attr.Expr
 	}
 
+	if attr, ok := content.Attributes["retain_on_delete"]; ok {
+		resource.RetainOnDelete = attr.Expr
+	}
+
+	if attr, ok := content.Attributes["deleted_with"]; ok {
+		traversal, travDiags := hcl.AbsTraversalForExpr(attr.Expr)
+		diags = append(diags, travDiags...)
+		if traversal != nil {
+			resource.DeletedWith = traversal
+		}
+	}
+
+	if attr, ok := content.Attributes["replace_with"]; ok {
+		exprs, exprDiags := hcl.ExprList(attr.Expr)
+		diags = append(diags, exprDiags...)
+		for _, expr := range exprs {
+			traversal, travDiags := hcl.AbsTraversalForExpr(expr)
+			diags = append(diags, travDiags...)
+			if traversal != nil {
+				resource.ReplaceWith = append(resource.ReplaceWith, traversal)
+			}
+		}
+	}
+
+	if attr, ok := content.Attributes["hide_diffs"]; ok {
+		exprs, exprDiags := hcl.ExprList(attr.Expr)
+		diags = append(diags, exprDiags...)
+		for _, expr := range exprs {
+			// Try as string literal first (preferred: "propertyName" in camelCase)
+			val, valDiags := expr.Value(nil)
+			if !valDiags.HasErrors() && val.Type() == cty.String {
+				resource.HideDiff = append(resource.HideDiff, val.AsString())
+			} else {
+				// Fallback: bare identifier traversal (e.g. for hand-written HCL)
+				traversal, travDiags := hcl.RelTraversalForExpr(expr)
+				diags = append(diags, travDiags...)
+				if traversal != nil {
+					resource.HideDiff = append(resource.HideDiff, traversal.RootName())
+				}
+			}
+		}
+	}
+
+	if attr, ok := content.Attributes["replace_on_changes"]; ok {
+		exprs, exprDiags := hcl.ExprList(attr.Expr)
+		diags = append(diags, exprDiags...)
+		for _, expr := range exprs {
+			// Try as string literal first (preferred: "propertyName" in camelCase)
+			val, valDiags := expr.Value(nil)
+			if !valDiags.HasErrors() && val.Type() == cty.String {
+				resource.ReplaceOnChanges = append(resource.ReplaceOnChanges, val.AsString())
+			} else {
+				// Fallback: bare identifier traversal (e.g. for hand-written HCL)
+				traversal, travDiags := hcl.RelTraversalForExpr(expr)
+				diags = append(diags, travDiags...)
+				if traversal != nil {
+					resource.ReplaceOnChanges = append(resource.ReplaceOnChanges, traversal.RootName())
+				}
+			}
+		}
+	}
+
+	if attr, ok := content.Attributes["replacement_trigger"]; ok {
+		resource.ReplacementTrigger = attr.Expr
+	}
+
+	if attr, ok := content.Attributes["import_id"]; ok {
+		val, valDiags := attr.Expr.Value(nil)
+		diags = append(diags, valDiags...)
+		if val.Type() == cty.String {
+			resource.ImportID = val.AsString()
+		}
+	}
+
 	// Parse nested blocks
 	for _, subBlock := range content.Blocks {
 		switch subBlock.Type {

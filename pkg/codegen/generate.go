@@ -272,23 +272,8 @@ func (g *generator) genResource(body *hclwrite.Body, r *pcl.Resource) hcl.Diagno
 	block := body.AppendNewBlock("resource", []string{hclType, r.LogicalName()})
 	var diags hcl.Diagnostics
 
-	// Handle provider option if present
-	if r.Options != nil && r.Options.Provider != nil {
-		tokens, d := g.exprTokens(r.Options.Provider, schema.AnyType)
-		diags = append(diags, d...)
-		if !d.HasErrors() {
-			block.Body().SetAttributeRaw("provider", tokens)
-		}
-	}
-
-	// Handle additionalSecretOutputs option if present
-	if r.Options != nil && r.Options.AdditionalSecretOutputs != nil {
-		tokens, d := g.exprTokens(r.Options.AdditionalSecretOutputs, schema.AnyResourceType)
-		diags = append(diags, d...)
-		if !d.HasErrors() {
-			block.Body().SetAttributeRaw("additional_secret_outputs", tokens)
-		}
-	}
+	d = g.genResourceOptions(block.Body(), r)
+	diags = append(diags, d...)
 
 	var inputs []*schema.Property
 	if r.Schema != nil {
@@ -312,6 +297,228 @@ func (g *generator) genResource(body *hclwrite.Body, r *pcl.Resource) hcl.Diagno
 		}
 	}
 	return diags
+}
+
+// genResourceOptions generates HCL meta-arguments for a resource's options.
+func (g *generator) genResourceOptions(body *hclwrite.Body, r *pcl.Resource) hcl.Diagnostics {
+	var diags hcl.Diagnostics
+	opts := r.Options
+
+	// Collect schema-based replaceOnChanges property paths in camelCase (Pulumi convention).
+	var schemaReplaceOnChanges []string
+	if r.Schema != nil {
+		schemaReplaceProps, _ := r.Schema.ReplaceOnChanges()
+		// Keep property names in camelCase so the engine can match them against the diff.
+		schemaReplaceOnChanges = schema.PropertyListJoinToString(schemaReplaceProps,
+			func(s string) string { return s })
+	}
+
+	if opts == nil && len(schemaReplaceOnChanges) == 0 {
+		return nil
+	}
+
+	if opts == nil {
+		// Only schema-based replaceOnChanges - generate it
+		g.genReplaceOnChanges(body, schemaReplaceOnChanges, nil, &diags)
+		return diags
+	}
+
+	if opts.Provider != nil {
+		tokens, d := g.exprTokens(opts.Provider, schema.AnyType)
+		diags = append(diags, d...)
+		if !d.HasErrors() {
+			body.SetAttributeRaw("provider", tokens)
+		}
+	}
+
+	if opts.AdditionalSecretOutputs != nil {
+		tokens, d := g.exprTokens(opts.AdditionalSecretOutputs, schema.AnyResourceType)
+		diags = append(diags, d...)
+		if !d.HasErrors() {
+			body.SetAttributeRaw("additional_secret_outputs", tokens)
+		}
+	}
+
+	if opts.RetainOnDelete != nil {
+		tokens, d := g.exprTokens(opts.RetainOnDelete, schema.BoolType)
+		diags = append(diags, d...)
+		if !d.HasErrors() {
+			body.SetAttributeRaw("retain_on_delete", tokens)
+		}
+	}
+
+	if opts.DeletedWith != nil {
+		tokens, d := g.exprTokens(opts.DeletedWith, schema.AnyType)
+		diags = append(diags, d...)
+		if !d.HasErrors() {
+			body.SetAttributeRaw("deleted_with", tokens)
+		}
+	}
+
+	if opts.ReplaceWith != nil {
+		tokens, d := g.exprTokens(opts.ReplaceWith, schema.AnyType)
+		diags = append(diags, d...)
+		if !d.HasErrors() {
+			body.SetAttributeRaw("replace_with", tokens)
+		}
+	}
+
+	if opts.HideDiffs != nil {
+		g.genPropertyPathList(body, "hide_diffs", opts.HideDiffs, &diags)
+	}
+
+	g.genReplaceOnChanges(body, schemaReplaceOnChanges, opts.ReplaceOnChanges, &diags)
+
+	if opts.ReplacementTrigger != nil {
+		tokens, d := g.exprTokens(opts.ReplacementTrigger, schema.AnyType)
+		diags = append(diags, d...)
+		if !d.HasErrors() {
+			body.SetAttributeRaw("replacement_trigger", tokens)
+		}
+	}
+
+	if opts.IgnoreChanges != nil || opts.Protect != nil || opts.DeleteBeforeReplace != nil {
+		lifecycleBlock := body.AppendNewBlock("lifecycle", nil)
+		if opts.Protect != nil {
+			tokens, d := g.exprTokens(opts.Protect, schema.BoolType)
+			diags = append(diags, d...)
+			if !d.HasErrors() {
+				lifecycleBlock.Body().SetAttributeRaw("prevent_destroy", tokens)
+			}
+		}
+		if opts.IgnoreChanges != nil {
+			tokens, d := g.exprTokens(opts.IgnoreChanges, schema.AnyType)
+			diags = append(diags, d...)
+			if !d.HasErrors() {
+				lifecycleBlock.Body().SetAttributeRaw("ignore_changes", tokens)
+			}
+		}
+		if opts.DeleteBeforeReplace != nil {
+			// PCL deleteBeforeReplace=true means delete-then-create.
+			// HCL create_before_destroy=true means create-then-delete.
+			// So create_before_destroy = !deleteBeforeReplace.
+			// We generate the inverted expression.
+			tokens, d := g.exprTokens(opts.DeleteBeforeReplace, schema.BoolType)
+			diags = append(diags, d...)
+			if !d.HasErrors() {
+				invertedTokens := append(hclwrite.Tokens{
+					{Type: hclsyntax.TokenBang, Bytes: []byte("!")},
+				}, tokens...)
+				lifecycleBlock.Body().SetAttributeRaw("create_before_destroy", invertedTokens)
+			}
+		}
+	}
+
+	if opts.CustomTimeouts != nil {
+		timeoutsBlock := body.AppendNewBlock("timeouts", nil)
+		if obj, ok := opts.CustomTimeouts.(*model.ObjectConsExpression); ok {
+			for _, item := range obj.Items {
+				keyName, ok := extractStringLiteral(item.Key)
+				if !ok {
+					continue
+				}
+				hclName := strings.ToLower(keyName)
+				tokens, d := g.exprTokens(item.Value, schema.StringType)
+				diags = append(diags, d...)
+				if !d.HasErrors() {
+					timeoutsBlock.Body().SetAttributeRaw(hclName, tokens)
+				}
+			}
+		}
+	}
+
+	if opts.DependsOn != nil {
+		tokens, d := g.exprTokens(opts.DependsOn, schema.AnyType)
+		diags = append(diags, d...)
+		if !d.HasErrors() {
+			body.SetAttributeRaw("depends_on", tokens)
+		}
+	}
+
+	if opts.ImportID != nil {
+		tokens, d := g.exprTokens(opts.ImportID, schema.StringType)
+		diags = append(diags, d...)
+		if !d.HasErrors() {
+			body.SetAttributeRaw("import_id", tokens)
+		}
+	}
+
+	return diags
+}
+
+// extractPropertyNames extracts camelCase property names from a PCL expression like [value, otherProp].
+func extractPropertyNames(expr model.Expression) []string {
+	var names []string
+	if expr == nil {
+		return names
+	}
+	tuple, ok := expr.(*model.TupleConsExpression)
+	if !ok {
+		return names
+	}
+	for _, elem := range tuple.Expressions {
+		if s, ok := extractStringLiteral(elem); ok {
+			names = append(names, s)
+		} else if traversal, ok := elem.(*model.ScopeTraversalExpression); ok {
+			// PCL property traversals are already in camelCase (e.g., value, replaceProp)
+			names = append(names, traversal.Traversal.RootName())
+		}
+	}
+	return names
+}
+
+// genPropertyPathList generates an HCL string list attribute for property paths.
+// Property names are emitted as string literals in camelCase (e.g., replace_on_changes = ["replaceProp"]).
+func (g *generator) genPropertyPathList(body *hclwrite.Body, attrName string, optsExpr model.Expression, diags *hcl.Diagnostics) {
+	names := extractPropertyNames(optsExpr)
+	if len(names) == 0 {
+		return
+	}
+	body.SetAttributeRaw(attrName, makeStringListTokens(names))
+}
+
+// makeStringListTokens generates HCL tokens for a list of string literals: ["a", "b", "c"].
+func makeStringListTokens(strs []string) hclwrite.Tokens {
+	tokens := hclwrite.Tokens{
+		{Type: hclsyntax.TokenOBrack, Bytes: []byte("[")},
+	}
+	for i, s := range strs {
+		if i > 0 {
+			tokens = append(tokens, &hclwrite.Token{Type: hclsyntax.TokenComma, Bytes: []byte(",")})
+		}
+		tokens = append(tokens, &hclwrite.Token{
+			Type: hclsyntax.TokenQuotedLit, Bytes: []byte(`"` + s + `"`), SpacesBefore: 1,
+		})
+	}
+	tokens = append(tokens, &hclwrite.Token{Type: hclsyntax.TokenCBrack, Bytes: []byte("]")})
+	return tokens
+}
+
+// genReplaceOnChanges generates the replace_on_changes attribute, merging schema-based and option-based paths.
+// All paths are emitted as string literals in camelCase so the engine can match them against the diff.
+func (g *generator) genReplaceOnChanges(body *hclwrite.Body, schemaPaths []string, optsExpr model.Expression, diags *hcl.Diagnostics) {
+	optPaths := extractPropertyNames(optsExpr)
+	if len(schemaPaths) == 0 && len(optPaths) == 0 {
+		return
+	}
+
+	// Merge and deduplicate paths.
+	seen := make(map[string]bool)
+	var allPaths []string
+	for _, p := range schemaPaths {
+		if !seen[p] {
+			seen[p] = true
+			allPaths = append(allPaths, p)
+		}
+	}
+	for _, p := range optPaths {
+		if !seen[p] {
+			seen[p] = true
+			allPaths = append(allPaths, p)
+		}
+	}
+
+	body.SetAttributeRaw("replace_on_changes", makeStringListTokens(allPaths))
 }
 
 func (g *generator) genConfigVariable(body *hclwrite.Body, cv *pcl.ConfigVariable) hcl.Diagnostics {
@@ -476,6 +683,12 @@ func (g *generator) exprTokens(expr model.Expression, typ schema.Type) (hclwrite
 
 func (g *generator) funcCallTokens(expr *model.FunctionCallExpression) (hclwrite.Tokens, hcl.Diagnostics) {
 	switch expr.Name {
+	case "__convert":
+		// __convert is a PCL internal type-coercion function; it's an identity operation at runtime.
+		if len(expr.Args) == 1 {
+			return g.exprTokens(expr.Args[0], schema.AnyType)
+		}
+		return g.passthroughFuncCallTokens(expr.Name, expr.Args)
 	case "cwd":
 		return hclwrite.TokensForTraversal(hcl.Traversal{
 			hcl.TraverseRoot{Name: "path"},

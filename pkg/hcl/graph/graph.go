@@ -334,6 +334,34 @@ func (g *Graph) extractResourceDependencies(resource *ast.Resource) []pdag.Node 
 		}
 	}
 
+	// Extract from deleted_with (resource reference)
+	if resource.DeletedWith != nil {
+		dep := formatTraversal(resource.DeletedWith)
+		if dep != "" {
+			_, idx := g.newNode(dep)
+			seen[idx] = true
+		}
+	}
+
+	// Extract from replace_with (list of resource references)
+	for _, traversal := range resource.ReplaceWith {
+		dep := formatTraversal(traversal)
+		if dep != "" {
+			_, idx := g.newNode(dep)
+			seen[idx] = true
+		}
+	}
+
+	// Extract from replacement_trigger expression
+	for _, dep := range g.extractDependenciesFromExpression(resource.ReplacementTrigger) {
+		seen[dep] = true
+	}
+
+	// Extract from additional_secret_outputs expression
+	for _, dep := range g.extractDependenciesFromExpression(resource.AdditionalSecretOutputs) {
+		seen[dep] = true
+	}
+
 	return slices.Collect(maps.Keys(seen))
 }
 
