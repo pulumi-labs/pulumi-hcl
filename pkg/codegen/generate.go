@@ -443,6 +443,14 @@ func (g *generator) genResourceOptions(body *hclwrite.Body, r *pcl.Resource) hcl
 		}
 	}
 
+	if opts.EnvVarMappings != nil {
+		tokens, d := g.exprTokens(opts.EnvVarMappings, schema.AnyType)
+		diags = append(diags, d...)
+		if !d.HasErrors() {
+			body.SetAttributeRaw("env_var_mappings", tokens)
+		}
+	}
+
 	return diags
 }
 

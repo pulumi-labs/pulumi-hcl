@@ -87,6 +87,7 @@ type RegisterResourceRequest struct {
 	HideDiffs               []string // Property paths whose diffs should not be displayed
 	ReplaceOnChanges        []string // Property paths that if changed should force a replacement
 	ReplacementTrigger      resource.PropertyValue // Value whose change triggers replacement
+	EnvVarMappings          map[string]string
 }
 
 // RegisterResourceResponse contains the result of registering a resource.
@@ -946,6 +947,22 @@ func (e *Engine) buildResourceOptions(res *ast.Resource, instance *graph.Expande
 		opts.ImportId = res.ImportID
 	}
 
+	// Handle env_var_mappings
+	if res.EnvVarMappings != nil {
+		val, diags := res.EnvVarMappings.Value(e.evaluator.Context().HCLContext())
+		if !diags.HasErrors() && (val.Type().IsObjectType() || val.Type().IsMapType()) {
+			mappings := make(map[string]string)
+			for k, v := range val.AsValueMap() {
+				if v.Type() == cty.String {
+					mappings[k] = v.AsString()
+				}
+			}
+			if len(mappings) > 0 {
+				opts.EnvVarMappings = mappings
+			}
+		}
+	}
+
 	return opts
 }
 
@@ -1054,6 +1071,7 @@ type ResourceOptions struct {
 	HideDiffs               []string // Property paths whose diffs should not be displayed
 	ReplaceOnChanges        []string // Property paths that if changed should force a replacement
 	ReplacementTrigger      resource.PropertyValue // Value whose change triggers replacement
+	EnvVarMappings          map[string]string
 }
 
 // registerResource registers a resource with the Pulumi engine.
@@ -1087,6 +1105,7 @@ func (e *Engine) registerResource(
 		HideDiffs:               opts.HideDiffs,
 		ReplaceOnChanges:        opts.ReplaceOnChanges,
 		ReplacementTrigger:      opts.ReplacementTrigger,
+		EnvVarMappings:          opts.EnvVarMappings,
 	})
 	if err != nil {
 		return "", "", nil, err

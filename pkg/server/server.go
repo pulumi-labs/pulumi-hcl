@@ -701,6 +701,7 @@ func (r *resourceMonitorAdapter) RegisterResource(
 		ReplaceWith:                req.ReplaceWith,
 		HideDiffs:                  req.HideDiffs,
 		ReplaceOnChanges:           req.ReplaceOnChanges,
+		EnvVarMappings:             req.EnvVarMappings,
 	}
 
 	// Add custom timeouts if specified

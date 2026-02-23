@@ -102,6 +102,10 @@ type Resource struct {
 	// ImportID is the resource ID to import this resource as.
 	ImportID string
 
+	// EnvVarMappings specifies environment variable remappings for provider resources.
+	// Maps local environment variable names to provider-specific variable names.
+	EnvVarMappings hcl.Expression
+
 	// Lifecycle contains lifecycle configuration, if present.
 	Lifecycle *Lifecycle
 
