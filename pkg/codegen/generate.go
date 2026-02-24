@@ -22,6 +22,7 @@ import (
 	"github.com/hashicorp/hcl/v2"
 	"github.com/hashicorp/hcl/v2/hclsyntax"
 	"github.com/hashicorp/hcl/v2/hclwrite"
+	"github.com/pulumi/pulumi-language-hcl/pkg/hcl/packages"
 	"github.com/pulumi/pulumi-language-hcl/pkg/hcl/transform"
 	"github.com/pulumi/pulumi/pkg/v3/codegen"
 	"github.com/pulumi/pulumi/pkg/v3/codegen/hcl2/model"
@@ -208,7 +209,7 @@ func (g *generator) genInvokeDataSource(body *hclwrite.Body, invoke *model.Funct
 		}
 	}
 
-	dsType, diags := tokenToHCLType(token)
+	dsType, diags := packages.PulumiTokenToHCL(token)
 	if diags.HasErrors() {
 		return diags
 	}
@@ -248,24 +249,8 @@ func (g *generator) genInvokeDataSource(body *hclwrite.Body, invoke *model.Funct
 	return nil
 }
 
-// tokenToHCLType converts a Pulumi type token to an HCL type name.
-// e.g., "aws:index:getAmi" -> "aws_getami"
-// e.g., "aws:ec2:getAmi" -> "aws_ec2_getami"
-func tokenToHCLType(token string) (string, hcl.Diagnostics) {
-	pkg, mod, name, diags := pcl.DecomposeToken(token, hcl.Range{})
-	if diags.HasErrors() {
-		return "", diags
-	}
-	// Strip the "index" module (standard Pulumi convention for the default module).
-	// Also strip the module when it equals the package name (e.g. pulumi:pulumi:StackReference).
-	if mod == "index" || mod == pkg || mod == "" {
-		return strings.ToLower(pkg + "_" + name), nil
-	}
-	return strings.ToLower(pkg + "_" + mod + "_" + name), nil
-}
-
 func (g *generator) genResource(body *hclwrite.Body, r *pcl.Resource) hcl.Diagnostics {
-	hclType, d := tokenToHCLType(r.Token)
+	hclType, d := packages.PulumiTokenToHCL(r.Token)
 	if d.HasErrors() {
 		return d
 	}
@@ -788,7 +773,7 @@ func (g *generator) exprTokens(expr model.Expression, typ schema.Type) (hclwrite
 						Detail:   "invoke token must be a string literal",
 					}}
 				}
-				dsType, diags := tokenToHCLType(token)
+				dsType, diags := packages.PulumiTokenToHCL(token)
 				if diags.HasErrors() {
 					return nil, diags
 				}
@@ -907,7 +892,7 @@ func (g *generator) getOutputTokens(expr *model.FunctionCallExpression) (hclwrit
 	}
 
 	// Get the HCL resource type
-	hclType, diags := tokenToHCLType(res.Token)
+	hclType, diags := packages.PulumiTokenToHCL(res.Token)
 	if diags.HasErrors() {
 		return nil, diags
 	}
@@ -925,37 +910,88 @@ func (g *generator) getOutputTokens(expr *model.FunctionCallExpression) (hclwrit
 // PCL config variables become HCL `var.<name>`, local variables become `local.<name>`,
 // and resource references become `<resource_type>.<name>.<property>`.
 func (g *generator) scopeTraversalTokens(expr *model.ScopeTraversalExpression) (hclwrite.Tokens, hcl.Diagnostics) {
-	traversal := expr.Traversal
-	if len(expr.Parts) > 0 {
-		switch part := expr.Parts[0].(type) {
-		case *pcl.ConfigVariable:
-			// Rewrite "aMap.x" → "var.aMap.x".
-			rewritten := make(hcl.Traversal, 0, len(traversal)+1)
-			rewritten = append(rewritten, hcl.TraverseRoot{Name: "var"})
-			rewritten = append(rewritten, hcl.TraverseAttr{Name: traversal.RootName()})
-			rewritten = append(rewritten, traversal[1:]...)
-			traversal = rewritten
-		case *pcl.LocalVariable:
-			// Rewrite "myLocal.x" → "local.myLocal.x".
-			rewritten := make(hcl.Traversal, 0, len(traversal)+1)
-			rewritten = append(rewritten, hcl.TraverseRoot{Name: "local"})
-			rewritten = append(rewritten, hcl.TraverseAttr{Name: traversal.RootName()})
-			rewritten = append(rewritten, traversal[1:]...)
-			traversal = rewritten
-		case *pcl.Resource:
-			// Rewrite "myResource.property" → "resource_type.myResource.property".
-			hclType, diags := tokenToHCLType(part.Token)
-			if diags.HasErrors() {
-				return nil, diags
+	if len(expr.Parts) == 0 {
+		return hclwrite.TokensForTraversal(expr.Traversal), nil
+	}
+
+	var typedObjectTraversal func(props []*schema.Property, traversal hcl.Traversal) hcl.Traversal
+	var typedTraversal func(typ schema.Type, traversal hcl.Traversal) hcl.Traversal
+	typedTraversal = func(typ schema.Type, traversal hcl.Traversal) hcl.Traversal {
+		if len(traversal) == 0 {
+			return traversal
+		}
+
+		switch t := traversal[0].(type) {
+		case hcl.TraverseAttr:
+			switch s := codegen.UnwrapType(typ).(type) {
+			case *schema.ResourceType:
+				return typedObjectTraversal(s.Resource.Properties, traversal)
+			case *schema.ObjectType:
+				return typedObjectTraversal(s.Properties, traversal)
+			default:
+				return traversal // de-typed
 			}
-			rewritten := make(hcl.Traversal, 0, len(traversal)+1)
-			rewritten = append(rewritten, hcl.TraverseRoot{Name: hclType})
-			rewritten = append(rewritten, hcl.TraverseAttr{Name: traversal.RootName()})
-			rewritten = append(rewritten, traversal[1:]...)
-			traversal = rewritten
+		case hcl.TraverseIndex:
+			switch s := codegen.UnwrapType(typ).(type) {
+			case *schema.MapType:
+				return append(hcl.Traversal{t}, typedTraversal(s.ElementType, traversal[1:])...)
+			case *schema.ArrayType:
+				return append(hcl.Traversal{t}, typedTraversal(s.ElementType, traversal[1:])...)
+			default:
+				return traversal // de-typed
+			}
+		default:
+			return traversal // de-typed
 		}
 	}
-	return hclwrite.TokensForTraversal(traversal), nil
+	typedObjectTraversal = func(props []*schema.Property, traversal hcl.Traversal) hcl.Traversal {
+		if len(traversal) == 0 {
+			return traversal
+		}
+		t, ok := traversal[0].(hcl.TraverseAttr)
+		if !ok {
+			return traversal // de-typed
+		}
+		for _, p := range props {
+			if p.Name == t.Name {
+				t = hcl.TraverseAttr{Name: transform.SnakeCaseFromPulumiCase(p.Name), SrcRange: t.SrcRange}
+				return append(hcl.Traversal{t}, typedTraversal(p.Type, traversal[1:])...)
+			}
+		}
+		return traversal // de-typed
+	}
+
+	traversal := expr.Traversal
+	switch part := expr.Parts[0].(type) {
+	case *pcl.ConfigVariable:
+		// Rewrite "aMap.x" → "var.aMap.x".
+		rewritten := make(hcl.Traversal, 0, len(traversal)+1)
+		rewritten = append(rewritten, hcl.TraverseRoot{Name: "var"})
+		rewritten = append(rewritten, hcl.TraverseAttr{Name: traversal.RootName()})
+		return hclwrite.TokensForTraversal(append(rewritten, traversal[1:]...)), nil
+	case *pcl.LocalVariable:
+		// Rewrite "myLocal.x" → "local.myLocal.x".
+		rewritten := make(hcl.Traversal, 0, len(traversal)+1)
+		rewritten = append(rewritten, hcl.TraverseRoot{Name: "local"})
+		rewritten = append(rewritten, hcl.TraverseAttr{Name: traversal.RootName()})
+		return hclwrite.TokensForTraversal(append(rewritten, traversal[1:]...)), nil
+	case *pcl.Resource:
+		// Rewrite "myResource.property" → "resource_type.myResource.property".
+		//
+		// TODO: Resource traversal needs to be type (and schema) aware. It needs to invoke
+		// [transform.SnakeCaseFromPulumiCase] on property values, and the invoke the standard ["<key>"]
+		// & [<idx>] operators otherwise.
+		hclType, diags := packages.PulumiTokenToHCL(part.Token)
+		if diags.HasErrors() {
+			return nil, diags
+		}
+		rewritten := make(hcl.Traversal, 0, len(traversal)+1)
+		rewritten = append(rewritten, hcl.TraverseRoot{Name: hclType})
+		rewritten = append(rewritten, hcl.TraverseAttr{Name: traversal.RootName()})
+		return hclwrite.TokensForTraversal(append(rewritten, typedObjectTraversal(part.Schema.Properties, traversal[1:])...)), nil
+	default:
+		return hclwrite.TokensForTraversal(traversal), nil
+	}
 }
 
 // passthroughFuncCallTokens generates tokens for a function call: name(arg1, arg2, ...).

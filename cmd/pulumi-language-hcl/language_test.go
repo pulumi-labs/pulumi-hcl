@@ -140,7 +140,6 @@ var expectedFailures = map[string]string{
 	"l2-component-component-resource-ref":   "not yet implemented",
 	"l2-component-program-resource-ref":     "not yet implemented",
 	"l2-component-property-deps":            "not yet implemented",
-	"l2-camel-names":                        "not yet implemented",
 	"l2-destroy":                            "not yet implemented",
 	"l2-discriminated-union":                "not yet implemented",
 	"l2-elide-index":                        "not yet implemented",

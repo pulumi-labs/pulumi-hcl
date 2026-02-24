@@ -22,6 +22,8 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/hashicorp/hcl/v2"
+	"github.com/pulumi/pulumi/pkg/v3/codegen/pcl"
 	"github.com/pulumi/pulumi/pkg/v3/codegen/schema"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/util/contract"
 )
@@ -44,6 +46,21 @@ func (err InvalidToken) Error() string {
 		b.WriteString(err.reason)
 	}
 	return b.String()
+}
+
+func PulumiTokenToHCL(token string) (string, hcl.Diagnostics) {
+	if token == "pulumi:pulumi:StackReference" {
+		return "pulumi_stackreference", nil
+	}
+	pkg, mod, name, diag := pcl.DecomposeToken(token, hcl.Range{})
+	if diag.HasErrors() {
+		return "", diag
+	}
+	hclToken := pkg
+	if mod != "index" && mod != "" {
+		hclToken += "_" + strings.ToLower(strings.ReplaceAll(mod, "/", "_"))
+	}
+	return hclToken + "_" + strings.ToLower(strings.ReplaceAll(name, "/", "_")), nil
 }
 
 func ResolveResource(ctx context.Context, loader schema.ReferenceLoader, token string) (*schema.Resource, error) {
@@ -89,7 +106,8 @@ func ResolveResource(ctx context.Context, loader schema.ReferenceLoader, token s
 	for iter := pkg.Resources().Range(); iter.Next(); {
 		mod := pkg.TokenToModule(iter.Token())
 		name := strings.Split(iter.Token(), ":")[2]
-		if strings.ToLower(mod+name) == key {
+		rKey := strings.ReplaceAll(strings.ToLower(mod+name), "/", "")
+		if rKey == key {
 			return iter.Resource()
 		}
 	}
