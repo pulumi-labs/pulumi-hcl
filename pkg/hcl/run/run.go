@@ -36,6 +36,7 @@ import (
 	"github.com/pulumi/pulumi/pkg/v3/codegen/schema"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/resource"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/util/contract"
+	"github.com/pulumi/pulumi/sdk/v3/go/property"
 	"github.com/zclconf/go-cty/cty"
 	"github.com/zclconf/go-cty/cty/function/stdlib"
 	"github.com/zclconf/go-cty/cty/json"
@@ -51,7 +52,7 @@ type ResourceMonitor interface {
 	Invoke(ctx context.Context, req InvokeRequest) (*InvokeResponse, error)
 
 	// RegisterResourceOutputs registers outputs on a resource (used for stack outputs).
-	RegisterResourceOutputs(ctx context.Context, urn string, outputs resource.PropertyMap) error
+	RegisterResourceOutputs(ctx context.Context, urn string, outputs property.Map) error
 
 	// CheckPulumiVersion checks if the Pulumi CLI version satisfies the given version range.
 	CheckPulumiVersion(ctx context.Context, versionRange string) error
@@ -86,7 +87,7 @@ type AliasSpec struct {
 type RegisterResourceRequest struct {
 	Type                    string
 	Name                    string
-	Inputs                  resource.PropertyMap
+	Inputs                  property.Map
 	Dependencies            []string
 	PropertyDependencies    map[string][]string // Map from property key to list of URNs it depends on
 	Protect                 bool
@@ -100,11 +101,11 @@ type RegisterResourceRequest struct {
 	ImportId                string // Resource ID to import
 	AdditionalSecretOutputs []string
 	RetainOnDelete          *bool
-	DeletedWith             string                 // URN of the resource that, when deleted, causes this resource to be deleted
-	ReplaceWith             []string               // URNs of resources whose replacement triggers replacement of this resource
-	HideDiffs               []string               // Property paths whose diffs should not be displayed
-	ReplaceOnChanges        []string               // Property paths that if changed should force a replacement
-	ReplacementTrigger      resource.PropertyValue // Value whose change triggers replacement
+	DeletedWith             string         // URN of the resource that, when deleted, causes this resource to be deleted
+	ReplaceWith             []string       // URNs of resources whose replacement triggers replacement of this resource
+	HideDiffs               []string       // Property paths whose diffs should not be displayed
+	ReplaceOnChanges        []string       // Property paths that if changed should force a replacement
+	ReplacementTrigger      property.Value // Value whose change triggers replacement
 	EnvVarMappings          map[string]string
 	Version                 string
 	PluginDownloadURL       string
@@ -114,18 +115,18 @@ type RegisterResourceRequest struct {
 type RegisterResourceResponse struct {
 	URN     string
 	ID      string
-	Outputs resource.PropertyMap
+	Outputs property.Map
 }
 
 // InvokeRequest contains the parameters for invoking a function.
 type InvokeRequest struct {
 	Token string
-	Args  resource.PropertyMap
+	Args  property.Map
 }
 
 // InvokeResponse contains the result of invoking a function.
 type InvokeResponse struct {
-	Return   resource.PropertyMap
+	Return   property.Map
 	Failures []string
 }
 
@@ -150,7 +151,7 @@ type Engine struct {
 	dataSourceDependencies *util.SyncMap[string, []resource.URN]
 
 	// stackOutputs collects outputs to be registered on the stack.
-	stackOutputs resource.PropertyMap
+	stackOutputs map[string]property.Value
 
 	// stackURN is the URN of the root stack resource.
 	stackURN string
@@ -234,7 +235,7 @@ func NewEngine(config *ast.Config, opts *EngineOptions) *Engine {
 		resmon:                 opts.ResourceMonitor,
 		resourceOutputs:        util.NewSyncMap[string, cty.Value](),
 		dataSourceDependencies: util.NewSyncMap[string, []resource.URN](),
-		stackOutputs:           make(resource.PropertyMap),
+		stackOutputs:           make(map[string]property.Value),
 		projectName:            opts.ProjectName,
 		stackName:              opts.StackName,
 		organization:           opts.Organization,
@@ -297,7 +298,7 @@ func (e *Engine) registerStack(ctx context.Context) error {
 	resp, err := e.resmon.RegisterResource(ctx, RegisterResourceRequest{
 		Type:   "pulumi:pulumi:Stack",
 		Name:   stackName,
-		Inputs: resource.PropertyMap{},
+		Inputs: property.NewMap(nil),
 	})
 	if err != nil {
 		return err
@@ -313,7 +314,7 @@ func (e *Engine) registerStackOutputs(ctx context.Context) error {
 		return nil
 	}
 
-	return e.resmon.RegisterResourceOutputs(ctx, e.stackURN, e.stackOutputs)
+	return e.resmon.RegisterResourceOutputs(ctx, e.stackURN, property.NewMap(e.stackOutputs))
 }
 
 // processNode processes a single node based on its type.
@@ -565,7 +566,7 @@ func (e *Engine) processProvider(ctx context.Context, node *graph.Node) error {
 
 	// Evaluate provider configuration
 	attrs, _ := provider.Config.JustAttributes()
-	inputs := make(resource.PropertyMap)
+	inputs := make(map[string]property.Value)
 
 	// TODO: This needs to lookup a resource schema & then use transform methods
 
@@ -585,7 +586,7 @@ func (e *Engine) processProvider(ctx context.Context, node *graph.Node) error {
 			return fmt.Errorf("converting provider attribute %s: %w", name, err)
 		}
 
-		inputs[resource.PropertyKey(name)] = pv
+		inputs[name] = pv
 	}
 
 	// Register the provider resource
@@ -598,7 +599,7 @@ func (e *Engine) processProvider(ctx context.Context, node *graph.Node) error {
 	resp, err := e.resmon.RegisterResource(ctx, RegisterResourceRequest{
 		Type:   typeToken,
 		Name:   logicalName,
-		Inputs: inputs,
+		Inputs: property.NewMap(inputs),
 	})
 	if err != nil {
 		return fmt.Errorf("registering provider %s: %w", node.Key, err)
@@ -612,7 +613,7 @@ func (e *Engine) processProvider(ctx context.Context, node *graph.Node) error {
 	outputObj["id"] = cty.StringVal(providerID)
 	outputObj["urn"] = cty.StringVal(resp.URN)
 
-	for k, v := range resp.Outputs {
+	for k, v := range resp.Outputs.All {
 		snakeKey := camelToSnake(string(k))
 		outputObj[snakeKey] = transform.PropertyValueToCty(v)
 	}
@@ -730,7 +731,7 @@ func (e *Engine) registerResourceInstance(
 	if strings.HasPrefix(res.Type, "pulumi_providers_") && res.PluginDownloadURL != nil {
 		val, valDiags := res.PluginDownloadURL.Value(e.evaluator.Context().HCLContext())
 		if !valDiags.HasErrors() && val.Type() == cty.String {
-			resourceInputs["pluginDownloadURL"] = resource.NewStringProperty(val.AsString())
+			resourceInputs = resourceInputs.Set("pluginDownloadURL", property.New(val.AsString()))
 		}
 	}
 
@@ -777,8 +778,7 @@ func (e *Engine) registerResourceInstance(
 		return fmt.Errorf("registering resource: %w", err)
 	}
 
-	delete(outputs, "id")
-	delete(outputs, "urn")
+	outputs = outputs.Delete("id", "urn")
 	// Store outputs for future references
 	outputObj, err := transform.ResourceOutputToCty(outputs, resSchema, e.dryRun)
 	if err != nil {
@@ -1252,11 +1252,11 @@ type ResourceOptions struct {
 	ImportId                string
 	AdditionalSecretOutputs []string
 	RetainOnDelete          *bool
-	DeletedWith             string                 // URN of the resource that, when deleted, causes this resource to be deleted
-	ReplaceWith             []string               // URNs of resources whose replacement triggers replacement of this resource
-	HideDiffs               []string               // Property paths whose diffs should not be displayed
-	ReplaceOnChanges        []string               // Property paths that if changed should force a replacement
-	ReplacementTrigger      resource.PropertyValue // Value whose change triggers replacement
+	DeletedWith             string         // URN of the resource that, when deleted, causes this resource to be deleted
+	ReplaceWith             []string       // URNs of resources whose replacement triggers replacement of this resource
+	HideDiffs               []string       // Property paths whose diffs should not be displayed
+	ReplaceOnChanges        []string       // Property paths that if changed should force a replacement
+	ReplacementTrigger      property.Value // Value whose change triggers replacement
 	EnvVarMappings          map[string]string
 	Version                 string
 	PluginDownloadURL       string
@@ -1267,9 +1267,9 @@ func (e *Engine) registerResource(
 	ctx context.Context,
 	typeToken string,
 	name string,
-	inputs resource.PropertyMap,
+	inputs property.Map,
 	opts *ResourceOptions,
-) (string, string, resource.PropertyMap, error) {
+) (string, string, property.Map, error) {
 	// Register with the resource monitor
 	resp, err := e.resmon.RegisterResource(ctx, RegisterResourceRequest{
 		Type:                    typeToken,
@@ -1298,7 +1298,7 @@ func (e *Engine) registerResource(
 		PluginDownloadURL:       opts.PluginDownloadURL,
 	})
 	if err != nil {
-		return "", "", nil, err
+		return "", "", property.Map{}, err
 	}
 
 	return resp.URN, resp.ID, resp.Outputs, nil
@@ -1370,11 +1370,11 @@ func (e *Engine) processDataSource(ctx context.Context, node *graph.Node) error 
 func (e *Engine) invokeFunction(
 	ctx context.Context,
 	funcToken string,
-	inputs resource.PropertyMap,
-) (resource.PropertyMap, error) {
-	if e.resmon == nil {
+	inputs property.Map,
+) (property.Map, error) {
+	if e.resmon == nil { // TODO: Remove this check
 		// No resource monitor - return empty outputs for testing
-		return resource.PropertyMap{}, nil
+		return property.Map{}, nil
 	}
 
 	// Invoke the function
@@ -1383,11 +1383,11 @@ func (e *Engine) invokeFunction(
 		Args:  inputs,
 	})
 	if err != nil {
-		return nil, err
+		return property.Map{}, err
 	}
 
 	if len(resp.Failures) > 0 {
-		return nil, fmt.Errorf("function invocation failed: %v", resp.Failures)
+		return property.Map{}, fmt.Errorf("function invocation failed: %v", resp.Failures)
 	}
 
 	return resp.Return, nil
@@ -1504,7 +1504,7 @@ func (e *Engine) processModuleInstance(ctx context.Context, mod *ast.Module, ins
 	}
 
 	// Evaluate module inputs from the module block
-	inputs := make(resource.PropertyMap)
+	inputs := make(map[string]property.Value)
 	attrs, _ := mod.Config.JustAttributes()
 	for name, attr := range attrs {
 		val, diags := e.evaluator.EvaluateExpression(attr.Expr)
@@ -1515,7 +1515,7 @@ func (e *Engine) processModuleInstance(ctx context.Context, mod *ast.Module, ins
 		if err != nil {
 			return fmt.Errorf("converting module input %s: %w", name, err)
 		}
-		inputs[resource.PropertyKey(name)] = pv
+		inputs[name] = pv
 	}
 
 	// Register the module as a component resource with a dynamic type token.
@@ -1538,7 +1538,7 @@ func (e *Engine) processModuleInstance(ctx context.Context, mod *ast.Module, ins
 		}
 	}
 
-	componentURN, _, _, err := e.registerComponentResource(ctx, componentType, instance.Key, inputs, componentOpts)
+	componentURN, _, _, err := e.registerComponentResource(ctx, componentType, instance.Key, property.NewMap(inputs), componentOpts)
 	if err != nil {
 		return fmt.Errorf("registering module component: %w", err)
 	}
@@ -1568,16 +1568,16 @@ func (e *Engine) processModuleInstance(ctx context.Context, mod *ast.Module, ins
 
 	// Register the component outputs
 	if e.resmon != nil {
-		outputProps := make(resource.PropertyMap)
+		outputProps := make(map[string]property.Value)
 		if moduleOutputs.Type().IsObjectType() {
 			for name, val := range moduleOutputs.AsValueMap() {
 				pv, err := transform.CtyToPropertyValue(val)
 				if err == nil {
-					outputProps[resource.PropertyKey(name)] = pv
+					outputProps[name] = pv
 				}
 			}
 		}
-		if err := e.resmon.RegisterResourceOutputs(ctx, componentURN, outputProps); err != nil {
+		if err := e.resmon.RegisterResourceOutputs(ctx, componentURN, property.NewMap(outputProps)); err != nil {
 			return fmt.Errorf("registering module outputs: %w", err)
 		}
 	}
@@ -1590,10 +1590,10 @@ func (e *Engine) registerComponentResource(
 	ctx context.Context,
 	typeToken string,
 	name string,
-	inputs resource.PropertyMap,
+	inputs property.Map,
 	opts *ResourceOptions,
-) (string, string, resource.PropertyMap, error) {
-	if e.resmon == nil {
+) (string, string, property.Map, error) {
+	if e.resmon == nil { // TODO: Remove this check
 		// No resource monitor - return synthetic values for testing
 		urn := fmt.Sprintf("urn:pulumi:%s::%s::%s::%s",
 			e.stackName, e.projectName, typeToken, name)
@@ -1613,7 +1613,7 @@ func (e *Engine) registerComponentResource(
 		// Note: Custom=false for components, but we handle this in server.go
 	})
 	if err != nil {
-		return "", "", nil, err
+		return "", "", property.Map{}, err
 	}
 
 	return resp.URN, resp.ID, resp.Outputs, nil
@@ -1628,7 +1628,7 @@ func (e *Engine) createChildEngine(config *ast.Config, parentURN string, moduleD
 		pkgLoader:        e.pkgLoader,
 		resmon:           e.resmon,
 		resourceOutputs:  util.NewSyncMap[string, cty.Value](),
-		stackOutputs:     make(resource.PropertyMap),
+		stackOutputs:     make(map[string]property.Value),
 		projectName:      e.projectName,
 		stackName:        e.stackName,
 		organization:     e.organization,
@@ -1700,11 +1700,11 @@ func (e *Engine) processOutput(_ context.Context, name string, output *ast.Outpu
 
 	// Mark as secret if sensitive
 	if output.Sensitive {
-		pv = resource.MakeSecret(pv)
+		pv = pv.WithSecret(true)
 	}
 
 	// Store the output for later registration on the stack
-	e.stackOutputs[resource.PropertyKey(name)] = pv
+	e.stackOutputs[name] = pv
 
 	return nil
 }

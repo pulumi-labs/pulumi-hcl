@@ -18,7 +18,7 @@ import (
 	"testing"
 
 	"github.com/pulumi/pulumi/pkg/v3/codegen/schema"
-	"github.com/pulumi/pulumi/sdk/v3/go/common/resource"
+	"github.com/pulumi/pulumi/sdk/v3/go/property"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/zclconf/go-cty/cty"
@@ -56,7 +56,7 @@ func TestCtyToResourceInputs(t *testing.T) {
 		name       string
 		properties []*schema.Property
 		input      cty.Value
-		expected   resource.PropertyMap
+		expected   property.Map
 	}{
 		{
 			name: "simple string property",
@@ -69,9 +69,9 @@ func TestCtyToResourceInputs(t *testing.T) {
 			input: cty.ObjectVal(map[string]cty.Value{
 				"name": cty.StringVal("test-resource"),
 			}),
-			expected: resource.PropertyMap{
-				"name": resource.NewStringProperty("test-resource"),
-			},
+			expected: property.NewMap(map[string]property.Value{
+				"name": property.New("test-resource"),
+			}),
 		},
 		{
 			name: "boolean and number primitives",
@@ -83,10 +83,10 @@ func TestCtyToResourceInputs(t *testing.T) {
 				"enabled": cty.BoolVal(true),
 				"count":   cty.NumberIntVal(42),
 			}),
-			expected: resource.PropertyMap{
-				"enabled": resource.NewBoolProperty(true),
-				"count":   resource.NewNumberProperty(42),
-			},
+			expected: property.NewMap(map[string]property.Value{
+				"enabled": property.New(true),
+				"count":   property.New(float64(42)),
+			}),
 		},
 		{
 			name: "object with name translation from snake_case",
@@ -107,12 +107,12 @@ func TestCtyToResourceInputs(t *testing.T) {
 					"protocol":    cty.StringVal("TCP"),
 				}),
 			}),
-			expected: resource.PropertyMap{
-				"containerPort": resource.NewObjectProperty(resource.PropertyMap{
-					"portNumber": resource.NewNumberProperty(8080),
-					"protocol":   resource.NewStringProperty("TCP"),
-				}),
-			},
+			expected: property.NewMap(map[string]property.Value{
+				"containerPort": property.New(property.NewMap(map[string]property.Value{
+					"portNumber": property.New(float64(8080)),
+					"protocol":   property.New("TCP"),
+				})),
+			}),
 		},
 		{
 			name: "map without name translation",
@@ -128,12 +128,12 @@ func TestCtyToResourceInputs(t *testing.T) {
 					"another_key":    cty.StringVal("value2"),
 				}),
 			}),
-			expected: resource.PropertyMap{
-				"tags": resource.NewObjectProperty(resource.PropertyMap{
-					"snake_case_key": resource.NewStringProperty("value1"),
-					"another_key":    resource.NewStringProperty("value2"),
-				}),
-			},
+			expected: property.NewMap(map[string]property.Value{
+				"tags": property.New(property.NewMap(map[string]property.Value{
+					"snake_case_key": property.New("value1"),
+					"another_key":    property.New("value2"),
+				})),
+			}),
 		},
 		{
 			name: "array of primitives",
@@ -150,13 +150,13 @@ func TestCtyToResourceInputs(t *testing.T) {
 					cty.NumberIntVal(8080),
 				}),
 			}),
-			expected: resource.PropertyMap{
-				"ports": resource.NewArrayProperty([]resource.PropertyValue{
-					resource.NewNumberProperty(80),
-					resource.NewNumberProperty(443),
-					resource.NewNumberProperty(8080),
-				}),
-			},
+			expected: property.NewMap(map[string]property.Value{
+				"ports": property.New(property.NewArray([]property.Value{
+					property.New(float64(80)),
+					property.New(float64(443)),
+					property.New(float64(8080)),
+				})),
+			}),
 		},
 		{
 			name: "array of objects with name translation",
@@ -185,18 +185,18 @@ func TestCtyToResourceInputs(t *testing.T) {
 					}),
 				}),
 			}),
-			expected: resource.PropertyMap{
-				"endpoints": resource.NewArrayProperty([]resource.PropertyValue{
-					resource.NewObjectProperty(resource.PropertyMap{
-						"hostName":   resource.NewStringProperty("api.example.com"),
-						"portNumber": resource.NewNumberProperty(443),
-					}),
-					resource.NewObjectProperty(resource.PropertyMap{
-						"hostName":   resource.NewStringProperty("db.example.com"),
-						"portNumber": resource.NewNumberProperty(5432),
-					}),
-				}),
-			},
+			expected: property.NewMap(map[string]property.Value{
+				"endpoints": property.New(property.NewArray([]property.Value{
+					property.New(property.NewMap(map[string]property.Value{
+						"hostName":   property.New("api.example.com"),
+						"portNumber": property.New(float64(443)),
+					})),
+					property.New(property.NewMap(map[string]property.Value{
+						"hostName":   property.New("db.example.com"),
+						"portNumber": property.New(float64(5432)),
+					})),
+				})),
+			}),
 		},
 		{
 			name: "static default value float64",
@@ -213,10 +213,10 @@ func TestCtyToResourceInputs(t *testing.T) {
 			input: cty.ObjectVal(map[string]cty.Value{
 				"name": cty.StringVal("my-service"),
 			}),
-			expected: resource.PropertyMap{
-				"name": resource.NewStringProperty("my-service"),
-				"port": resource.NewNumberProperty(8080),
-			},
+			expected: property.NewMap(map[string]property.Value{
+				"name": property.New("my-service"),
+				"port": property.New(float64(8080)),
+			}),
 		},
 		{
 			name: "static default value int",
@@ -233,10 +233,10 @@ func TestCtyToResourceInputs(t *testing.T) {
 			input: cty.ObjectVal(map[string]cty.Value{
 				"name": cty.StringVal("my-service"),
 			}),
-			expected: resource.PropertyMap{
-				"name":           resource.NewStringProperty("my-service"),
-				"maxConnections": resource.NewNumberProperty(100),
-			},
+			expected: property.NewMap(map[string]property.Value{
+				"name":           property.New("my-service"),
+				"maxConnections": property.New(float64(100)),
+			}),
 		},
 		{
 			name: "static default value string",
@@ -250,9 +250,9 @@ func TestCtyToResourceInputs(t *testing.T) {
 				},
 			},
 			input: cty.ObjectVal(map[string]cty.Value{}),
-			expected: resource.PropertyMap{
-				"region": resource.NewStringProperty("us-west-2"),
-			},
+			expected: property.NewMap(map[string]property.Value{
+				"region": property.New("us-west-2"),
+			}),
 		},
 		{
 			name: "static default value boolean",
@@ -266,9 +266,9 @@ func TestCtyToResourceInputs(t *testing.T) {
 				},
 			},
 			input: cty.ObjectVal(map[string]cty.Value{}),
-			expected: resource.PropertyMap{
-				"autoScale": resource.NewBoolProperty(true),
-			},
+			expected: property.NewMap(map[string]property.Value{
+				"autoScale": property.New(true),
+			}),
 		},
 		{
 			name: "environment variable default overrides static default",
@@ -286,10 +286,10 @@ func TestCtyToResourceInputs(t *testing.T) {
 			input: cty.ObjectVal(map[string]cty.Value{
 				"name": cty.StringVal("my-service"),
 			}),
-			expected: resource.PropertyMap{
-				"name": resource.NewStringProperty("my-service"),
-				"port": resource.NewNumberProperty(9000),
-			},
+			expected: property.NewMap(map[string]property.Value{
+				"name": property.New("my-service"),
+				"port": property.New(float64(9000)),
+			}),
 		},
 		{
 			name: "environment variable default for boolean",
@@ -303,9 +303,9 @@ func TestCtyToResourceInputs(t *testing.T) {
 				},
 			},
 			input: cty.ObjectVal(map[string]cty.Value{}),
-			expected: resource.PropertyMap{
-				"enabled": resource.NewBoolProperty(true),
-			},
+			expected: property.NewMap(map[string]property.Value{
+				"enabled": property.New(true),
+			}),
 		},
 		{
 			name: "secret property",
@@ -315,9 +315,9 @@ func TestCtyToResourceInputs(t *testing.T) {
 			input: cty.ObjectVal(map[string]cty.Value{
 				"password": cty.StringVal("super-secret"),
 			}),
-			expected: resource.PropertyMap{
-				"password": resource.MakeSecret(resource.NewStringProperty("super-secret")),
-			},
+			expected: property.NewMap(map[string]property.Value{
+				"password": property.New("super-secret").WithSecret(true),
+			}),
 		},
 		{
 			name: "missing property without default not in output",
@@ -328,9 +328,9 @@ func TestCtyToResourceInputs(t *testing.T) {
 			input: cty.ObjectVal(map[string]cty.Value{
 				"name": cty.StringVal("test"),
 			}),
-			expected: resource.PropertyMap{
-				"name": resource.NewStringProperty("test"),
-			},
+			expected: property.NewMap(map[string]property.Value{
+				"name": property.New("test"),
+			}),
 		},
 		{
 			name: "deeply nested objects with name translation",
@@ -362,15 +362,15 @@ func TestCtyToResourceInputs(t *testing.T) {
 					}),
 				}),
 			}),
-			expected: resource.PropertyMap{
-				"metadata": resource.NewObjectProperty(resource.PropertyMap{
-					"resourceName": resource.NewStringProperty("my-resource"),
-					"nestedConfig": resource.NewObjectProperty(resource.PropertyMap{
-						"maxRetries":     resource.NewNumberProperty(3),
-						"timeoutSeconds": resource.NewNumberProperty(30),
-					}),
-				}),
-			},
+			expected: property.NewMap(map[string]property.Value{
+				"metadata": property.New(property.NewMap(map[string]property.Value{
+					"resourceName": property.New("my-resource"),
+					"nestedConfig": property.New(property.NewMap(map[string]property.Value{
+						"maxRetries":     property.New(float64(3)),
+						"timeoutSeconds": property.New(float64(30)),
+					})),
+				})),
+			}),
 		},
 	}
 
@@ -383,12 +383,7 @@ func TestCtyToResourceInputs(t *testing.T) {
 				InputProperties: tt.properties,
 			})
 			require.NoError(t, err)
-
-			// A map may not be reflect.DeepEqual equal, but still be semantically equivalent. If it's not
-			// semantically equivalent, we assert it's equal for a good debugging experience.
-			if !assert.True(t, tt.expected.DeepEquals(result)) {
-				assert.Equal(t, tt.expected, result)
-			}
+			assert.Equal(t, tt.expected, result)
 		})
 	}
 }
@@ -399,37 +394,37 @@ func TestCtyToPropertyValue_Primitives(t *testing.T) {
 	tests := []struct {
 		name     string
 		input    cty.Value
-		expected resource.PropertyValue
+		expected property.Value
 	}{
 		{
 			name:     "null",
 			input:    cty.NullVal(cty.String),
-			expected: resource.NewNullProperty(),
+			expected: property.New(property.Null),
 		},
 		{
 			name:     "bool true",
 			input:    cty.BoolVal(true),
-			expected: resource.NewBoolProperty(true),
+			expected: property.New(true),
 		},
 		{
 			name:     "bool false",
 			input:    cty.BoolVal(false),
-			expected: resource.NewBoolProperty(false),
+			expected: property.New(false),
 		},
 		{
 			name:     "string",
 			input:    cty.StringVal("hello"),
-			expected: resource.NewStringProperty("hello"),
+			expected: property.New("hello"),
 		},
 		{
 			name:     "number int",
 			input:    cty.NumberIntVal(42),
-			expected: resource.NewNumberProperty(42),
+			expected: property.New(float64(42)),
 		},
 		{
 			name:     "number float",
 			input:    cty.NumberFloatVal(3.14),
-			expected: resource.NewNumberProperty(3.14),
+			expected: property.New(3.14),
 		},
 	}
 
@@ -439,7 +434,7 @@ func TestCtyToPropertyValue_Primitives(t *testing.T) {
 			if err != nil {
 				t.Fatalf("unexpected error: %v", err)
 			}
-			if !result.DeepEquals(tt.expected) {
+			if !result.Equals(tt.expected) {
 				t.Errorf("expected %v, got %v", tt.expected, result)
 			}
 		})
@@ -467,11 +462,11 @@ func TestCtyToPropertyValue_Collections(t *testing.T) {
 			t.Fatal("expected array")
 		}
 
-		arr := result.ArrayValue()
+		arr := result.AsArray().AsSlice()
 		if len(arr) != 3 {
 			t.Errorf("expected 3 elements, got %d", len(arr))
 		}
-		if arr[0].StringValue() != "a" || arr[1].StringValue() != "b" || arr[2].StringValue() != "c" {
+		if arr[0].AsString() != "a" || arr[1].AsString() != "b" || arr[2].AsString() != "c" {
 			t.Error("unexpected array contents")
 		}
 	})
@@ -490,15 +485,15 @@ func TestCtyToPropertyValue_Collections(t *testing.T) {
 			t.Fatalf("unexpected error: %v", err)
 		}
 
-		if !result.IsObject() {
+		if !result.IsMap() {
 			t.Fatal("expected object")
 		}
 
-		obj := result.ObjectValue()
-		if obj["key1"].StringValue() != "value1" {
+		obj := result.AsMap().AsMap()
+		if obj["key1"].AsString() != "value1" {
 			t.Errorf("expected key1=value1, got %v", obj["key1"])
 		}
-		if obj["key2"].StringValue() != "value2" {
+		if obj["key2"].AsString() != "value2" {
 			t.Errorf("expected key2=value2, got %v", obj["key2"])
 		}
 	})
@@ -516,15 +511,15 @@ func TestCtyToPropertyValue_Collections(t *testing.T) {
 			t.Fatalf("unexpected error: %v", err)
 		}
 
-		if !result.IsObject() {
+		if !result.IsMap() {
 			t.Fatal("expected object")
 		}
 
-		obj := result.ObjectValue()
-		if obj["name"].StringValue() != "test" {
+		obj := result.AsMap().AsMap()
+		if obj["name"].AsString() != "test" {
 			t.Errorf("expected name=test, got %v", obj["name"])
 		}
-		if obj["port"].NumberValue() != 8080 {
+		if obj["port"].AsNumber() != 8080 {
 			t.Errorf("expected port=8080, got %v", obj["port"])
 		}
 	})
@@ -547,7 +542,7 @@ func TestCtyToPropertyValue_Collections(t *testing.T) {
 			t.Fatal("expected array")
 		}
 
-		arr := result.ArrayValue()
+		arr := result.AsArray().AsSlice()
 		if len(arr) != 3 {
 			t.Errorf("expected 3 elements, got %d", len(arr))
 		}
@@ -570,7 +565,7 @@ func TestCtyToPropertyValue_Collections(t *testing.T) {
 			t.Fatal("expected array")
 		}
 
-		arr := result.ArrayValue()
+		arr := result.AsArray().AsSlice()
 		if len(arr) != 2 {
 			t.Errorf("expected 2 elements, got %d", len(arr))
 		}
@@ -595,16 +590,16 @@ func TestCtyToPropertyValue_Nested(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	if !result.IsObject() {
+	if !result.IsMap() {
 		t.Fatal("expected object")
 	}
 
-	obj := result.ObjectValue()
+	obj := result.AsMap().AsMap()
 	tags := obj["tags"]
-	if !tags.IsObject() {
+	if !tags.IsMap() {
 		t.Fatal("expected tags to be object")
 	}
-	if tags.ObjectValue()["env"].StringValue() != "prod" {
+	if tags.AsMap().AsMap()["env"].AsString() != "prod" {
 		t.Error("expected tags.env=prod")
 	}
 
@@ -612,7 +607,7 @@ func TestCtyToPropertyValue_Nested(t *testing.T) {
 	if !ports.IsArray() {
 		t.Fatal("expected ports to be array")
 	}
-	if len(ports.ArrayValue()) != 2 {
+	if len(ports.AsArray().AsSlice()) != 2 {
 		t.Error("expected 2 ports")
 	}
 }
@@ -622,27 +617,27 @@ func TestPropertyValueToCty_Primitives(t *testing.T) {
 
 	tests := []struct {
 		name     string
-		input    resource.PropertyValue
+		input    property.Value
 		expected cty.Value
 	}{
 		{
 			name:     "null",
-			input:    resource.NewNullProperty(),
+			input:    property.New(property.Null),
 			expected: cty.NullVal(cty.DynamicPseudoType),
 		},
 		{
 			name:     "bool",
-			input:    resource.NewBoolProperty(true),
+			input:    property.New(true),
 			expected: cty.BoolVal(true),
 		},
 		{
 			name:     "string",
-			input:    resource.NewStringProperty("hello"),
+			input:    property.New("hello"),
 			expected: cty.StringVal("hello"),
 		},
 		{
 			name:     "number",
-			input:    resource.NewNumberProperty(42),
+			input:    property.New(float64(42)),
 			expected: cty.NumberFloatVal(42),
 		},
 	}
@@ -665,10 +660,10 @@ func TestPropertyValueToCty_Collections(t *testing.T) {
 	t.Run("array", func(t *testing.T) {
 		t.Parallel()
 
-		input := resource.NewArrayProperty([]resource.PropertyValue{
-			resource.NewStringProperty("a"),
-			resource.NewStringProperty("b"),
-		})
+		input := property.New(property.NewArray([]property.Value{
+			property.New("a"),
+			property.New("b"),
+		}))
 
 		result := PropertyValueToCty(input)
 
@@ -689,9 +684,9 @@ func TestPropertyValueToCty_Collections(t *testing.T) {
 	t.Run("object", func(t *testing.T) {
 		t.Parallel()
 
-		input := resource.NewObjectProperty(resource.PropertyMap{
-			"key": resource.NewStringProperty("value"),
-		})
+		input := property.New(property.NewMap(map[string]property.Value{
+			"key": property.New("value"),
+		}))
 
 		result := PropertyValueToCty(input)
 
@@ -709,8 +704,7 @@ func TestPropertyValueToCty_Collections(t *testing.T) {
 func TestPropertyValueToCty_Secret(t *testing.T) {
 	t.Parallel()
 
-	inner := resource.NewStringProperty("secret-value")
-	input := resource.MakeSecret(inner)
+	input := property.New("secret-value").WithSecret(true)
 
 	result := PropertyValueToCty(input)
 
@@ -739,10 +733,10 @@ func TestCtyToPropertyMap(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	if result["name"].StringValue() != "test" {
+	if result.Get("name").AsString() != "test" {
 		t.Errorf("expected name=test")
 	}
-	if result["enabled"].BoolValue() != true {
+	if result.Get("enabled").AsBool() != true {
 		t.Errorf("expected enabled=true")
 	}
 }
@@ -750,10 +744,10 @@ func TestCtyToPropertyMap(t *testing.T) {
 func TestPropertyMapToCty(t *testing.T) {
 	t.Parallel()
 
-	input := resource.PropertyMap{
-		"name":    resource.NewStringProperty("test"),
-		"enabled": resource.NewBoolProperty(true),
-	}
+	input := property.NewMap(map[string]property.Value{
+		"name":    property.New("test"),
+		"enabled": property.New(true),
+	})
 
 	result := PropertyMapToCty(input)
 

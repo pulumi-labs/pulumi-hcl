@@ -38,19 +38,19 @@ const SensativeMark = "sensitive"
 
 type EvalFunc = func(resource.PropertyKey, hcl.Expression) (cty.Value, hcl.Diagnostics)
 
-func EvalFunctionWithSchema(config hcl.Body, r *schema.Function, eval EvalFunc) (resource.PropertyMap, hcl.Diagnostics) {
+func EvalFunctionWithSchema(config hcl.Body, r *schema.Function, eval EvalFunc) (property.Map, hcl.Diagnostics) {
 	var props []*schema.Property
 	if r.Inputs != nil {
 		props = r.Inputs.Properties
 	}
 	functionInputs, diags := evalBlockWithSchema(config, props, eval)
 	if diags.HasErrors() {
-		return nil, diags
+		return property.Map{}, diags
 	}
 
 	m, err := ctyToFunctionInputs(functionInputs, r)
 	if err != nil {
-		return nil, append(diags, &hcl.Diagnostic{
+		return property.Map{}, append(diags, &hcl.Diagnostic{
 			Severity: hcl.DiagError,
 			Summary:  "failed to convert HCL function inputs to Pulumi inputs",
 			Detail:   err.Error(),
@@ -59,15 +59,15 @@ func EvalFunctionWithSchema(config hcl.Body, r *schema.Function, eval EvalFunc) 
 	return m, diags
 }
 
-func EvalResourceWithSchema(config hcl.Body, r *schema.Resource, eval EvalFunc) (resource.PropertyMap, hcl.Diagnostics) {
+func EvalResourceWithSchema(config hcl.Body, r *schema.Resource, eval EvalFunc) (property.Map, hcl.Diagnostics) {
 	resourceInputs, diags := evalBlockWithSchema(config, r.InputProperties, eval)
 	if diags.HasErrors() {
-		return nil, diags
+		return property.Map{}, diags
 	}
 
 	m, err := ctyToResourceInputs(resourceInputs, r)
 	if err != nil {
-		return nil, append(diags, &hcl.Diagnostic{
+		return property.Map{}, append(diags, &hcl.Diagnostic{
 			Severity: hcl.DiagError,
 			Summary:  "failed to convert HCL resource inputs to Pulumi inputs",
 			Detail:   err.Error(),
@@ -184,18 +184,16 @@ func inputBodyFromProperties(r []*schema.Property) *hcl.BodySchema {
 	return body
 }
 
-func ctyToResourceInputs(val cty.Value, r *schema.Resource) (resource.PropertyMap, error) {
-	m, err := ctyToObject(r.Token, val, r.InputProperties)
-	return resource.ToResourcePropertyMap(m), err
+func ctyToResourceInputs(val cty.Value, r *schema.Resource) (property.Map, error) {
+	return ctyToObject(r.Token, val, r.InputProperties)
 }
 
-func ctyToFunctionInputs(val cty.Value, r *schema.Function) (resource.PropertyMap, error) {
+func ctyToFunctionInputs(val cty.Value, r *schema.Function) (property.Map, error) {
 	var inputs []*schema.Property
 	if r.Inputs != nil {
 		inputs = r.Inputs.Properties
 	}
-	m, err := ctyToObject(r.Token, val, inputs)
-	return resource.ToResourcePropertyMap(m), err
+	return ctyToObject(r.Token, val, inputs)
 }
 
 func ctyToObject(path string, val cty.Value, properties []*schema.Property) (property.Map, error) {
@@ -405,9 +403,8 @@ func snakeCaseFromCamelCase(s string) string {
 // CtyToPropertyValue converts a cty.Value to a Pulumi PropertyValue.
 //
 // Because this conversion is untyped, it should be avoided when type information is available.
-func CtyToPropertyValue(val cty.Value) (resource.PropertyValue, error) {
-	v, err := ctyToPropertyValue(val)
-	return resource.ToResourcePropertyValue(v), err
+func CtyToPropertyValue(val cty.Value) (property.Value, error) {
+	return ctyToPropertyValue(val)
 }
 
 func ctyToPropertyValue(val cty.Value) (property.Value, error) {
@@ -502,7 +499,7 @@ func ctyObjectToPropertyValue(val cty.Value) (property.Value, error) {
 	return property.New(obj), nil
 }
 
-func ResourceOutputToCty(pv resource.PropertyMap, r *schema.Resource, dryRun bool) (map[string]cty.Value, error) {
+func ResourceOutputToCty(pv property.Map, r *schema.Resource, dryRun bool) (map[string]cty.Value, error) {
 	properties := r.Properties
 	// Providers pass "version" as an output - even though it's not in the schema.
 	if r.IsProvider {
@@ -511,15 +508,15 @@ func ResourceOutputToCty(pv resource.PropertyMap, r *schema.Resource, dryRun boo
 			Type: schema.StringType,
 		})
 	}
-	return propertyObjectToCtyMap("", resource.FromResourcePropertyMap(pv), properties, dryRun)
+	return propertyObjectToCtyMap("", pv, properties, dryRun)
 }
 
-func FunctionOutputToCty(pv resource.PropertyMap, r *schema.Function, dryRun bool) (map[string]cty.Value, error) {
+func FunctionOutputToCty(pv property.Map, r *schema.Function, dryRun bool) (map[string]cty.Value, error) {
 	var props []*schema.Property
 	if r.Outputs != nil {
 		props = r.Outputs.Properties
 	}
-	return propertyObjectToCtyMap("", resource.FromResourcePropertyMap(pv), props, dryRun)
+	return propertyObjectToCtyMap("", pv, props, dryRun)
 }
 
 func propertyObjectToCtyMap(path string, m property.Map, properties []*schema.Property, dryRun bool) (map[string]cty.Value, error) {
@@ -702,7 +699,13 @@ func propertyValueToCty(path string, v property.Value, typ schema.Type, dryRun b
 }
 
 // PropertyValueToCty converts a Pulumi PropertyValue to a cty.Value.
-func PropertyValueToCty(pv resource.PropertyValue) cty.Value {
+func PropertyValueToCty(pv property.Value) cty.Value {
+
+	if pv.Secret() {
+		return PropertyValueToCty(pv.WithSecret(false)).
+			WithMarks(cty.NewValueMarks(SensativeMark))
+	}
+
 	if pv.IsNull() {
 		return cty.NullVal(cty.DynamicPseudoType)
 	}
@@ -713,48 +716,35 @@ func PropertyValueToCty(pv resource.PropertyValue) cty.Value {
 
 	switch {
 	case pv.IsBool():
-		return cty.BoolVal(pv.BoolValue())
+		return cty.BoolVal(pv.AsBool())
 
 	case pv.IsString():
-		return cty.StringVal(pv.StringValue())
+		return cty.StringVal(pv.AsString())
 
 	case pv.IsNumber():
-		return cty.NumberFloatVal(pv.NumberValue())
+		return cty.NumberFloatVal(pv.AsNumber())
 
 	case pv.IsArray():
-		arr := pv.ArrayValue()
-		if len(arr) == 0 {
+		arr := pv.AsArray()
+		if arr.Len() == 0 {
 			return cty.ListValEmpty(cty.DynamicPseudoType)
 		}
-		vals := make([]cty.Value, len(arr))
-		for i, elem := range arr {
+		vals := make([]cty.Value, arr.Len())
+		for i, elem := range arr.All {
 			vals[i] = PropertyValueToCty(elem)
 		}
 		return cty.TupleVal(vals)
 
-	case pv.IsObject():
-		obj := pv.ObjectValue()
-		if len(obj) == 0 {
+	case pv.IsMap():
+		obj := pv.AsMap()
+		if obj.Len() == 0 {
 			return cty.EmptyObjectVal
 		}
 		vals := make(map[string]cty.Value)
-		for k, v := range obj {
+		for k, v := range obj.All {
 			vals[string(k)] = PropertyValueToCty(v)
 		}
 		return cty.ObjectVal(vals)
-
-	case pv.IsSecret():
-		// Convert the inner value and mark it as sensitive
-		inner := PropertyValueToCty(pv.SecretValue().Element)
-		return inner.Mark(SensativeMark)
-
-	case pv.IsOutput():
-		// For outputs, try to get the known value if available
-		output := pv.OutputValue()
-		if output.Known {
-			return PropertyValueToCty(output.Element)
-		}
-		return cty.UnknownVal(cty.DynamicPseudoType)
 
 	default:
 		return cty.NullVal(cty.DynamicPseudoType)
@@ -762,39 +752,39 @@ func PropertyValueToCty(pv resource.PropertyValue) cty.Value {
 }
 
 // PropertyMapToCty converts a Pulumi PropertyMap to a cty.Value object.
-func PropertyMapToCty(pm resource.PropertyMap) cty.Value {
-	if len(pm) == 0 {
+func PropertyMapToCty(pm property.Map) cty.Value {
+	if pm.Len() == 0 {
 		return cty.EmptyObjectVal
 	}
 
 	vals := make(map[string]cty.Value)
-	for k, v := range pm {
+	for k, v := range pm.All {
 		vals[string(k)] = PropertyValueToCty(v)
 	}
 	return cty.ObjectVal(vals)
 }
 
 // CtyToPropertyMap converts a cty.Value object to a Pulumi PropertyMap.
-func CtyToPropertyMap(val cty.Value) (resource.PropertyMap, error) {
+func CtyToPropertyMap(val cty.Value) (property.Map, error) {
 	if val.IsNull() || !val.IsKnown() {
-		return nil, nil
+		return property.Map{}, nil
 	}
 
 	if !val.Type().IsObjectType() && !val.Type().IsMapType() {
-		return nil, fmt.Errorf("expected object or map type, got %s", val.Type().FriendlyName())
+		return property.Map{}, fmt.Errorf("expected object or map type, got %s", val.Type().FriendlyName())
 	}
 
-	pm := make(resource.PropertyMap)
+	pm := make(map[string]property.Value)
 	for it := val.ElementIterator(); it.Next(); {
 		keyVal, elemVal := it.Element()
 		key := keyVal.AsString()
 		pv, err := CtyToPropertyValue(elemVal)
 		if err != nil {
-			return nil, fmt.Errorf("converting property %q: %w", key, err)
+			return property.Map{}, fmt.Errorf("converting property %q: %w", key, err)
 		}
-		pm[resource.PropertyKey(key)] = pv
+		pm[key] = pv
 	}
-	return pm, nil
+	return property.NewMap(pm), nil
 }
 
 // MakeSecret wraps a PropertyValue as a secret.

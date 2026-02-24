@@ -28,6 +28,7 @@ import (
 	"github.com/pulumi/pulumi/sdk/v3/go/common/util/contract"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/util/logging"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/util/rpcutil"
+	"github.com/pulumi/pulumi/sdk/v3/go/property"
 	pulumirpc "github.com/pulumi/pulumi/sdk/v3/proto/go"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
@@ -237,7 +238,7 @@ func (p *HCLProvider) Construct(ctx context.Context, req *pulumirpc.ConstructReq
 	componentURN := resmon.componentURN
 
 	// Collect outputs from the resource monitor
-	outputsStruct, err := plugin.MarshalProperties(resmon.outputs, plugin.MarshalOptions{
+	outputsStruct, err := plugin.MarshalProperties(resource.ToResourcePropertyMap(resmon.outputs), plugin.MarshalOptions{
 		KeepSecrets:   true,
 		KeepResources: true,
 	})
@@ -275,7 +276,7 @@ type constructResourceMonitor struct {
 	ctx          context.Context
 	parentURN    string
 	componentURN string
-	outputs      resource.PropertyMap
+	outputs      property.Map
 }
 
 // RegisterResource registers a resource.
@@ -284,7 +285,7 @@ func (m *constructResourceMonitor) RegisterResource(
 	req run.RegisterResourceRequest,
 ) (*run.RegisterResourceResponse, error) {
 	// Convert PropertyMap to protobuf
-	inputs, err := plugin.MarshalProperties(req.Inputs, plugin.MarshalOptions{
+	inputs, err := plugin.MarshalProperties(resource.ToResourcePropertyMap(req.Inputs), plugin.MarshalOptions{
 		KeepSecrets:   true,
 		KeepResources: true,
 	})
@@ -331,7 +332,7 @@ func (m *constructResourceMonitor) RegisterResource(
 	return &run.RegisterResourceResponse{
 		URN:     resp.Urn,
 		ID:      resp.Id,
-		Outputs: outputs,
+		Outputs: resource.FromResourcePropertyMap(outputs),
 	}, nil
 }
 
@@ -339,14 +340,14 @@ func (m *constructResourceMonitor) RegisterResource(
 func (m *constructResourceMonitor) RegisterResourceOutputs(
 	ctx context.Context,
 	urn string,
-	outputs resource.PropertyMap,
+	outputs property.Map,
 ) error {
 	// Track outputs for the component
 	if urn == m.componentURN {
 		m.outputs = outputs
 	}
 
-	outputsStruct, err := plugin.MarshalProperties(outputs, plugin.MarshalOptions{
+	outputsStruct, err := plugin.MarshalProperties(resource.ToResourcePropertyMap(outputs), plugin.MarshalOptions{
 		KeepSecrets:   true,
 		KeepResources: true,
 	})
@@ -366,7 +367,7 @@ func (m *constructResourceMonitor) Invoke(
 	ctx context.Context,
 	req run.InvokeRequest,
 ) (*run.InvokeResponse, error) {
-	argsStruct, err := plugin.MarshalProperties(req.Args, plugin.MarshalOptions{
+	argsStruct, err := plugin.MarshalProperties(resource.ToResourcePropertyMap(req.Args), plugin.MarshalOptions{
 		KeepSecrets:   true,
 		KeepResources: true,
 	})
@@ -397,7 +398,7 @@ func (m *constructResourceMonitor) Invoke(
 	}
 
 	return &run.InvokeResponse{
-		Return:   ret,
+		Return:   resource.FromResourcePropertyMap(ret),
 		Failures: failures,
 	}, nil
 }

@@ -43,6 +43,7 @@ import (
 	"github.com/pulumi/pulumi/sdk/v3/go/common/util/logging"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/util/rpcutil"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/workspace"
+	"github.com/pulumi/pulumi/sdk/v3/go/property"
 	pulumirpc "github.com/pulumi/pulumi/sdk/v3/proto/go"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
@@ -597,7 +598,7 @@ func (r *resourceMonitorAdapter) RegisterResource(
 	req run.RegisterResourceRequest,
 ) (*run.RegisterResourceResponse, error) {
 	// Convert inputs to protobuf struct
-	inputsStruct, err := plugin.MarshalProperties(req.Inputs, plugin.MarshalOptions{
+	inputsStruct, err := plugin.MarshalProperties(resource.ToResourcePropertyMap(req.Inputs), plugin.MarshalOptions{
 		KeepUnknowns: true,
 		KeepSecrets:  true,
 	})
@@ -683,10 +684,12 @@ func (r *resourceMonitorAdapter) RegisterResource(
 
 	// Add replacement trigger if specified
 	if !req.ReplacementTrigger.IsNull() {
-		trigger, err := plugin.MarshalPropertyValue("replacement_trigger", req.ReplacementTrigger, plugin.MarshalOptions{
-			KeepUnknowns: true,
-			KeepSecrets:  true,
-		})
+		trigger, err := plugin.MarshalPropertyValue("replacement_trigger",
+			resource.ToResourcePropertyValue(req.ReplacementTrigger),
+			plugin.MarshalOptions{
+				KeepUnknowns: true,
+				KeepSecrets:  true,
+			})
 		if err != nil {
 			return nil, fmt.Errorf("marshaling replacement trigger: %w", err)
 		}
@@ -711,7 +714,7 @@ func (r *resourceMonitorAdapter) RegisterResource(
 	return &run.RegisterResourceResponse{
 		URN:     resp.Urn,
 		ID:      resp.Id,
-		Outputs: outputs,
+		Outputs: resource.FromResourcePropertyMap(outputs),
 	}, nil
 }
 
@@ -721,7 +724,7 @@ func (r *resourceMonitorAdapter) Invoke(
 	req run.InvokeRequest,
 ) (*run.InvokeResponse, error) {
 	// Convert args to protobuf struct
-	argsStruct, err := plugin.MarshalProperties(req.Args, plugin.MarshalOptions{
+	argsStruct, err := plugin.MarshalProperties(resource.ToResourcePropertyMap(req.Args), plugin.MarshalOptions{
 		KeepUnknowns: true,
 		KeepSecrets:  true,
 	})
@@ -758,7 +761,7 @@ func (r *resourceMonitorAdapter) Invoke(
 	}
 
 	return &run.InvokeResponse{
-		Return:   returnVal,
+		Return:   resource.FromResourcePropertyMap(returnVal),
 		Failures: failures,
 	}, nil
 }
@@ -767,10 +770,10 @@ func (r *resourceMonitorAdapter) Invoke(
 func (r *resourceMonitorAdapter) RegisterResourceOutputs(
 	ctx context.Context,
 	urn string,
-	outputs resource.PropertyMap,
+	outputs property.Map,
 ) error {
 	// Convert outputs to protobuf struct
-	outputsStruct, err := plugin.MarshalProperties(outputs, plugin.MarshalOptions{
+	outputsStruct, err := plugin.MarshalProperties(resource.ToResourcePropertyMap(outputs), plugin.MarshalOptions{
 		KeepUnknowns: true,
 		KeepSecrets:  true,
 	})

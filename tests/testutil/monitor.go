@@ -19,7 +19,7 @@ import (
 	"sync"
 
 	"github.com/pulumi/pulumi-language-hcl/pkg/hcl/run"
-	"github.com/pulumi/pulumi/sdk/v3/go/common/resource"
+	"github.com/pulumi/pulumi/sdk/v3/go/property"
 )
 
 // MockResourceMonitor is a mock implementation of run.ResourceMonitor for testing.
@@ -27,7 +27,7 @@ type MockResourceMonitor struct {
 	mu                  sync.Mutex
 	RegisteredResources []run.RegisterResourceRequest
 	InvokedFunctions    []run.InvokeRequest
-	StackOutputs        resource.PropertyMap
+	StackOutputs        property.Map
 	stackURN            string
 }
 
@@ -51,13 +51,13 @@ func (m *MockResourceMonitor) Invoke(ctx context.Context, req run.InvokeRequest)
 	defer m.mu.Unlock()
 	m.InvokedFunctions = append(m.InvokedFunctions, req)
 	return &run.InvokeResponse{
-		Return: resource.PropertyMap{
-			"id": resource.NewStringProperty("mock-id"),
-		},
+		Return: property.NewMap(map[string]property.Value{
+			"id": property.New("mock-id"),
+		}),
 	}, nil
 }
 
-func (m *MockResourceMonitor) RegisterResourceOutputs(ctx context.Context, urn string, outputs resource.PropertyMap) error {
+func (m *MockResourceMonitor) RegisterResourceOutputs(ctx context.Context, urn string, outputs property.Map) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if urn == m.stackURN {
