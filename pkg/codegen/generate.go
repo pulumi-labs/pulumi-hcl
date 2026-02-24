@@ -845,6 +845,10 @@ func (g *generator) funcCallTokens(expr *model.FunctionCallExpression) (hclwrite
 		return g.getOutputTokens(expr)
 	case "secret":
 		return g.passthroughFuncCallTokens("sensitive", expr.Args)
+	case "toBase64":
+		return g.passthroughFuncCallTokens("base64encode", expr.Args)
+	case "fromBase64":
+		return g.passthroughFuncCallTokens("base64decode", expr.Args)
 	default:
 		return g.passthroughFuncCallTokens(expr.Name, expr.Args)
 	}
