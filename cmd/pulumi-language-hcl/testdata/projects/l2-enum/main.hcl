@@ -15,7 +15,7 @@ resource "enum_mod_res" "sink2" {
   int_enum    = 1
   string_enum = "two"
 }
-resource "enum_mod/nested_res" "sink3" {
+resource "enum_mod_nested_res" "sink3" {
   int_enum    = 1
   string_enum = "two"
 }
