@@ -220,7 +220,6 @@ func (g *generator) genInvokeDataSource(body *hclwrite.Body, invoke *model.Funct
 	if len(invoke.Args) >= 2 {
 		argsExpr := invoke.Args[1]
 		if objExpr, ok := argsExpr.(*model.ObjectConsExpression); ok {
-			var diags hcl.Diagnostics
 			for _, item := range objExpr.Items {
 				keyLit, ok := item.Key.(*model.LiteralValueExpression)
 				if !ok {
@@ -242,11 +241,42 @@ func (g *generator) genInvokeDataSource(body *hclwrite.Body, invoke *model.Funct
 					diags = append(diags, d...)
 				}
 			}
-			return diags
 		}
 	}
 
-	return nil
+	// Third arg is the invoke options object
+	if len(invoke.Args) >= 3 {
+		if optsExpr, ok := invoke.Args[2].(*model.ObjectConsExpression); ok {
+			for _, item := range optsExpr.Items {
+				keyLit, ok := item.Key.(*model.LiteralValueExpression)
+				if !ok {
+					continue
+				}
+				switch keyLit.Value.AsString() {
+				case "provider", "parent":
+					tokens, d := g.exprTokens(item.Value, schema.AnyType)
+					diags = append(diags, d...)
+					if !d.HasErrors() {
+						block.Body().SetAttributeRaw(keyLit.Value.AsString(), tokens)
+					}
+				case "version":
+					tokens, d := g.exprTokens(item.Value, schema.StringType)
+					diags = append(diags, d...)
+					if !d.HasErrors() {
+						block.Body().SetAttributeRaw("version", tokens)
+					}
+				case "pluginDownloadUrl":
+					tokens, d := g.exprTokens(item.Value, schema.StringType)
+					diags = append(diags, d...)
+					if !d.HasErrors() {
+						block.Body().SetAttributeRaw("plugin_download_url", tokens)
+					}
+				}
+			}
+		}
+	}
+
+	return diags
 }
 
 func (g *generator) genResource(body *hclwrite.Body, r *pcl.Resource) hcl.Diagnostics {

@@ -734,9 +734,12 @@ func (r *resourceMonitorAdapter) Invoke(
 
 	// Build the invoke request
 	invokeReq := &pulumirpc.ResourceInvokeRequest{
-		Tok:             req.Token,
-		Args:            argsStruct,
-		AcceptResources: true,
+		Tok:               req.Token,
+		Args:              argsStruct,
+		Provider:          req.Provider,
+		Version:           req.Version,
+		PluginDownloadURL: req.PluginDownloadURL,
+		AcceptResources:   true,
 	}
 
 	// Call the resource monitor
