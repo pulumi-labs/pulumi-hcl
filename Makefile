@@ -11,15 +11,18 @@ BIN_DIR := bin
 LANGUAGE_HOST := pulumi-language-hcl
 CONVERTER := pulumi-converter-hcl
 
+_ := $(shell mkdir -p $(BIN_DIR))
+_ := $(shell go build -o $(BIN_DIR)/helpmakego github.com/iwahbe/helpmakego)
+
 all: build
 
 build: $(BIN_DIR)/$(LANGUAGE_HOST) $(BIN_DIR)/$(CONVERTER)
 
-$(BIN_DIR)/$(LANGUAGE_HOST): cmd/pulumi-language-hcl/main.go $(shell find pkg -name '*.go')
+$(BIN_DIR)/$(LANGUAGE_HOST): $(shell $(BIN_DIR)/helpmakego ./cmd/pulumi-language-hcl)
 	@mkdir -p $(BIN_DIR)
 	go build $(LDFLAGS) -o $@ ./cmd/pulumi-language-hcl
 
-$(BIN_DIR)/$(CONVERTER): cmd/pulumi-converter-hcl/main.go $(shell find pkg -name '*.go')
+$(BIN_DIR)/$(CONVERTER): $(shell $(BIN_DIR)/helpmakego ./cmd/pulumi-converter-hcl)
 	@mkdir -p $(BIN_DIR)
 	go build $(LDFLAGS) -o $@ ./cmd/pulumi-converter-hcl
 
@@ -49,8 +52,13 @@ tidy:
 	go mod tidy
 
 # Development helpers
-dev: build
-	cp $(BIN_DIR)/$(LANGUAGE_HOST) ~/.pulumi/bin/
+dev: ~/.pulumi/bin/$(LANGUAGE_HOST) ~/.pulumi/bin/$(CONVERTER)
+
+~/.pulumi/bin/$(LANGUAGE_HOST): $(BIN_DIR)/$(LANGUAGE_HOST)
+	cp $< $@
+
+~/.pulumi/bin/$(CONVERTER): $(BIN_DIR)/$(CONVERTER)
+	cp $< $@
 
 .PHONY: generate
 generate:
