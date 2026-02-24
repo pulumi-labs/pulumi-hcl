@@ -1378,6 +1378,19 @@ func (e *Engine) processDataSource(ctx context.Context, node *graph.Node) error 
 		}
 	}
 
+	for _, dep := range ds.DependsOn {
+		depKey := graph.FormatTraversal(dep)
+		if depKey == "" {
+			continue
+		}
+		if outputs, ok := e.resourceOutputs.Get(depKey); ok {
+			urnVal := outputs.GetAttr("urn")
+			if urnVal.Type() == cty.String {
+				allDeps = append(allDeps, resource.URN(urnVal.AsString()))
+			}
+		}
+	}
+
 	outputs, err := e.invokeFunction(ctx, invokeReq)
 	if err != nil {
 		return fmt.Errorf("invoking data source: %w", err)

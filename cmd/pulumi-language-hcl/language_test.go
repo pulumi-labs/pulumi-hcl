@@ -128,7 +128,6 @@ func runTestingHost(t *testing.T) (string, testingrpc.LanguageTestClient) {
 }
 
 var expectedFailures = map[string]string{
-	"l2-invoke-options-depends-on":          "not yet implemented - remember that invoke's in Pulumi are datasources in HCL",
 	"l2-invoke-output-only":                 "not yet implemented - remember that invoke's in Pulumi are datasources in HCL - this should be trivial since HCL is all outputs",
 	"l2-invoke-scalar":                      "not yet implemented - remember that invoke's in Pulumi are datasources in HCL",
 	"l2-invoke-scalars":                     "not yet implemented - remember that invoke's in Pulumi are datasources in HCL",
