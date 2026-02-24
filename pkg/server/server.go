@@ -114,7 +114,7 @@ func (host *LanguageHost) GetRequiredPlugins(
 			// Parse version constraint if present
 			// Pulumi expects semver, not constraints, so extract the version number
 			if provider.Version != "" {
-				dep.Version = extractSemverFromConstraint(provider.Version)
+				dep.Version = run.ExtractSemverFromConstraint(provider.Version)
 			}
 
 			// Parse source to get the actual provider name
@@ -583,41 +583,6 @@ func (host *LanguageHost) Pack(
 
 // Ensure LanguageHost implements the interface.
 var _ pulumirpc.LanguageRuntimeServer = (*LanguageHost)(nil)
-
-// extractSemverFromConstraint extracts a semver version from a Terraform version constraint.
-// For example, ">= 4.0.0" returns "4.0.0", "~> 6.0" returns "6.0.0".
-// If the constraint cannot be parsed, returns empty string (let Pulumi resolve).
-func extractSemverFromConstraint(constraint string) string {
-	// Remove common constraint operators
-	constraint = strings.TrimSpace(constraint)
-	constraint = strings.TrimPrefix(constraint, ">=")
-	constraint = strings.TrimPrefix(constraint, "~>")
-	constraint = strings.TrimPrefix(constraint, ">")
-	constraint = strings.TrimPrefix(constraint, "=")
-	constraint = strings.TrimPrefix(constraint, "^")
-	constraint = strings.TrimSpace(constraint)
-
-	// Handle multiple constraints (comma-separated) - take the first one
-	if idx := strings.Index(constraint, ","); idx >= 0 {
-		constraint = strings.TrimSpace(constraint[:idx])
-	}
-
-	// Validate it looks like a semver (digits and dots)
-	if constraint == "" {
-		return ""
-	}
-
-	// Ensure it has at least major.minor.patch format
-	parts := strings.Split(constraint, ".")
-	switch len(parts) {
-	case 1:
-		return parts[0] + ".0.0"
-	case 2:
-		return constraint + ".0"
-	default:
-		return constraint
-	}
-}
 
 // resourceMonitorAdapter adapts the Pulumi gRPC resource monitor to our interface.
 type resourceMonitorAdapter struct {

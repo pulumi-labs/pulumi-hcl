@@ -100,10 +100,10 @@ type RegisterResourceRequest struct {
 	ImportId                string // Resource ID to import
 	AdditionalSecretOutputs []string
 	RetainOnDelete          *bool
-	DeletedWith             string // URN of the resource that, when deleted, causes this resource to be deleted
-	ReplaceWith             []string // URNs of resources whose replacement triggers replacement of this resource
-	HideDiffs               []string // Property paths whose diffs should not be displayed
-	ReplaceOnChanges        []string // Property paths that if changed should force a replacement
+	DeletedWith             string                 // URN of the resource that, when deleted, causes this resource to be deleted
+	ReplaceWith             []string               // URNs of resources whose replacement triggers replacement of this resource
+	HideDiffs               []string               // Property paths whose diffs should not be displayed
+	ReplaceOnChanges        []string               // Property paths that if changed should force a replacement
 	ReplacementTrigger      resource.PropertyValue // Value whose change triggers replacement
 	EnvVarMappings          map[string]string
 	Version                 string
@@ -725,6 +725,15 @@ func (e *Engine) registerResourceInstance(
 		return diags
 	}
 
+	// For provider resources, plugin_download_url is a configuration input property but
+	// the parser extracts it as a meta-argument. Re-add it to the resource inputs.
+	if strings.HasPrefix(res.Type, "pulumi_providers_") && res.PluginDownloadURL != nil {
+		val, valDiags := res.PluginDownloadURL.Value(e.evaluator.Context().HCLContext())
+		if !valDiags.HasErrors() && val.Type() == cty.String {
+			resourceInputs["pluginDownloadURL"] = resource.NewStringProperty(val.AsString())
+		}
+	}
+
 	// Build resource options
 	opts := e.buildResourceOptions(res, instance)
 	opts.PropertyDependencies = dependsOn
@@ -736,6 +745,21 @@ func (e *Engine) registerResourceInstance(
 		}
 	}
 	slices.Sort(opts.DependsOn)
+
+	// Set version from required_providers if not explicitly set by resource options.
+	if opts.Version == "" {
+		pkgName := packageNameFromResourceType(res.Type)
+		if e.config.Terraform != nil {
+			if req, ok := e.config.Terraform.RequiredProviders[pkgName]; ok && req.Version != "" {
+				opts.Version = ExtractSemverFromConstraint(req.Version)
+			}
+		}
+	}
+
+	// Set plugin download URL from package schema if not explicitly set.
+	if opts.PluginDownloadURL == "" && resSchema.PackageReference != nil {
+		opts.PluginDownloadURL = resSchema.PackageReference.PluginDownloadURL()
+	}
 
 	// Evaluate preconditions before resource creation
 	if len(res.Preconditions) > 0 {
@@ -1019,8 +1043,10 @@ func (e *Engine) buildResourceOptions(res *ast.Resource, instance *graph.Expande
 		}
 	}
 
-	// Handle plugin_download_url
-	if res.PluginDownloadURL != nil {
+	// Handle plugin_download_url as a resource option.
+	// For provider resources (pulumi_providers_*), plugin_download_url is a provider
+	// configuration property, not a resource option, so it should not be set here.
+	if res.PluginDownloadURL != nil && !strings.HasPrefix(res.Type, "pulumi_providers_") {
 		val, diags := res.PluginDownloadURL.Value(e.evaluator.Context().HCLContext())
 		if !diags.HasErrors() && val.Type() == cty.String {
 			opts.PluginDownloadURL = val.AsString()
@@ -1126,6 +1152,47 @@ func (e *Engine) evaluateAliases(expr hcl.Expression) ([]Alias, error) {
 
 // extractResourceName extracts the resource name from an instance key.
 // For example: "pulumi_stash.myStash" -> "myStash", "aws_instance.web[0]" -> "web[0]".
+// packageNameFromResourceType extracts the provider package name from an HCL resource type.
+// For example, "config_resource" returns "config" and "pulumi_providers_config" returns "config".
+func packageNameFromResourceType(token string) string {
+	if name, ok := strings.CutPrefix(token, "pulumi_providers_"); ok {
+		return name
+	}
+	return strings.SplitN(token, "_", 2)[0]
+}
+
+func ExtractSemverFromConstraint(constraint string) string {
+	// Remove common constraint operators
+	constraint = strings.TrimSpace(constraint)
+	constraint = strings.TrimPrefix(constraint, ">=")
+	constraint = strings.TrimPrefix(constraint, "~>")
+	constraint = strings.TrimPrefix(constraint, ">")
+	constraint = strings.TrimPrefix(constraint, "=")
+	constraint = strings.TrimPrefix(constraint, "^")
+	constraint = strings.TrimSpace(constraint)
+
+	// Handle multiple constraints (comma-separated) - take the first one
+	if idx := strings.Index(constraint, ","); idx >= 0 {
+		constraint = strings.TrimSpace(constraint[:idx])
+	}
+
+	// Validate it looks like a semver (digits and dots)
+	if constraint == "" {
+		return ""
+	}
+
+	// Ensure it has at least major.minor.patch format
+	parts := strings.Split(constraint, ".")
+	switch len(parts) {
+	case 1:
+		return parts[0] + ".0.0"
+	case 2:
+		return constraint + ".0"
+	default:
+		return constraint
+	}
+}
+
 func extractResourceName(key string) string {
 	// Find the first dot to split type from name
 	dotIndex := strings.Index(key, ".")
@@ -1185,10 +1252,10 @@ type ResourceOptions struct {
 	ImportId                string
 	AdditionalSecretOutputs []string
 	RetainOnDelete          *bool
-	DeletedWith             string // URN of the resource that, when deleted, causes this resource to be deleted
-	ReplaceWith             []string // URNs of resources whose replacement triggers replacement of this resource
-	HideDiffs               []string // Property paths whose diffs should not be displayed
-	ReplaceOnChanges        []string // Property paths that if changed should force a replacement
+	DeletedWith             string                 // URN of the resource that, when deleted, causes this resource to be deleted
+	ReplaceWith             []string               // URNs of resources whose replacement triggers replacement of this resource
+	HideDiffs               []string               // Property paths whose diffs should not be displayed
+	ReplaceOnChanges        []string               // Property paths that if changed should force a replacement
 	ReplacementTrigger      resource.PropertyValue // Value whose change triggers replacement
 	EnvVarMappings          map[string]string
 	Version                 string
