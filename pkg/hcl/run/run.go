@@ -120,8 +120,11 @@ type RegisterResourceResponse struct {
 
 // InvokeRequest contains the parameters for invoking a function.
 type InvokeRequest struct {
-	Token string
-	Args  property.Map
+	Token             string
+	Args              property.Map
+	Provider          string
+	Version           string
+	PluginDownloadURL string
 }
 
 // InvokeResponse contains the result of invoking a function.
@@ -1345,8 +1348,37 @@ func (e *Engine) processDataSource(ctx context.Context, node *graph.Node) error 
 		return diags
 	}
 
-	// Invoke the function
-	outputs, err := e.invokeFunction(ctx, funcSchema.Token, inputs)
+	invokeReq := InvokeRequest{Token: funcSchema.Token, Args: inputs}
+
+	if ds.Provider != nil {
+		providerKey := ds.Provider.Name
+		if ds.Provider.Alias != "" {
+			providerKey = ds.Provider.Name + "." + ds.Provider.Alias
+		}
+		if providerOutputs, ok := e.resourceOutputs.Get(providerKey); ok {
+			urnVal := providerOutputs.GetAttr("urn")
+			idVal := providerOutputs.GetAttr("id")
+			if urnVal.Type() == cty.String && idVal.Type() == cty.String {
+				invokeReq.Provider = urnVal.AsString() + "::" + idVal.AsString()
+			}
+		}
+	}
+
+	if ds.Version != nil {
+		val, valDiags := ds.Version.Value(e.evaluator.Context().HCLContext())
+		if !valDiags.HasErrors() && val.Type() == cty.String {
+			invokeReq.Version = val.AsString()
+		}
+	}
+
+	if ds.PluginDownloadURL != nil {
+		val, valDiags := ds.PluginDownloadURL.Value(e.evaluator.Context().HCLContext())
+		if !valDiags.HasErrors() && val.Type() == cty.String {
+			invokeReq.PluginDownloadURL = val.AsString()
+		}
+	}
+
+	outputs, err := e.invokeFunction(ctx, invokeReq)
 	if err != nil {
 		return fmt.Errorf("invoking data source: %w", err)
 	}
@@ -1367,21 +1399,14 @@ func (e *Engine) processDataSource(ctx context.Context, node *graph.Node) error 
 }
 
 // invokeFunction invokes a Pulumi function (data source).
-func (e *Engine) invokeFunction(
-	ctx context.Context,
-	funcToken string,
-	inputs property.Map,
-) (property.Map, error) {
+func (e *Engine) invokeFunction(ctx context.Context, req InvokeRequest) (property.Map, error) {
 	if e.resmon == nil { // TODO: Remove this check
 		// No resource monitor - return empty outputs for testing
 		return property.Map{}, nil
 	}
 
 	// Invoke the function
-	resp, err := e.resmon.Invoke(ctx, InvokeRequest{
-		Token: funcToken,
-		Args:  inputs,
-	})
+	resp, err := e.resmon.Invoke(ctx, req)
 	if err != nil {
 		return property.Map{}, err
 	}
