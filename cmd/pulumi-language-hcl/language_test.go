@@ -128,6 +128,7 @@ func runTestingHost(t *testing.T) (string, testingrpc.LanguageTestClient) {
 }
 
 var expectedFailures = map[string]string{
+	"l1-builtin-base64":                     "not yet implemented",
 	"l2-explicit-providers":                 "not yet implemented",
 	"l2-invoke-options":                     "not yet implemented - remember that invoke's in Pulumi are datasources in HCL",
 	"l2-invoke-options-depends-on":          "not yet implemented - remember that invoke's in Pulumi are datasources in HCL",
@@ -161,7 +162,6 @@ var expectedFailures = map[string]string{
 	"l2-proxy-index":                        "not yet implemented",
 	"l2-ref-ref":                            "not yet implemented",
 	"l2-resource-asset-archive":             "not yet implemented",
-	"l2-resource-config":                    "not yet implemented",
 	"l2-resource-invoke-dynamic-function":   "not yet implemented",
 	"l2-resource-keyword-overlap":           "not yet implemented",
 	"l2-resource-name-type":                 "not yet implemented - pulumiResourceName/pulumiResourceType functions",
