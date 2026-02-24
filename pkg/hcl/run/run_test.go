@@ -26,7 +26,7 @@ import (
 	"github.com/pulumi/pulumi-language-hcl/pkg/hcl/packages"
 	"github.com/pulumi/pulumi-language-hcl/pkg/hcl/parser"
 	"github.com/pulumi/pulumi/pkg/v3/codegen/schema"
-	"github.com/pulumi/pulumi/sdk/v3/go/common/resource"
+	"github.com/pulumi/pulumi/sdk/v3/go/property"
 	"github.com/stretchr/testify/require"
 )
 
@@ -35,7 +35,7 @@ type mockResourceMonitor struct {
 	mu                  sync.Mutex
 	registeredResources []RegisterResourceRequest
 	invokedFunctions    []InvokeRequest
-	stackOutputs        resource.PropertyMap
+	stackOutputs        property.Map
 	stackURN            string
 }
 
@@ -59,13 +59,13 @@ func (m *mockResourceMonitor) Invoke(ctx context.Context, req InvokeRequest) (*I
 	defer m.mu.Unlock()
 	m.invokedFunctions = append(m.invokedFunctions, req)
 	return &InvokeResponse{
-		Return: resource.PropertyMap{
-			"id": resource.NewStringProperty("mock-id"),
-		},
+		Return: property.NewMap(map[string]property.Value{
+			"id": property.New("mock-id"),
+		}),
 	}, nil
 }
 
-func (m *mockResourceMonitor) RegisterResourceOutputs(ctx context.Context, urn string, outputs resource.PropertyMap) error {
+func (m *mockResourceMonitor) RegisterResourceOutputs(ctx context.Context, urn string, outputs property.Map) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if urn == m.stackURN {
@@ -211,11 +211,11 @@ resource "aws_instance" "web" {
 	if req.Name != "web" {
 		t.Errorf("expected resource name 'web', got %s", req.Name)
 	}
-	if req.Inputs["ami"].StringValue() != "ami-12345" {
-		t.Errorf("expected ami 'ami-12345', got %v", req.Inputs["ami"])
+	if req.Inputs.Get("ami").AsString() != "ami-12345" {
+		t.Errorf("expected ami 'ami-12345', got %v", req.Inputs.Get("ami"))
 	}
-	if req.Inputs["instanceType"].StringValue() != "test" {
-		t.Errorf("expected instanceType 'test', got %v", req.Inputs["instanceType"])
+	if req.Inputs.Get("instanceType").AsString() != "test" {
+		t.Errorf("expected instanceType 'test', got %v", req.Inputs.Get("instanceType"))
 	}
 }
 
@@ -277,7 +277,7 @@ resource "aws_s3_bucket" "mybucket" {
 	}
 
 	req := mock.registeredResources[1]
-	bucketName := req.Inputs["bucket"].StringValue()
+	bucketName := req.Inputs.Get("bucket").AsString()
 	if bucketName != "myapp-dev-bucket" {
 		t.Errorf("expected bucket 'myapp-dev-bucket', got %s", bucketName)
 	}
@@ -732,15 +732,15 @@ output "region_value" {
 	}
 
 	// Check the stack outputs - region should be us-west-2 from config, not default
-	if mock.stackOutputs == nil {
+	if mock.stackOutputs.Len() == 0 {
 		t.Fatal("expected stack outputs")
 	}
-	regionOutput, ok := mock.stackOutputs["region_value"]
+	regionOutput, ok := mock.stackOutputs.GetOk("region_value")
 	if !ok {
 		t.Fatal("expected region_value output")
 	}
-	if regionOutput.StringValue() != "us-west-2" {
-		t.Errorf("expected region_value=%q from config, got %q", "us-west-2", regionOutput.StringValue())
+	if regionOutput.AsString() != "us-west-2" {
+		t.Errorf("expected region_value=%q from config, got %q", "us-west-2", regionOutput.AsString())
 	}
 }
 
@@ -798,15 +798,15 @@ output "region_value" {
 	}
 
 	// Check the stack outputs - region should be eu-west-1 from env (highest priority)
-	if mock.stackOutputs == nil {
+	if mock.stackOutputs.Len() == 0 {
 		t.Fatal("expected stack outputs")
 	}
-	regionOutput, ok := mock.stackOutputs["region_value"]
+	regionOutput, ok := mock.stackOutputs.GetOk("region_value")
 	if !ok {
 		t.Fatal("expected region_value output")
 	}
-	if regionOutput.StringValue() != "eu-west-1" {
-		t.Errorf("expected region_value=%q from env, got %q", "eu-west-1", regionOutput.StringValue())
+	if regionOutput.AsString() != "eu-west-1" {
+		t.Errorf("expected region_value=%q from env, got %q", "eu-west-1", regionOutput.AsString())
 	}
 }
 
@@ -916,12 +916,12 @@ output "instance_type" {
 	}
 
 	// Should pass validation
-	output, ok := mock.stackOutputs["instance_type"]
+	output, ok := mock.stackOutputs.GetOk("instance_type")
 	if !ok {
 		t.Fatal("expected instance_type output")
 	}
-	if output.StringValue() != "t3.micro" {
-		t.Errorf("expected t3.micro, got %q", output.StringValue())
+	if output.AsString() != "t3.micro" {
+		t.Errorf("expected t3.micro, got %q", output.AsString())
 	}
 }
 
@@ -1301,18 +1301,18 @@ resource "aws_instance" "web" {
 	}
 
 	// Check that the command was mapped to create
-	if create, ok := provisionerReq.Inputs["create"]; ok {
-		if create.StringValue() != "echo 'Hello World'" {
-			t.Errorf("expected create command 'echo 'Hello World'', got %s", create.StringValue())
+	if create, ok := provisionerReq.Inputs.GetOk("create"); ok {
+		if create.AsString() != "echo 'Hello World'" {
+			t.Errorf("expected create command 'echo 'Hello World'', got %s", create.AsString())
 		}
 	} else {
 		t.Error("expected 'create' input to be set")
 	}
 
 	// Check working_dir was mapped to dir
-	if dir, ok := provisionerReq.Inputs["dir"]; ok {
-		if dir.StringValue() != "/tmp" {
-			t.Errorf("expected dir '/tmp', got %s", dir.StringValue())
+	if dir, ok := provisionerReq.Inputs.GetOk("dir"); ok {
+		if dir.AsString() != "/tmp" {
+			t.Errorf("expected dir '/tmp', got %s", dir.AsString())
 		}
 	} else {
 		t.Error("expected 'dir' input to be set")
@@ -1448,10 +1448,10 @@ resource "aws_instance" "web" {
 	}
 
 	// Check that self.id was resolved
-	if create, ok := provisionerReq.Inputs["create"]; ok {
+	if create, ok := provisionerReq.Inputs.GetOk("create"); ok {
 		// The id should be set to the resource name + "-id" by the mock
-		if !strings.Contains(create.StringValue(), "web-id") {
-			t.Errorf("expected self.id to be resolved, got: %s", create.StringValue())
+		if !strings.Contains(create.AsString(), "web-id") {
+			t.Errorf("expected self.id to be resolved, got: %s", create.AsString())
 		}
 	} else {
 		t.Error("expected 'create' input to be set")
@@ -1601,9 +1601,9 @@ output "vpc_id" {
 	}
 
 	// Check that the VPC has the correct cidr_block
-	if cidr, ok := vpcResource.Inputs["cidrBlock"]; ok {
-		if cidr.StringValue() != "10.0.0.0/16" {
-			t.Errorf("expected cidr_block '10.0.0.0/16', got %s", cidr.StringValue())
+	if cidr, ok := vpcResource.Inputs.GetOk("cidrBlock"); ok {
+		if cidr.AsString() != "10.0.0.0/16" {
+			t.Errorf("expected cidr_block '10.0.0.0/16', got %s", cidr.AsString())
 		}
 	} else {
 		t.Error("expected 'cidr_block' input to be set")

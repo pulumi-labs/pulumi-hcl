@@ -27,8 +27,8 @@ import (
 	"github.com/pulumi/pulumi/pkg/v3/codegen/hcl2/syntax"
 	"github.com/pulumi/pulumi/pkg/v3/codegen/pcl"
 	"github.com/pulumi/pulumi/pkg/v3/codegen/schema"
-	"github.com/pulumi/pulumi/sdk/v3/go/common/resource"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/util/cmdutil"
+	"github.com/pulumi/pulumi/sdk/v3/go/property"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -95,19 +95,19 @@ func TestHCL(t *testing.T) {
 
 		require.Len(t, mock.InvokedFunctions, 1)
 		assert.Equal(t, "test:index:getFiltered", mock.InvokedFunctions[0].Token)
-		assert.Equal(t, resource.PropertyMap{
-			"name": resource.NewStringProperty("my-filter"),
-			"filters": resource.NewArrayProperty([]resource.PropertyValue{
-				resource.NewObjectProperty(resource.PropertyMap{
-					"key":   resource.NewStringProperty("tag:Name"),
-					"value": resource.NewStringProperty("production"),
-				}),
-				resource.NewObjectProperty(resource.PropertyMap{
-					"key":   resource.NewStringProperty("tag:Env"),
-					"value": resource.NewStringProperty("prod"),
-				}),
-			}),
-		}, mock.InvokedFunctions[0].Args)
+		assert.Equal(t, property.NewMap(map[string]property.Value{
+			"name": property.New("my-filter"),
+			"filters": property.New(property.NewArray([]property.Value{
+				property.New(property.NewMap(map[string]property.Value{
+					"key":   property.New("tag:Name"),
+					"value": property.New("production"),
+				})),
+				property.New(property.NewMap(map[string]property.Value{
+					"key":   property.New("tag:Env"),
+					"value": property.New("prod"),
+				})),
+			})),
+		}), mock.InvokedFunctions[0].Args)
 	})
 
 	t.Run("blocks", func(t *testing.T) {
@@ -178,17 +178,17 @@ func TestHCL(t *testing.T) {
 		server := mock.RegisteredResources[1]
 		assert.Equal(t, "test:index:Server", server.Type)
 		assert.Equal(t, "myServer", server.Name)
-		assert.Equal(t, resource.NewStringProperty("my-server"), server.Inputs["name"])
-		assert.Equal(t, resource.NewArrayProperty([]resource.PropertyValue{
-			resource.NewObjectProperty(resource.PropertyMap{
-				"protocol": resource.NewStringProperty("tcp"),
-				"port":     resource.NewNumberProperty(443),
-			}),
-			resource.NewObjectProperty(resource.PropertyMap{
-				"protocol": resource.NewStringProperty("udp"),
-				"port":     resource.NewNumberProperty(53),
-			}),
-		}), server.Inputs["networkRules"])
+		assert.Equal(t, property.New("my-server"), server.Inputs.Get("name"))
+		assert.Equal(t, property.New(property.NewArray([]property.Value{
+			property.New(property.NewMap(map[string]property.Value{
+				"protocol": property.New("tcp"),
+				"port":     property.New(float64(443)),
+			})),
+			property.New(property.NewMap(map[string]property.Value{
+				"protocol": property.New("udp"),
+				"port":     property.New(float64(53)),
+			})),
+		})), server.Inputs.Get("networkRules"))
 	})
 }
 

@@ -21,7 +21,7 @@ import (
 
 	"github.com/pulumi/pulumi-language-hcl/pkg/hcl/ast"
 	"github.com/pulumi/pulumi-language-hcl/pkg/hcl/transform"
-	"github.com/pulumi/pulumi/sdk/v3/go/common/resource"
+	"github.com/pulumi/pulumi/sdk/v3/go/property"
 	"github.com/zclconf/go-cty/cty"
 )
 
@@ -108,7 +108,7 @@ func (e *Engine) registerLocalExecProvisioner(
 	deps []string,
 	parentURN string,
 ) (string, error) {
-	inputs := make(resource.PropertyMap)
+	inputs := make(map[string]property.Value)
 
 	attrs, _ := prov.Config.JustAttributes()
 
@@ -120,7 +120,7 @@ func (e *Engine) registerLocalExecProvisioner(
 		}
 		if val.Type() == cty.String {
 			// The Command provider uses "create" for the command to run on creation
-			inputs["create"] = resource.NewStringProperty(val.AsString())
+			inputs["create"] = property.New(val.AsString())
 		}
 	}
 
@@ -131,7 +131,7 @@ func (e *Engine) registerLocalExecProvisioner(
 			return "", fmt.Errorf("evaluating working_dir: %s", diags.Error())
 		}
 		if val.Type() == cty.String {
-			inputs["dir"] = resource.NewStringProperty(val.AsString())
+			inputs["dir"] = property.New(val.AsString())
 		}
 	}
 
@@ -176,7 +176,7 @@ func (e *Engine) registerLocalExecProvisioner(
 		Parent:    parentURN,
 	}
 
-	urn, _, _, err := e.registerResource(ctx, "command:local:Command", name, inputs, opts)
+	urn, _, _, err := e.registerResource(ctx, "command:local:Command", name, property.NewMap(inputs), opts)
 	return urn, err
 }
 
@@ -189,7 +189,7 @@ func (e *Engine) registerRemoteExecProvisioner(
 	deps []string,
 	parentURN string,
 ) (string, error) {
-	inputs := make(resource.PropertyMap)
+	inputs := make(map[string]property.Value)
 
 	attrs, _ := prov.Config.JustAttributes()
 
@@ -244,7 +244,7 @@ func (e *Engine) registerRemoteExecProvisioner(
 	}
 
 	if command != "" {
-		inputs["create"] = resource.NewStringProperty(command)
+		inputs["create"] = property.New(command)
 	}
 
 	// Build connection configuration
@@ -269,7 +269,7 @@ func (e *Engine) registerRemoteExecProvisioner(
 		Parent:    parentURN,
 	}
 
-	urn, _, _, err := e.registerResource(ctx, "command:remote:Command", name, inputs, opts)
+	urn, _, _, err := e.registerResource(ctx, "command:remote:Command", name, property.NewMap(inputs), opts)
 	return urn, err
 }
 
@@ -282,7 +282,7 @@ func (e *Engine) registerFileProvisioner(
 	deps []string,
 	parentURN string,
 ) (string, error) {
-	inputs := make(resource.PropertyMap)
+	inputs := make(map[string]property.Value)
 
 	attrs, _ := prov.Config.JustAttributes()
 
@@ -293,7 +293,7 @@ func (e *Engine) registerFileProvisioner(
 			return "", fmt.Errorf("evaluating source: %s", diags.Error())
 		}
 		if val.Type() == cty.String {
-			inputs["localPath"] = resource.NewStringProperty(val.AsString())
+			inputs["localPath"] = property.New(val.AsString())
 		}
 	} else if attr, ok := attrs["content"]; ok {
 		val, diags := attr.Expr.Value(e.evaluator.Context().HCLContext())
@@ -304,7 +304,7 @@ func (e *Engine) registerFileProvisioner(
 			// For content, we need to create a temp file or use stdin
 			// The Command provider's CopyToRemote doesn't directly support content
 			// We'll need to create an Asset from the content
-			inputs["content"] = resource.NewStringProperty(val.AsString())
+			inputs["content"] = property.New(val.AsString())
 		}
 	}
 
@@ -315,7 +315,7 @@ func (e *Engine) registerFileProvisioner(
 			return "", fmt.Errorf("evaluating destination: %s", diags.Error())
 		}
 		if val.Type() == cty.String {
-			inputs["remotePath"] = resource.NewStringProperty(val.AsString())
+			inputs["remotePath"] = property.New(val.AsString())
 		}
 	}
 
@@ -333,13 +333,13 @@ func (e *Engine) registerFileProvisioner(
 		Parent:    parentURN,
 	}
 
-	urn, _, _, err := e.registerResource(ctx, "command:remote:CopyToRemote", name, inputs, opts)
+	urn, _, _, err := e.registerResource(ctx, "command:remote:CopyToRemote", name, property.NewMap(inputs), opts)
 	return urn, err
 }
 
 // buildConnectionProperty builds a connection property map from an ast.Connection.
-func (e *Engine) buildConnectionProperty(conn *ast.Connection) (resource.PropertyValue, error) {
-	connMap := make(resource.PropertyMap)
+func (e *Engine) buildConnectionProperty(conn *ast.Connection) (property.Value, error) {
+	connMap := make(map[string]property.Value)
 
 	attrs, _ := conn.Config.JustAttributes()
 
@@ -356,20 +356,20 @@ func (e *Engine) buildConnectionProperty(conn *ast.Connection) (resource.Propert
 		if attr, ok := attrs[tfAttr]; ok {
 			val, diags := attr.Expr.Value(e.evaluator.Context().HCLContext())
 			if diags.HasErrors() {
-				return resource.PropertyValue{}, fmt.Errorf("evaluating %s: %s", tfAttr, diags.Error())
+				return property.Value{}, fmt.Errorf("evaluating %s: %s", tfAttr, diags.Error())
 			}
 			pv, err := transform.CtyToPropertyValue(val)
 			if err != nil {
-				return resource.PropertyValue{}, fmt.Errorf("converting %s: %w", tfAttr, err)
+				return property.Value{}, fmt.Errorf("converting %s: %w", tfAttr, err)
 			}
-			connMap[resource.PropertyKey(pulumiAttr)] = pv
+			connMap[pulumiAttr] = pv
 		}
 	}
 
 	// Default port to 22 if not specified for SSH
 	if _, ok := connMap["port"]; !ok && conn.Type == "ssh" {
-		connMap["port"] = resource.NewNumberProperty(22)
+		connMap["port"] = property.New(22.0)
 	}
 
-	return resource.NewObjectProperty(connMap), nil
+	return property.New(connMap), nil
 }
