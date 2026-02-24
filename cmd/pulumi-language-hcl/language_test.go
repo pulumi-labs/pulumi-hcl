@@ -128,7 +128,6 @@ func runTestingHost(t *testing.T) (string, testingrpc.LanguageTestClient) {
 }
 
 var expectedFailures = map[string]string{
-	"l1-builtin-base64":                     "not yet implemented",
 	"l2-explicit-providers":                 "not yet implemented",
 	"l2-invoke-options":                     "not yet implemented - remember that invoke's in Pulumi are datasources in HCL",
 	"l2-invoke-options-depends-on":          "not yet implemented - remember that invoke's in Pulumi are datasources in HCL",
