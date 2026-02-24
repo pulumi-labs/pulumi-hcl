@@ -6,8 +6,8 @@ require (
 	github.com/blang/semver v3.5.1+incompatible
 	github.com/google/uuid v1.6.0
 	github.com/hashicorp/hcl/v2 v2.23.0
-	github.com/pulumi/pulumi/pkg/v3 v3.223.1-0.20260224143241-7cb895317726
-	github.com/pulumi/pulumi/sdk/v3 v3.223.1-0.20260224143241-7cb895317726
+	github.com/pulumi/pulumi/pkg/v3 v3.223.1-0.20260224151349-727c4de252d7
+	github.com/pulumi/pulumi/sdk/v3 v3.223.1-0.20260224151349-727c4de252d7
 	github.com/spf13/cobra v1.10.2
 	github.com/stretchr/testify v1.11.1
 	github.com/zclconf/go-cty v1.16.2
@@ -123,6 +123,7 @@ require (
 	github.com/hexops/gotextdiff v1.0.3 // indirect
 	github.com/iancoleman/strcase v0.3.0 // indirect
 	github.com/inconshreveable/mousetrap v1.1.0 // indirect
+	github.com/iwahbe/helpmakego v0.4.1 // indirect
 	github.com/jbenet/go-context v0.0.0-20150711004518-d14ea06fba99 // indirect
 	github.com/jmespath/go-jmespath v0.4.0 // indirect
 	github.com/json-iterator/go v1.1.12 // indirect
@@ -217,4 +218,7 @@ require (
 	lukechampine.com/frand v1.5.1 // indirect
 )
 
-tool github.com/pulumi/pulumi/pkg/v3/testing/pulumi-test-language
+tool (
+	github.com/iwahbe/helpmakego
+	github.com/pulumi/pulumi/pkg/v3/testing/pulumi-test-language
+)
