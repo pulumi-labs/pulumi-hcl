@@ -271,6 +271,12 @@ func (g *generator) genInvokeDataSource(body *hclwrite.Body, invoke *model.Funct
 					if !d.HasErrors() {
 						block.Body().SetAttributeRaw("plugin_download_url", tokens)
 					}
+				case "dependsOn":
+					tokens, d := g.exprTokens(item.Value, schema.AnyType)
+					diags = append(diags, d...)
+					if !d.HasErrors() {
+						block.Body().SetAttributeRaw("depends_on", tokens)
+					}
 				}
 			}
 		}
@@ -714,8 +720,26 @@ func convertPCLTypeToHCL(pclType string) string {
 }
 
 func (g *generator) genLocalVariable(body *hclwrite.Body, lv *pcl.LocalVariable) hcl.Diagnostics {
+	if g.isInvokeLocal(lv) {
+		return nil
+	}
 	block := body.AppendNewBlock("locals", nil)
 	return g.genExpression(block.Body(), lv.LogicalName(), lv.Definition.Value, schema.AnyType)
+}
+
+// isInvokeLocal reports whether a local variable's definition is an invoke call
+// that has been promoted to a data source block.
+func (g *generator) isInvokeLocal(lv *pcl.LocalVariable) bool {
+	call, ok := lv.Definition.Value.(*model.FunctionCallExpression)
+	if !ok || call.Name != pcl.Invoke {
+		return false
+	}
+	for _, ds := range g.invokeDataSources {
+		if ds.expr == call {
+			return true
+		}
+	}
+	return false
 }
 
 func (g *generator) genOutput(body *hclwrite.Body, ov *pcl.OutputVariable) hcl.Diagnostics {
@@ -1004,6 +1028,27 @@ func (g *generator) scopeTraversalTokens(expr *model.ScopeTraversalExpression) (
 		rewritten = append(rewritten, hcl.TraverseAttr{Name: traversal.RootName()})
 		return hclwrite.TokensForTraversal(append(rewritten, traversal[1:]...)), nil
 	case *pcl.LocalVariable:
+		// If this local is backed by an invoke call, substitute the data source reference
+		// directly so that resource dependency tracking works correctly.
+		if call, ok := part.Definition.Value.(*model.FunctionCallExpression); ok && call.Name == pcl.Invoke {
+			for _, ds := range g.invokeDataSources {
+				if ds.expr == call {
+					token, ok := extractStringLiteral(call.Args[0])
+					if ok {
+						dsType, d := packages.PulumiTokenToHCL(token)
+						if !d.HasErrors() {
+							rewritten := hcl.Traversal{
+								hcl.TraverseRoot{Name: "data"},
+								hcl.TraverseAttr{Name: dsType},
+								hcl.TraverseAttr{Name: ds.name},
+							}
+							return hclwrite.TokensForTraversal(append(rewritten, traversal[1:]...)), nil
+						}
+					}
+					break
+				}
+			}
+		}
 		// Rewrite "myLocal.x" → "local.myLocal.x".
 		rewritten := make(hcl.Traversal, 0, len(traversal)+1)
 		rewritten = append(rewritten, hcl.TraverseRoot{Name: "local"})
