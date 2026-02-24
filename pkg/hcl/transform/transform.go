@@ -185,7 +185,7 @@ func inputBodyFromProperties(r []*schema.Property) *hcl.BodySchema {
 }
 
 func ctyToResourceInputs(val cty.Value, r *schema.Resource) (property.Map, error) {
-	return ctyToObject(r.Token, val, r.InputProperties)
+	return ctyToObject(r.Token, val, r.InputProperties, false /* already in a secret */)
 }
 
 func ctyToFunctionInputs(val cty.Value, r *schema.Function) (property.Map, error) {
@@ -193,10 +193,10 @@ func ctyToFunctionInputs(val cty.Value, r *schema.Function) (property.Map, error
 	if r.Inputs != nil {
 		inputs = r.Inputs.Properties
 	}
-	return ctyToObject(r.Token, val, inputs)
+	return ctyToObject(r.Token, val, inputs, false /* already in a secret */)
 }
 
-func ctyToObject(path string, val cty.Value, properties []*schema.Property) (property.Map, error) {
+func ctyToObject(path string, val cty.Value, properties []*schema.Property, alreadyInSecret bool) (property.Map, error) {
 	seen := make(map[string]struct{})
 	result := map[string]property.Value{}
 	for it := val.ElementIterator(); it.Next(); {
@@ -214,9 +214,12 @@ func ctyToObject(path string, val cty.Value, properties []*schema.Property) (pro
 		}
 		seen[puField] = struct{}{}
 		var err error
-		result[puField], err = ctyToResourceProperty(k.AsString(), v, prop.Type, prop.Secret)
+		result[puField], err = ctyToResourceProperty(k.AsString(), v, prop.Type, prop.Secret || alreadyInSecret)
 		if err != nil {
 			return property.Map{}, err
+		}
+		if prop.Secret && !alreadyInSecret {
+			result[puField] = result[puField].WithSecret(true)
 		}
 	}
 
@@ -231,6 +234,9 @@ func ctyToObject(path string, val cty.Value, properties []*schema.Property) (pro
 				return property.Map{}, err
 			}
 			result[prop.Name] = v.WithSecret(prop.Secret)
+			if prop.Secret {
+				result[prop.Name] = result[prop.Name].WithSecret(true)
+			}
 		}
 	}
 	return property.NewMap(result), nil
@@ -269,40 +275,31 @@ func getDefault(path string, d *schema.DefaultValue, typ schema.Type) (property.
 	return property.New(property.Null), nil
 }
 
-func ctyToResourceProperty(path string, val cty.Value, prop schema.Type, secret bool) (property.Value, error) {
+func ctyToResourceProperty(path string, val cty.Value, prop schema.Type, alreadyInSecret bool) (property.Value, error) {
 	if val.IsMarked() {
 		var marks cty.ValueMarks
 		val, marks = val.Unmark()
-		if _, isSensitive := marks[SensativeMark]; isSensitive {
-			secret = true
+		if _, isSensitive := marks[SensativeMark]; isSensitive && !alreadyInSecret {
+			v, err := ctyToResourceProperty(path, val, prop, true)
+			return v.WithSecret(true), err
 		}
 	}
 
 	// Strip unneeded signifiers
-strip:
-	for {
-		switch p := prop.(type) {
-		case *schema.OptionalType:
-			prop = p.ElementType
-		case *schema.InputType:
-			prop = p.ElementType
-		default:
-			break strip
-		}
-	}
+	prop = codegen.UnwrapType(prop)
 
 	// Handle primitive types & unknown
 
 	switch {
 	case !val.IsKnown():
-		return property.New(property.Computed).WithSecret(secret), nil
+		return property.New(property.Computed), nil
 	case val.Type().Equals(cty.String):
-		return property.New(val.AsString()).WithSecret(secret), nil
+		return property.New(val.AsString()), nil
 	case val.Type().Equals(cty.Bool):
-		return property.New(val.True()).WithSecret(secret), nil
+		return property.New(val.True()), nil
 	case val.Type().Equals(cty.Number):
 		f, _ := val.AsBigFloat().Float64()
-		return property.New(f).WithSecret(secret), nil
+		return property.New(f), nil
 	}
 
 	// We don't have any type info, so do a direct conversion.
@@ -316,7 +313,7 @@ strip:
 		if !val.Type().IsObjectType() {
 			return property.Value{}, fmt.Errorf("expected object at %q, found %#v", path, val.Type())
 		}
-		m, err := ctyToObject(path, val, prop.Properties)
+		m, err := ctyToObject(path, val, prop.Properties, alreadyInSecret)
 		return property.New(m), err
 	case *schema.ArrayType:
 		if !val.Type().IsListType() && !val.Type().IsSetType() && !val.Type().IsTupleType() {
@@ -325,7 +322,7 @@ strip:
 		arr := make([]property.Value, 0, val.LengthInt())
 		for it := val.ElementIterator(); it.Next(); {
 			_, elem := it.Element()
-			convertedElem, err := ctyToResourceProperty(fmt.Sprintf("%s[%d]", path, len(arr)), elem, prop.ElementType, false)
+			convertedElem, err := ctyToResourceProperty(fmt.Sprintf("%s[%d]", path, len(arr)), elem, prop.ElementType, alreadyInSecret)
 			if err != nil {
 				return property.Value{}, err
 			}
@@ -339,7 +336,7 @@ strip:
 		m := make(map[string]property.Value, val.LengthInt())
 		for it := val.ElementIterator(); it.Next(); {
 			k, elem := it.Element()
-			convertedElem, err := ctyToResourceProperty(fmt.Sprintf("%s[%q]", path, k.AsString()), elem, prop.ElementType, false)
+			convertedElem, err := ctyToResourceProperty(fmt.Sprintf("%s[%q]", path, k.AsString()), elem, prop.ElementType, alreadyInSecret)
 			if err != nil {
 				return property.Value{}, err
 			}
