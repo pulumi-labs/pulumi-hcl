@@ -508,12 +508,18 @@ func ResourceOutputToCty(pv property.Map, r *schema.Resource, dryRun bool) (map[
 	return propertyObjectToCtyMap("", pv, properties, dryRun)
 }
 
-func FunctionOutputToCty(pv property.Map, r *schema.Function, dryRun bool) (map[string]cty.Value, error) {
-	var props []*schema.Property
-	if r.Outputs != nil {
-		props = r.Outputs.Properties
+func FunctionOutputToCty(pv property.Map, r *schema.Function, dryRun bool) (cty.Value, error) {
+	if obj, ok := r.ReturnType.(*schema.ObjectType); ok {
+		o, err := propertyObjectToCtyMap("", pv, obj.Properties, dryRun)
+		return cty.ObjectVal(o), err
 	}
-	return propertyObjectToCtyMap("", pv, props, dryRun)
+	for k, scalarPV := range pv.AsMap() {
+		return propertyValueToCty(k, scalarPV, r.ReturnType, dryRun)
+	}
+	if dryRun {
+		return cty.UnknownVal(ctyTypeFromType(r.ReturnType)), nil
+	}
+	return cty.Value{}, fmt.Errorf("invoke %q: provider returned empty scalar result", r.Token)
 }
 
 func propertyObjectToCtyMap(path string, m property.Map, properties []*schema.Property, dryRun bool) (map[string]cty.Value, error) {
