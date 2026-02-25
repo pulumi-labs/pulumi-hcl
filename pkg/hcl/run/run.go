@@ -136,6 +136,13 @@ type InvokeResponse struct {
 	Failures []string
 }
 
+// inheritableOpts holds the resource options that child resources can inherit from their parent.
+type inheritableOpts struct {
+	Provider       string
+	Protect        *bool
+	RetainOnDelete *bool
+}
+
 // Engine executes HCL programs against the Pulumi engine.
 type Engine struct {
 	// config is the parsed HCL configuration.
@@ -152,6 +159,9 @@ type Engine struct {
 
 	// resourceOutputs maps resource keys to their output values.
 	resourceOutputs *util.SyncMap[string, cty.Value]
+
+	// resourceInheritableOpts maps resource keys to the options that children can inherit.
+	resourceInheritableOpts *util.SyncMap[string, inheritableOpts]
 
 	// dataSourceDependencies maps data source keys to their resource dependencies (URNs).
 	dataSourceDependencies *util.SyncMap[string, []resource.URN]
@@ -235,22 +245,23 @@ func NewEngine(config *ast.Config, opts *EngineOptions) *Engine {
 		opts.StackName, opts.ProjectName, opts.Organization)
 
 	engine := &Engine{
-		config:                 config,
-		evaluator:              eval.NewEvaluator(evalCtx),
-		pkgLoader:              opts.SchemaLoader,
-		resmon:                 opts.ResourceMonitor,
-		resourceOutputs:        util.NewSyncMap[string, cty.Value](),
-		dataSourceDependencies: util.NewSyncMap[string, []resource.URN](),
-		stackOutputs:           make(map[string]property.Value),
-		projectName:            opts.ProjectName,
-		stackName:              opts.StackName,
-		organization:           opts.Organization,
-		dryRun:                 opts.DryRun,
-		workDir:                opts.WorkDir,
-		pulumiConfig:           opts.Config,
-		configSecretKeys:       opts.ConfigSecretKeys,
-		moduleLoader:           modules.NewLoader(),
-		moduleOutputs:          make(map[string]cty.Value),
+		config:                  config,
+		evaluator:               eval.NewEvaluator(evalCtx),
+		pkgLoader:               opts.SchemaLoader,
+		resmon:                  opts.ResourceMonitor,
+		resourceOutputs:         util.NewSyncMap[string, cty.Value](),
+		resourceInheritableOpts: util.NewSyncMap[string, inheritableOpts](),
+		dataSourceDependencies:  util.NewSyncMap[string, []resource.URN](),
+		stackOutputs:            make(map[string]property.Value),
+		projectName:             opts.ProjectName,
+		stackName:               opts.StackName,
+		organization:            opts.Organization,
+		dryRun:                  opts.DryRun,
+		workDir:                 opts.WorkDir,
+		pulumiConfig:            opts.Config,
+		configSecretKeys:        opts.ConfigSecretKeys,
+		moduleLoader:            modules.NewLoader(),
+		moduleOutputs:           make(map[string]cty.Value),
 	}
 
 	return engine
@@ -798,6 +809,14 @@ func (e *Engine) registerResourceInstance(
 
 	e.resourceOutputs.Set(instance.Key, cty.ObjectVal(outputObj))
 
+	// Store inheritable options so child resources can inherit from this resource.
+	iOpts := inheritableOpts{Provider: opts.Provider}
+	if opts.Protect {
+		iOpts.Protect = new(true)
+	}
+	iOpts.RetainOnDelete = opts.RetainOnDelete
+	e.resourceInheritableOpts.Set(instance.Key, iOpts)
+
 	// Also store in eval context for expression references
 	e.evaluator.Context().SetResource(instance.Key, cty.ObjectVal(outputObj))
 
@@ -848,7 +867,7 @@ func (e *Engine) buildResourceOptions(res *ast.Resource, instance *graph.Expande
 
 	// Handle lifecycle options
 	if res.Lifecycle != nil {
-		if res.Lifecycle.PreventDestroy {
+		if res.Lifecycle.PreventDestroy != nil && *res.Lifecycle.PreventDestroy {
 			opts.Protect = true
 		}
 		// ignore_changes maps to ignoreChanges
@@ -1078,6 +1097,25 @@ func (e *Engine) buildResourceOptions(res *ast.Resource, instance *graph.Expande
 		val, diags := res.PluginDownloadURL.Value(e.evaluator.Context().HCLContext())
 		if !diags.HasErrors() && val.Type() == cty.String {
 			opts.PluginDownloadURL = val.AsString()
+		}
+	}
+
+	// Inherit options from parent resource if not explicitly set.
+	if res.ResourceParent != nil {
+		depKey := graph.FormatTraversal(res.ResourceParent)
+		if depKey != "" {
+			if parentOpts, ok := e.resourceInheritableOpts.Get(depKey); ok {
+				if res.Provider == nil && opts.Provider == "" && parentOpts.Provider != "" {
+					opts.Provider = parentOpts.Provider
+				}
+				if (res.Lifecycle == nil || res.Lifecycle.PreventDestroy == nil) &&
+					parentOpts.Protect != nil && *parentOpts.Protect {
+					opts.Protect = true
+				}
+				if res.RetainOnDelete == nil && parentOpts.RetainOnDelete != nil {
+					opts.RetainOnDelete = parentOpts.RetainOnDelete
+				}
+			}
 		}
 	}
 
@@ -1692,20 +1730,21 @@ func (e *Engine) createChildEngine(config *ast.Config, parentURN string, moduleD
 		config: config,
 		evaluator: eval.NewEvaluator(eval.NewContext(moduleDir, moduleDir,
 			e.stackName, e.projectName, e.organization)),
-		pkgLoader:        e.pkgLoader,
-		resmon:           e.resmon,
-		resourceOutputs:  util.NewSyncMap[string, cty.Value](),
-		stackOutputs:     make(map[string]property.Value),
-		projectName:      e.projectName,
-		stackName:        e.stackName,
-		organization:     e.organization,
-		dryRun:           e.dryRun,
-		workDir:          moduleDir,
-		pulumiConfig:     e.pulumiConfig,
-		configSecretKeys: e.configSecretKeys,
-		moduleLoader:     e.moduleLoader,
-		moduleOutputs:    make(map[string]cty.Value),
-		parentURN:        parentURN,
+		pkgLoader:               e.pkgLoader,
+		resmon:                  e.resmon,
+		resourceOutputs:         util.NewSyncMap[string, cty.Value](),
+		resourceInheritableOpts: util.NewSyncMap[string, inheritableOpts](),
+		stackOutputs:            make(map[string]property.Value),
+		projectName:             e.projectName,
+		stackName:               e.stackName,
+		organization:            e.organization,
+		dryRun:                  e.dryRun,
+		workDir:                 moduleDir,
+		pulumiConfig:            e.pulumiConfig,
+		configSecretKeys:        e.configSecretKeys,
+		moduleLoader:            e.moduleLoader,
+		moduleOutputs:           make(map[string]cty.Value),
+		parentURN:               parentURN,
 	}
 }
 
