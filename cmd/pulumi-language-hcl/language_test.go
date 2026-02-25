@@ -140,7 +140,6 @@ var expectedFailures = map[string]string{
 	"l2-parameterized-resource-twice":     "not yet implemented",
 	"l2-provider-call":                    "not yet implemented",
 	"l2-provider-call-explicit":           "not yet implemented",
-	"l2-provider-grpc-config-secret":      "not yet implemented",
 	"l2-namespaced-provider":              "not yet implemented",
 	"l2-resource-asset-archive":           "not yet implemented",
 	"l2-resource-name-type":               "not yet implemented - pulumiResourceName/pulumiResourceType functions",
