@@ -1403,7 +1403,7 @@ func (e *Engine) processDataSource(ctx context.Context, node *graph.Node) error 
 
 	// Store outputs for future references
 	dsKey := node.Key[5:] // Remove "data." prefix
-	e.evaluator.Context().SetDataSource(dsKey, cty.ObjectVal(ctyOutputs))
+	e.evaluator.Context().SetDataSource(dsKey, ctyOutputs)
 
 	// Store dependencies for this data source
 	e.dataSourceDependencies.Set(dsKey, allDeps)
