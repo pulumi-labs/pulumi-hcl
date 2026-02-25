@@ -105,6 +105,7 @@ var resourceSchema = &hcl.BodySchema{
 		{Name: "for_each"},
 		{Name: "depends_on"},
 		{Name: "provider"},
+		{Name: "providers"},
 		{Name: "additional_secret_outputs"},
 		// Pulumi-specific resource options
 		{Name: "parent"},

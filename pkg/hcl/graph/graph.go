@@ -335,6 +335,15 @@ func (g *Graph) extractResourceDependencies(resource *ast.Resource) []pdag.Node 
 		seen[idx] = true
 	}
 
+	// Extract from providers list
+	for _, traversal := range resource.Providers {
+		dep := formatTraversal(traversal)
+		if dep != "" {
+			_, idx := g.newNode(dep)
+			seen[idx] = true
+		}
+	}
+
 	// Extract from resource body (config block)
 	if resource.Config != nil {
 		bodyDeps := g.extractDependenciesFromBody(resource.Config)
