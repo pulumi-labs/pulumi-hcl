@@ -148,7 +148,6 @@ var expectedFailures = map[string]string{
 	"l2-resource-parent-inheritance":        "not yet implemented",
 	"l2-rtti":                               "not yet implemented",
 	"l2-discriminated-union":                "not yet implemented",
-	"l2-explicit-providers":                 "not yet implemented",
 	"l2-failed-create":                      "not yet implemented",
 	"l2-failed-create-continue-on-error":    "not yet implemented",
 

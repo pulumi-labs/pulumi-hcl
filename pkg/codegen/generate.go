@@ -360,6 +360,14 @@ func (g *generator) genResourceOptions(body *hclwrite.Body, r *pcl.Resource) hcl
 		}
 	}
 
+	if opts.Providers != nil {
+		tokens, d := g.genProvidersTokens(opts.Providers)
+		diags = append(diags, d...)
+		if !d.HasErrors() {
+			body.SetAttributeRaw("providers", tokens)
+		}
+	}
+
 	if opts.AdditionalSecretOutputs != nil {
 		tokens, d := g.exprTokens(opts.AdditionalSecretOutputs, schema.AnyResourceType)
 		diags = append(diags, d...)
@@ -502,6 +510,23 @@ func (g *generator) genResourceOptions(body *hclwrite.Body, r *pcl.Resource) hcl
 	}
 
 	return diags
+}
+
+// genProviders generates the HCL `providers` attribute as a list.
+// PCL providers can be a list [p1, p2] or a map {pkg = p}; we always emit a list
+// since the package name is recoverable from the provider resource type at runtime.
+func (g *generator) genProvidersTokens(providers model.Expression) (hclwrite.Tokens, hcl.Diagnostics) {
+	if providers, ok := providers.(*model.ObjectConsExpression); ok {
+		elems := make([]model.Expression, 0, len(providers.Items))
+		for _, v := range providers.Items {
+			elems = append(elems, v.Value)
+		}
+		return g.exprTokens(&model.TupleConsExpression{
+			Expressions: elems,
+		}, &schema.ArrayType{ElementType: schema.AnyResourceType})
+	}
+
+	return g.exprTokens(providers, &schema.ArrayType{ElementType: schema.AnyResourceType})
 }
 
 // genAliases generates the HCL `aliases` attribute from a PCL aliases expression.

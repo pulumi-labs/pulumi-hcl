@@ -90,10 +90,13 @@ type RegisterResourceRequest struct {
 	Inputs                  property.Map
 	Dependencies            []string
 	PropertyDependencies    map[string][]string // Map from property key to list of URNs it depends on
+	Custom                  bool
+	Remote                  bool
 	Protect                 bool
 	IgnoreChanges           []string
 	Aliases                 []Alias
 	Provider                string
+	Providers               map[string]string // Map from package name to provider reference (urn::id)
 	Parent                  string
 	DeleteBeforeReplace     bool
 	DeleteBeforeReplaceDef  bool // True if DeleteBeforeReplace was explicitly set
@@ -603,6 +606,7 @@ func (e *Engine) processProvider(ctx context.Context, node *graph.Node) error {
 		Type:   typeToken,
 		Name:   logicalName,
 		Inputs: property.NewMap(inputs),
+		Custom: true,
 	})
 	if err != nil {
 		return fmt.Errorf("registering provider %s: %w", node.Key, err)
@@ -740,6 +744,8 @@ func (e *Engine) registerResourceInstance(
 
 	// Build resource options
 	opts := e.buildResourceOptions(res, instance)
+	opts.Custom = !resSchema.IsComponent
+	opts.Remote = resSchema.IsComponent
 	opts.PropertyDependencies = dependsOn
 	for _, deps := range dependsOn {
 		for _, dep := range deps {
@@ -904,6 +910,25 @@ func (e *Engine) buildResourceOptions(res *ast.Resource, instance *graph.Expande
 			idVal := providerOutputs.GetAttr("id")
 			if urnVal.Type() == cty.String && idVal.Type() == cty.String {
 				opts.Provider = urnVal.AsString() + "::" + idVal.AsString()
+			}
+		}
+	}
+
+	// Handle providers list (for component resources)
+	for _, traversal := range res.Providers {
+		providerKey := graph.FormatTraversal(traversal)
+		if providerKey == "" {
+			continue
+		}
+		if providerOutputs, ok := e.resourceOutputs.Get(providerKey); ok {
+			urnVal := providerOutputs.GetAttr("urn")
+			idVal := providerOutputs.GetAttr("id")
+			if urnVal.Type() == cty.String && idVal.Type() == cty.String {
+				pkgName := packageNameFromResourceType(strings.SplitN(providerKey, ".", 2)[0])
+				if opts.Providers == nil {
+					opts.Providers = make(map[string]string)
+				}
+				opts.Providers[pkgName] = urnVal.AsString() + "::" + idVal.AsString()
 			}
 		}
 	}
@@ -1248,6 +1273,7 @@ type ResourceOptions struct {
 	IgnoreChanges           []string
 	Aliases                 []Alias
 	Provider                string
+	Providers               map[string]string // Map from package name to provider reference (urn::id)
 	Parent                  string
 	DeleteBeforeReplace     bool
 	DeleteBeforeReplaceDef  bool // True if DeleteBeforeReplace was explicitly set
@@ -1280,10 +1306,13 @@ func (e *Engine) registerResource(
 		Inputs:                  inputs,
 		Dependencies:            opts.DependsOn,
 		PropertyDependencies:    opts.PropertyDependencies,
+		Custom:                  opts.Custom,
+		Remote:                  opts.Remote,
 		Protect:                 opts.Protect,
 		IgnoreChanges:           opts.IgnoreChanges,
 		Aliases:                 opts.Aliases,
 		Provider:                opts.Provider,
+		Providers:               opts.Providers,
 		Parent:                  opts.Parent,
 		DeleteBeforeReplace:     opts.DeleteBeforeReplace,
 		DeleteBeforeReplaceDef:  opts.DeleteBeforeReplaceDef,

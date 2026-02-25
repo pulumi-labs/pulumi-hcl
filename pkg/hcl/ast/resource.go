@@ -76,6 +76,10 @@ type Resource struct {
 	// Provider is the provider configuration reference, if specified.
 	Provider *ProviderRef
 
+	// Providers is a list of explicit provider resources to pass to a component resource.
+	// Only valid for component resources.
+	Providers []hcl.Traversal
+
 	// ResourceParent is the parent resource reference, if specified.
 	// Unlike Terraform, Pulumi supports explicit parent resources.
 	ResourceParent hcl.Traversal

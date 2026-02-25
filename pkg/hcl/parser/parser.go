@@ -469,6 +469,18 @@ func (p *Parser) parseResourceBlock(config *ast.Config, block *hcl.Block, isData
 		resource.Provider = providerRef
 	}
 
+	if attr, ok := content.Attributes["providers"]; ok {
+		exprs, exprDiags := hcl.ExprList(attr.Expr)
+		diags = append(diags, exprDiags...)
+		for _, expr := range exprs {
+			traversal, travDiags := hcl.AbsTraversalForExpr(expr)
+			diags = append(diags, travDiags...)
+			if traversal != nil {
+				resource.Providers = append(resource.Providers, traversal)
+			}
+		}
+	}
+
 	if attr, ok := content.Attributes["parent"]; ok {
 		traversal, travDiags := hcl.AbsTraversalForExpr(attr.Expr)
 		diags = append(diags, travDiags...)
