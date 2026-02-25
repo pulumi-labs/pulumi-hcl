@@ -145,7 +145,6 @@ var expectedFailures = map[string]string{
 	"l2-namespaced-provider":                "not yet implemented",
 	"l2-resource-asset-archive":             "not yet implemented",
 	"l2-resource-name-type":                 "not yet implemented - pulumiResourceName/pulumiResourceType functions",
-	"l2-resource-parent-inheritance":        "not yet implemented",
 	"l2-rtti":                               "not yet implemented",
 	"l2-discriminated-union":                "not yet implemented",
 	"l2-failed-create":                      "not yet implemented",

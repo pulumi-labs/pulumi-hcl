@@ -665,7 +665,7 @@ func (p *Parser) parseLifecycleBlock(block *hcl.Block) (*lifecycleResult, hcl.Di
 		val, valDiags := attr.Expr.Value(nil)
 		diags = append(diags, valDiags...)
 		if val.Type() == cty.Bool {
-			lifecycle.PreventDestroy = val.True()
+			lifecycle.PreventDestroy = new(val.True())
 		}
 	}
 

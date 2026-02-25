@@ -140,7 +140,7 @@ module "vpc" {
 		}
 		if r.Lifecycle == nil {
 			t.Error("Expected lifecycle block")
-		} else if !r.Lifecycle.PreventDestroy {
+		} else if r.Lifecycle.PreventDestroy == nil || !*r.Lifecycle.PreventDestroy {
 			t.Error("Expected prevent_destroy to be true")
 		}
 	} else {
