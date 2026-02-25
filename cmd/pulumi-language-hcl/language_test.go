@@ -128,7 +128,6 @@ func runTestingHost(t *testing.T) (string, testingrpc.LanguageTestClient) {
 }
 
 var expectedFailures = map[string]string{
-	"l2-invoke-secrets":                     "not yet implemented - remember that invoke's in Pulumi are datasources in HCL",
 	"l2-component-call-simple":              "not yet implemented",
 	"l2-component-component-resource-ref":   "not yet implemented",
 	"l2-component-program-resource-ref":     "not yet implemented",
@@ -157,6 +156,7 @@ var expectedFailures = map[string]string{
 	"l2-plain": "unsupported in HCL:" +
 		" requires that HCL can distinguish between an empty and null List<Object>" +
 		" - not compatible with block syntax",
+	"l2-invoke-secrets": "ideal solution depends on https://github.com/pulumi/pulumi/pull/21954",
 }
 
 func log(t *testing.T, name, message string) {
