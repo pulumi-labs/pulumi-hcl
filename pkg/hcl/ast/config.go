@@ -50,6 +50,9 @@ type Config struct {
 	// Modules maps module name to module call definition.
 	Modules map[string]*Module
 
+	// Calls maps "resourceName.methodName" to call definitions.
+	Calls map[string]*Call
+
 	// Moved contains moved blocks for resource renaming.
 	Moved []*Moved
 
@@ -73,6 +76,7 @@ func NewConfig() *Config {
 		DataSources: make(map[string]*Resource),
 		Outputs:     make(map[string]*Output),
 		Modules:     make(map[string]*Module),
+		Calls:       make(map[string]*Call),
 		Files:       make(map[string]*hcl.File),
 	}
 }

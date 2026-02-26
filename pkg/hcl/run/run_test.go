@@ -74,6 +74,10 @@ func (m *mockResourceMonitor) RegisterResourceOutputs(ctx context.Context, urn s
 	return nil
 }
 
+func (m *mockResourceMonitor) Call(ctx context.Context, req CallRequest) (*CallResponse, error) {
+	return &CallResponse{Return: property.NewMap(nil)}, nil
+}
+
 func (m *mockResourceMonitor) CheckPulumiVersion(ctx context.Context, versionRange string) error {
 	return nil
 }

@@ -403,6 +403,46 @@ func (m *constructResourceMonitor) Invoke(
 	}, nil
 }
 
+// Call invokes a method on a resource.
+func (m *constructResourceMonitor) Call(
+	ctx context.Context,
+	req run.CallRequest,
+) (*run.CallResponse, error) {
+	argsStruct, err := plugin.MarshalProperties(resource.ToResourcePropertyMap(req.Args), plugin.MarshalOptions{
+		KeepSecrets:   true,
+		KeepResources: true,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("marshaling args: %w", err)
+	}
+
+	resp, err := m.client.Call(ctx, &pulumirpc.ResourceCallRequest{
+		Tok:  req.Token,
+		Args: argsStruct,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("calling method: %w", err)
+	}
+
+	var failures []string
+	for _, f := range resp.Failures {
+		failures = append(failures, f.Reason)
+	}
+
+	ret, err := plugin.UnmarshalProperties(resp.Return, plugin.MarshalOptions{
+		KeepSecrets:   true,
+		KeepResources: true,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("unmarshaling return: %w", err)
+	}
+
+	return &run.CallResponse{
+		Return:   resource.FromResourcePropertyMap(ret),
+		Failures: failures,
+	}, nil
+}
+
 // CheckPulumiVersion checks if the Pulumi CLI version satisfies the given version range.
 func (m *constructResourceMonitor) CheckPulumiVersion(ctx context.Context, versionRange string) error {
 	return nil

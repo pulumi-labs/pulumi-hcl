@@ -33,6 +33,7 @@ var rootSchema = &hcl.BodySchema{
 		{Type: "module", LabelNames: []string{"name"}},
 		{Type: "moved"},
 		{Type: "import"},
+		{Type: "call", LabelNames: []string{"resource", "method"}},
 	},
 }
 

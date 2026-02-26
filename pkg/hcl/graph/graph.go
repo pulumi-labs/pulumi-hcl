@@ -56,6 +56,9 @@ type Node struct {
 
 	// Provider is set for provider nodes
 	Provider *ast.Provider
+
+	// Call is set for call nodes
+	Call *ast.Call
 }
 
 // NodeType indicates what type of configuration element a node represents.
@@ -71,6 +74,7 @@ const (
 	NodeTypeOutput
 	NodeTypeProvider
 	NodeTypeBuiltin
+	NodeTypeCall
 )
 
 func (t NodeType) String() string {
@@ -91,6 +95,8 @@ func (t NodeType) String() string {
 		return "provider"
 	case NodeTypeBuiltin:
 		return "builtin"
+	case NodeTypeCall:
+		return "call"
 	default:
 		return "unknown"
 	}
@@ -271,6 +277,38 @@ func BuildFromConfig(config *ast.Config) (*Graph, error) {
 			Key:    "module." + name,
 			Type:   NodeTypeModule,
 			Module: module,
+		}, deps)
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	// Add call nodes (method invocations on resources)
+	for key, call := range config.Calls {
+		var deps []pdag.Node
+
+		// Depend on the resource or provider being called
+		for resKey, res := range config.Resources {
+			if res.Name == call.ResourceName {
+				_, idx := g.newNode(resKey)
+				deps = append(deps, idx)
+				break
+			}
+		}
+		if _, exists := config.Providers[call.ResourceName]; exists {
+			_, idx := g.newNode(call.ResourceName)
+			deps = append(deps, idx)
+		}
+
+		// Extract expression deps from args body
+		if call.Config != nil {
+			deps = append(deps, g.extractDependenciesFromBody(call.Config)...)
+		}
+
+		err := g.AddNode(&Node{
+			Key:  "call." + key,
+			Type: NodeTypeCall,
+			Call: call,
 		}, deps)
 		if err != nil {
 			return nil, err
@@ -488,6 +526,11 @@ func (g *Graph) extractDependenciesFromExpression(expr hcl.Expression) []pdag.No
 			if len(parts) >= 1 {
 				dep = fmt.Sprintf("module.%s", parts[0])
 			}
+		case "call":
+			// Call reference: call.resourceName.methodName
+			if len(parts) >= 2 {
+				dep = fmt.Sprintf("call.%s.%s", parts[0], parts[1])
+			}
 		default:
 			// Resource reference: type.name (namespace is the type)
 			if len(parts) >= 1 {
@@ -540,6 +583,10 @@ func formatTraversal(traversal hcl.Traversal) string {
 	case "module":
 		if len(parts) >= 1 {
 			return "module." + parts[0]
+		}
+	case "call":
+		if len(parts) >= 2 {
+			return fmt.Sprintf("call.%s.%s", parts[0], parts[1])
 		}
 	default:
 		// Resource reference
