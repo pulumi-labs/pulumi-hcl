@@ -731,10 +731,21 @@ func (e *Engine) registerResourceInstance(
 		dependsOn[prop] = slices.Insert(dependsOn[prop], idx, urn)
 	}
 
+	plainInputProps := make(map[string]bool, len(resSchema.InputProperties))
+	for _, p := range resSchema.InputProperties {
+		plainInputProps[p.Name] = p.Plain
+	}
+
 	resourceInputs, diags := transform.EvalResourceWithSchema(res.Config, resSchema,
 		func(propKey resource.PropertyKey, expr hcl.Expression) (cty.Value, hcl.Diagnostics) {
 			val, diags := e.evaluator.EvaluateExpression(expr)
 			if diags.HasErrors() {
+				return val, diags
+			}
+
+			// Plain properties are passed as direct values, not as tracked outputs,
+			// so no property dependency tracking is needed.
+			if plainInputProps[string(propKey)] {
 				return val, diags
 			}
 
