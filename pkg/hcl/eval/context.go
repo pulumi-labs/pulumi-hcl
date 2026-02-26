@@ -60,6 +60,9 @@ type Context struct {
 	// providers contains provider references (provider.name)
 	providers map[string]cty.Value
 
+	// calls contains call results keyed as "resourceName.methodName"
+	calls map[string]cty.Value
+
 	// path contains path information
 	path PathContext
 
@@ -121,6 +124,7 @@ func NewContext(baseDir, rootDir, stack, project, organization string) *Context 
 		dataSources: make(map[string]cty.Value),
 		modules:     make(map[string]cty.Value),
 		providers:   make(map[string]cty.Value),
+		calls:       make(map[string]cty.Value),
 		path: PathContext{
 			Module: baseDir,
 			Root:   rootDir,
@@ -169,6 +173,14 @@ func (c *Context) SetModule(name string, value cty.Value) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.modules[name] = value
+}
+
+// SetCall sets the result of a method call.
+// The key should be "resourceName.methodName".
+func (c *Context) SetCall(key string, value cty.Value) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.calls[key] = value
 }
 
 // SetProvider sets a provider reference.
@@ -286,6 +298,28 @@ func (c *Context) HCLContext() *hcl.EvalContext {
 		vars["module"] = cty.EmptyObjectVal
 	}
 
+	// Add call.* namespace for method call results
+	// Calls are referenced as call.resourceName.methodName.attr
+	callsByResource := make(map[string]map[string]cty.Value)
+	for key, value := range c.calls {
+		parts := splitResourceKey(key)
+		if len(parts) == 2 {
+			if callsByResource[parts[0]] == nil {
+				callsByResource[parts[0]] = make(map[string]cty.Value)
+			}
+			callsByResource[parts[0]][parts[1]] = value
+		}
+	}
+	if len(callsByResource) > 0 {
+		callMap := make(map[string]cty.Value)
+		for rName, methods := range callsByResource {
+			callMap[rName] = cty.ObjectVal(methods)
+		}
+		vars["call"] = cty.ObjectVal(callMap)
+	} else {
+		vars["call"] = cty.EmptyObjectVal
+	}
+
 	// Add path.* namespace
 	vars["path"] = cty.ObjectVal(map[string]cty.Value{
 		"module": cty.StringVal(c.path.Module),
@@ -339,6 +373,7 @@ func (c *Context) Clone() *Context {
 		dataSources: maps.Clone(c.dataSources),
 		modules:     maps.Clone(c.modules),
 		providers:   maps.Clone(c.providers),
+		calls:       maps.Clone(c.calls),
 		path:        c.path,
 		pulumi:      c.pulumi,
 		self:        c.self,

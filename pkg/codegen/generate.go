@@ -39,16 +39,17 @@ func GenerateProgram(program *pcl.Program) (map[string][]byte, hcl.Diagnostics, 
 	f := hclwrite.NewEmptyFile()
 	body := f.Body()
 
-	// Create a generator context to track invoke data sources
+	// Create a generator context to track invoke data sources and call blocks
 	gen := &generator{
 		program: program,
 	}
 
 	genRequiredProviders(body, program)
 
-	// First pass: collect all invoke calls and generate data sources
+	// First pass: collect all invoke calls and call expressions
 	for _, node := range program.Nodes {
 		gen.collectInvokes(node)
+		gen.collectCalls(node)
 	}
 
 	// Generate data source blocks for invokes
@@ -58,6 +59,16 @@ func GenerateProgram(program *pcl.Program) (map[string][]byte, hcl.Diagnostics, 
 	}
 
 	if len(gen.invokeDataSources) > 0 {
+		body.AppendNewline()
+	}
+
+	// Generate call blocks
+	for _, cb := range gen.callBlocks {
+		d := gen.genCallBlock(body, cb)
+		diags = append(diags, d...)
+	}
+
+	if len(gen.callBlocks) > 0 {
 		body.AppendNewline()
 	}
 
@@ -95,11 +106,18 @@ func GenerateProgram(program *pcl.Program) (map[string][]byte, hcl.Diagnostics, 
 type generator struct {
 	program           *pcl.Program
 	invokeDataSources []spilledDataSource
+	callBlocks        []spilledCall
 }
 
 type spilledDataSource struct {
 	expr *model.FunctionCallExpression
 	name string
+}
+
+type spilledCall struct {
+	expr         *model.FunctionCallExpression
+	resourceName string
+	methodName   string
 }
 
 func genRequiredProviders(body *hclwrite.Body, program *pcl.Program) {
@@ -161,6 +179,118 @@ func (g *generator) collectInvokesInExpr(expr model.Expression) {
 		return expr, nil
 	})
 	contract.Assertf(len(diags) == 0, "we never return diags")
+}
+
+// collectCalls walks the node and collects all call function expressions.
+func (g *generator) collectCalls(node pcl.Node) {
+	switch n := node.(type) {
+	case *pcl.Resource:
+		for _, attr := range n.Inputs {
+			g.collectCallsInExpr(attr.Value)
+		}
+	case *pcl.OutputVariable:
+		g.collectCallsInExpr(n.Value)
+	case *pcl.LocalVariable:
+		g.collectCallsInExpr(n.Definition.Value)
+	}
+}
+
+// collectCallsInExpr walks an expression tree and collects call expressions.
+func (g *generator) collectCallsInExpr(expr model.Expression) {
+	_, diags := model.VisitExpression(expr, nil, func(expr model.Expression) (model.Expression, hcl.Diagnostics) {
+		if call, ok := expr.(*model.FunctionCallExpression); ok {
+			if call.Name == pcl.Call && len(call.Args) >= 2 {
+				resourceName, methodName, ok := g.extractCallArgs(call)
+				if ok {
+					snakeMethod := transform.SnakeCaseFromPulumiCase(methodName)
+					// Deduplicate: only add if we haven't already seen this resourceName.methodName
+					duplicate := false
+					for _, cb := range g.callBlocks {
+						if cb.resourceName == resourceName && cb.methodName == snakeMethod {
+							duplicate = true
+							break
+						}
+					}
+					if !duplicate {
+						g.callBlocks = append(g.callBlocks, spilledCall{
+							expr:         call,
+							resourceName: resourceName,
+							methodName:   snakeMethod,
+						})
+					}
+				}
+			}
+		}
+		return expr, nil
+	})
+	contract.Assertf(len(diags) == 0, "we never return diags")
+}
+
+// extractCallArgs extracts (resourceName, methodName) from a pcl.Call expression.
+// Returns ok=false if the args are not the expected form.
+func (g *generator) extractCallArgs(call *model.FunctionCallExpression) (resourceName, methodName string, ok bool) {
+	if len(call.Args) < 2 {
+		return "", "", false
+	}
+	// First arg: resource reference
+	scopeTraversal, isScopeTraversal := call.Args[0].(*model.ScopeTraversalExpression)
+	if !isScopeTraversal || len(scopeTraversal.Parts) == 0 {
+		return "", "", false
+	}
+	switch part := scopeTraversal.Parts[0].(type) {
+	case *pcl.Resource:
+		resourceName = part.LogicalName()
+	default:
+		// Could be a provider - use the traversal root name
+		resourceName = scopeTraversal.Traversal.RootName()
+	}
+	// Second arg: method name string literal
+	methodName, ok = extractStringLiteralFromCallArg(call.Args[1])
+	return resourceName, methodName, ok
+}
+
+// extractStringLiteralFromCallArg extracts a string value from a method name argument,
+// which can be a TemplateExpression or a LiteralValueExpression.
+func extractStringLiteralFromCallArg(expr model.Expression) (string, bool) {
+	switch e := expr.(type) {
+	case *model.LiteralValueExpression:
+		if e.Value.Type() == cty.String {
+			return e.Value.AsString(), true
+		}
+	case *model.TemplateExpression:
+		if len(e.Parts) == 1 {
+			if lit, ok := e.Parts[0].(*model.LiteralValueExpression); ok && lit.Value.Type() == cty.String {
+				return lit.Value.AsString(), true
+			}
+		}
+	}
+	return "", false
+}
+
+// genCallBlock generates a call block for a method invocation.
+func (g *generator) genCallBlock(body *hclwrite.Body, cb spilledCall) hcl.Diagnostics {
+	block := body.AppendNewBlock("call", []string{cb.resourceName, cb.methodName})
+
+	if len(cb.expr.Args) < 3 {
+		return nil
+	}
+
+	var diags hcl.Diagnostics
+	argsExpr := cb.expr.Args[2]
+	if objExpr, ok := argsExpr.(*model.ObjectConsExpression); ok {
+		for _, item := range objExpr.Items {
+			keyLit, ok := item.Key.(*model.LiteralValueExpression)
+			if !ok {
+				continue
+			}
+			keyName := keyLit.Value.AsString()
+			hclName := transform.SnakeCaseFromPulumiCase(keyName)
+			d := g.genExpression(block.Body(), hclName, item.Value, schema.AnyType)
+			diags = append(diags, d...)
+		}
+	}
+
+	return diags
 }
 
 // genInvokeDataSource generates a data source block for an invoke call.
@@ -860,6 +990,18 @@ func (g *generator) exprTokens(expr model.Expression, typ schema.Type) (hclwrite
 					hcl.TraverseRoot{Name: "data"},
 					hcl.TraverseAttr{Name: dsType},
 					hcl.TraverseAttr{Name: dsName},
+				}), nil
+			}
+		}
+		// Check if this is a call expression that we've replaced with a call block
+		if e.Name == pcl.Call {
+			resourceName, methodName, ok := g.extractCallArgs(e)
+			if ok {
+				snakeMethod := transform.SnakeCaseFromPulumiCase(methodName)
+				return hclwrite.TokensForTraversal(hcl.Traversal{
+					hcl.TraverseRoot{Name: "call"},
+					hcl.TraverseAttr{Name: resourceName},
+					hcl.TraverseAttr{Name: snakeMethod},
 				}), nil
 			}
 		}

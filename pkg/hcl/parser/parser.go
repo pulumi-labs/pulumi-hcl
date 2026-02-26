@@ -113,6 +113,8 @@ func (p *Parser) parseBlock(config *ast.Config, block *hcl.Block) hcl.Diagnostic
 		return p.parseMovedBlock(config, block)
 	case "import":
 		return p.parseImportBlock(config, block)
+	case "call":
+		return p.parseCallBlock(config, block)
 	default:
 		return hcl.Diagnostics{{
 			Severity: hcl.DiagError,
@@ -1023,6 +1025,33 @@ func (p *Parser) parseMovedBlock(config *ast.Config, block *hcl.Block) hcl.Diagn
 	}
 
 	config.Moved = append(config.Moved, moved)
+	return diags
+}
+
+// parseCallBlock parses a call block.
+func (p *Parser) parseCallBlock(config *ast.Config, block *hcl.Block) hcl.Diagnostics {
+	var diags hcl.Diagnostics
+
+	resourceName := block.Labels[0]
+	methodName := block.Labels[1]
+	key := ast.CallKey(resourceName, methodName)
+
+	if _, exists := config.Calls[key]; exists {
+		diags = append(diags, &hcl.Diagnostic{
+			Severity: hcl.DiagError,
+			Summary:  "Duplicate call block",
+			Detail:   fmt.Sprintf("A call block for %q.%q was already declared.", resourceName, methodName),
+			Subject:  &block.DefRange,
+		})
+		return diags
+	}
+
+	config.Calls[key] = &ast.Call{
+		ResourceName: resourceName,
+		MethodName:   methodName,
+		Config:       block.Body,
+		DeclRange:    block.DefRange,
+	}
 	return diags
 }
 

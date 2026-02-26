@@ -51,6 +51,9 @@ type ResourceMonitor interface {
 	// Invoke invokes a provider function.
 	Invoke(ctx context.Context, req InvokeRequest) (*InvokeResponse, error)
 
+	// Call invokes a method on a resource.
+	Call(ctx context.Context, req CallRequest) (*CallResponse, error)
+
 	// RegisterResourceOutputs registers outputs on a resource (used for stack outputs).
 	RegisterResourceOutputs(ctx context.Context, urn string, outputs property.Map) error
 
@@ -132,6 +135,19 @@ type InvokeRequest struct {
 
 // InvokeResponse contains the result of invoking a function.
 type InvokeResponse struct {
+	Return   property.Map
+	Failures []string
+}
+
+// CallRequest contains the parameters for invoking a method on a resource.
+type CallRequest struct {
+	Token    string
+	Args     property.Map
+	Provider string
+}
+
+// CallResponse contains the result of invoking a method on a resource.
+type CallResponse struct {
 	Return   property.Map
 	Failures []string
 }
@@ -347,6 +363,8 @@ func (e *Engine) processNode(ctx context.Context, node *graph.Node) error {
 		return e.processDataSource(ctx, node)
 	case graph.NodeTypeModule:
 		return e.processModule(ctx, node)
+	case graph.NodeTypeCall:
+		return e.processCall(ctx, node)
 	case graph.NodeTypeOutput:
 		// Outputs are processed after the main loop
 		return nil
@@ -1476,6 +1494,163 @@ func (e *Engine) processDataSource(ctx context.Context, node *graph.Node) error 
 	e.dataSourceDependencies.Set(dsKey, allDeps)
 
 	return nil
+}
+
+// processCall processes a call block (method invocation on a resource).
+func (e *Engine) processCall(ctx context.Context, node *graph.Node) error {
+	call := node.Call
+	if call == nil {
+		return fmt.Errorf("call node missing Call field")
+	}
+
+	// Find the resource or provider being called by logical name
+	var resKey string
+	var resSchema *schema.Resource
+	var isProvider bool
+	var isProviderResource bool // true for resource "pulumi_providers_*" blocks
+
+	for k, res := range e.config.Resources {
+		if res.Name == call.ResourceName {
+			resKey = k
+			var err error
+			resSchema, err = packages.ResolveResource(ctx, e.pkgLoader, res.Type)
+			if err != nil {
+				return fmt.Errorf("resolving resource type %s for call: %w", res.Type, err)
+			}
+			isProviderResource = strings.HasPrefix(res.Type, "pulumi_providers_")
+			break
+		}
+	}
+
+	if resKey == "" {
+		// Try providers
+		if _, exists := e.config.Providers[call.ResourceName]; exists {
+			resKey = call.ResourceName
+			isProvider = true
+			var err error
+			// Providers use their name as the key
+			providerToken := "pulumi_providers_" + e.config.Providers[call.ResourceName].Name
+			resSchema, err = packages.ResolveResource(ctx, e.pkgLoader, providerToken)
+			if err != nil {
+				return fmt.Errorf("resolving provider schema for call: %w", err)
+			}
+		}
+	}
+
+	if resKey == "" {
+		return fmt.Errorf("call block references unknown resource or provider %q", call.ResourceName)
+	}
+
+	// Find the method in the resource schema by matching snake_case name
+	var method *schema.Method
+	for _, m := range resSchema.Methods {
+		if transform.SnakeCaseFromPulumiCase(m.Name) == call.MethodName {
+			method = m
+			break
+		}
+	}
+	if method == nil {
+		return fmt.Errorf("resource %q has no method %q", call.ResourceName, call.MethodName)
+	}
+
+	// Look up resource outputs to get URN and ID
+	outputs, ok := e.resourceOutputs.Get(resKey)
+	if !ok {
+		return fmt.Errorf("resource %q outputs not found", resKey)
+	}
+
+	urnVal := outputs.GetAttr("urn")
+	if urnVal.Type() != cty.String {
+		return fmt.Errorf("resource %q missing URN", resKey)
+	}
+	urn := resource.URN(urnVal.AsString())
+
+	// Determine the provider reference for routing the call to the right provider instance.
+	// For provider resources, the provider IS the resource itself (urn::id).
+	// For custom resources, the provider is inherited from the resource's own provider.
+	var callProvider string
+	if isProvider || isProviderResource {
+		idVal := outputs.GetAttr("id")
+		if urnVal.Type() == cty.String && idVal.Type() == cty.String {
+			callProvider = urnVal.AsString() + "::" + idVal.AsString()
+		}
+	} else {
+		if iOpts, ok := e.resourceInheritableOpts.Get(resKey); ok {
+			callProvider = iOpts.Provider
+		}
+	}
+
+	// Build __self__ resource reference
+	var selfID property.Value
+	if resSchema.IsComponent && !isProviderResource {
+		selfID = property.New(property.Null)
+	} else {
+		idVal := outputs.GetAttr("id")
+		if idVal.Type() == cty.String {
+			selfID = property.New(idVal.AsString())
+		} else {
+			selfID = property.New(property.Null)
+		}
+	}
+	selfRef := property.New(property.ResourceReference{
+		URN: urn,
+		ID:  selfID,
+	})
+
+	// Evaluate call arguments using the function schema, excluding __self__ which is
+	// provided by the runtime (not the HCL body).
+	filteredFunc := *method.Function
+	if filteredFunc.Inputs != nil {
+		filteredInputs := *filteredFunc.Inputs
+		filteredInputs.Properties = slices.DeleteFunc(
+			slices.Clone(filteredInputs.Properties),
+			func(p *schema.Property) bool { return p.Name == "__self__" },
+		)
+		filteredFunc.Inputs = &filteredInputs
+	}
+
+	userArgs, diags := transform.EvalFunctionWithSchema(call.Config, &filteredFunc,
+		func(_ resource.PropertyKey, expr hcl.Expression) (cty.Value, hcl.Diagnostics) {
+			return e.evaluator.EvaluateExpression(expr)
+		})
+	if diags.HasErrors() {
+		return fmt.Errorf("evaluating call arguments for %s.%s: %s", call.ResourceName, call.MethodName, diags.Error())
+	}
+
+	ret, err := e.callMethod(ctx, CallRequest{
+		Token:    method.Function.Token,
+		Args:     userArgs.Set("__self__", selfRef),
+		Provider: callProvider,
+	})
+	if err != nil {
+		return fmt.Errorf("calling method %s.%s: %w", call.ResourceName, call.MethodName, err)
+	}
+
+	// Convert return values to cty
+	ctyOutputs, err := transform.FunctionOutputToCty(ret, method.Function, e.dryRun)
+	if err != nil {
+		return fmt.Errorf("converting call outputs to HCL types: %w", err)
+	}
+
+	// Store outputs keyed as "resourceName.methodName"
+	callKey := ast.CallKey(call.ResourceName, call.MethodName)
+	e.evaluator.Context().SetCall(callKey, ctyOutputs)
+
+	return nil
+}
+
+// callMethod calls a method on a resource via the resource monitor.
+func (e *Engine) callMethod(ctx context.Context, req CallRequest) (property.Map, error) {
+	resp, err := e.resmon.Call(ctx, req)
+	if err != nil {
+		return property.Map{}, err
+	}
+
+	if len(resp.Failures) > 0 {
+		return property.Map{}, fmt.Errorf("method call failed: %v", resp.Failures)
+	}
+
+	return resp.Return, nil
 }
 
 // invokeFunction invokes a Pulumi function (data source).

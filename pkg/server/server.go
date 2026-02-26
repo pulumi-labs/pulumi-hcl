@@ -802,6 +802,48 @@ func (r *resourceMonitorAdapter) CheckPulumiVersion(ctx context.Context, version
 	return err
 }
 
+// Call invokes a method on a resource.
+func (r *resourceMonitorAdapter) Call(
+	ctx context.Context,
+	req run.CallRequest,
+) (*run.CallResponse, error) {
+	argsStruct, err := plugin.MarshalProperties(resource.ToResourcePropertyMap(req.Args), plugin.MarshalOptions{
+		KeepUnknowns: true,
+		KeepSecrets:  true,
+		KeepResources: true,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("marshaling args: %w", err)
+	}
+
+	resp, err := r.monitorClient.Call(ctx, &pulumirpc.ResourceCallRequest{
+		Tok:      req.Token,
+		Args:     argsStruct,
+		Provider: req.Provider,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("calling method: %w", err)
+	}
+
+	returnVal, err := plugin.UnmarshalProperties(resp.Return, plugin.MarshalOptions{
+		KeepUnknowns: true,
+		KeepSecrets:  true,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("unmarshaling return value: %w", err)
+	}
+
+	var failures []string
+	for _, f := range resp.Failures {
+		failures = append(failures, fmt.Sprintf("%s: %s", f.Property, f.Reason))
+	}
+
+	return &run.CallResponse{
+		Return:   resource.FromResourcePropertyMap(returnVal),
+		Failures: failures,
+	}, nil
+}
+
 // Ensure resourceMonitorAdapter implements the interface.
 var _ run.ResourceMonitor = (*resourceMonitorAdapter)(nil)
 
