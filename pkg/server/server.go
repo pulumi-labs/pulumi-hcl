@@ -599,8 +599,9 @@ func (r *resourceMonitorAdapter) RegisterResource(
 ) (*run.RegisterResourceResponse, error) {
 	// Convert inputs to protobuf struct
 	inputsStruct, err := plugin.MarshalProperties(resource.ToResourcePropertyMap(req.Inputs), plugin.MarshalOptions{
-		KeepUnknowns: true,
-		KeepSecrets:  true,
+		KeepUnknowns:  true,
+		KeepSecrets:   true,
+		KeepResources: true,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("marshaling inputs: %w", err)
@@ -684,8 +685,9 @@ func (r *resourceMonitorAdapter) RegisterResource(
 		trigger, err := plugin.MarshalPropertyValue("replacement_trigger",
 			resource.ToResourcePropertyValue(req.ReplacementTrigger),
 			plugin.MarshalOptions{
-				KeepUnknowns: true,
-				KeepSecrets:  true,
+				KeepUnknowns:  true,
+				KeepSecrets:   true,
+				KeepResources: true,
 			})
 		if err != nil {
 			return nil, fmt.Errorf("marshaling replacement trigger: %w", err)
@@ -701,8 +703,9 @@ func (r *resourceMonitorAdapter) RegisterResource(
 
 	// Unmarshal outputs
 	outputs, err := plugin.UnmarshalProperties(resp.Object, plugin.MarshalOptions{
-		KeepUnknowns: true,
-		KeepSecrets:  true,
+		KeepUnknowns:  true,
+		KeepSecrets:   true,
+		KeepResources: true,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("unmarshaling outputs: %w", err)
@@ -722,8 +725,9 @@ func (r *resourceMonitorAdapter) Invoke(
 ) (*run.InvokeResponse, error) {
 	// Convert args to protobuf struct
 	argsStruct, err := plugin.MarshalProperties(resource.ToResourcePropertyMap(req.Args), plugin.MarshalOptions{
-		KeepUnknowns: true,
-		KeepSecrets:  true,
+		KeepUnknowns:  true,
+		KeepSecrets:   true,
+		KeepResources: true,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("marshaling args: %w", err)
@@ -747,8 +751,9 @@ func (r *resourceMonitorAdapter) Invoke(
 
 	// Unmarshal return value
 	returnVal, err := plugin.UnmarshalProperties(resp.Return, plugin.MarshalOptions{
-		KeepUnknowns: true,
-		KeepSecrets:  true,
+		KeepUnknowns:  true,
+		KeepSecrets:   true,
+		KeepResources: true,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("unmarshaling return value: %w", err)
@@ -774,8 +779,9 @@ func (r *resourceMonitorAdapter) RegisterResourceOutputs(
 ) error {
 	// Convert outputs to protobuf struct
 	outputsStruct, err := plugin.MarshalProperties(resource.ToResourcePropertyMap(outputs), plugin.MarshalOptions{
-		KeepUnknowns: true,
-		KeepSecrets:  true,
+		KeepUnknowns:  true,
+		KeepSecrets:   true,
+		KeepResources: true,
 	})
 	if err != nil {
 		return fmt.Errorf("marshaling outputs: %w", err)
@@ -808,8 +814,8 @@ func (r *resourceMonitorAdapter) Call(
 	req run.CallRequest,
 ) (*run.CallResponse, error) {
 	argsStruct, err := plugin.MarshalProperties(resource.ToResourcePropertyMap(req.Args), plugin.MarshalOptions{
-		KeepUnknowns: true,
-		KeepSecrets:  true,
+		KeepUnknowns:  true,
+		KeepSecrets:   true,
 		KeepResources: true,
 	})
 	if err != nil {

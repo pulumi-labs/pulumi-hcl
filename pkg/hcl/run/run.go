@@ -817,6 +817,12 @@ func (e *Engine) registerResourceInstance(
 	}
 
 	outputs = outputs.Delete("id", "urn")
+
+	outputs, err = e.resolveResourceRefsInOutputs(ctx, outputs, resSchema)
+	if err != nil {
+		return fmt.Errorf("resolving resource references in outputs: %w", err)
+	}
+
 	// Store outputs for future references
 	outputObj, err := transform.ResourceOutputToCty(outputs, resSchema, e.dryRun)
 	if err != nil {
@@ -1671,6 +1677,52 @@ func (e *Engine) invokeFunction(ctx context.Context, req InvokeRequest) (propert
 	}
 
 	return resp.Return, nil
+}
+
+func (e *Engine) getResourceState(ctx context.Context, ref property.ResourceReference) (property.Map, error) {
+	result, err := e.resmon.Invoke(ctx, InvokeRequest{
+		Token: "pulumi:pulumi:getResource",
+		Args:  property.NewMap(map[string]property.Value{"urn": property.New(string(ref.URN))}),
+	})
+	if err != nil {
+		return property.Map{}, err
+	}
+	stateVal, ok := result.Return.GetOk("state")
+	if !ok || !stateVal.IsMap() {
+		return property.Map{}, nil
+	}
+	return stateVal.AsMap(), nil
+}
+
+func (e *Engine) resolveResourceRefsInOutputs(
+	ctx context.Context,
+	outputs property.Map,
+	resSchema *schema.Resource,
+) (property.Map, error) {
+	resolved := outputs
+	for _, p := range resSchema.Properties {
+		resType, ok := p.Type.(*schema.ResourceType)
+		if !ok {
+			continue
+		}
+		v, ok := resolved.GetOk(p.Name)
+		if !ok || !v.IsResourceReference() {
+			continue
+		}
+		ref := v.AsResourceReference()
+		refMap := property.NewMap(map[string]property.Value{"__ref": property.New(ref)})
+		if e.resmon != nil && !ref.ID.IsComputed() && resType.Resource != nil {
+			if state, err := e.getResourceState(ctx, ref); err == nil {
+				for _, sp := range resType.Resource.Properties {
+					if sv, ok := state.GetOk(sp.Name); ok {
+						refMap = refMap.Set(sp.Name, sv)
+					}
+				}
+			}
+		}
+		resolved = resolved.Set(p.Name, property.New(refMap))
+	}
+	return resolved, nil
 }
 
 // processModule processes a module call.

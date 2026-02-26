@@ -18,6 +18,7 @@ package transform
 import (
 	"fmt"
 	"os"
+	"reflect"
 	"slices"
 	"strconv"
 	"strings"
@@ -35,6 +36,8 @@ import (
 )
 
 const SensativeMark = "sensitive"
+
+var resourceRefCapsuleType = cty.Capsule("resource_reference", reflect.TypeOf(property.ResourceReference{}))
 
 type EvalFunc = func(resource.PropertyKey, hcl.Expression) (cty.Value, hcl.Diagnostics)
 
@@ -309,6 +312,19 @@ func ctyToResourceProperty(path string, val cty.Value, prop schema.Type, already
 
 	// Handle complex types
 	switch prop := prop.(type) {
+	case *schema.ResourceType:
+		if !val.Type().IsObjectType() {
+			return property.Value{}, fmt.Errorf("expected object at %q for resource reference, found %#v", path, val.Type())
+		}
+		refAttr, hasRef := val.AsValueMap()["__ref"]
+		if !hasRef || !refAttr.IsKnown() {
+			return property.New(property.Computed), nil
+		}
+		ref, ok := refAttr.EncapsulatedValue().(*property.ResourceReference)
+		if !ok {
+			return property.Value{}, fmt.Errorf("expected resource reference capsule at %q", path)
+		}
+		return property.New(*ref), nil
 	case *schema.ObjectType:
 		if !val.Type().IsObjectType() {
 			return property.Value{}, fmt.Errorf("expected object at %q, found %#v", path, val.Type())
@@ -588,6 +604,20 @@ func ctyTypeFromType(typ schema.Type) cty.Type {
 			attrs[key] = ctyTypeFromType(p.Type)
 		}
 		return cty.ObjectWithOptionalAttrs(attrs, optional)
+	case *schema.ResourceType:
+		if typ.Resource == nil {
+			return cty.DynamicPseudoType
+		}
+		attrs := map[string]cty.Type{"__ref": resourceRefCapsuleType}
+		optional := []string{"__ref"}
+		for _, p := range typ.Resource.Properties {
+			key := snakeCaseFromCamelCase(p.Name)
+			if !p.IsRequired() {
+				optional = append(optional, key)
+			}
+			attrs[key] = ctyTypeFromType(p.Type)
+		}
+		return cty.ObjectWithOptionalAttrs(attrs, optional)
 	case *schema.InvalidType:
 		return cty.DynamicPseudoType
 	case *schema.UnionType:
@@ -634,6 +664,19 @@ func propertyValueToCty(path string, v property.Value, typ schema.Type, dryRun b
 	case v.IsMap():
 		elemType := schema.AnyType
 		switch typ := typ.(type) {
+		case *schema.ResourceType:
+			if typ.Resource == nil {
+				break
+			}
+			result, err := propertyObjectToCtyMap(path, v.AsMap(), typ.Resource.Properties, dryRun)
+			if err != nil {
+				return cty.Value{}, err
+			}
+			if refVal, ok := v.AsMap().GetOk("__ref"); ok && refVal.IsResourceReference() {
+				ref := refVal.AsResourceReference()
+				result["__ref"] = cty.CapsuleVal(resourceRefCapsuleType, &ref)
+			}
+			return cty.ObjectVal(result), nil
 		case *schema.ObjectType:
 			m, err := propertyObjectToCtyMap(path, v.AsMap(), typ.Properties, dryRun)
 			if err != nil {
