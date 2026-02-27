@@ -86,57 +86,6 @@ func (host *LanguageHost) Close() error {
 	return errors.Join(errs...)
 }
 
-// GetRequiredPlugins returns the plugins required to run an HCL program.
-func (host *LanguageHost) GetRequiredPlugins(
-	ctx context.Context,
-	req *pulumirpc.GetRequiredPluginsRequest,
-) (*pulumirpc.GetRequiredPluginsResponse, error) {
-	logging.V(5).Infof("GetRequiredPlugins: program=%s", req.Info.ProgramDirectory)
-
-	// Parse HCL files to extract required providers from terraform block
-	p := parser.NewParser()
-	config, diags := p.ParseDirectory(req.Info.ProgramDirectory)
-	if diags.HasErrors() {
-		// Return empty list on parse errors - we'll report them during Run
-		return &pulumirpc.GetRequiredPluginsResponse{
-			Plugins: []*pulumirpc.PluginDependency{},
-		}, nil
-	}
-
-	var plugins []*pulumirpc.PluginDependency
-
-	// Extract required providers from the terraform block
-	if config.Terraform != nil {
-		for name, provider := range config.Terraform.RequiredProviders {
-			dep := &pulumirpc.PluginDependency{
-				Name: name,
-				Kind: "resource",
-			}
-
-			// Parse version constraint if present
-			// Pulumi expects semver, not constraints, so extract the version number
-			if provider.Version != "" {
-				dep.Version = run.ExtractSemverFromConstraint(provider.Version)
-			}
-
-			// Parse source to get the actual provider name
-			// Format is typically "pulumi/aws" or "hashicorp/aws"
-			if provider.Source != "" {
-				parts := strings.Split(provider.Source, "/")
-				if len(parts) >= 2 {
-					dep.Name = parts[len(parts)-1]
-				}
-			}
-
-			plugins = append(plugins, dep)
-		}
-	}
-
-	return &pulumirpc.GetRequiredPluginsResponse{
-		Plugins: plugins,
-	}, nil
-}
-
 // GetRequiredPackages returns the packages required to run an HCL program,
 // including parameterization info for parameterized packages.
 func (host *LanguageHost) GetRequiredPackages(
@@ -299,6 +248,8 @@ func (host *LanguageHost) Run(
 		loader = packages.NewParameterizationAwareLoader(schemaLoader, paramDescriptors)
 	}
 
+	req.Parallel = max(req.Parallel, 1) // (req.Parallel <= 1) => serial
+
 	// Create and run the engine
 	engine := run.NewEngine(config, &run.EngineOptions{
 		ProjectName:      req.Project,
@@ -312,6 +263,7 @@ func (host *LanguageHost) Run(
 		WorkDir:          req.Info.ProgramDirectory,
 		RootDir:          req.Info.RootDirectory,
 		Packages:         paramDescriptors,
+		Parallel:         int(req.Parallel),
 	})
 
 	if err := engine.Run(ctx); err != nil {
