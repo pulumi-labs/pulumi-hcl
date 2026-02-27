@@ -377,6 +377,8 @@ func ctyToResourceProperty(path string, val cty.Value, prop schema.Type, already
 			m[k.AsString()] = convertedElem
 		}
 		return property.New(m), nil
+	case *schema.UnionType:
+		return ctyToPropertyValue(val)
 	default:
 		return property.Value{}, fmt.Errorf("%q: unknown schema type %s when converting %#v", path, prop, val.Type())
 	}
