@@ -28,6 +28,7 @@ import (
 	"github.com/pulumi/pulumi/sdk/v3/go/common/util/contract"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/util/logging"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/util/rpcutil"
+	"github.com/pulumi/pulumi/sdk/v3/go/common/workspace"
 	"github.com/pulumi/pulumi/sdk/v3/go/property"
 	pulumirpc "github.com/pulumi/pulumi/sdk/v3/proto/go"
 	"google.golang.org/grpc"
@@ -446,6 +447,13 @@ func (m *constructResourceMonitor) Call(
 // CheckPulumiVersion checks if the Pulumi CLI version satisfies the given version range.
 func (m *constructResourceMonitor) CheckPulumiVersion(ctx context.Context, versionRange string) error {
 	return nil
+}
+
+func (m *constructResourceMonitor) RegisterPackage(
+	ctx context.Context,
+	pkg workspace.PackageDescriptor,
+) (run.PackageRef, error) {
+	return "", nil
 }
 
 // buildStateDependencies builds the state dependencies map from outputs.

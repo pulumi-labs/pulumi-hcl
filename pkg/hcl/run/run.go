@@ -36,15 +36,24 @@ import (
 	"github.com/pulumi/pulumi/pkg/v3/codegen/schema"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/resource"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/util/contract"
+	"github.com/pulumi/pulumi/sdk/v3/go/common/workspace"
 	"github.com/pulumi/pulumi/sdk/v3/go/property"
 	"github.com/zclconf/go-cty/cty"
 	"github.com/zclconf/go-cty/cty/function/stdlib"
 	"github.com/zclconf/go-cty/cty/json"
 )
 
+// PackageRef is an opaque reference returned by RegisterPackage that routes
+// resource registrations to the correct parameterized provider instance.
+type PackageRef string
+
 // ResourceMonitor is the interface for registering resources with Pulumi.
 // This matches the resource monitor interface used by the Pulumi engine.
 type ResourceMonitor interface {
+	// RegisterPackage registers a parameterized package with the engine and returns
+	// a PackageRef that must be passed in subsequent resource registrations.
+	RegisterPackage(ctx context.Context, pkg workspace.PackageDescriptor) (PackageRef, error)
+
 	// RegisterResource registers a resource with Pulumi.
 	RegisterResource(ctx context.Context, req RegisterResourceRequest) (*RegisterResourceResponse, error)
 
@@ -115,6 +124,7 @@ type RegisterResourceRequest struct {
 	EnvVarMappings          map[string]string
 	Version                 string
 	PluginDownloadURL       string
+	PackageRef              PackageRef
 }
 
 // RegisterResourceResponse contains the result of registering a resource.
@@ -131,6 +141,7 @@ type InvokeRequest struct {
 	Provider          string
 	Version           string
 	PluginDownloadURL string
+	PackageRef        PackageRef
 }
 
 // InvokeResponse contains the result of invoking a function.
@@ -141,9 +152,10 @@ type InvokeResponse struct {
 
 // CallRequest contains the parameters for invoking a method on a resource.
 type CallRequest struct {
-	Token    string
-	Args     property.Map
-	Provider string
+	Token      string
+	Args       property.Map
+	Provider   string
+	PackageRef PackageRef
 }
 
 // CallResponse contains the result of invoking a method on a resource.
@@ -197,6 +209,12 @@ type Engine struct {
 	// organization is the current organization name.
 	organization string
 
+	// packages maps parameterized package alias to its descriptor, for registration at startup.
+	packages map[string]workspace.PackageDescriptor
+
+	// packageRefs maps parameterized package alias to its RegisterPackage ref.
+	packageRefs map[string]PackageRef
+
 	// dryRun indicates if this is a preview operation.
 	dryRun bool
 
@@ -249,6 +267,10 @@ type EngineOptions struct {
 	RootDir string
 
 	SchemaLoader schema.ReferenceLoader
+
+	// Packages maps parameterized package alias to its descriptor.
+	// The engine calls RegisterPackage on the resource monitor for each entry before running the program.
+	Packages map[string]workspace.PackageDescriptor
 }
 
 // NewEngine creates a new execution engine.
@@ -276,6 +298,8 @@ func NewEngine(config *ast.Config, opts *EngineOptions) *Engine {
 		workDir:                 opts.WorkDir,
 		pulumiConfig:            opts.Config,
 		configSecretKeys:        opts.ConfigSecretKeys,
+		packages:                opts.Packages,
+		packageRefs:             make(map[string]PackageRef),
 		moduleLoader:            modules.NewLoader(),
 		moduleOutputs:           make(map[string]cty.Value),
 	}
@@ -285,6 +309,14 @@ func NewEngine(config *ast.Config, opts *EngineOptions) *Engine {
 
 // Run executes the HCL program.
 func (e *Engine) Run(ctx context.Context) error {
+	for alias, pkg := range e.packages {
+		ref, err := e.resmon.RegisterPackage(ctx, pkg)
+		if err != nil {
+			return fmt.Errorf("registering package %s: %w", alias, err)
+		}
+		e.packageRefs[alias] = ref
+	}
+
 	// Register the root stack resource to get its URN for outputs
 	if err := e.registerStack(ctx); err != nil {
 		return fmt.Errorf("registering stack: %w", err)
@@ -811,6 +843,8 @@ func (e *Engine) registerResourceInstance(
 		opts.PluginDownloadURL = resSchema.PackageReference.PluginDownloadURL()
 	}
 
+	opts.PackageRef = e.packageRefForType(res.Type)
+
 	// Evaluate preconditions before resource creation
 	if len(res.Preconditions) > 0 {
 		if err := e.evaluateCheckRules(res.Preconditions, instance.Key, "precondition"); err != nil {
@@ -1262,6 +1296,11 @@ func packageNameFromResourceType(token string) string {
 	return strings.SplitN(token, "_", 2)[0]
 }
 
+// packageRefForType returns the RegisterPackage ref for the given HCL resource type, or empty if none.
+func (e *Engine) packageRefForType(hclToken string) PackageRef {
+	return e.packageRefs[packageNameFromResourceType(hclToken)]
+}
+
 func ExtractSemverFromConstraint(constraint string) string {
 	// Remove common constraint operators
 	constraint = strings.TrimSpace(constraint)
@@ -1362,6 +1401,7 @@ type ResourceOptions struct {
 	EnvVarMappings          map[string]string
 	Version                 string
 	PluginDownloadURL       string
+	PackageRef              PackageRef
 }
 
 // registerResource registers a resource with the Pulumi engine.
@@ -1401,6 +1441,7 @@ func (e *Engine) registerResource(
 		EnvVarMappings:          opts.EnvVarMappings,
 		Version:                 opts.Version,
 		PluginDownloadURL:       opts.PluginDownloadURL,
+		PackageRef:              opts.PackageRef,
 	})
 	if err != nil {
 		return "", "", property.Map{}, err
@@ -1450,7 +1491,11 @@ func (e *Engine) processDataSource(ctx context.Context, node *graph.Node) error 
 		return diags
 	}
 
-	invokeReq := InvokeRequest{Token: funcSchema.Token, Args: inputs}
+	invokeReq := InvokeRequest{
+		Token:      funcSchema.Token,
+		Args:       inputs,
+		PackageRef: e.packageRefForType(ds.Type),
+	}
 
 	if ds.Provider != nil {
 		providerKey := ds.Provider.Name
@@ -1522,6 +1567,7 @@ func (e *Engine) processCall(ctx context.Context, node *graph.Node) error {
 
 	// Find the resource or provider being called by logical name
 	var resKey string
+	var resType string
 	var resSchema *schema.Resource
 	var isProvider bool
 	var isProviderResource bool // true for resource "pulumi_providers_*" blocks
@@ -1529,6 +1575,7 @@ func (e *Engine) processCall(ctx context.Context, node *graph.Node) error {
 	for k, res := range e.config.Resources {
 		if res.Name == call.ResourceName {
 			resKey = k
+			resType = res.Type
 			var err error
 			resSchema, err = packages.ResolveResource(ctx, e.pkgLoader, res.Type)
 			if err != nil {
@@ -1547,6 +1594,7 @@ func (e *Engine) processCall(ctx context.Context, node *graph.Node) error {
 			var err error
 			// Providers use their name as the key
 			providerToken := "pulumi_providers_" + e.config.Providers[call.ResourceName].Name
+			resType = providerToken
 			resSchema, err = packages.ResolveResource(ctx, e.pkgLoader, providerToken)
 			if err != nil {
 				return fmt.Errorf("resolving provider schema for call: %w", err)
@@ -1635,9 +1683,10 @@ func (e *Engine) processCall(ctx context.Context, node *graph.Node) error {
 	}
 
 	ret, err := e.callMethod(ctx, CallRequest{
-		Token:    method.Function.Token,
-		Args:     userArgs.Set("__self__", selfRef),
-		Provider: callProvider,
+		Token:      method.Function.Token,
+		Args:       userArgs.Set("__self__", selfRef),
+		Provider:   callProvider,
+		PackageRef: e.packageRefForType(resType),
 	})
 	if err != nil {
 		return fmt.Errorf("calling method %s.%s: %w", call.ResourceName, call.MethodName, err)

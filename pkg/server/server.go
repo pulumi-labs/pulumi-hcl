@@ -30,6 +30,7 @@ import (
 
 	"github.com/blang/semver"
 	"github.com/pulumi/pulumi-language-hcl/pkg/codegen"
+	"github.com/pulumi/pulumi-language-hcl/pkg/hcl/packages"
 	"github.com/pulumi/pulumi-language-hcl/pkg/hcl/parser"
 	"github.com/pulumi/pulumi-language-hcl/pkg/hcl/run"
 	"github.com/pulumi/pulumi-language-hcl/pkg/version"
@@ -136,6 +137,108 @@ func (host *LanguageHost) GetRequiredPlugins(
 	}, nil
 }
 
+// GetRequiredPackages returns the packages required to run an HCL program,
+// including parameterization info for parameterized packages.
+func (host *LanguageHost) GetRequiredPackages(
+	ctx context.Context,
+	req *pulumirpc.GetRequiredPackagesRequest,
+) (*pulumirpc.GetRequiredPackagesResponse, error) {
+	logging.V(5).Infof("GetRequiredPackages: program=%s", req.Info.ProgramDirectory)
+
+	p := parser.NewParser()
+	config, diags := p.ParseDirectory(req.Info.ProgramDirectory)
+	if diags.HasErrors() {
+		return &pulumirpc.GetRequiredPackagesResponse{}, nil
+	}
+
+	paramInfos, err := readParameterizationInfos(req.Info.ProgramDirectory)
+	if err != nil {
+		return &pulumirpc.GetRequiredPackagesResponse{}, fmt.Errorf("unable to read SDKs folder: %w", err)
+	}
+
+	var pkgs []*pulumirpc.PackageDependency
+	if config.Terraform != nil {
+		for alias, provider := range config.Terraform.RequiredProviders {
+
+			version := func(v *semver.Version) string {
+				if v == nil {
+					return ""
+				}
+				return v.String()
+			}
+
+			parameterization := func(p *workspace.Parameterization) *pulumirpc.PackageParameterization {
+				if p == nil {
+					return nil
+				}
+				return &pulumirpc.PackageParameterization{
+					Name:    p.Name,
+					Version: p.Version.String(),
+					Value:   p.Value,
+				}
+			}
+
+			if info, ok := paramInfos[alias]; ok {
+				pkgs = append(pkgs, &pulumirpc.PackageDependency{
+					Name:             info.Name,
+					Version:          version(info.Version),
+					Kind:             "resource",
+					Parameterization: parameterization(info.Parameterization),
+				})
+				continue
+			}
+			dep := &pulumirpc.PackageDependency{
+				Name: alias,
+				Kind: "resource",
+			}
+			if provider.Version != "" {
+				dep.Version = run.ExtractSemverFromConstraint(provider.Version)
+			}
+			if provider.Source != "" {
+				parts := strings.Split(provider.Source, "/")
+				if len(parts) >= 2 {
+					dep.Name = parts[len(parts)-1]
+				}
+			}
+			pkgs = append(pkgs, dep)
+		}
+	}
+
+	return &pulumirpc.GetRequiredPackagesResponse{Packages: pkgs}, nil
+}
+
+// readParameterizationInfos reads .hcl/sdks/*/hcl.sdk.json files from dir and
+// returns a map from parameterized package alias to its ParameterizationInfo.
+func readParameterizationInfos(dir string) (map[string]workspace.PackageDescriptor, error) {
+	sdksDir := filepath.Join(dir, ".hcl", "sdks")
+	entries, err := os.ReadDir(sdksDir)
+	if os.IsNotExist(err) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	result := make(map[string]workspace.PackageDescriptor, len(entries))
+	var errs []error
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		path := filepath.Join(sdksDir, entry.Name(), "hcl.sdk.json")
+		data, err := os.ReadFile(path)
+		if err != nil {
+			continue
+		}
+		var desc workspace.PackageDescriptor
+		if err := json.Unmarshal(data, &desc); err != nil {
+			errs = append(errs, fmt.Errorf("%q: %w", path, err))
+		} else {
+			result[entry.Name()] = desc
+		}
+	}
+	return result, errors.Join(errs...)
+}
+
 // Run executes an HCL program.
 func (host *LanguageHost) Run(
 	ctx context.Context,
@@ -176,7 +279,24 @@ func (host *LanguageHost) Run(
 
 	schemaLoader, err := schema.NewLoaderClient(req.LoaderTarget)
 	if err != nil {
-		return nil, fmt.Errorf("unable to aquire gRPC schema loader: %w", err)
+		return nil, fmt.Errorf("unable to acquire gRPC schema loader: %w", err)
+	}
+
+	descriptors, err := readParameterizationInfos(req.Info.ProgramDirectory)
+	if err != nil {
+		return nil, fmt.Errorf("unable to read parameterization: %w", err)
+	}
+
+	paramDescriptors := make(map[string]workspace.PackageDescriptor)
+	for alias, desc := range descriptors {
+		if desc.Parameterization != nil {
+			paramDescriptors[alias] = desc
+		}
+	}
+
+	loader := schema.ReferenceLoader(schemaLoader)
+	if len(paramDescriptors) > 0 {
+		loader = packages.NewParameterizationAwareLoader(schemaLoader, paramDescriptors)
 	}
 
 	// Create and run the engine
@@ -188,9 +308,10 @@ func (host *LanguageHost) Run(
 		ConfigSecretKeys: req.ConfigSecretKeys,
 		DryRun:           req.DryRun,
 		ResourceMonitor:  resmon,
-		SchemaLoader:     schema.NewCachedLoader(schemaLoader),
+		SchemaLoader:     schema.NewCachedLoader(loader),
 		WorkDir:          req.Info.ProgramDirectory,
 		RootDir:          req.Info.RootDirectory,
+		Packages:         paramDescriptors,
 	})
 
 	if err := engine.Run(ctx); err != nil {
@@ -491,6 +612,29 @@ func (host *LanguageHost) GenerateProject(
 		return nil, fmt.Errorf("writing Pulumi.yaml: %w", err)
 	}
 
+	// For each parameterized local dependency, store the hcl.sdk.json so that
+	// GetRequiredPackages and Run can find the parameterization info later.
+	for alias, artifactPath := range req.LocalDependencies {
+		data, err := os.ReadFile(filepath.Join(artifactPath, "hcl.sdk.json"))
+		if err != nil {
+			continue
+		}
+		var desc workspace.PackageDescriptor
+		if err := json.Unmarshal(data, &desc); err != nil {
+			continue
+		}
+		if desc.Parameterization == nil {
+			continue
+		}
+		sdkDir := filepath.Join(programDir, ".hcl", "sdks", alias)
+		if err := os.MkdirAll(sdkDir, 0755); err != nil {
+			return nil, fmt.Errorf("creating sdk dir for %s: %w", alias, err)
+		}
+		if err := os.WriteFile(filepath.Join(sdkDir, "hcl.sdk.json"), data, 0644); err != nil {
+			return nil, fmt.Errorf("writing hcl.sdk.json for %s: %w", alias, err)
+		}
+	}
+
 	return &pulumirpc.GenerateProjectResponse{
 		Diagnostics: plugin.HclDiagnosticsToRPCDiagnostics(genDiags),
 	}, nil
@@ -573,12 +717,20 @@ func (host *LanguageHost) Pack(
 	logging.V(5).Infof("Pack: packageDirectory=%s, destinationDirectory=%s",
 		req.PackageDirectory, req.DestinationDirectory)
 
-	if err := fsutil.CopyFile(req.DestinationDirectory, req.PackageDirectory, nil); err != nil {
+	// Create a named subdirectory within the destination so that multiple packages packed into
+	// the same destination directory don't overwrite each other's files.
+	pkgName := filepath.Base(req.PackageDirectory)
+	artifactPath := filepath.Join(req.DestinationDirectory, pkgName+".sdk")
+	if err := os.MkdirAll(artifactPath, 0755); err != nil {
+		return nil, fmt.Errorf("creating artifact directory: %w", err)
+	}
+
+	if err := fsutil.CopyFile(artifactPath, req.PackageDirectory, nil); err != nil {
 		return nil, err
 	}
 
 	return &pulumirpc.PackResponse{
-		ArtifactPath: req.DestinationDirectory,
+		ArtifactPath: artifactPath,
 	}, nil
 }
 
@@ -590,6 +742,33 @@ type resourceMonitorAdapter struct {
 	monitorClient pulumirpc.ResourceMonitorClient
 	engineClient  pulumirpc.EngineClient
 	ctx           context.Context
+}
+
+// RegisterPackage registers a parameterized package with the engine.
+func (r *resourceMonitorAdapter) RegisterPackage(
+	ctx context.Context,
+	pkg workspace.PackageDescriptor,
+) (run.PackageRef, error) {
+	versionStr := ""
+	if pkg.Version != nil {
+		versionStr = pkg.Version.String()
+	}
+	req := &pulumirpc.RegisterPackageRequest{
+		Name:    pkg.Name,
+		Version: versionStr,
+	}
+	if pkg.Parameterization != nil {
+		req.Parameterization = &pulumirpc.Parameterization{
+			Name:    pkg.Parameterization.Name,
+			Version: pkg.Parameterization.Version.String(),
+			Value:   pkg.Parameterization.Value,
+		}
+	}
+	resp, err := r.monitorClient.RegisterPackage(ctx, req)
+	if err != nil {
+		return "", fmt.Errorf("registering package %s: %w", pkg.Name, err)
+	}
+	return run.PackageRef(resp.Ref), nil
 }
 
 // RegisterResource registers a resource with Pulumi.
@@ -665,6 +844,7 @@ func (r *resourceMonitorAdapter) RegisterResource(
 		EnvVarMappings:             req.EnvVarMappings,
 		Version:                    req.Version,
 		PluginDownloadURL:          req.PluginDownloadURL,
+		PackageRef:                 string(req.PackageRef),
 	}
 
 	// Add custom timeouts if specified
@@ -725,6 +905,7 @@ func (r *resourceMonitorAdapter) Invoke(
 		Version:           req.Version,
 		PluginDownloadURL: req.PluginDownloadURL,
 		AcceptResources:   true,
+		PackageRef:        string(req.PackageRef),
 	}
 
 	// Call the resource monitor
@@ -795,9 +976,10 @@ func (r *resourceMonitorAdapter) Call(
 	}
 
 	resp, err := r.monitorClient.Call(ctx, &pulumirpc.ResourceCallRequest{
-		Tok:      req.Token,
-		Args:     argsStruct,
-		Provider: req.Provider,
+		Tok:        req.Token,
+		Args:       argsStruct,
+		Provider:   req.Provider,
+		PackageRef: string(req.PackageRef),
 	})
 	if err != nil {
 		return nil, fmt.Errorf("calling method: %w", err)

@@ -1,0 +1,12 @@
+{
+  "Name": "parameterized",
+  "Kind": "",
+  "Version": "1.2.3",
+  "PluginDownloadURL": "",
+  "Checksums": null,
+  "Parameterization": {
+    "Name": "goodbye",
+    "Version": "2.0.0",
+    "Value": "R29vZGJ5ZQ=="
+  }
+}
