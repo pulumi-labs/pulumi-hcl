@@ -25,10 +25,13 @@ import (
 	"unicode"
 
 	"github.com/hashicorp/hcl/v2"
+	"github.com/pulumi/pulumi-language-hcl/pkg/hcl/eval"
 	"github.com/pulumi/pulumi/pkg/v3/codegen"
 	"github.com/pulumi/pulumi/pkg/v3/codegen/cgstrings"
 	"github.com/pulumi/pulumi/pkg/v3/codegen/schema"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/resource"
+	"github.com/pulumi/pulumi/sdk/v3/go/common/resource/archive"
+	"github.com/pulumi/pulumi/sdk/v3/go/common/resource/asset"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/util/cmdutil"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/util/contract"
 	"github.com/pulumi/pulumi/sdk/v3/go/property"
@@ -310,6 +313,21 @@ func ctyToResourceProperty(path string, val cty.Value, prop schema.Type, already
 		return ctyToPropertyValue(val)
 	}
 
+	// Handle asset and archive types.
+	if prop == schema.AssetType || prop == schema.ArchiveType {
+		if !val.Type().IsCapsuleType() {
+			return property.Value{}, fmt.Errorf("%q: expected asset or archive, got %s", path, val.Type().FriendlyName())
+		}
+		switch inner := val.EncapsulatedValue().(type) {
+		case *asset.Asset:
+			return property.New(inner), nil
+		case *archive.Archive:
+			return property.New(inner), nil
+		default:
+			return property.Value{}, fmt.Errorf("%q: unexpected capsule value type %T", path, inner)
+		}
+	}
+
 	// Handle complex types
 	switch prop := prop.(type) {
 	case *schema.ResourceType:
@@ -464,6 +482,16 @@ func ctyToPropertyValue(val cty.Value) (property.Value, error) {
 		// Dynamic type - try to infer the type from the underlying value
 		return property.New(property.Null), nil
 
+	case typ.IsCapsuleType():
+		switch inner := val.EncapsulatedValue().(type) {
+		case *asset.Asset:
+			return property.New(inner), nil
+		case *archive.Archive:
+			return property.New(inner), nil
+		default:
+			return property.Value{}, fmt.Errorf("unknown capsule type %T", inner)
+		}
+
 	default:
 		return property.Value{}, fmt.Errorf("unknown type %v", typ)
 	}
@@ -584,6 +612,10 @@ func ctyTypeFromType(typ schema.Type) cty.Type {
 		return cty.Number
 	case schema.AnyType:
 		return cty.DynamicPseudoType
+	case schema.AssetType:
+		return eval.AssetCapsuleType
+	case schema.ArchiveType:
+		return eval.ArchiveCapsuleType
 	}
 
 	switch typ := typ.(type) {
@@ -752,6 +784,12 @@ func propertyValueToCty(path string, v property.Value, typ schema.Type, dryRun b
 		result["__ref"] = cty.CapsuleVal(resourceRefCapsuleType, &ref)
 		return cty.ObjectVal(result), nil
 
+	case v.IsAsset():
+		return cty.CapsuleVal(eval.AssetCapsuleType, v.AsAsset()), nil
+
+	case v.IsArchive():
+		return cty.CapsuleVal(eval.ArchiveCapsuleType, v.AsArchive()), nil
+
 	default:
 		return cty.Value{}, fmt.Errorf("%s: unhandled property %s", path, v.GoString())
 	}
@@ -804,6 +842,12 @@ func PropertyValueToCty(pv property.Value) cty.Value {
 			vals[string(k)] = PropertyValueToCty(v)
 		}
 		return cty.ObjectVal(vals)
+
+	case pv.IsAsset():
+		return cty.CapsuleVal(eval.AssetCapsuleType, pv.AsAsset())
+
+	case pv.IsArchive():
+		return cty.CapsuleVal(eval.ArchiveCapsuleType, pv.AsArchive())
 
 	default:
 		return cty.NullVal(cty.DynamicPseudoType)

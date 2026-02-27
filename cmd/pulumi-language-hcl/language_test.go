@@ -128,8 +128,7 @@ func runTestingHost(t *testing.T) (string, testingrpc.LanguageTestClient) {
 }
 
 var expectedFailures = map[string]string{
-	"l2-resource-asset-archive": "not yet implemented - We should implement asset & archive support fully, using cty.Capsules to propagate through the cty layer.",
-	"l2-discriminated-union":    "not yet implemented",
+	"l2-discriminated-union": "not yet implemented",
 
 	"l2-rtti": "not yet implemented - don't bother - will be deleted",
 	"l2-plain": "unsupported in HCL:" +
