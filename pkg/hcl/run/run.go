@@ -235,6 +235,8 @@ type Engine struct {
 
 	// parentURN is the parent resource URN (for child modules).
 	parentURN string
+
+	parallel int
 }
 
 // EngineOptions configures the engine.
@@ -271,6 +273,8 @@ type EngineOptions struct {
 	// Packages maps parameterized package alias to its descriptor.
 	// The engine calls RegisterPackage on the resource monitor for each entry before running the program.
 	Packages map[string]workspace.PackageDescriptor
+
+	Parallel int
 }
 
 // NewEngine creates a new execution engine.
@@ -302,6 +306,7 @@ func NewEngine(config *ast.Config, opts *EngineOptions) *Engine {
 		packageRefs:             make(map[string]PackageRef),
 		moduleLoader:            modules.NewLoader(),
 		moduleOutputs:           make(map[string]cty.Value),
+		parallel:                opts.Parallel,
 	}
 
 	return engine
@@ -416,7 +421,7 @@ func (e *Engine) processGraph(ctx context.Context, g *graph.Graph) error {
 	if err := g.InjectAfter(e.checkPulumiVersion, graph.NodeTypeVariable); err != nil {
 		return err
 	}
-	return g.Walk(ctx, e.processNode)
+	return g.Walk(ctx, e.processNode, e.parallel)
 }
 
 // processVariable processes a variable definition.

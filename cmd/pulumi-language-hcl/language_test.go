@@ -128,7 +128,6 @@ func runTestingHost(t *testing.T) (string, testingrpc.LanguageTestClient) {
 }
 
 var expectedFailures = map[string]string{
-	"l2-module-format":                   "not yet implemented",
 	"l2-namespaced-provider":             "not yet implemented",
 	"l2-resource-asset-archive":          "not yet implemented",
 	"l2-resource-name-type":              "not yet implemented - pulumiResourceName/pulumiResourceType functions",

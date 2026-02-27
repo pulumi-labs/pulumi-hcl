@@ -207,7 +207,7 @@ func ResolveFunction(ctx context.Context, loader schema.ReferenceLoader, token s
 	for iter := pkg.Functions().Range(); iter.Next(); {
 		mod := pkg.TokenToModule(iter.Token())
 		name := strings.Split(iter.Token(), ":")[2]
-		if strings.ToLower(mod+name) == key {
+		if strings.ReplaceAll(strings.ToLower(mod+name), "/", "") == key {
 			return iter.Function()
 		}
 	}
@@ -218,7 +218,7 @@ func ResolveFunction(ctx context.Context, loader schema.ReferenceLoader, token s
 	for iter := pkg.Functions().Range(); iter.Next(); {
 		mod := pkg.TokenToModule(iter.Token())
 		name := strings.Split(iter.Token(), ":")[2]
-		if strings.ToLower(mod+name) == key {
+		if strings.ReplaceAll(strings.ToLower(mod+name), "/", "") == key {
 			return iter.Function()
 		}
 	}

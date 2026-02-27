@@ -255,6 +255,17 @@ func TestResolveFunction(t *testing.T) {
 				"gcp:storage:getBucket": {},
 			},
 		},
+		schema.PackageSpec{
+			Name: "mypkg",
+			Meta: &schema.MetadataSpec{
+				// Non-standard module format where the module is everything before the last _name segment.
+				ModuleFormat: `(.*)(?:_[^_]*)`,
+			},
+			Functions: map[string]schema.FunctionSpec{
+				"mypkg:mod_concatWorld:concatWorld":        {},
+				"mypkg:mod/nested_concatWorld:concatWorld": {},
+			},
+		},
 	)
 
 	ctx := context.Background()
@@ -308,6 +319,16 @@ func TestResolveFunction(t *testing.T) {
 			token:        "",
 			errAsInvalid: true,
 			errContains:  "at least 2 parts",
+		},
+		{
+			name:      "non-standard module format",
+			token:     "mypkg_mod_concatworld",
+			wantToken: "mypkg:mod_concatWorld:concatWorld",
+		},
+		{
+			name:      "non-standard module format with nested slash",
+			token:     "mypkg_mod_nested_concatworld",
+			wantToken: "mypkg:mod/nested_concatWorld:concatWorld",
 		},
 		{
 			name:    "function not found",

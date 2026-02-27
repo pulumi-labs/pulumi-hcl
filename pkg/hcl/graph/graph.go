@@ -126,7 +126,7 @@ func NewGraph() *Graph {
 	}
 }
 
-func (g *Graph) Walk(ctx context.Context, apply func(context.Context, *Node) error) error {
+func (g *Graph) Walk(ctx context.Context, apply func(context.Context, *Node) error, parallel int) error {
 	return g.dag.Walk(ctx, func(ctx context.Context, n dagNode) error {
 		if n.exec != nil {
 			return n.exec(ctx)
@@ -134,7 +134,7 @@ func (g *Graph) Walk(ctx context.Context, apply func(context.Context, *Node) err
 		node, ok := g.seen[n.key]
 		contract.Assertf(ok, "invalid graph - key not interned")
 		return apply(ctx, node.n)
-	})
+	}, pdag.MaxProcs(parallel))
 }
 
 // Inject a step to run after all nodes of kind nodeType, and before any other kind of node.
