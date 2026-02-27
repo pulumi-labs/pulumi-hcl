@@ -128,11 +128,13 @@ func runTestingHost(t *testing.T) (string, testingrpc.LanguageTestClient) {
 }
 
 var expectedFailures = map[string]string{
-	"l2-namespaced-provider":             "not yet implemented",
-	"l2-resource-asset-archive":          "not yet implemented",
-	"l2-resource-name-type":              "not yet implemented - pulumiResourceName/pulumiResourceType functions",
-	"l2-rtti":                            "not yet implemented",
-	"l2-discriminated-union":             "not yet implemented",
+	"l2-resource-name-type": "not yet implemented - pulumiResourceName/pulumiResourceType functions. We should implement these as built-in functions. They must be implemented at runtime. It is not OK to replace the function invocations at compile time.",
+	"l2-namespaced-provider": "not yet implemented - We should generte SDKs that store the namespace. In terraform.required_providers, we " +
+		"should generate <namespace>/<name> for the provider. We can generate just <name> for non-namespaced provider",
+	"l2-resource-asset-archive": "not yet implemented - We should implement asset & archive support fully, using cty.Capsules to propagate through the cty layer.",
+	"l2-discriminated-union":    "not yet implemented",
+
+	"l2-rtti": "not yet implemented - don't bother - will be deleted",
 	"l2-plain": "unsupported in HCL:" +
 		" requires that HCL can distinguish between an empty and null List<Object>" +
 		" - not compatible with block syntax",
