@@ -35,6 +35,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"reflect"
 	"regexp"
 	"sort"
 	"strings"
@@ -43,12 +44,20 @@ import (
 	"github.com/google/uuid"
 	"github.com/hashicorp/hcl/v2/ext/customdecode"
 	"github.com/hashicorp/hcl/v2/ext/tryfunc"
+	"github.com/pulumi/pulumi/sdk/v3/go/common/resource/archive"
+	"github.com/pulumi/pulumi/sdk/v3/go/common/resource/asset"
 	"github.com/zclconf/go-cty/cty"
 	"github.com/zclconf/go-cty/cty/function"
 	"github.com/zclconf/go-cty/cty/function/stdlib"
 	"golang.org/x/crypto/bcrypt"
 	"gopkg.in/yaml.v3"
 )
+
+// AssetCapsuleType is the cty capsule type for Pulumi assets.
+var AssetCapsuleType = cty.Capsule("Asset", reflect.TypeOf(asset.Asset{}))
+
+// ArchiveCapsuleType is the cty capsule type for Pulumi archives.
+var ArchiveCapsuleType = cty.Capsule("Archive", reflect.TypeOf(archive.Archive{}))
 
 // Functions returns a map of all Terraform-compatible functions.
 func Functions(baseDir string) map[string]function.Function {
@@ -191,6 +200,13 @@ func Functions(baseDir string) map[string]function.Function {
 		// Pulumi-specific functions
 		"pulumiResourceName": pulumiResourceNameFunc,
 		"pulumiResourceType": pulumiResourceTypeFunc,
+
+		// Asset and archive functions
+		"fileAsset":    fileAssetFunc(baseDir),
+		"fileArchive":  fileArchiveFunc(baseDir),
+		"stringAsset":  stringAssetFunc(),
+		"assetArchive": assetArchiveFunc(),
+		"remoteAsset":  remoteAssetFunc(),
 	}
 
 	return funcs
@@ -1805,4 +1821,92 @@ func splitURN(urn string) (name, typeToken string, err error) {
 		return "", "", fmt.Errorf("invalid Pulumi URN: %q", urn)
 	}
 	return parts[3], parts[2], nil
+}
+
+// Asset and archive functions
+
+func fileAssetFunc(baseDir string) function.Function {
+	return function.New(&function.Spec{
+		Params: []function.Parameter{{Name: "path", Type: cty.String}},
+		Type:   function.StaticReturnType(AssetCapsuleType),
+		Impl: func(args []cty.Value, retType cty.Type) (cty.Value, error) {
+			path := args[0].AsString()
+			a, err := asset.FromPathWithWD(path, baseDir)
+			if err != nil {
+				return cty.NilVal, fmt.Errorf("fileAsset: %w", err)
+			}
+			return cty.CapsuleVal(AssetCapsuleType, a), nil
+		},
+	})
+}
+
+func fileArchiveFunc(baseDir string) function.Function {
+	return function.New(&function.Spec{
+		Params: []function.Parameter{{Name: "path", Type: cty.String}},
+		Type:   function.StaticReturnType(ArchiveCapsuleType),
+		Impl: func(args []cty.Value, retType cty.Type) (cty.Value, error) {
+			path := args[0].AsString()
+			a, err := archive.FromPathWithWD(path, baseDir)
+			if err != nil {
+				return cty.NilVal, fmt.Errorf("fileArchive: %w", err)
+			}
+			return cty.CapsuleVal(ArchiveCapsuleType, a), nil
+		},
+	})
+}
+
+func stringAssetFunc() function.Function {
+	return function.New(&function.Spec{
+		Params: []function.Parameter{{Name: "text", Type: cty.String}},
+		Type:   function.StaticReturnType(AssetCapsuleType),
+		Impl: func(args []cty.Value, retType cty.Type) (cty.Value, error) {
+			text := args[0].AsString()
+			a := &asset.Asset{Sig: asset.AssetSig, Text: text}
+			return cty.CapsuleVal(AssetCapsuleType, a), nil
+		},
+	})
+}
+
+func assetArchiveFunc() function.Function {
+	return function.New(&function.Spec{
+		Params: []function.Parameter{{Name: "assets", Type: cty.DynamicPseudoType}},
+		Type:   function.StaticReturnType(ArchiveCapsuleType),
+		Impl: func(args []cty.Value, retType cty.Type) (cty.Value, error) {
+			val := args[0]
+			if !val.Type().IsObjectType() && !val.Type().IsMapType() {
+				return cty.NilVal, fmt.Errorf("assetArchive: argument must be an object or map")
+			}
+			assets := make(map[string]any)
+			for it := val.ElementIterator(); it.Next(); {
+				k, v := it.Element()
+				key := k.AsString()
+				switch {
+				case v.Type().Equals(AssetCapsuleType):
+					assets[key] = v.EncapsulatedValue().(*asset.Asset)
+				case v.Type().Equals(ArchiveCapsuleType):
+					assets[key] = v.EncapsulatedValue().(*archive.Archive)
+				default:
+					return cty.NilVal, fmt.Errorf("assetArchive: value for key %q must be an asset or archive, got %s",
+						key, v.Type().FriendlyName())
+				}
+			}
+			a := &archive.Archive{Sig: archive.ArchiveSig, Assets: assets}
+			return cty.CapsuleVal(ArchiveCapsuleType, a), nil
+		},
+	})
+}
+
+func remoteAssetFunc() function.Function {
+	return function.New(&function.Spec{
+		Params: []function.Parameter{{Name: "uri", Type: cty.String}},
+		Type:   function.StaticReturnType(AssetCapsuleType),
+		Impl: func(args []cty.Value, retType cty.Type) (cty.Value, error) {
+			uri := args[0].AsString()
+			a, err := asset.FromURI(uri)
+			if err != nil {
+				return cty.NilVal, fmt.Errorf("remoteAsset: %w", err)
+			}
+			return cty.CapsuleVal(AssetCapsuleType, a), nil
+		},
+	})
 }
