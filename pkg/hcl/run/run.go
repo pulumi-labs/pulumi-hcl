@@ -237,6 +237,10 @@ type Engine struct {
 	parentURN string
 
 	parallel int
+
+	// failedNodes tracks resource nodes that failed to register, keyed by instance key.
+	// Dependent nodes check this map and are skipped when a dependency failed.
+	failedNodes *util.SyncMap[string, error]
 }
 
 // EngineOptions configures the engine.
@@ -307,6 +311,7 @@ func NewEngine(config *ast.Config, opts *EngineOptions) *Engine {
 		moduleLoader:            modules.NewLoader(),
 		moduleOutputs:           make(map[string]cty.Value),
 		parallel:                opts.Parallel,
+		failedNodes:             util.NewSyncMap[string, error](),
 	}
 
 	return engine
@@ -341,6 +346,13 @@ func (e *Engine) Run(ctx context.Context) error {
 	// Process nodes in parallel where possible
 	if err := e.processGraph(ctx, g); err != nil {
 		return err
+	}
+
+	// Collect errors from resources that failed to register but were not fatal
+	// (i.e., we continued processing to allow independent resources to proceed).
+	nodeErrs := slices.Collect(e.failedNodes.Values())
+	if len(nodeErrs) > 0 {
+		return errors.Join(nodeErrs...)
 	}
 
 	// Process outputs (collect them into stackOutputs)
@@ -705,7 +717,7 @@ func (e *Engine) processResource(ctx context.Context, node *graph.Node) error {
 	}
 
 	// Resolve the resource type to a Pulumi type token.
-	resSchema, err := packages.ResolveResource(ctx, e.pkgLoader, res.Type)
+	resSchema, err := packages.ResolveResource(ctx, e.pkgLoader, e.knownProviders(), res.Type)
 	if err != nil {
 		return fmt.Errorf("resolving resource type %s: %w", res.Type, err)
 	}
@@ -734,6 +746,11 @@ func (e *Engine) processResource(ctx context.Context, node *graph.Node) error {
 
 	// Register each instance
 	for _, instance := range result.Instances {
+		// Skip this instance if any of the resource's dependencies failed.
+		if e.hasFailedDependency(res) {
+			e.failedNodes.Set(instance.Key, fmt.Errorf("skipped: dependency failed"))
+			continue
+		}
 		if err := e.registerResourceInstance(ctx, res, resSchema, instance); err != nil {
 			return fmt.Errorf("registering %s: %w", instance.Key, err)
 		}
@@ -863,7 +880,10 @@ func (e *Engine) registerResourceInstance(
 
 	urn, id, outputs, err := e.registerResource(ctx, resSchema.Token, resourceName, resourceInputs, opts)
 	if err != nil {
-		return fmt.Errorf("registering resource: %w", err)
+		// Store the failure so dependent resources can detect it and skip.
+		// Return nil so the PDAG walk continues and independent resources proceed.
+		e.failedNodes.Set(instance.Key, fmt.Errorf("registering resource: %w", err))
+		return nil
 	}
 
 	outputs = outputs.Delete("id", "urn")
@@ -1306,6 +1326,44 @@ func (e *Engine) packageRefForType(hclToken string) PackageRef {
 	return e.packageRefs[packageNameFromResourceType(hclToken)]
 }
 
+func (e *Engine) knownProviders() []string {
+	if e.config.Terraform == nil {
+		return nil
+	}
+	providers := make([]string, 0, len(e.config.Terraform.RequiredProviders))
+	for name := range e.config.Terraform.RequiredProviders {
+		providers = append(providers, name)
+	}
+	return providers
+}
+
+// hasFailedDependency reports whether any dependency of res is in failedNodes.
+// When true, the resource should be skipped so that only genuinely independent
+// resources are registered with the engine.
+func (e *Engine) hasFailedDependency(res *ast.Resource) bool {
+	// Check explicit depends_on traversals.
+	for _, dep := range res.DependsOn {
+		depKey := graph.FormatTraversal(dep)
+		if depKey != "" {
+			if _, failed := e.failedNodes.Get(depKey); failed {
+				return true
+			}
+		}
+	}
+	// Check resource body expressions.
+	if res.Config != nil {
+		attrs, _ := res.Config.JustAttributes()
+		for _, attr := range attrs {
+			for _, depKey := range eval.ExtractDependencies(attr.Expr) {
+				if _, failed := e.failedNodes.Get(depKey); failed {
+					return true
+				}
+			}
+		}
+	}
+	return false
+}
+
 func ExtractSemverFromConstraint(constraint string) string {
 	// Remove common constraint operators
 	constraint = strings.TrimSpace(constraint)
@@ -1463,7 +1521,7 @@ func (e *Engine) processDataSource(ctx context.Context, node *graph.Node) error 
 	}
 
 	// Resolve the data source type to a Pulumi function token
-	funcSchema, err := packages.ResolveFunction(ctx, e.pkgLoader, ds.Type)
+	funcSchema, err := packages.ResolveFunction(ctx, e.pkgLoader, e.knownProviders(), ds.Type)
 	if err != nil {
 		return fmt.Errorf("resolving data source type %s: %w", ds.Type, err)
 	}
@@ -1582,7 +1640,7 @@ func (e *Engine) processCall(ctx context.Context, node *graph.Node) error {
 			resKey = k
 			resType = res.Type
 			var err error
-			resSchema, err = packages.ResolveResource(ctx, e.pkgLoader, res.Type)
+			resSchema, err = packages.ResolveResource(ctx, e.pkgLoader, e.knownProviders(), res.Type)
 			if err != nil {
 				return fmt.Errorf("resolving resource type %s for call: %w", res.Type, err)
 			}
@@ -1600,7 +1658,7 @@ func (e *Engine) processCall(ctx context.Context, node *graph.Node) error {
 			// Providers use their name as the key
 			providerToken := "pulumi_providers_" + e.config.Providers[call.ResourceName].Name
 			resType = providerToken
-			resSchema, err = packages.ResolveResource(ctx, e.pkgLoader, providerToken)
+			resSchema, err = packages.ResolveResource(ctx, e.pkgLoader, e.knownProviders(), providerToken)
 			if err != nil {
 				return fmt.Errorf("resolving provider schema for call: %w", err)
 			}

@@ -15,7 +15,12 @@
 // Package util provides utility types and functions.
 package util
 
-import "sync"
+import (
+	"iter"
+	"maps"
+	"slices"
+	"sync"
+)
 
 // SyncMap is a thread-safe map implementation.
 type SyncMap[K comparable, V any] struct {
@@ -57,4 +62,20 @@ func (s *SyncMap[K, V]) Len() int {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return len(s.m)
+}
+
+func (s *SyncMap[K, V]) Keys() iter.Seq[K] {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	// Copy the iterator so the iter is thread safe.
+	return slices.Values(slices.Collect(maps.Keys(s.m)))
+}
+
+func (s *SyncMap[K, V]) Values() iter.Seq[V] {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	// Copy the iterator so the iter is thread safe.
+	return slices.Values(slices.Collect(maps.Values(s.m)))
 }

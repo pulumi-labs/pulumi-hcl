@@ -147,37 +147,48 @@ func TestResolveResource(t *testing.T) {
 				"gcp:storage:Bucket": {},
 			},
 		},
+		schema.PackageSpec{
+			Name: "fail_on_create",
+			Resources: map[string]schema.ResourceSpec{
+				"fail_on_create:index:Resource": {},
+			},
+		},
 	)
 
 	ctx := context.Background()
 
 	tests := []struct {
-		name         string
-		token        string
-		wantToken    string
-		wantErr      error
-		errAsInvalid bool
-		errContains  string
+		name           string
+		knownProviders []string
+		token          string
+		wantToken      string
+		wantErr        error
+		errAsInvalid   bool
+		errContains    string
 	}{
 		{
-			name:      "basic resource",
-			token:     "aws_s3_bucket",
-			wantToken: "aws:s3:Bucket",
+			name:           "basic resource",
+			knownProviders: []string{"aws"},
+			token:          "aws_s3_bucket",
+			wantToken:      "aws:s3:Bucket",
 		},
 		{
-			name:      "index module",
-			token:     "aws_instance",
-			wantToken: "aws:index:Instance",
+			name:           "index module",
+			knownProviders: []string{"aws"},
+			token:          "aws_instance",
+			wantToken:      "aws:index:Instance",
 		},
 		{
-			name:      "multi-part module",
-			token:     "aws_ec2_vpc",
-			wantToken: "aws:ec2:Vpc",
+			name:           "multi-part module",
+			knownProviders: []string{"aws"},
+			token:          "aws_ec2_vpc",
+			wantToken:      "aws:ec2:Vpc",
 		},
 		{
-			name:      "gcp provider",
-			token:     "gcp_storage_bucket",
-			wantToken: "gcp:storage:Bucket",
+			name:           "gcp provider",
+			knownProviders: []string{"gcp"},
+			token:          "gcp_storage_bucket",
+			wantToken:      "gcp:storage:Bucket",
 		},
 		{
 			name:         "single part token",
@@ -192,20 +203,33 @@ func TestResolveResource(t *testing.T) {
 			errContains:  "at least 2 parts",
 		},
 		{
-			name:    "resource not found",
-			token:   "aws_nonexistent",
+			name:           "resource not found",
+			knownProviders: []string{"aws"},
+			token:          "aws_nonexistent",
+			wantErr:        ErrNotFound,
+		},
+		{
+			name:    "package not found",
+			token:   "fake_resource",
 			wantErr: ErrNotFound,
 		},
 		{
-			name:        "package not found",
-			token:       "fake_resource",
-			errContains: "unable to load schema",
+			name:           "underscore package name",
+			knownProviders: []string{"fail_on_create", "simple"},
+			token:          "fail_on_create_resource",
+			wantToken:      "fail_on_create:index:Resource",
+		},
+		{
+			name:           "ambiguous token",
+			knownProviders: []string{"foo", "foo_bar"},
+			token:          "foo_bar_thing",
+			errContains:    "ambiguous token",
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			res, err := ResolveResource(ctx, loader, tt.token)
+			res, err := ResolveResource(ctx, loader, tt.knownProviders, tt.token)
 
 			if tt.errAsInvalid {
 				require.Error(t, err)
@@ -271,42 +295,49 @@ func TestResolveFunction(t *testing.T) {
 	ctx := context.Background()
 
 	tests := []struct {
-		name         string
-		token        string
-		wantToken    string
-		wantErr      error
-		errAsInvalid bool
-		errContains  string
+		name           string
+		knownProviders []string
+		token          string
+		wantToken      string
+		wantErr        error
+		errAsInvalid   bool
+		errContains    string
 	}{
 		{
-			name:      "direct function match",
-			token:     "aws_s3_getbucket",
-			wantToken: "aws:s3:getBucket",
+			name:           "direct function match",
+			knownProviders: []string{"aws"},
+			token:          "aws_s3_getbucket",
+			wantToken:      "aws:s3:getBucket",
 		},
 		{
-			name:      "index module function",
-			token:     "aws_getinstance",
-			wantToken: "aws:index:getInstance",
+			name:           "index module function",
+			knownProviders: []string{"aws"},
+			token:          "aws_getinstance",
+			wantToken:      "aws:index:getInstance",
 		},
 		{
-			name:      "implicit get prefix",
-			token:     "aws_s3_bucket",
-			wantToken: "aws:s3:getBucket",
+			name:           "implicit get prefix",
+			knownProviders: []string{"aws"},
+			token:          "aws_s3_bucket",
+			wantToken:      "aws:s3:getBucket",
 		},
 		{
-			name:      "implicit get prefix multi-part",
-			token:     "aws_ec2_vpc",
-			wantToken: "aws:ec2:getVpc",
+			name:           "implicit get prefix multi-part",
+			knownProviders: []string{"aws"},
+			token:          "aws_ec2_vpc",
+			wantToken:      "aws:ec2:getVpc",
 		},
 		{
-			name:      "gcp implicit get",
-			token:     "gcp_storage_bucket",
-			wantToken: "gcp:storage:getBucket",
+			name:           "gcp implicit get",
+			knownProviders: []string{"gcp"},
+			token:          "gcp_storage_bucket",
+			wantToken:      "gcp:storage:getBucket",
 		},
 		{
-			name:      "list function",
-			token:     "aws_s3_listbuckets",
-			wantToken: "aws:s3:listBuckets",
+			name:           "list function",
+			knownProviders: []string{"aws"},
+			token:          "aws_s3_listbuckets",
+			wantToken:      "aws:s3:listBuckets",
 		},
 		{
 			name:         "single part token",
@@ -321,30 +352,33 @@ func TestResolveFunction(t *testing.T) {
 			errContains:  "at least 2 parts",
 		},
 		{
-			name:      "non-standard module format",
-			token:     "mypkg_mod_concatworld",
-			wantToken: "mypkg:mod_concatWorld:concatWorld",
+			name:           "non-standard module format",
+			knownProviders: []string{"mypkg"},
+			token:          "mypkg_mod_concatworld",
+			wantToken:      "mypkg:mod_concatWorld:concatWorld",
 		},
 		{
-			name:      "non-standard module format with nested slash",
-			token:     "mypkg_mod_nested_concatworld",
-			wantToken: "mypkg:mod/nested_concatWorld:concatWorld",
+			name:           "non-standard module format with nested slash",
+			knownProviders: []string{"mypkg"},
+			token:          "mypkg_mod_nested_concatworld",
+			wantToken:      "mypkg:mod/nested_concatWorld:concatWorld",
 		},
 		{
-			name:    "function not found",
-			token:   "aws_nonexistent",
+			name:           "function not found",
+			knownProviders: []string{"aws"},
+			token:          "aws_nonexistent",
+			wantErr:        ErrNotFound,
+		},
+		{
+			name:    "package not found",
+			token:   "fake_function",
 			wantErr: ErrNotFound,
-		},
-		{
-			name:        "package not found",
-			token:       "fake_function",
-			errContains: "unable to load schema",
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			fn, err := ResolveFunction(ctx, loader, tt.token)
+			fn, err := ResolveFunction(ctx, loader, tt.knownProviders, tt.token)
 
 			if tt.errAsInvalid {
 				require.Error(t, err)
