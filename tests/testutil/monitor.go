@@ -19,6 +19,7 @@ import (
 	"sync"
 
 	"github.com/pulumi/pulumi-language-hcl/pkg/hcl/run"
+	"github.com/pulumi/pulumi/sdk/v3/go/common/workspace"
 	"github.com/pulumi/pulumi/sdk/v3/go/property"
 )
 
@@ -74,4 +75,8 @@ func (m *MockResourceMonitor) Call(ctx context.Context, req run.CallRequest) (*r
 
 func (m *MockResourceMonitor) CheckPulumiVersion(ctx context.Context, versionRange string) error {
 	return nil
+}
+
+func (m *MockResourceMonitor) RegisterPackage(ctx context.Context, pkg workspace.PackageDescriptor) (run.PackageRef, error) {
+	return "", nil
 }

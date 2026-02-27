@@ -26,6 +26,7 @@ import (
 	"github.com/pulumi/pulumi-language-hcl/pkg/hcl/packages"
 	"github.com/pulumi/pulumi-language-hcl/pkg/hcl/parser"
 	"github.com/pulumi/pulumi/pkg/v3/codegen/schema"
+	"github.com/pulumi/pulumi/sdk/v3/go/common/workspace"
 	"github.com/pulumi/pulumi/sdk/v3/go/property"
 	"github.com/stretchr/testify/require"
 )
@@ -80,6 +81,10 @@ func (m *mockResourceMonitor) Call(ctx context.Context, req CallRequest) (*CallR
 
 func (m *mockResourceMonitor) CheckPulumiVersion(ctx context.Context, versionRange string) error {
 	return nil
+}
+
+func (m *mockResourceMonitor) RegisterPackage(ctx context.Context, pkg workspace.PackageDescriptor) (PackageRef, error) {
+	return "", nil
 }
 
 var _ schema.ReferenceLoader = mockReferenceLoader{}

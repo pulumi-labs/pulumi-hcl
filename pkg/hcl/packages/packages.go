@@ -22,10 +22,12 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/blang/semver"
 	"github.com/hashicorp/hcl/v2"
 	"github.com/pulumi/pulumi/pkg/v3/codegen/pcl"
 	"github.com/pulumi/pulumi/pkg/v3/codegen/schema"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/util/contract"
+	"github.com/pulumi/pulumi/sdk/v3/go/common/workspace"
 )
 
 var ErrNotFound = errors.New("not found")
@@ -126,6 +128,64 @@ func resolvePackage(ctx context.Context, loader schema.ReferenceLoader, descript
 	return pkg, nil
 
 }
+
+// ParameterizationAwareLoader wraps a schema.ReferenceLoader and enriches load
+// requests for parameterized packages with the correct base provider name and
+// parameterization.
+type ParameterizationAwareLoader struct {
+	inner   schema.ReferenceLoader
+	aliases map[string]workspace.PackageDescriptor
+}
+
+func NewParameterizationAwareLoader(
+	inner schema.ReferenceLoader,
+	aliases map[string]workspace.PackageDescriptor,
+) *ParameterizationAwareLoader {
+	return &ParameterizationAwareLoader{inner: inner, aliases: aliases}
+}
+
+func (l *ParameterizationAwareLoader) enrich(descriptor *schema.PackageDescriptor) *schema.PackageDescriptor {
+	if descriptor.Parameterization != nil {
+		return descriptor
+	}
+	desc, ok := l.aliases[descriptor.Name]
+	if !ok || desc.Parameterization == nil || desc.Version == nil {
+		return descriptor
+	}
+	paramVersion := desc.Parameterization.Version
+	baseVersion := *desc.Version
+	return &schema.PackageDescriptor{
+		Name:    desc.Name,
+		Version: &baseVersion,
+		Parameterization: &schema.ParameterizationDescriptor{
+			Name:    desc.Parameterization.Name,
+			Version: paramVersion,
+			Value:   desc.Parameterization.Value,
+		},
+	}
+}
+
+func (l *ParameterizationAwareLoader) LoadPackage(pkg string, version *semver.Version) (*schema.Package, error) {
+	return l.LoadPackageV2(context.TODO(), &schema.PackageDescriptor{Name: pkg, Version: version})
+}
+
+func (l *ParameterizationAwareLoader) LoadPackageV2(ctx context.Context, descriptor *schema.PackageDescriptor) (*schema.Package, error) {
+	ref, err := l.LoadPackageReferenceV2(ctx, descriptor)
+	if err != nil {
+		return nil, err
+	}
+	return ref.Definition()
+}
+
+func (l *ParameterizationAwareLoader) LoadPackageReference(pkg string, version *semver.Version) (schema.PackageReference, error) {
+	return l.LoadPackageReferenceV2(context.TODO(), &schema.PackageDescriptor{Name: pkg, Version: version})
+}
+
+func (l *ParameterizationAwareLoader) LoadPackageReferenceV2(ctx context.Context, descriptor *schema.PackageDescriptor) (schema.PackageReference, error) {
+	return l.inner.LoadPackageReferenceV2(ctx, l.enrich(descriptor))
+}
+
+var _ schema.ReferenceLoader = (*ParameterizationAwareLoader)(nil)
 
 func ResolveFunction(ctx context.Context, loader schema.ReferenceLoader, token string) (*schema.Function, error) {
 	parts := strings.Split(token, "_")
