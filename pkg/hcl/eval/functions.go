@@ -187,6 +187,10 @@ func Functions(baseDir string) map[string]function.Function {
 		"tostring":     toStringFunc,
 		"try":          tryfunc.TryFunc,
 		"type":         typeFunc,
+
+		// Pulumi-specific functions
+		"pulumiResourceName": pulumiResourceNameFunc,
+		"pulumiResourceType": pulumiResourceTypeFunc,
 	}
 
 	return funcs
@@ -1730,3 +1734,75 @@ var (
 	_ = json.Marshal
 	_ = csv.NewReader
 )
+
+// Pulumi-specific functions
+
+// pulumiResourceNameFunc returns the logical name of a Pulumi resource by extracting it from the
+// resource's URN. The argument must be a resource reference (an object with a "urn" attribute).
+var pulumiResourceNameFunc = function.New(&function.Spec{
+	Params: []function.Parameter{
+		{
+			Name: "resource",
+			Type: cty.DynamicPseudoType,
+		},
+	},
+	Type: function.StaticReturnType(cty.String),
+	Impl: func(args []cty.Value, retType cty.Type) (cty.Value, error) {
+		res := args[0]
+		if !res.IsKnown() {
+			return cty.UnknownVal(cty.String), nil
+		}
+		if !res.Type().IsObjectType() || !res.Type().HasAttribute("urn") {
+			return cty.NilVal, fmt.Errorf("pulumiResourceName: argument must be a resource reference")
+		}
+		urnVal := res.GetAttr("urn")
+		if !urnVal.IsKnown() {
+			return cty.UnknownVal(cty.String), nil
+		}
+		name, _, err := splitURN(urnVal.AsString())
+		if err != nil {
+			return cty.NilVal, fmt.Errorf("pulumiResourceName: %w", err)
+		}
+		return cty.StringVal(name), nil
+	},
+})
+
+// pulumiResourceTypeFunc returns the type token of a Pulumi resource by extracting it from the
+// resource's URN. The argument must be a resource reference (an object with a "urn" attribute).
+var pulumiResourceTypeFunc = function.New(&function.Spec{
+	Params: []function.Parameter{
+		{
+			Name: "resource",
+			Type: cty.DynamicPseudoType,
+		},
+	},
+	Type: function.StaticReturnType(cty.String),
+	Impl: func(args []cty.Value, retType cty.Type) (cty.Value, error) {
+		res := args[0]
+		if !res.IsKnown() {
+			return cty.UnknownVal(cty.String), nil
+		}
+		if !res.Type().IsObjectType() || !res.Type().HasAttribute("urn") {
+			return cty.NilVal, fmt.Errorf("pulumiResourceType: argument must be a resource reference")
+		}
+		urnVal := res.GetAttr("urn")
+		if !urnVal.IsKnown() {
+			return cty.UnknownVal(cty.String), nil
+		}
+		_, typeToken, err := splitURN(urnVal.AsString())
+		if err != nil {
+			return cty.NilVal, fmt.Errorf("pulumiResourceType: %w", err)
+		}
+		return cty.StringVal(typeToken), nil
+	},
+})
+
+// splitURN parses a Pulumi URN (urn:pulumi:<stack>::<project>::<type>::<name>) and returns
+// the resource name and type token.
+func splitURN(urn string) (name, typeToken string, err error) {
+	parts := strings.SplitN(urn, "::", 4)
+	if len(parts) != 4 {
+		return "", "", fmt.Errorf("invalid Pulumi URN: %q", urn)
+	}
+	return parts[3], parts[2], nil
+}
