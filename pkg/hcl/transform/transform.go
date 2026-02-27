@@ -739,6 +739,19 @@ func propertyValueToCty(path string, v property.Value, typ schema.Type, dryRun b
 		}
 		return cty.ListVal(arr), nil
 
+	case v.IsResourceReference():
+		ref := v.AsResourceReference()
+		resType, ok := typ.(*schema.ResourceType)
+		if !ok || resType.Resource == nil {
+			return cty.NullVal(ctyTypeFromType(typ)), nil
+		}
+		result, err := propertyObjectToCtyMap(path, property.Map{}, resType.Resource.Properties, dryRun)
+		if err != nil {
+			return cty.Value{}, err
+		}
+		result["__ref"] = cty.CapsuleVal(resourceRefCapsuleType, &ref)
+		return cty.ObjectVal(result), nil
+
 	default:
 		return cty.Value{}, fmt.Errorf("%s: unhandled property %s", path, v.GoString())
 	}
