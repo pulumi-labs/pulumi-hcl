@@ -134,8 +134,12 @@ func genRequiredProviders(body *hclwrite.Body, program *pcl.Program) {
 		if ref.Name() == "pulumi" {
 			continue
 		}
+		namespace := ref.Namespace()
+		if namespace == "" {
+			namespace = "pulumi"
+		}
 		attrs := map[string]cty.Value{
-			"source": cty.StringVal("pulumi/" + ref.Name()),
+			"source": cty.StringVal(namespace + "/" + ref.Name()),
 		}
 		if v := ref.Version(); v != nil {
 			attrs["version"] = cty.StringVal(v.String())
