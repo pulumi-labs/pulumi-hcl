@@ -46,6 +46,7 @@ import (
 	"github.com/hashicorp/hcl/v2/ext/tryfunc"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/resource/archive"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/resource/asset"
+	"github.com/pulumi/pulumi/sdk/v3/go/common/resource/urn"
 	"github.com/zclconf/go-cty/cty"
 	"github.com/zclconf/go-cty/cty/function"
 	"github.com/zclconf/go-cty/cty/function/stdlib"
@@ -1813,14 +1814,12 @@ var pulumiResourceTypeFunc = function.New(&function.Spec{
 	},
 })
 
-// splitURN parses a Pulumi URN (urn:pulumi:<stack>::<project>::<type>::<name>) and returns
-// the resource name and type token.
-func splitURN(urn string) (name, typeToken string, err error) {
-	parts := strings.SplitN(urn, "::", 4)
-	if len(parts) != 4 {
+func splitURN(u string) (name, typeToken string, err error) {
+	urn := urn.URN(u)
+	if !urn.IsValid() {
 		return "", "", fmt.Errorf("invalid Pulumi URN: %q", urn)
 	}
-	return parts[3], parts[2], nil
+	return urn.Name(), string(urn.Type()), nil
 }
 
 // Asset and archive functions
