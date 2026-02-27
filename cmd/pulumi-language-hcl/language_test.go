@@ -128,7 +128,6 @@ func runTestingHost(t *testing.T) (string, testingrpc.LanguageTestClient) {
 }
 
 var expectedFailures = map[string]string{
-	"l1-builtin-list":   "not yet implemented",
 	"l1-builtin-object": "not yet implemented",
 	"l2-builtin-object": "not yet implemented",
 
