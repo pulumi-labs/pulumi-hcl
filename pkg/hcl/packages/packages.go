@@ -65,13 +65,36 @@ func PulumiTokenToHCL(token string) (string, hcl.Diagnostics) {
 	return hclToken + "_" + strings.ToLower(strings.ReplaceAll(name, "/", "_")), nil
 }
 
-func ResolveResource(ctx context.Context, loader schema.ReferenceLoader, token string) (*schema.Resource, error) {
+// packageFromToken determines the package name from an HCL token and the list of
+// known providers from required_providers.
+//
+// If exactly one known provider matches as a prefix of the token, that provider
+// name is returned. If multiple known providers match, an error is returned to
+// surface the ambiguity. If no known provider matches, the first underscore-
+// delimited segment is used as the package name.
+func packageFromToken(knownProviders []string, token string) (string, error) {
+	var matches []string
+	for _, p := range knownProviders {
+		if strings.HasPrefix(token, p+"_") {
+			matches = append(matches, p)
+		}
+	}
+	switch len(matches) {
+	case 0:
+		return token[:strings.Index(token, "_")], nil
+	case 1:
+		return matches[0], nil
+	default:
+		return "", fmt.Errorf("ambiguous token %q: matches multiple providers %v", token, matches)
+	}
+}
+
+func ResolveResource(ctx context.Context, loader schema.ReferenceLoader, knownProviders []string, token string) (*schema.Resource, error) {
 	parts := strings.Split(token, "_")
 	if len(parts) < 2 {
 		return nil, InvalidToken{token: token, reason: "Pulumi HCL tokens must have at least 2 parts"}
 	}
 
-	// transform the default provider token into something the
 	if provider, ok := strings.CutPrefix(token, "pulumi_providers_"); ok {
 		pkg, err := resolvePackage(ctx, loader, &schema.PackageDescriptor{Name: provider})
 		if err != nil {
@@ -80,31 +103,28 @@ func ResolveResource(ctx context.Context, loader schema.ReferenceLoader, token s
 		return pkg.Provider()
 	}
 
-	// TODO: Thread through sufficient information to be deterministic:
-	// - Version
-	// - DownloadURL
-	// - Parameterization
-	pkg, err := resolvePackage(ctx, loader, &schema.PackageDescriptor{Name: parts[0]})
-	if err != nil {
-		return nil, err
-	}
-
 	// Prevent users from needing to write pulumi_pulumi_stackreference
 	if token == "pulumi_stackreference" {
+		pkg, err := resolvePackage(ctx, loader, &schema.PackageDescriptor{Name: "pulumi"})
+		if err != nil {
+			return nil, err
+		}
 		r, ok, err := pkg.Resources().Get("pulumi:pulumi:StackReference")
 		contract.Assertf(ok, "stack references are there")
 		return r, err
 	}
 
-	// Caveats:
-	//
-	// - Fails totally if '_' are in tokens
-	//
-	// - Looses information on where the separator between module & name are:
-	//
-	//	"ab:c" is the same as "a:bc"
+	pkgName, err := packageFromToken(knownProviders, token)
+	if err != nil {
+		return nil, err
+	}
 
-	key := strings.Join(parts[1:], "")
+	pkg, err := resolvePackage(ctx, loader, &schema.PackageDescriptor{Name: pkgName})
+	if err != nil {
+		return nil, ErrNotFound
+	}
+
+	key := strings.ReplaceAll(token[len(pkgName)+1:], "_", "")
 	for iter := pkg.Resources().Range(); iter.Next(); {
 		mod := pkg.TokenToModule(iter.Token())
 		name := strings.Split(iter.Token(), ":")[2]
@@ -187,23 +207,26 @@ func (l *ParameterizationAwareLoader) LoadPackageReferenceV2(ctx context.Context
 
 var _ schema.ReferenceLoader = (*ParameterizationAwareLoader)(nil)
 
-func ResolveFunction(ctx context.Context, loader schema.ReferenceLoader, token string) (*schema.Function, error) {
+func ResolveFunction(ctx context.Context, loader schema.ReferenceLoader, knownProviders []string, token string) (*schema.Function, error) {
 	parts := strings.Split(token, "_")
 	if len(parts) < 2 {
 		return nil, InvalidToken{token: token, reason: "Pulumi HCL tokens must have at least 2 parts"}
 	}
 
-	// TODO: Thread through sufficient information to be deterministic:
-	// - Version
-	// - DownloadURL
-	// - Parameterization
-
-	pkg, err := resolvePackage(ctx, loader, &schema.PackageDescriptor{Name: parts[0]})
+	pkgName, err := packageFromToken(knownProviders, token)
 	if err != nil {
 		return nil, err
 	}
 
-	key := strings.Join(parts[1:], "")
+	pkg, err := resolvePackage(ctx, loader, &schema.PackageDescriptor{Name: pkgName})
+	if err != nil {
+		return nil, ErrNotFound
+	}
+
+	suffix := token[len(pkgName)+1:]
+	suffixParts := strings.Split(suffix, "_")
+
+	key := strings.ReplaceAll(suffix, "_", "")
 	for iter := pkg.Functions().Range(); iter.Next(); {
 		mod := pkg.TokenToModule(iter.Token())
 		name := strings.Split(iter.Token(), ":")[2]
@@ -213,12 +236,11 @@ func ResolveFunction(ctx context.Context, loader schema.ReferenceLoader, token s
 	}
 
 	// Allow omitting the "get" on Pulumi datasources.
-
-	key = parts[1] + "get" + strings.Join(parts[2:], "")
+	implicitGetKey := suffixParts[0] + "get" + strings.Join(suffixParts[1:], "")
 	for iter := pkg.Functions().Range(); iter.Next(); {
 		mod := pkg.TokenToModule(iter.Token())
 		name := strings.Split(iter.Token(), ":")[2]
-		if strings.ReplaceAll(strings.ToLower(mod+name), "/", "") == key {
+		if strings.ReplaceAll(strings.ToLower(mod+name), "/", "") == implicitGetKey {
 			return iter.Function()
 		}
 	}

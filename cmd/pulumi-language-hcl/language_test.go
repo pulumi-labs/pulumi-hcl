@@ -133,9 +133,6 @@ var expectedFailures = map[string]string{
 	"l2-resource-name-type":              "not yet implemented - pulumiResourceName/pulumiResourceType functions",
 	"l2-rtti":                            "not yet implemented",
 	"l2-discriminated-union":             "not yet implemented",
-	"l2-failed-create":                   "not yet implemented",
-	"l2-failed-create-continue-on-error": "not yet implemented",
-
 	"l2-plain": "unsupported in HCL:" +
 		" requires that HCL can distinguish between an empty and null List<Object>" +
 		" - not compatible with block syntax",
