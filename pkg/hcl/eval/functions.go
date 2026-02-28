@@ -130,6 +130,7 @@ func Functions(baseDir string) map[string]function.Function {
 		"transpose":       transposeFunc,
 		"values":          stdlib.ValuesFunc,
 		"zipmap":          stdlib.ZipmapFunc,
+		"entries":         entriesFunc,
 
 		// Encoding functions
 		"base64decode":     base64DecodeFunc,
@@ -547,6 +548,60 @@ var sumFunc = function.New(&function.Spec{
 			sum += f
 		}
 		return cty.NumberFloatVal(sum), nil
+	},
+})
+
+var entriesFunc = function.New(&function.Spec{
+	Params: []function.Parameter{
+		{Name: "collection", Type: cty.DynamicPseudoType},
+	},
+	Type: func(args []cty.Value) (cty.Type, error) {
+		ret := func(k, v cty.Type) (cty.Type, error) {
+			return cty.List(cty.Object(map[string]cty.Type{
+				"key":   k,
+				"value": v,
+			})), nil
+		}
+
+		t := args[0].Type()
+
+		switch {
+		case t.IsObjectType():
+			return ret(cty.String, cty.DynamicPseudoType)
+		case t.IsMapType():
+			return ret(cty.String, args[0].Type().ElementType())
+		case t.IsListType(), t.IsTupleType():
+			return ret(cty.Number, args[0].Type().ElementType())
+		default:
+			return cty.NilType, fmt.Errorf("entries: expected a Map, Object or List")
+		}
+
+	},
+	Impl: func(args []cty.Value, retType cty.Type) (cty.Value, error) {
+		v := args[0]
+		t := v.Type()
+
+		if !v.IsKnown() {
+			return cty.UnknownVal(t), nil
+		}
+
+		if !t.IsCollectionType() {
+			return cty.Value{}, fmt.Errorf("entries: invalid input")
+		}
+
+		elems := make([]cty.Value, 0, v.LengthInt())
+		for it := v.ElementIterator(); it.Next(); {
+			k, v := it.Element()
+			elems = append(elems, cty.ObjectVal(map[string]cty.Value{
+				"key":   k,
+				"value": v,
+			}))
+		}
+
+		if t.IsObjectType() || t.IsTupleType() {
+			return cty.TupleVal(elems), nil
+		}
+		return cty.ListVal(elems), nil
 	},
 })
 
