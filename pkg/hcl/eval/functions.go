@@ -55,10 +55,10 @@ import (
 )
 
 // AssetCapsuleType is the cty capsule type for Pulumi assets.
-var AssetCapsuleType = cty.Capsule("Asset", reflect.TypeOf(asset.Asset{}))
+var AssetCapsuleType = cty.Capsule("Asset", reflect.TypeFor[asset.Asset]())
 
 // ArchiveCapsuleType is the cty capsule type for Pulumi archives.
-var ArchiveCapsuleType = cty.Capsule("Archive", reflect.TypeOf(archive.Archive{}))
+var ArchiveCapsuleType = cty.Capsule("Archive", reflect.TypeFor[archive.Archive]())
 
 // Functions returns a map of all Terraform-compatible functions.
 func Functions(baseDir string) map[string]function.Function {
@@ -567,7 +567,9 @@ var entriesFunc = function.New(&function.Spec{
 
 		switch {
 		case t.IsObjectType():
-			return ret(cty.String, cty.DynamicPseudoType)
+			// We can't return a list, since that would require that each "value" type is the same. We can't
+			// return a tuple since we don't know the length given option fields.
+			return cty.DynamicPseudoType, nil
 		case t.IsMapType():
 			return ret(cty.String, args[0].Type().ElementType())
 		case t.IsListType(), t.IsTupleType():
@@ -585,8 +587,8 @@ var entriesFunc = function.New(&function.Spec{
 			return cty.UnknownVal(t), nil
 		}
 
-		if !t.IsCollectionType() {
-			return cty.Value{}, fmt.Errorf("entries: invalid input")
+		if !t.IsCollectionType() && !t.IsObjectType() {
+			return cty.Value{}, fmt.Errorf("entries: invalid input: %v", t)
 		}
 
 		elems := make([]cty.Value, 0, v.LengthInt())
