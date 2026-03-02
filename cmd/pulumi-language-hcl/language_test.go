@@ -128,8 +128,7 @@ func runTestingHost(t *testing.T) (string, testingrpc.LanguageTestClient) {
 }
 
 var expectedFailures = map[string]string{
-	"l3-component-simple": "not yet implemented",
-	"l2-rtti":             "not yet implemented - don't bother - will be deleted",
+	"l2-rtti": "not yet implemented - don't bother - will be deleted",
 	"l2-plain": "unsupported in HCL:" +
 		" requires that HCL can distinguish between an empty and null List<Object>" +
 		" - not compatible with block syntax",

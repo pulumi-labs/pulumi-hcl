@@ -556,6 +556,9 @@ func (host *LanguageHost) GenerateProject(
 
 	for name, content := range files {
 		path := filepath.Join(programDir, name)
+		if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+			return nil, fmt.Errorf("creating directory for %s: %w", name, err)
+		}
 		if err := os.WriteFile(path, content, 0644); err != nil {
 			return nil, fmt.Errorf("writing %s: %w", name, err)
 		}
