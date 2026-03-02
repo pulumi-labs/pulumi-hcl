@@ -16,6 +16,7 @@ package codegen
 
 import (
 	"fmt"
+	"path/filepath"
 	"regexp"
 	"strings"
 
@@ -90,6 +91,9 @@ func GenerateProgram(program *pcl.Program) (map[string][]byte, hcl.Diagnostics, 
 		case *pcl.PulumiBlock:
 			d := gen.genPulumiBlock(body, n)
 			diags = append(diags, d...)
+		case *pcl.Component:
+			d := gen.genModule(body, n)
+			diags = append(diags, d...)
 		default:
 			diags = append(diags, &hcl.Diagnostic{
 				Severity: hcl.DiagError,
@@ -99,7 +103,19 @@ func GenerateProgram(program *pcl.Program) (map[string][]byte, hcl.Diagnostics, 
 		}
 	}
 
-	return map[string][]byte{"main.hcl": f.Bytes()}, diags, nil
+	files := map[string][]byte{"main.hcl": f.Bytes()}
+	for componentDir, component := range program.CollectComponents() {
+		subFiles, d, err := GenerateProgram(component.Program)
+		diags = append(diags, d...)
+		if err != nil {
+			return nil, diags, err
+		}
+		subDirName := filepath.Base(componentDir)
+		for name, content := range subFiles {
+			files[filepath.Join(subDirName, name)] = content
+		}
+	}
+	return files, diags, nil
 }
 
 type rangeKind int
@@ -989,6 +1005,18 @@ func (g *generator) genOutput(body *hclwrite.Body, ov *pcl.OutputVariable) hcl.D
 	return g.genExpression(block.Body(), "value", ov.Value, schema.AnyType)
 }
 
+func (g *generator) genModule(body *hclwrite.Body, c *pcl.Component) hcl.Diagnostics {
+	block := body.AppendNewBlock("module", []string{c.LogicalName()})
+	source := "./" + filepath.Base(c.DirPath())
+	block.Body().SetAttributeValue("source", cty.StringVal(source))
+	var diags hcl.Diagnostics
+	for _, attr := range c.Inputs {
+		d := g.genExpression(block.Body(), attr.Name, attr.Value, schema.AnyType)
+		diags = append(diags, d...)
+	}
+	return diags
+}
+
 func (g *generator) genPulumiBlock(body *hclwrite.Body, pb *pcl.PulumiBlock) hcl.Diagnostics {
 	if pb.RequiredVersion == nil {
 		return nil
@@ -1324,6 +1352,12 @@ func (g *generator) scopeTraversalTokens(expr *model.ScopeTraversalExpression) (
 		rewritten = append(rewritten, hcl.TraverseRoot{Name: hclType})
 		rewritten = append(rewritten, hcl.TraverseAttr{Name: traversal.RootName()})
 		return hclwrite.TokensForTraversal(append(rewritten, typedObjectTraversal(part.Schema.Properties, traversal[1:])...)), nil
+	case *pcl.Component:
+		// Rewrite "someComponent.output" → "module.someComponent.output".
+		rewritten := make(hcl.Traversal, 0, len(traversal)+1)
+		rewritten = append(rewritten, hcl.TraverseRoot{Name: "module"})
+		rewritten = append(rewritten, hcl.TraverseAttr{Name: traversal.RootName()})
+		return hclwrite.TokensForTraversal(append(rewritten, traversal[1:]...)), nil
 	default:
 		if traversal.RootName() == "range" {
 			switch g.currentRangeKind {

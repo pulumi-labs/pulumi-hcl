@@ -1572,10 +1572,10 @@ output "vpc_id" {
 		t.Fatalf("expected at least 3 registered resources, got %d", len(mock.registeredResources))
 	}
 
-	// Find the module component (type is now dynamic: {project}:modules:{name})
+	// Find the module component (type: components:index:{TypeName})
 	var moduleComponent *RegisterResourceRequest
 	for i := range mock.registeredResources {
-		if strings.Contains(mock.registeredResources[i].Type, ":modules:") {
+		if strings.HasPrefix(mock.registeredResources[i].Type, "components:index:") {
 			moduleComponent = &mock.registeredResources[i]
 			break
 		}
@@ -1585,8 +1585,8 @@ output "vpc_id" {
 		t.Fatal("expected module component to be registered")
 	}
 
-	// Verify the dynamic component type token format
-	expectedType := "test-project:modules:vpc"
+	// Verify the component type token format
+	expectedType := "components:index:Vpc"
 	if moduleComponent.Type != expectedType {
 		t.Errorf("expected module type %q, got %q", expectedType, moduleComponent.Type)
 	}

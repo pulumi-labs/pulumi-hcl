@@ -20,6 +20,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"time"
@@ -1988,14 +1989,7 @@ func (e *Engine) processModuleInstance(ctx context.Context, mod *ast.Module, ins
 		inputs[name] = pv
 	}
 
-	// Register the module as a component resource with a dynamic type token.
-	// Format: {projectName}:modules:{moduleName}
-	// This enables proper identification in the Pulumi state and UI.
-	moduleName := mod.Name
-	if idx := strings.LastIndex(moduleName, "/"); idx != -1 {
-		moduleName = moduleName[idx+1:]
-	}
-	componentType := fmt.Sprintf("%s:modules:%s", e.projectName, moduleName)
+	componentType := fmt.Sprintf("components:index:%s", componentTypeName(loadedModule.SourcePath))
 	componentOpts := &ResourceOptions{
 		Parent: e.parentURN,
 	}
@@ -2053,6 +2047,23 @@ func (e *Engine) processModuleInstance(ctx context.Context, mod *ast.Module, ins
 	}
 
 	return nil
+}
+
+// componentTypeName derives a component type name from its source directory path,
+// replicating PCL's DeclarationName logic.
+func componentTypeName(sourcePath string) string {
+	name := filepath.Base(sourcePath)
+	for _, ch := range []string{"-", ".", " "} {
+		name = strings.ReplaceAll(name, ch, "_")
+	}
+	parts := strings.Split(name, "_")
+	var b strings.Builder
+	for _, p := range parts {
+		if p != "" {
+			b.WriteString(strings.ToUpper(p[:1]) + p[1:])
+		}
+	}
+	return b.String()
 }
 
 // registerComponentResource registers a component (non-custom) resource.
