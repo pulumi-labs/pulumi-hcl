@@ -218,7 +218,7 @@ func TestEvaluateForEach(t *testing.T) {
 		expr := parseExpr(t, `["a", "b"]`)
 		_, diags := eval.EvaluateForEach(expr)
 		if !diags.HasErrors() {
-			t.Error("Expected error for list type")
+			t.Error("Expected error for list for_each, got none")
 		}
 	})
 }

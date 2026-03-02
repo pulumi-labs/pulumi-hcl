@@ -1,6 +1,6 @@
 {
   "Name": "config",
-  "Kind": "",
+  "Kind": "resource",
   "Version": "9.0.0",
   "PluginDownloadURL": "http://example.com",
   "Checksums": null,

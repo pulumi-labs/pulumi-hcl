@@ -19,8 +19,6 @@ terraform {
 }
 ```
 
-Terraform-style resource type names (like `aws_instance`) work unchanged—they're automatically mapped to their Pulumi equivalents.
-
 ## Behavioral Differences
 
 ### Resource Replacement Order
@@ -53,16 +51,16 @@ Variables support Pulumi's configuration system alongside Terraform's:
 
 These Terraform features map to Pulumi equivalents:
 
-| Terraform | Pulumi | Notes |
-|-----------|--------|-------|
-| `prevent_destroy` | `protect` | Same behavior |
-| `ignore_changes` | `ignoreChanges` | Same behavior |
-| `create_before_destroy` | `deleteBeforeReplace` | Inverted logic (see above) |
-| `moved` blocks | `aliases` | Renames without recreation |
-| `import` blocks | Import resource option | Imports existing resources |
-| `timeouts` | `customTimeouts` | Same duration format |
-| Modules | Component resources | Full support including remote sources |
-| Provisioners | Command provider | `local-exec`, `remote-exec`, `file` |
+| Terraform               | Pulumi                 | Notes                                 |
+|-------------------------|------------------------|---------------------------------------|
+| `prevent_destroy`       | `protect`              | Same behavior                         |
+| `ignore_changes`        | `ignoreChanges`        | Same behavior                         |
+| `create_before_destroy` | `deleteBeforeReplace`  | Inverted logic (see above)            |
+| `moved` blocks          | `aliases`              | Renames without recreation            |
+| `import` blocks         | Import resource option | Imports existing resources            |
+| `timeouts`              | `customTimeouts`       | Same duration format                  |
+| Modules                 | Component resources    | Full support including remote sources |
+| Provisioners            | Command provider       | `local-exec`, `remote-exec`, `file`   |
 
 ### Modules
 

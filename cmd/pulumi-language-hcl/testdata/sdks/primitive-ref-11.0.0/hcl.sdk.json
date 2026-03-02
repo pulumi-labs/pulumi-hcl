@@ -1,6 +1,6 @@
 {
   "Name": "primitive-ref",
-  "Kind": "",
+  "Kind": "resource",
   "Version": "11.0.0",
   "PluginDownloadURL": "",
   "Checksums": null,

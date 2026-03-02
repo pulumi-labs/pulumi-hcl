@@ -1,6 +1,6 @@
 {
   "Name": "scalar-returns",
-  "Kind": "",
+  "Kind": "resource",
   "Version": "21.0.0",
   "PluginDownloadURL": "",
   "Checksums": null,

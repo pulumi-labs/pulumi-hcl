@@ -1,6 +1,6 @@
 {
   "Name": "call",
-  "Kind": "",
+  "Kind": "resource",
   "Version": "15.7.9",
   "PluginDownloadURL": "",
   "Checksums": null,

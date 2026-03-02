@@ -1,6 +1,6 @@
 {
   "Name": "primitive",
-  "Kind": "",
+  "Kind": "resource",
   "Version": "7.0.0",
   "PluginDownloadURL": "",
   "Checksums": null,

@@ -24,12 +24,11 @@ output "bucket_arn" {
 
 ## Installation
 
-Build and install the plugin:
+Install the plugin onto your path:
 
 ```bash
-make build
-mkdir -p ~/.pulumi/plugins/language-hcl-v0.0.1
-cp bin/pulumi-language-hcl ~/.pulumi/plugins/language-hcl-v0.0.1/
+go install github.com/pulumi/pulumi-language-hcl/cmd/pulumi-language-hcl # for the language
+go install github.com/pulumi/pulumi-language-hcl/cmd/pulumi-converter-hcl # for the converter
 ```
 
 ## Usage
@@ -127,7 +126,7 @@ output "instance_ip" {
 }
 ```
 
-### Meta-Arguments
+### Meta-Arguments (TODO)
 
 ```hcl
 resource "aws_instance" "web" {
@@ -153,7 +152,7 @@ resource "aws_instance" "web" {
 }
 ```
 
-### Modules
+### Modules (TODO)
 
 ```hcl
 # Local module
@@ -179,9 +178,9 @@ module "lambda" {
 }
 ```
 
-Modules map to Pulumi component resources. All source types are supported: local paths, Git URLs, GitHub/BitBucket shorthand, Terraform Registry, and HTTP archives. Remote modules are cached in `~/.pulumi/modules/`.
+Modules map to Pulumi component resources. All source types are supported: local paths, Git URLs, GitHub/BitBucket shorthand, Terraform Registry, and HTTP archives.
 
-### Provisioners
+### Provisioners (TODO)
 
 ```hcl
 resource "aws_instance" "web" {
@@ -218,7 +217,7 @@ Provisioners map to the [Pulumi Command provider](https://www.pulumi.com/registr
 - `remote-exec` → `command:remote:Command`
 - `file` → `command:remote:CopyToRemote`
 
-### Moved and Import Blocks
+### Moved and Import Blocks (TODO)
 
 ```hcl
 # Rename a resource without recreating it
@@ -234,7 +233,7 @@ import {
 }
 ```
 
-### Provider Configuration
+### Provider Configuration (TODO)
 
 ```hcl
 terraform {
@@ -318,8 +317,7 @@ provider "aws" {
 
 1. **Parse**: HCL files are parsed using `hashicorp/hcl/v2` into an AST
 2. **Graph**: Dependencies are extracted and a DAG is built
-3. **Sort**: Topological sort determines valid execution order
-4. **Execute**: Nodes are processed in parallel where dependencies allow:
+3. **Execute**: Nodes are processed in parallel where dependencies allow:
    - Variables → set in evaluation context
    - Locals → evaluated and stored
    - Resources/Data Sources → registered with Pulumi (parallel)
@@ -327,67 +325,21 @@ provider "aws" {
 
 ### Type Resolution
 
-The plugin supports both Terraform-style and Pulumi-style resource type names:
+Pulumi HCL supports Terraform-style resource type names:
 
 ```hcl
-# Terraform-style (looked up via provider bridge mapping)
-resource "aws_instance" "web" { }      # → aws:ec2/instance:Instance
-
-# Pulumi-style (used directly)
-resource "aws:ec2/instance:Instance" "web" { }
+# Terraform-style
+resource "aws_ec2_instance" "web" { }      # → aws:ec2/instance:Instance
 ```
 
-For Terraform-bridged providers (AWS, Azure, GCP, etc.), type resolution uses the provider's `-get-provider-info` output which maps TF types to Pulumi tokens.
+Type resolution is conducted with the following algorithm:
 
-### Caching
-
-Provider information is cached in `~/.pulumi/plugins/resource-{provider}-v{version}/pulumi-hcl.cache`:
-
-```json
-{
-  "name": "aws",
-  "version": "6.0.0",
-  "isBridged": true,
-  "resources": {
-    "aws_instance": "aws:ec2/instance:Instance",
-    "aws_s3_bucket": "aws:s3/bucket:Bucket"
-  },
-  "dataSources": {
-    "aws_ami": "aws:ec2/getAmi:getAmi"
-  },
-  "resourceTokens": ["aws:ec2/instance:Instance", ...],
-  "functionTokens": ["aws:ec2/getAmi:getAmi", ...]
-}
-```
-
-This avoids expensive provider invocations and schema parsing on subsequent runs.
-
-### Parallel Execution
-
-Independent resources are processed in parallel:
-
-```
-Variables (sequential)
-    │
-    ▼
-Locals (sequential)
-    │
-    ▼
-Resources & Data Sources (parallel with dependency tracking)
-    │
-    ├── data.aws_ami ─────────────┐
-    │                             │
-    ├── aws_security_group ───────┼──► aws_instance (waits for both)
-    │                             │
-    └─────────────────────────────┘
-```
+TODO
 
 ### Name Conversion
 
-Terraform uses `snake_case` for attribute names, while Pulumi uses `camelCase`. The plugin automatically converts:
-
-- Input: `instance_type` → `instanceType` (when sending to Pulumi)
-- Output: `publicIp` → `public_ip` (when reading from Pulumi)
+Pulumi HCL expects `snake_case` properties. The plugin ensures that the engine sees Pulumi's `camelCase` property
+names. Map keys are not translated.
 
 ## Terraform Compatibility
 
@@ -425,33 +377,6 @@ data "pulumi_stack_reference" "network" {
 output "vpc_id" {
   value = data.pulumi_stack_reference.network.outputs["vpc_id"]
 }
-```
-
-## Project Structure
-
-```
-pulumi-language-hcl/
-├── docs/
-│   └── terraform-compatibility.md  # Detailed compatibility documentation
-├── examples/
-│   ├── simple/                     # Basic random_pet example
-│   └── aws-webserver/              # AWS EC2 example
-├── pkg/
-│   ├── hcl/
-│   │   ├── ast/                    # AST types
-│   │   ├── eval/                   # Expression evaluator
-│   │   ├── graph/                  # Dependency graph
-│   │   ├── modules/                # Module loading (local/remote)
-│   │   ├── packages/               # Provider schema loading
-│   │   ├── parser/                 # HCL parser
-│   │   ├── run/                    # Execution engine
-│   │   ├── schema/                 # Schema generation
-│   │   └── transform/              # Type conversions
-│   ├── server/                     # gRPC server
-│   └── version/                    # Version info
-├── go.mod
-├── Makefile
-└── README.md
 ```
 
 ## Development
