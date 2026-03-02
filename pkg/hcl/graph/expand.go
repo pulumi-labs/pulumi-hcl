@@ -55,6 +55,9 @@ type ResourceExpander struct {
 	// countValues maps resource keys to their evaluated count values
 	countValues map[string]int
 
+	// boolCountKeys tracks resources whose count is a bool (0 or 1, single-instance semantics)
+	boolCountKeys map[string]bool
+
 	// forEachValues maps resource keys to their evaluated for_each values
 	forEachValues map[string]map[string]cty.Value
 }
@@ -63,6 +66,7 @@ type ResourceExpander struct {
 func NewResourceExpander() *ResourceExpander {
 	return &ResourceExpander{
 		countValues:   make(map[string]int),
+		boolCountKeys: make(map[string]bool),
 		forEachValues: make(map[string]map[string]cty.Value),
 	}
 }
@@ -70,6 +74,13 @@ func NewResourceExpander() *ResourceExpander {
 // SetCount sets the evaluated count value for a resource.
 func (e *ResourceExpander) SetCount(key string, count int) {
 	e.countValues[key] = count
+}
+
+// SetBoolCount sets a bool-derived count for a resource (0 or 1).
+// When count > 0, produces a single instance with no numeric index suffix.
+func (e *ResourceExpander) SetBoolCount(key string, count int) {
+	e.countValues[key] = count
+	e.boolCountKeys[key] = true
 }
 
 // SetForEach sets the evaluated for_each value for a resource.
@@ -85,6 +96,18 @@ func (e *ResourceExpander) Expand(node *Node) *ExpandResult {
 			return &ExpandResult{
 				Instances: nil,
 				IsSingle:  false,
+			}
+		}
+
+		// Bool-derived counts produce a single instance without an index suffix.
+		if e.boolCountKeys[node.Key] {
+			return &ExpandResult{
+				Instances: []*ExpandedResource{{
+					Key:         node.Key,
+					OriginalKey: node.Key,
+					Node:        node,
+				}},
+				IsSingle: true,
 			}
 		}
 

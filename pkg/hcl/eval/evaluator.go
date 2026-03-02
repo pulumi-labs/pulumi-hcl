@@ -120,29 +120,50 @@ func (e *Evaluator) EvaluateBody(body hcl.Body) (map[string]cty.Value, hcl.Diagn
 	return result, diags
 }
 
-// EvaluateCount evaluates a count expression and returns the count value.
-// Returns 1 if expr is nil (no count specified).
-func (e *Evaluator) EvaluateCount(expr hcl.Expression) (int, hcl.Diagnostics) {
+// EvaluateCount evaluates a count expression and returns (count, isBool, diags).
+// isBool is true when the expression evaluated to a boolean (true→1, false→0),
+// which suppresses the numeric index suffix on resource names.
+// Returns (1, false, nil) if expr is nil (no count specified).
+func (e *Evaluator) EvaluateCount(expr hcl.Expression) (int, bool, hcl.Diagnostics) {
 	if expr == nil {
-		return 1, nil
+		return 1, false, nil
 	}
 
-	count, diags := e.EvaluateInt(expr)
+	val, diags := e.Evaluate(expr)
 	if diags.HasErrors() {
-		return 0, diags
+		return 0, false, diags
 	}
+
+	if val.Type() == cty.Bool {
+		if val.True() {
+			return 1, true, nil
+		}
+		return 0, true, nil
+	}
+
+	converted, err := convert.Convert(val, cty.Number)
+	if err != nil {
+		return 0, false, hcl.Diagnostics{{
+			Severity: hcl.DiagError,
+			Summary:  "Invalid count value",
+			Detail:   fmt.Sprintf("Count must be a number or boolean, got %s.", val.Type().FriendlyName()),
+			Subject:  expr.Range().Ptr(),
+		}}
+	}
+	bf := converted.AsBigFloat()
+	i64, _ := bf.Int64()
+	count := int(i64)
 
 	if count < 0 {
-		diags = append(diags, &hcl.Diagnostic{
+		return 0, false, hcl.Diagnostics{{
 			Severity: hcl.DiagError,
 			Summary:  "Invalid count value",
 			Detail:   "Count must be a non-negative integer.",
 			Subject:  expr.Range().Ptr(),
-		})
-		return 0, diags
+		}}
 	}
 
-	return count, diags
+	return count, false, nil
 }
 
 // EvaluateForEach evaluates a for_each expression and returns the map/set of values.

@@ -8,6 +8,6 @@ terraform {
 }
 
 resource "test_item" "myItem" {
-  count = true  ?  1  :  0
+  count = true
   name  = "static-item"
 }

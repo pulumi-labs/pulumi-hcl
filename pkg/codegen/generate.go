@@ -668,16 +668,11 @@ func (g *generator) genRange(body *hclwrite.Body, rangeExpr model.Expression) hc
 
 	switch {
 	case model.InputType(model.BoolType).ConversionFrom(rangeType) == model.SafeConversion:
-		condTokens, d := g.exprTokens(rangeExpr, schema.AnyType)
+		tokens, d := g.exprTokens(rangeExpr, schema.AnyType)
 		if d.HasErrors() {
 			return d
 		}
-		body.SetAttributeRaw("count", append(condTokens,
-			&hclwrite.Token{Type: hclsyntax.TokenQuestion, Bytes: []byte(" ? ")},
-			&hclwrite.Token{Type: hclsyntax.TokenNumberLit, Bytes: []byte("1")},
-			&hclwrite.Token{Type: hclsyntax.TokenColon, Bytes: []byte(" : ")},
-			&hclwrite.Token{Type: hclsyntax.TokenNumberLit, Bytes: []byte("0")},
-		))
+		body.SetAttributeRaw("count", tokens)
 		g.currentRangeKind = rangeKindCount
 
 	case model.InputType(model.NumberType).ConversionFrom(rangeType) == model.SafeConversion:
