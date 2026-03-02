@@ -1,6 +1,6 @@
 {
   "Name": "config-grpc",
-  "Kind": "",
+  "Kind": "resource",
   "Version": "1.0.0",
   "PluginDownloadURL": "",
   "Checksums": null,

@@ -1,6 +1,6 @@
 {
   "Name": "enum",
-  "Kind": "",
+  "Kind": "resource",
   "Version": "30.0.0",
   "PluginDownloadURL": "",
   "Checksums": null,

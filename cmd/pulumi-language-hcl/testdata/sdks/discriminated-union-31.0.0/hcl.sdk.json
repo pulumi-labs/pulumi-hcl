@@ -1,6 +1,6 @@
 {
   "Name": "discriminated-union",
-  "Kind": "",
+  "Kind": "resource",
   "Version": "31.0.0",
   "PluginDownloadURL": "",
   "Checksums": null,

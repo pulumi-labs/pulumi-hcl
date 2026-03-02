@@ -1,6 +1,6 @@
 {
   "Name": "simple-invoke-with-scalar-return",
-  "Kind": "",
+  "Kind": "resource",
   "Version": "17.0.0",
   "PluginDownloadURL": "",
   "Checksums": null,

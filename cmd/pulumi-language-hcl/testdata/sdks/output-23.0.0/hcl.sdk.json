@@ -1,6 +1,6 @@
 {
   "Name": "output",
-  "Kind": "",
+  "Kind": "resource",
   "Version": "23.0.0",
   "PluginDownloadURL": "",
   "Checksums": null,

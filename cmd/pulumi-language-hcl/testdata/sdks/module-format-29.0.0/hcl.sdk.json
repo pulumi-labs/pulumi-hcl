@@ -1,6 +1,6 @@
 {
   "Name": "module-format",
-  "Kind": "",
+  "Kind": "resource",
   "Version": "29.0.0",
   "PluginDownloadURL": "",
   "Checksums": null,

@@ -1,6 +1,6 @@
 {
   "Name": "large",
-  "Kind": "",
+  "Kind": "resource",
   "Version": "4.3.2",
   "PluginDownloadURL": "",
   "Checksums": null,

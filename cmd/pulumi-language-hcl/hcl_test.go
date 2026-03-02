@@ -33,7 +33,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestHCL(t *testing.T) {
+func TestConvertedPCL(t *testing.T) {
 	t.Parallel()
 
 	t.Run("function_blocks", func(t *testing.T) {
@@ -91,7 +91,7 @@ func TestHCL(t *testing.T) {
 			},
 		}
 
-		mock := testHCL(t, pclSource, testSchema)
+		mock := testConvertedPCL(t, pclSource, testSchema)
 
 		require.Len(t, mock.InvokedFunctions, 1)
 		assert.Equal(t, "test:index:getFiltered", mock.InvokedFunctions[0].Token)
@@ -169,7 +169,7 @@ func TestHCL(t *testing.T) {
 			},
 		}
 
-		mock := testHCL(t, pclSource, testSchema)
+		mock := testConvertedPCL(t, pclSource, testSchema)
 
 		require.Len(t, mock.RegisteredResources, 2, "expected stack + server")
 
@@ -192,7 +192,91 @@ func TestHCL(t *testing.T) {
 	})
 }
 
-func testHCL(t *testing.T, pclSource string, schemas ...schema.PackageSpec) *testutil.MockResourceMonitor {
+func TestConvertedPCLRange(t *testing.T) {
+	t.Parallel()
+
+	rangeSchema := schema.PackageSpec{
+		Name:    "test",
+		Version: "1.0.0",
+		Resources: map[string]schema.ResourceSpec{
+			"test:index:Item": {
+				InputProperties: map[string]schema.PropertySpec{
+					"name": {TypeSpec: schema.TypeSpec{Type: "string"}},
+				},
+				ObjectTypeSpec: schema.ObjectTypeSpec{
+					Properties: map[string]schema.PropertySpec{
+						"name": {TypeSpec: schema.TypeSpec{Type: "string"}},
+					},
+				},
+			},
+		},
+	}
+
+	t.Run("range_bool", func(t *testing.T) {
+		t.Parallel()
+
+		pclSource := `resource myItem "test:index:Item" {
+    options {
+        range = true
+    }
+    name = "static-item"
+}
+`
+
+		mock := testConvertedPCL(t, pclSource, rangeSchema)
+
+		// With enabled=true (default true in PCL), we should have stack + 1 item
+		require.Len(t, mock.RegisteredResources, 2, "expected stack + 1 item")
+		assert.Equal(t, "pulumi:pulumi:Stack", mock.RegisteredResources[0].Type)
+		assert.Equal(t, "test:index:Item", mock.RegisteredResources[1].Type)
+	})
+
+	t.Run("range_count", func(t *testing.T) {
+		t.Parallel()
+
+		pclSource := `resource myItem "test:index:Item" {
+    options {
+        range = 3
+    }
+    name = "item-${range.value}"
+}
+`
+
+		mock := testConvertedPCL(t, pclSource, rangeSchema)
+
+		// stack + 3 items
+		require.Len(t, mock.RegisteredResources, 4, "expected stack + 3 items")
+		assert.Equal(t, "pulumi:pulumi:Stack", mock.RegisteredResources[0].Type)
+		for i := 1; i <= 3; i++ {
+			assert.Equal(t, "test:index:Item", mock.RegisteredResources[i].Type)
+		}
+	})
+
+	t.Run("range_map", func(t *testing.T) {
+		t.Parallel()
+
+		pclSource := `resource myItem "test:index:Item" {
+    options {
+        range = {
+            a = "alpha"
+            b = "bravo"
+        }
+    }
+    name = range.value
+}
+`
+
+		mock := testConvertedPCL(t, pclSource, rangeSchema)
+
+		// stack + 2 items
+		require.Len(t, mock.RegisteredResources, 3, "expected stack + 2 items")
+		assert.Equal(t, "pulumi:pulumi:Stack", mock.RegisteredResources[0].Type)
+		assert.Equal(t, "test:index:Item", mock.RegisteredResources[1].Type)
+		assert.Equal(t, "test:index:Item", mock.RegisteredResources[2].Type)
+	})
+}
+
+func testConvertedPCL(t *testing.T, pclSource string, schemas ...schema.PackageSpec) *testutil.MockResourceMonitor {
 	t.Helper()
 
 	loader := testutil.NewMockReferenceLoader(t, schemas...)

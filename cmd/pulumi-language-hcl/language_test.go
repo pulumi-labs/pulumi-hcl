@@ -128,7 +128,8 @@ func runTestingHost(t *testing.T) (string, testingrpc.LanguageTestClient) {
 }
 
 var expectedFailures = map[string]string{
-	"l2-rtti": "not yet implemented - don't bother - will be deleted",
+	"l3-component-simple": "not yet implemented",
+	"l2-rtti":             "not yet implemented - don't bother - will be deleted",
 	"l2-plain": "unsupported in HCL:" +
 		" requires that HCL can distinguish between an empty and null List<Object>" +
 		" - not compatible with block syntax",
@@ -182,9 +183,6 @@ func TestLanguage(t *testing.T) {
 	for _, tt := range tests.Tests {
 		t.Run(tt, func(t *testing.T) {
 			t.Parallel()
-			if strings.HasPrefix(tt, "l3-") {
-				t.Skip("HCL does not support level three tests")
-			}
 			if strings.HasPrefix(tt, "policy-") {
 				t.Skip("HCL does not support policy tests")
 			}

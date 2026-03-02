@@ -1,6 +1,6 @@
 {
   "Name": "simple-invoke",
-  "Kind": "",
+  "Kind": "resource",
   "Version": "10.0.0",
   "PluginDownloadURL": "",
   "Checksums": null,

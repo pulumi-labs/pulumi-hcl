@@ -726,11 +726,15 @@ func (e *Engine) processResource(ctx context.Context, node *graph.Node) error {
 	expander := graph.NewResourceExpander()
 
 	if res.Count != nil {
-		count, diags := e.evaluator.EvaluateCount(res.Count)
+		count, isBool, diags := e.evaluator.EvaluateCount(res.Count)
 		if diags.HasErrors() {
 			return fmt.Errorf("evaluating count: %s", diags.Error())
 		}
-		expander.SetCount(node.Key, count)
+		if isBool {
+			expander.SetBoolCount(node.Key, count)
+		} else {
+			expander.SetCount(node.Key, count)
+		}
 	}
 
 	if res.ForEach != nil {
@@ -1396,15 +1400,26 @@ func ExtractSemverFromConstraint(constraint string) string {
 	}
 }
 
+// extractResourceName converts an instance key into a Pulumi resource name.
+// Single instances use the logical name as-is. Count instances get a "-N" suffix.
+// ForEach instances get a "-key" suffix.
 func extractResourceName(key string) string {
-	// Find the first dot to split type from name
-	dotIndex := strings.Index(key, ".")
-	if dotIndex == -1 {
-		// No dot found, return the whole key
-		return key
+	baseKey, index, eachKey := graph.ParseInstanceKey(key)
+
+	// Strip the "type." prefix from the base key to get the logical name.
+	dotIndex := strings.Index(baseKey, ".")
+	name := baseKey
+	if dotIndex != -1 {
+		name = baseKey[dotIndex+1:]
 	}
-	// Return everything after the dot
-	return key[dotIndex+1:]
+
+	if index != nil {
+		return fmt.Sprintf("%s-%d", name, *index)
+	}
+	if eachKey != nil {
+		return fmt.Sprintf("%s-%s", name, *eachKey)
+	}
+	return name
 }
 
 // formatTraversalForIgnoreChanges formats a traversal for ignore_changes.

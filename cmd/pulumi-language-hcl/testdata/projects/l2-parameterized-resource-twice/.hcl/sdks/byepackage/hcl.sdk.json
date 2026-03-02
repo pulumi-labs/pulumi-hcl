@@ -1,6 +1,6 @@
 {
   "Name": "parameterized",
-  "Kind": "",
+  "Kind": "resource",
   "Version": "1.2.3",
   "PluginDownloadURL": "",
   "Checksums": null,

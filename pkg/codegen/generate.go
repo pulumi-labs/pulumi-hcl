@@ -102,11 +102,20 @@ func GenerateProgram(program *pcl.Program) (map[string][]byte, hcl.Diagnostics, 
 	return map[string][]byte{"main.hcl": f.Bytes()}, diags, nil
 }
 
+type rangeKind int
+
+const (
+	rangeKindNone    rangeKind = iota
+	rangeKindCount             // bool/number → count
+	rangeKindForEach           // list/map → for_each
+)
+
 // generator holds state during code generation, including invoke data sources.
 type generator struct {
 	program           *pcl.Program
 	invokeDataSources []spilledDataSource
 	callBlocks        []spilledCall
+	currentRangeKind  rangeKind
 }
 
 type spilledDataSource struct {
@@ -420,6 +429,8 @@ func (g *generator) genInvokeDataSource(body *hclwrite.Body, invoke *model.Funct
 }
 
 func (g *generator) genResource(body *hclwrite.Body, r *pcl.Resource) hcl.Diagnostics {
+	defer func() { g.currentRangeKind = rangeKindNone }()
+
 	hclType, d := packages.PulumiTokenToHCL(r.Token)
 	if d.HasErrors() {
 		return d
@@ -476,6 +487,11 @@ func (g *generator) genResourceOptions(body *hclwrite.Body, r *pcl.Resource) hcl
 		// Only schema-based replaceOnChanges - generate it
 		g.genReplaceOnChanges(body, schemaReplaceOnChanges, nil, &diags)
 		return diags
+	}
+
+	if opts.Range != nil {
+		d := g.genRange(body, opts.Range)
+		diags = append(diags, d...)
 	}
 
 	if opts.Parent != nil {
@@ -645,6 +661,73 @@ func (g *generator) genResourceOptions(body *hclwrite.Body, r *pcl.Resource) hcl
 
 	return diags
 }
+
+// genRange emits a count or for_each meta-argument based on the PCL range expression type.
+func (g *generator) genRange(body *hclwrite.Body, rangeExpr model.Expression) hcl.Diagnostics {
+	rangeType := model.ResolveOutputs(rangeExpr.Type())
+
+	switch {
+	case model.InputType(model.BoolType).ConversionFrom(rangeType) == model.SafeConversion:
+		tokens, d := g.exprTokens(rangeExpr, schema.AnyType)
+		if d.HasErrors() {
+			return d
+		}
+		body.SetAttributeRaw("count", tokens)
+		g.currentRangeKind = rangeKindCount
+
+	case model.InputType(model.NumberType).ConversionFrom(rangeType) == model.SafeConversion:
+		tokens, d := g.exprTokens(rangeExpr, schema.AnyType)
+		if d.HasErrors() {
+			return d
+		}
+		body.SetAttributeRaw("count", tokens)
+		g.currentRangeKind = rangeKindCount
+
+	default:
+		exprTokens, d := g.exprTokens(rangeExpr, schema.AnyType)
+		if d.HasErrors() {
+			return d
+		}
+		var tokens hclwrite.Tokens
+		switch rangeType.(type) {
+		case *model.ListType, *model.TupleType:
+			tokens = wrapListAsMapForEach(exprTokens)
+		default:
+			tokens = exprTokens
+		}
+		body.SetAttributeRaw("for_each", tokens)
+		g.currentRangeKind = rangeKindForEach
+	}
+	return nil
+}
+
+// wrapListAsMapForEach generates `{ for __key, __value in <expr> : tostring(__key) => __value }`.
+func wrapListAsMapForEach(listTokens hclwrite.Tokens) hclwrite.Tokens {
+	tok := func(t hclsyntax.TokenType, s string) *hclwrite.Token {
+		return &hclwrite.Token{Type: t, Bytes: []byte(s)}
+	}
+	tokens := hclwrite.Tokens{
+		tok(hclsyntax.TokenOBrace, "{"),
+		tok(hclsyntax.TokenIdent, " for"),
+		tok(hclsyntax.TokenIdent, " __key"),
+		tok(hclsyntax.TokenComma, ","),
+		tok(hclsyntax.TokenIdent, " __value"),
+		tok(hclsyntax.TokenIdent, " in "),
+	}
+	tokens = append(tokens, listTokens...)
+	tokens = append(tokens,
+		tok(hclsyntax.TokenColon, " :"),
+		tok(hclsyntax.TokenIdent, " tostring"),
+		tok(hclsyntax.TokenOParen, "("),
+		tok(hclsyntax.TokenIdent, "__key"),
+		tok(hclsyntax.TokenCParen, ")"),
+		tok(hclsyntax.TokenFatArrow, " =>"),
+		tok(hclsyntax.TokenIdent, " __value"),
+		tok(hclsyntax.TokenCBrace, " }"),
+	)
+	return tokens
+}
+
 
 // genProviders generates the HCL `providers` attribute as a list.
 // PCL providers can be a list [p1, p2] or a map {pkg = p}; we always emit a list
@@ -1242,6 +1325,19 @@ func (g *generator) scopeTraversalTokens(expr *model.ScopeTraversalExpression) (
 		rewritten = append(rewritten, hcl.TraverseAttr{Name: traversal.RootName()})
 		return hclwrite.TokensForTraversal(append(rewritten, typedObjectTraversal(part.Schema.Properties, traversal[1:])...)), nil
 	default:
+		if traversal.RootName() == "range" {
+			switch g.currentRangeKind {
+			case rangeKindCount:
+				return hclwrite.TokensForTraversal(hcl.Traversal{
+					hcl.TraverseRoot{Name: "count"},
+					hcl.TraverseAttr{Name: "index"},
+				}), nil
+			default: // rangeKindForEach
+				return hclwrite.TokensForTraversal(append(
+					hcl.Traversal{hcl.TraverseRoot{Name: "each"}}, traversal[1:]...,
+				)), nil
+			}
+		}
 		return hclwrite.TokensForTraversal(traversal), nil
 	}
 }

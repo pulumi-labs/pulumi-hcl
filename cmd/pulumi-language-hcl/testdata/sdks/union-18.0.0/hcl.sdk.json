@@ -1,6 +1,6 @@
 {
   "Name": "union",
-  "Kind": "",
+  "Kind": "resource",
   "Version": "18.0.0",
   "PluginDownloadURL": "",
   "Checksums": null,

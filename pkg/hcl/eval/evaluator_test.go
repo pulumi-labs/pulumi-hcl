@@ -134,18 +134,21 @@ func TestEvaluateCount(t *testing.T) {
 		name      string
 		expr      string
 		expected  int
+		isBool    bool
 		expectErr bool
 	}{
-		{"literal", `3`, 3, false},
-		{"variable", `var.instance_count`, 3, false},
-		{"zero", `0`, 0, false},
-		{"negative", `-1`, 0, true},
+		{"literal", `3`, 3, false, false},
+		{"variable", `var.instance_count`, 3, false, false},
+		{"zero", `0`, 0, false, false},
+		{"negative", `-1`, 0, false, true},
+		{"bool_true", `true`, 1, true, false},
+		{"bool_false", `false`, 0, true, false},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			expr := parseExpr(t, tt.expr)
-			result, diags := eval.EvaluateCount(expr)
+			result, isBool, diags := eval.EvaluateCount(expr)
 			if tt.expectErr {
 				if !diags.HasErrors() {
 					t.Error("Expected error, got none")
@@ -157,6 +160,9 @@ func TestEvaluateCount(t *testing.T) {
 				if result != tt.expected {
 					t.Errorf("Expected %d, got %d", tt.expected, result)
 				}
+				if isBool != tt.isBool {
+					t.Errorf("Expected isBool=%v, got %v", tt.isBool, isBool)
+				}
 			}
 		})
 	}
@@ -166,12 +172,15 @@ func TestEvaluateCountNil(t *testing.T) {
 	ctx := NewContext("/tmp", "/tmp", "", "", "")
 	eval := NewEvaluator(ctx)
 
-	result, diags := eval.EvaluateCount(nil)
+	result, isBool, diags := eval.EvaluateCount(nil)
 	if diags.HasErrors() {
 		t.Errorf("Unexpected error: %s", diags.Error())
 	}
 	if result != 1 {
 		t.Errorf("Expected 1 for nil count, got %d", result)
+	}
+	if isBool {
+		t.Error("Expected isBool=false for nil count")
 	}
 }
 
@@ -218,7 +227,7 @@ func TestEvaluateForEach(t *testing.T) {
 		expr := parseExpr(t, `["a", "b"]`)
 		_, diags := eval.EvaluateForEach(expr)
 		if !diags.HasErrors() {
-			t.Error("Expected error for list type")
+			t.Error("Expected error for list for_each, got none")
 		}
 	})
 }

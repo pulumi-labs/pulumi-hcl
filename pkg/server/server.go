@@ -37,6 +37,7 @@ import (
 	"github.com/pulumi/pulumi/pkg/v3/codegen/hcl2/syntax"
 	"github.com/pulumi/pulumi/pkg/v3/codegen/pcl"
 	"github.com/pulumi/pulumi/pkg/v3/codegen/schema"
+	"github.com/pulumi/pulumi/sdk/v3/go/common/apitype"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/resource"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/resource/plugin"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/util/contract"
@@ -631,6 +632,7 @@ func packageDescriptorFromSchema(schemaJSON []byte) (workspace.PackageDescriptor
 	desc := workspace.PackageDescriptor{
 		PluginDescriptor: workspace.PluginDescriptor{
 			Name:              spec.Name,
+			Kind:              apitype.ResourcePlugin,
 			PluginDownloadURL: spec.PluginDownloadURL,
 		},
 	}
