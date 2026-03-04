@@ -126,7 +126,7 @@ output "instance_ip" {
 }
 ```
 
-### Meta-Arguments (TODO)
+### Meta-Arguments
 
 ```hcl
 resource "aws_instance" "web" {
@@ -152,7 +152,7 @@ resource "aws_instance" "web" {
 }
 ```
 
-### Modules (TODO)
+### Modules
 
 ```hcl
 # Local module
@@ -180,7 +180,7 @@ module "lambda" {
 
 Modules map to Pulumi component resources. All source types are supported: local paths, Git URLs, GitHub/BitBucket shorthand, Terraform Registry, and HTTP archives.
 
-### Provisioners (TODO)
+### Provisioners
 
 ```hcl
 resource "aws_instance" "web" {
@@ -217,7 +217,9 @@ Provisioners map to the [Pulumi Command provider](https://www.pulumi.com/registr
 - `remote-exec` → `command:remote:Command`
 - `file` → `command:remote:CopyToRemote`
 
-### Moved and Import Blocks (TODO)
+WinRM connections are not supported — SSH only.
+
+### Moved and Import Blocks
 
 ```hcl
 # Rename a resource without recreating it
@@ -233,7 +235,7 @@ import {
 }
 ```
 
-### Provider Configuration (TODO)
+### Provider Configuration
 
 ```hcl
 terraform {
@@ -249,6 +251,8 @@ provider "aws" {
   region = var.region
 }
 ```
+
+The `backend`, `cloud`, and `required_version` fields in `terraform` blocks are parsed but ignored (Pulumi manages state and versioning independently).
 
 ## Design Overview
 
@@ -334,7 +338,12 @@ resource "aws_ec2_instance" "web" { }      # → aws:ec2/instance:Instance
 
 Type resolution is conducted with the following algorithm:
 
-TODO
+1. The provider package name is extracted from the first underscore-delimited segment of the HCL type (e.g. `aws` from `aws_s3_bucket`). If `required_providers` is specified, the longest matching provider prefix is used to resolve ambiguity.
+2. The provider's schema is loaded from the Pulumi registry.
+3. Each resource in the provider schema has its module path and resource name lowercased and joined, with all underscores and slashes stripped, forming a lookup key.
+4. The remaining portion of the HCL type (after the provider prefix) is compared against these keys (also with underscores stripped) to find the matching resource.
+
+For example, `aws_ec2_instance` → provider `aws`, lookup key `ec2instance` → matches `aws:ec2/instance:Instance` in the AWS schema.
 
 ### Name Conversion
 
@@ -343,7 +352,7 @@ names. Map keys are not translated.
 
 ## Terraform Compatibility
 
-This plugin provides full compatibility with Terraform's HCL syntax. For detailed compatibility information, see [docs/terraform-compatibility.md](docs/terraform-compatibility.md).
+This plugin supports the majority of Terraform's HCL syntax. For detailed compatibility information and known limitations, see [docs/terraform-compatibility.md](docs/terraform-compatibility.md).
 
 ### Supported
 
@@ -365,6 +374,8 @@ This plugin provides full compatibility with Terraform's HCL syntax. For detaile
 ### Not Supported
 
 - `replace_triggered_by` lifecycle option (different semantics from Pulumi's `replaceOnChanges`)
+- `dynamic` blocks (dynamic block generation is not implemented)
+- `List<Object>` empty vs null distinction: HCL block syntax cannot distinguish between an empty and null `List<Object>`, which is a known incompatibility with some Pulumi programs
 
 ### Pulumi-Specific Extensions
 
@@ -378,6 +389,19 @@ output "vpc_id" {
   value = data.pulumi_stack_reference.network.outputs["vpc_id"]
 }
 ```
+
+```hcl
+# Method calls on resources
+call "aws_s3_bucket.my_bucket" "getObject" {
+  key = "config.json"
+}
+```
+
+The `call` block invokes a method on an existing resource. The first label is `resourceType.resourceName` and the second is the method name. Results are referenced as `call.<resource>.<method>.<output>`.
+
+Two built-in functions provide access to a resource's Pulumi identity at runtime:
+- `pulumiResourceName(resource)` — returns the logical name from the resource's URN
+- `pulumiResourceType(resource)` — returns the type token from the resource's URN
 
 ## Development
 

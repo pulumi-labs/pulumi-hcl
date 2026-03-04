@@ -1,8 +1,8 @@
 # Terraform HCL Compatibility
 
-Pulumi HCL supports [Terraform's HCL syntax](https://developer.hashicorp.com/terraform/language) with full compatibility. Resources, data sources, variables, locals, outputs, modules, expressions, and functions all work as documented by HashiCorp.
+Pulumi HCL supports the majority of [Terraform's HCL syntax](https://developer.hashicorp.com/terraform/language). Resources, data sources, variables, locals, outputs, modules, expressions, and functions broadly work as documented by HashiCorp.
 
-This document covers only what's different.
+This document covers what's different and what's not supported.
 
 ## The One Required Change
 
@@ -101,6 +101,12 @@ terraform {
 ## Unsupported Features
 
 **`replace_triggered_by`** — Terraform's lifecycle option cascades replacement when *other* resources change. Pulumi's [`replaceOnChanges`](https://www.pulumi.com/docs/iac/concepts/resources/options/replaceonchanges/) triggers replacement when properties on *this* resource change. These have different semantics and don't map directly.
+
+**`dynamic` blocks** — Dynamic block generation (`dynamic "tag" { for_each = ... content { ... } }`) is not implemented.
+
+**`List<Object>` empty vs null** — HCL's block syntax cannot distinguish between an empty list and a null `List<Object>`. Programs that rely on this distinction (e.g. passing `null` vs `[]` for a block-typed attribute) will not behave correctly.
+
+**WinRM connections** — `connection` blocks only support `type = "ssh"`. WinRM is not supported.
 
 ## CLI Reference
 
