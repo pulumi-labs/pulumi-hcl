@@ -78,11 +78,11 @@ Remote modules are cached in `~/.pulumi/modules/`.
 
 Provisioner blocks map to the [Command provider](https://www.pulumi.com/registry/packages/command/):
 
-| Terraform | Pulumi |
-|-----------|--------|
-| `local-exec` | `command:local:Command` |
-| `remote-exec` | `command:remote:Command` |
-| `file` | `command:remote:CopyToRemote` |
+| Terraform     | Pulumi                        |
+|---------------|-------------------------------|
+| `local-exec`  | `command:local:Command`       |
+| `remote-exec` | `command:remote:Command`      |
+| `file`        | `command:remote:CopyToRemote` |
 
 All provisioner features work: `self` references, `when = "destroy"`, `on_failure = "continue"`, and connection blocks. WinRM connections are not supported—SSH only.
 
@@ -110,16 +110,44 @@ terraform {
 
 ## CLI Reference
 
-| Terraform | Pulumi |
-|-----------|--------|
-| `terraform plan` | `pulumi preview` |
-| `terraform apply` | `pulumi up` |
+| Terraform           | Pulumi           |
+|---------------------|------------------|
+| `terraform plan`    | `pulumi preview` |
+| `terraform apply`   | `pulumi up`      |
 | `terraform destroy` | `pulumi destroy` |
-| `terraform state` | `pulumi state` |
-| `terraform import` | `pulumi import` |
-| Workspaces | Stacks |
+| `terraform state`   | `pulumi state`   |
+| `terraform import`  | `pulumi import`  |
+| Workspaces          | Stacks           |
 
 Terraform state files are not compatible. Import existing resources with `pulumi import`.
+
+## Built-in Functions
+
+Pulumi HCL supports nearly all of Terraform's built-in functions with identical behavior. The sections below document the exceptions.
+
+### Functions in Terraform but not supported here
+
+| Function          | Category        | Notes                                                                         |
+|-------------------|-----------------|-------------------------------------------------------------------------------|
+| `templatestring`  | String          | Renders an inline template string with a given context object.                |
+| `plantimestamp`   | Date and Time   | Returns the timestamp at the start of a plan, which has no Pulumi equivalent. |
+| `ephemeralasnull` | Type Conversion | Replaces ephemeral values with `null`; Pulumi has no ephemeral value concept. |
+| `issensitive`     | Type Conversion | Returns whether a value is marked sensitive.                                  |
+
+The `provider::terraform::*` provider functions and `terraform.applying` are Terraform-internal and have no equivalent here.
+
+### Functions supported here but not in Terraform
+
+| Function             | Category        | Notes                                                             |
+|----------------------|-----------------|-------------------------------------------------------------------|
+| `entries`            | Collection      | Converts a map or object to a list of `{key, value}` objects.     |
+| `pulumiResourceName` | Pulumi-specific | Returns the Pulumi resource name for a resource reference.        |
+| `pulumiResourceType` | Pulumi-specific | Returns the Pulumi resource type for a resource reference.        |
+| `fileAsset`          | Asset/Archive   | Creates a Pulumi `FileAsset` from a local file path.              |
+| `stringAsset`        | Asset/Archive   | Creates a Pulumi `StringAsset` from a string value.               |
+| `remoteAsset`        | Asset/Archive   | Creates a Pulumi `RemoteAsset` from a URL.                        |
+| `fileArchive`        | Asset/Archive   | Creates a Pulumi `FileArchive` from a local path.                 |
+| `assetArchive`       | Asset/Archive   | Creates a Pulumi `AssetArchive` from a map of assets or archives. |
 
 ## Getting Help
 
