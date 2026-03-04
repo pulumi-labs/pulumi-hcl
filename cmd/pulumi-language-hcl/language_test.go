@@ -53,8 +53,10 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/pulumi/pulumi-language-hcl/pkg/converter"
 	"github.com/pulumi/pulumi-language-hcl/pkg/server"
 
+	"github.com/pulumi/pulumi/sdk/v3/go/common/resource/plugin"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/util/contract"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/util/rpcutil"
 	pulumirpc "github.com/pulumi/pulumi/sdk/v3/proto/go"
@@ -128,9 +130,132 @@ func runTestingHost(t *testing.T) (string, testingrpc.LanguageTestClient) {
 }
 
 var expectedFailures = map[string]string{
+	"l1-builtin-secret": "unsupported in HCL: `unsecret` function is not available",
 	"l2-plain": "unsupported in HCL:" +
 		" requires that HCL can distinguish between an empty and null List<Object>" +
 		" - not compatible with block syntax",
+}
+
+// expectedEjectFailures lists tests whose eject (HCL→PCL conversion) step is
+// expected to fail because the converter does not yet support resources, data
+// sources, or other constructs used by those tests.
+var expectedEjectFailures = map[string]string{
+	"l1-builtin-can":                              "converter does not support resource/data/call blocks",
+	"l1-builtin-list":                             "converter does not support resource/data/call blocks",
+	"l1-builtin-object":                           "converter does not support resource/data/call blocks",
+	"l1-builtin-project-root":                     "converter does not support resource/data/call blocks",
+	"l1-builtin-project-root-main":                "converter does not support resource/data/call blocks",
+	"l1-builtin-require-pulumi-version":           "converter does not support resource/data/call blocks",
+	"l1-builtin-secret":                           "converter does not support resource/data/call blocks",
+	"l1-builtin-stash":                            "converter does not support resource/data/call blocks",
+	"l1-builtin-try":                              "converter does not support resource/data/call blocks",
+	"l1-config-secret":                            "converter does not support resource/data/call blocks",
+	"l1-config-types-object":                      "converter does not support complex type expressions",
+	"l1-elide-index":                              "converter does not support resource/data/call blocks",
+	"l1-keyword-overlap":                          "converter does not support resource/data/call blocks",
+	"l1-main":                                     "converter does not support resource/data/call blocks",
+	"l1-output-null":                              "converter does not support resource/data/call blocks",
+	"l1-output-object":                            "converter does not support resource/data/call blocks",
+	"l1-proxy-index":                              "converter does not support resource/data/call blocks",
+	"l1-stack-reference":                          "converter does not support resource/data/call blocks",
+	"l2-builtin-object":                           "converter does not support resource/data/call blocks",
+	"l2-camel-names":                              "converter does not support resource/data/call blocks",
+	"l2-component-call-simple":                    "converter does not support resource/data/call blocks",
+	"l2-component-component-resource-ref":         "converter does not support resource/data/call blocks",
+	"l2-component-program-resource-ref":           "converter does not support resource/data/call blocks",
+	"l2-component-property-deps":                  "converter does not support resource/data/call blocks",
+	"l2-destroy":                                  "converter does not support resource/data/call blocks",
+	"l2-discriminated-union":                      "converter does not support resource/data/call blocks",
+	"l2-elide-index":                              "converter does not support resource/data/call blocks",
+	"l2-engine-update-options":                    "converter does not support resource/data/call blocks",
+	"l2-enum":                                     "converter does not support resource/data/call blocks",
+	"l2-explicit-parameterized-provider":          "converter does not support resource/data/call blocks",
+	"l2-explicit-provider":                        "converter does not support resource/data/call blocks",
+	"l2-explicit-providers":                       "converter does not support resource/data/call blocks",
+	"l2-external-enum":                            "converter does not support resource/data/call blocks",
+	"l2-failed-create":                            "converter does not support resource/data/call blocks",
+	"l2-failed-create-continue-on-error":          "converter does not support resource/data/call blocks",
+	"l2-invoke-dependencies":                      "converter does not support resource/data/call blocks",
+	"l2-invoke-options":                           "converter does not support resource/data/call blocks",
+	"l2-invoke-options-depends-on":                "converter does not support resource/data/call blocks",
+	"l2-invoke-output-only":                       "converter does not support resource/data/call blocks",
+	"l2-invoke-scalar":                            "converter does not support resource/data/call blocks",
+	"l2-invoke-scalars":                           "converter does not support resource/data/call blocks",
+	"l2-invoke-secrets":                           "converter does not support resource/data/call blocks",
+	"l2-invoke-simple":                            "converter does not support resource/data/call blocks",
+	"l2-invoke-variants":                          "converter does not support resource/data/call blocks",
+	"l2-keywords":                                 "converter does not support resource/data/call blocks",
+	"l2-large-string":                             "converter does not support resource/data/call blocks",
+	"l2-map-keys":                                 "converter does not support resource/data/call blocks",
+	"l2-module-format":                            "converter does not support resource/data/call blocks",
+	"l2-namespaced-provider":                      "converter does not support resource/data/call blocks",
+	"l2-parallel-resources":                       "converter does not support resource/data/call blocks",
+	"l2-parameterized-invoke":                     "converter does not support resource/data/call blocks",
+	"l2-parameterized-resource":                   "converter does not support resource/data/call blocks",
+	"l2-parameterized-resource-twice":             "converter does not support resource/data/call blocks",
+	"l2-plain":                                    "converter does not support resource/data/call blocks",
+	"l2-primitive-ref":                            "converter does not support resource/data/call blocks",
+	"l2-provider-call":                            "converter does not support resource/data/call blocks",
+	"l2-provider-call-explicit":                   "converter does not support resource/data/call blocks",
+	"l2-provider-grpc-config":                     "converter does not support resource/data/call blocks",
+	"l2-provider-grpc-config-schema-secret":       "converter does not support resource/data/call blocks",
+	"l2-provider-grpc-config-secret":              "converter does not support resource/data/call blocks",
+	"l2-proxy-index":                              "converter does not support resource/data/call blocks",
+	"l2-ref-ref":                                  "converter does not support resource/data/call blocks",
+	"l2-resource-alpha":                           "converter does not support resource/data/call blocks",
+	"l2-resource-asset-archive":                   "converter does not support resource/data/call blocks",
+	"l2-resource-config":                          "converter does not support resource/data/call blocks",
+	"l2-resource-default":                         "converter does not support resource/data/call blocks",
+	"l2-resource-deletion-before-replacement":     "converter does not support resource/data/call blocks",
+	"l2-resource-destroy":                         "converter does not support resource/data/call blocks",
+	"l2-resource-elide-unknowns":                  "converter does not support resource/data/call blocks",
+	"l2-resource-invoke":                          "converter does not support resource/data/call blocks",
+	"l2-resource-invoke-component":                "converter does not support resource/data/call blocks",
+	"l2-resource-invoke-dynamic-function":         "converter does not support resource/data/call blocks",
+	"l2-resource-keyword-overlap":                 "converter does not support resource/data/call blocks",
+	"l2-resource-methods":                         "converter does not support resource/data/call blocks",
+	"l2-resource-name-type":                       "converter does not support resource/data/call blocks",
+	"l2-resource-names":                           "converter does not support resource/data/call blocks",
+	"l2-resource-option-additional-secret-outputs": "converter does not support resource/data/call blocks",
+	"l2-resource-option-alias":                    "converter does not support resource/data/call blocks",
+	"l2-resource-option-custom-timeouts":          "converter does not support resource/data/call blocks",
+	"l2-resource-option-delete-before-replace":    "converter does not support resource/data/call blocks",
+	"l2-resource-option-deleted-with":             "converter does not support resource/data/call blocks",
+	"l2-resource-option-depends-on":               "converter does not support resource/data/call blocks",
+	"l2-resource-option-env-var-mappings":         "converter does not support resource/data/call blocks",
+	"l2-resource-option-hide-diffs":               "converter does not support resource/data/call blocks",
+	"l2-resource-option-ignore-changes":           "converter does not support resource/data/call blocks",
+	"l2-resource-option-import":                   "converter does not support resource/data/call blocks",
+	"l2-resource-option-plugin-download-url":      "converter does not support resource/data/call blocks",
+	"l2-resource-option-protect":                  "converter does not support resource/data/call blocks",
+	"l2-resource-option-replace-on-changes":       "converter does not support resource/data/call blocks",
+	"l2-resource-option-replace-with":             "converter does not support resource/data/call blocks",
+	"l2-resource-option-replacement-trigger":      "converter does not support resource/data/call blocks",
+	"l2-resource-option-retain-on-delete":         "converter does not support resource/data/call blocks",
+	"l2-resource-option-version":                  "converter does not support resource/data/call blocks",
+	"l2-resource-option-version-sdk":              "converter does not support resource/data/call blocks",
+	"l2-resource-options":                         "converter does not support resource/data/call blocks",
+	"l2-resource-order":                           "converter does not support resource/data/call blocks",
+	"l2-resource-parent":                          "converter does not support resource/data/call blocks",
+	"l2-resource-parent-inheritance":              "converter does not support resource/data/call blocks",
+	"l2-resource-primitives":                      "converter does not support resource/data/call blocks",
+	"l2-resource-provider-call":                   "converter does not support resource/data/call blocks",
+	"l2-resource-ref":                             "converter does not support resource/data/call blocks",
+	"l2-resource-secret":                          "converter does not support resource/data/call blocks",
+	"l2-resource-simple":                          "converter does not support resource/data/call blocks",
+	"l2-resource-with-alone":                      "converter does not support resource/data/call blocks",
+	"l2-target-up-with-new-dependency":            "converter does not support resource/data/call blocks",
+	"l2-union":                                    "converter does not support resource/data/call blocks",
+	"l3-component-call":                           "converter does not support resource/data/call blocks",
+	"l3-component-simple":                         "converter does not support resource/data/call blocks",
+	"l3-range":                                    "converter does not support resource/data/call blocks",
+	"l3-range-resource-output-traversal":          "converter does not support resource/data/call blocks",
+	"l3-resource-simple":                          "converter does not support resource/data/call blocks",
+}
+
+func has[K comparable, V any, M ~map[K]V](m M, k K) bool {
+	_, ok := m[k]
+	return ok
 }
 
 func log(t *testing.T, name, message string) {
@@ -160,6 +285,7 @@ func TestLanguage(t *testing.T) {
 			}
 			t.Cleanup(func() { contract.IgnoreClose(host) })
 			pulumirpc.RegisterLanguageRuntimeServer(srv, host)
+			pulumirpc.RegisterConverterServer(srv, plugin.NewConverterServer(converter.New()))
 			return nil
 		},
 		Cancel: cancel,
@@ -171,10 +297,11 @@ func TestLanguage(t *testing.T) {
 	snapshotDir := "./testdata/"
 
 	prepare, err := engine.PrepareLanguageTests(t.Context(), &testingrpc.PrepareLanguageTestsRequest{
-		LanguagePluginName:   "hcl",
-		LanguagePluginTarget: fmt.Sprintf("127.0.0.1:%d", handle.Port),
-		TemporaryDirectory:   rootDir,
-		SnapshotDirectory:    snapshotDir,
+		LanguagePluginName:    "hcl",
+		LanguagePluginTarget:  fmt.Sprintf("127.0.0.1:%d", handle.Port),
+		ConverterPluginTarget: fmt.Sprintf("127.0.0.1:%d", handle.Port),
+		TemporaryDirectory:    rootDir,
+		SnapshotDirectory:     snapshotDir,
 	})
 	require.NoError(t, err)
 
@@ -193,8 +320,9 @@ func TestLanguage(t *testing.T) {
 			}
 
 			result, err := engine.RunLanguageTest(t.Context(), &testingrpc.RunLanguageTestRequest{
-				Token: prepare.Token,
-				Test:  tt,
+				Token:            prepare.Token,
+				Test:             tt,
+				SkipConvertTests: has(expectedEjectFailures, tt),
 			})
 
 			require.NoError(t, err)

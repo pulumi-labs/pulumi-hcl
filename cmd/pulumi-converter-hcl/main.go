@@ -16,38 +16,43 @@
 package main
 
 import (
+	"context"
 	"fmt"
+	"log"
 	"os"
+	"os/signal"
 
-	"github.com/pulumi/pulumi-language-hcl/pkg/version"
-	"github.com/spf13/cobra"
+	"github.com/pulumi/pulumi-language-hcl/pkg/converter"
+	"github.com/pulumi/pulumi/sdk/v3/go/common/resource/plugin"
+	"github.com/pulumi/pulumi/sdk/v3/go/common/util/rpcutil"
+	pulumirpc "github.com/pulumi/pulumi/sdk/v3/proto/go"
+	"google.golang.org/grpc"
 )
 
 func main() {
-	var rootCmd = &cobra.Command{
-		Use:   "pulumi-converter-hcl",
-		Short: "Convert between HCL and PCL",
-		Long: `pulumi-converter-hcl converts between HCL (HashiCorp Configuration Language)
-and PCL (Pulumi Configuration Language).`,
-		Run: func(cmd *cobra.Command, args []string) {
-			// TODO: Implement converter gRPC server
-			fmt.Fprintln(os.Stderr, "Converter not yet implemented")
-			os.Exit(1)
+	cancelch := make(chan bool)
+	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
+	go func() {
+		<-ctx.Done()
+		cancel()
+		close(cancelch)
+	}()
+
+	handle, err := rpcutil.ServeWithOptions(rpcutil.ServeOptions{
+		Cancel: cancelch,
+		Init: func(srv *grpc.Server) error {
+			pulumirpc.RegisterConverterServer(srv, plugin.NewConverterServer(converter.New()))
+			return nil
 		},
+		Options: rpcutil.OpenTracingServerInterceptorOptions(nil),
+	})
+	if err != nil {
+		log.Fatalf("fatal: %v", err)
 	}
 
-	var versionCmd = &cobra.Command{
-		Use:   "version",
-		Short: "Print the version number",
-		Run: func(cmd *cobra.Command, args []string) {
-			fmt.Println(version.GetVersion())
-		},
-	}
+	fmt.Printf("%d\n", handle.Port)
 
-	rootCmd.AddCommand(versionCmd)
-
-	if err := rootCmd.Execute(); err != nil {
-		fmt.Fprintln(os.Stderr, err)
-		os.Exit(1)
+	if err := <-handle.Done; err != nil {
+		log.Fatalf("fatal: %v", err)
 	}
 }
