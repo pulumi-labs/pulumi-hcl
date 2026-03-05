@@ -16,17 +16,19 @@
 package converter
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 
 	"github.com/hashicorp/hcl/v2"
 	"github.com/hashicorp/hcl/v2/hclsyntax"
+	"github.com/hashicorp/hcl/v2/hclwrite"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/resource/plugin"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/util/contract"
 	"gopkg.in/yaml.v3"
@@ -34,7 +36,7 @@ import (
 
 type hclConverter struct{}
 
-// New returns a new HCL→PCL converter.
+// New returns a new HCL->PCL converter.
 func New() plugin.Converter { return &hclConverter{} }
 
 func (*hclConverter) Close() error { return nil }
@@ -91,32 +93,37 @@ func (*hclConverter) ConvertProgram(
 			return nil, fmt.Errorf("reading %s: %w", entry.Name(), err)
 		}
 
-		pcl, diags, err := transformHCLToPCL(content, entry.Name())
+		out := hclwrite.NewEmptyFile()
+		diags, err := transformHCLFileToPCL(content, entry.Name(), out.Body())
 		if err != nil {
 			return nil, err
 		}
 		allDiags = append(allDiags, diags...)
 
 		dstName := strings.TrimSuffix(entry.Name(), ".hcl") + ".pp"
-		if err := os.WriteFile(filepath.Join(req.TargetDirectory, dstName), pcl, 0o644); err != nil {
-			return nil, fmt.Errorf("writing %s: %w", dstName, err)
+		f, err := os.Create(filepath.Join(req.TargetDirectory, dstName))
+		if err != nil {
+			return nil, fmt.Errorf("opening %s: %w", dstName, err)
+		}
+		defer contract.IgnoreClose(f)
+		if _, err := out.WriteTo(f); err != nil {
+			return nil, fmt.Errorf("writing to %s: %w", dstName, err)
 		}
 	}
 
 	return &plugin.ConvertProgramResponse{Diagnostics: allDiags}, nil
 }
 
-// transformHCLToPCL converts HCL source bytes to PCL source bytes.
+// transformHCLFileToPCL converts HCL source bytes to PCL source bytes.
 // It returns any non-fatal diagnostics (e.g., unsupported block types).
-func transformHCLToPCL(src []byte, filename string) ([]byte, hcl.Diagnostics, error) {
+func transformHCLFileToPCL(src []byte, filename string, out *hclwrite.Body) (hcl.Diagnostics, error) {
 	file, diags := hclsyntax.ParseConfig(src, filename, hcl.Pos{Line: 1, Column: 1})
 	if diags.HasErrors() {
-		return nil, diags, nil
+		return diags, nil
 	}
 
 	body := file.Body.(*hclsyntax.Body)
 
-	var out bytes.Buffer
 	var resultDiags hcl.Diagnostics
 
 	for _, block := range body.Blocks {
@@ -134,12 +141,13 @@ func transformHCLToPCL(src []byte, filename string) ([]byte, hcl.Diagnostics, er
 			if typeAttr, ok := block.Body.Attributes["type"]; ok {
 				typeStr = convertHCLTypeExpr(src, typeAttr.Expr)
 			}
-			fmt.Fprintf(&out, "config %q %q {}\n\n", name, typeStr)
+			out.AppendNewBlock("config", []string{name, typeStr})
+			out.AppendNewline()
 
 		case "locals":
 			for _, attr := range sortedAttributes(block.Body.Attributes) {
-				exprBytes := transformExpr(src, attr.Expr)
-				fmt.Fprintf(&out, "%s = %s\n\n", attr.Name, exprBytes)
+				out.SetAttributeRaw(attr.Name, transformExpr(src, attr.Expr))
+				out.AppendNewline()
 			}
 
 		case "output":
@@ -147,12 +155,11 @@ func transformHCLToPCL(src []byte, filename string) ([]byte, hcl.Diagnostics, er
 				continue
 			}
 			name := block.Labels[0]
-			fmt.Fprintf(&out, "output %q {\n", name)
+			blk := out.AppendNewBlock("output", []string{name})
 			for _, attr := range sortedAttributes(block.Body.Attributes) {
-				exprBytes := transformExpr(src, attr.Expr)
-				fmt.Fprintf(&out, "  %s = %s\n", attr.Name, exprBytes)
+				blk.Body().SetAttributeRaw(attr.Name, transformExpr(src, attr.Expr))
 			}
-			fmt.Fprintf(&out, "}\n\n")
+			out.AppendNewline()
 
 		default:
 			resultDiags = append(resultDiags, &hcl.Diagnostic{
@@ -166,19 +173,16 @@ func transformHCLToPCL(src []byte, filename string) ([]byte, hcl.Diagnostics, er
 
 	// Top-level attributes (uncommon in HCL input, but pass through with transforms).
 	for _, attr := range sortedAttributes(body.Attributes) {
-		exprBytes := transformExpr(src, attr.Expr)
-		fmt.Fprintf(&out, "%s = %s\n\n", attr.Name, exprBytes)
+		out.SetAttributeRaw(attr.Name, transformExpr(src, attr.Expr))
+		out.AppendNewline()
 	}
 
-	return out.Bytes(), resultDiags, nil
+	return resultDiags, nil
 }
 
 // sortedAttributes returns attributes sorted by source position.
 func sortedAttributes(attrs hclsyntax.Attributes) []*hclsyntax.Attribute {
-	result := make([]*hclsyntax.Attribute, 0, len(attrs))
-	for _, attr := range attrs {
-		result = append(result, attr)
-	}
+	result := slices.Collect(maps.Values(attrs))
 	sort.Slice(result, func(i, j int) bool {
 		return result[i].NameRange.Start.Byte < result[j].NameRange.Start.Byte
 	})
@@ -221,64 +225,129 @@ func convertHCLTypeExpr(src []byte, expr hclsyntax.Expression) string {
 	return string(src[expr.Range().Start.Byte:expr.Range().End.Byte])
 }
 
-// transformExpr applies expression rewrites to the source bytes spanning the expression.
-func transformExpr(src []byte, expr hclsyntax.Expression) []byte {
-	edits, diags := collectEdits(expr)
-	contract.Assertf(!diags.HasErrors(), "unexpected errors: %s", diags)
-	offset := expr.Range().Start.Byte
-	exprSrc := src[offset:expr.Range().End.Byte]
-
-	// Adjust edit positions to be relative to exprSrc.
-	adjusted := make([]edit, len(edits))
-	for i, e := range edits {
-		adjusted[i] = edit{e.start - offset, e.end - offset, e.text}
-	}
-	return applyEdits(exprSrc, adjusted)
-}
-
-// edit describes a text replacement in a byte slice.
-type edit struct {
-	start int
-	end   int
-	text  string
-}
-
-// collectEdits walks an expression AST and returns all rewrites needed for PCL.
-func collectEdits(expr hclsyntax.Expression) ([]edit, hcl.Diagnostics) {
-	var edits []edit
-	diags := hclsyntax.VisitAll(expr, func(node hclsyntax.Node) hcl.Diagnostics {
-		switch e := node.(type) {
-		case *hclsyntax.ScopeTraversalExpr:
-			edits = append(edits, traversalEdits(e)...)
-		case *hclsyntax.FunctionCallExpr:
-			edits = append(edits, functionEdits(e)...)
+// transformExpr converts an HCL expression to PCL hclwrite tokens by walking the AST.
+func transformExpr(src []byte, expr hclsyntax.Expression) hclwrite.Tokens {
+	switch e := expr.(type) {
+	case *hclsyntax.ScopeTraversalExpr:
+		return transformTraversal(e)
+	case *hclsyntax.FunctionCallExpr:
+		args := make([]hclwrite.Tokens, len(e.Args))
+		for i, arg := range e.Args {
+			args[i] = transformExpr(src, arg)
 		}
-		return nil
-	})
-	return edits, diags
+		return hclwrite.TokensForFunctionCall(transformFunctionName(e.Name), args...)
+	case *hclsyntax.TemplateExpr:
+		return transformTemplate(src, e)
+	case *hclsyntax.TemplateWrapExpr:
+		return transformExpr(src, e.Wrapped)
+	case *hclsyntax.BinaryOpExpr:
+		lhs := transformExpr(src, e.LHS)
+		op := binaryOpToken(e.Op)
+		op.SpacesBefore = 1
+		rhs := transformExpr(src, e.RHS)
+		if len(rhs) > 0 {
+			rhs[0].SpacesBefore = 1
+		}
+		return append(append(lhs, op), rhs...)
+	case *hclsyntax.UnaryOpExpr:
+		op := unaryOpToken(e.Op)
+		val := transformExpr(src, e.Val)
+		if len(val) > 0 {
+			val[0].SpacesBefore = 1
+		}
+		return append(hclwrite.Tokens{op}, val...)
+	default:
+		r := expr.Range()
+		return hclwrite.Tokens{
+			&hclwrite.Token{Type: hclsyntax.TokenIdent, Bytes: src[r.Start.Byte:r.End.Byte]},
+		}
+	}
 }
 
-// traversalEdits returns edits for HCL scope traversal expressions.
-func traversalEdits(e *hclsyntax.ScopeTraversalExpr) []edit {
-	start := e.SrcRange.Start.Byte
-	end := e.SrcRange.End.Byte
+func transformTemplate(src []byte, e *hclsyntax.TemplateExpr) hclwrite.Tokens {
+	tokens := hclwrite.Tokens{
+		&hclwrite.Token{Type: hclsyntax.TokenOQuote, Bytes: []byte{'"'}},
+	}
+	for _, part := range e.Parts {
+		if lit, ok := part.(*hclsyntax.LiteralValueExpr); ok {
+			r := lit.SrcRange
+			tokens = append(tokens, &hclwrite.Token{
+				Type:  hclsyntax.TokenQuotedLit,
+				Bytes: src[r.Start.Byte:r.End.Byte],
+			})
+		} else {
+			tokens = append(tokens,
+				&hclwrite.Token{Type: hclsyntax.TokenTemplateInterp, Bytes: []byte("${")},
+			)
+			tokens = append(tokens, transformExpr(src, part)...)
+			tokens = append(tokens,
+				&hclwrite.Token{Type: hclsyntax.TokenTemplateSeqEnd, Bytes: []byte("}")},
+			)
+		}
+	}
+	tokens = append(tokens, &hclwrite.Token{Type: hclsyntax.TokenCQuote, Bytes: []byte{'"'}})
+	return tokens
+}
+
+func binaryOpToken(op *hclsyntax.Operation) *hclwrite.Token {
+	switch op {
+	case hclsyntax.OpAdd:
+		return &hclwrite.Token{Type: hclsyntax.TokenPlus, Bytes: []byte("+")}
+	case hclsyntax.OpSubtract:
+		return &hclwrite.Token{Type: hclsyntax.TokenMinus, Bytes: []byte("-")}
+	case hclsyntax.OpMultiply:
+		return &hclwrite.Token{Type: hclsyntax.TokenStar, Bytes: []byte("*")}
+	case hclsyntax.OpDivide:
+		return &hclwrite.Token{Type: hclsyntax.TokenSlash, Bytes: []byte("/")}
+	case hclsyntax.OpModulo:
+		return &hclwrite.Token{Type: hclsyntax.TokenPercent, Bytes: []byte("%")}
+	case hclsyntax.OpLogicalAnd:
+		return &hclwrite.Token{Type: hclsyntax.TokenAnd, Bytes: []byte("&&")}
+	case hclsyntax.OpLogicalOr:
+		return &hclwrite.Token{Type: hclsyntax.TokenOr, Bytes: []byte("||")}
+	case hclsyntax.OpEqual:
+		return &hclwrite.Token{Type: hclsyntax.TokenEqualOp, Bytes: []byte("==")}
+	case hclsyntax.OpNotEqual:
+		return &hclwrite.Token{Type: hclsyntax.TokenNotEqual, Bytes: []byte("!=")}
+	case hclsyntax.OpGreaterThan:
+		return &hclwrite.Token{Type: hclsyntax.TokenGreaterThan, Bytes: []byte(">")}
+	case hclsyntax.OpGreaterThanOrEqual:
+		return &hclwrite.Token{Type: hclsyntax.TokenGreaterThanEq, Bytes: []byte(">=")}
+	case hclsyntax.OpLessThan:
+		return &hclwrite.Token{Type: hclsyntax.TokenLessThan, Bytes: []byte("<")}
+	case hclsyntax.OpLessThanOrEqual:
+		return &hclwrite.Token{Type: hclsyntax.TokenLessThanEq, Bytes: []byte("<=")}
+	default:
+		panic(fmt.Sprintf("unsupported binary operation: %v", op))
+	}
+}
+
+func unaryOpToken(op *hclsyntax.Operation) *hclwrite.Token {
+	switch op {
+	case hclsyntax.OpNegate:
+		return &hclwrite.Token{Type: hclsyntax.TokenMinus, Bytes: []byte("-")}
+	case hclsyntax.OpLogicalNot:
+		return &hclwrite.Token{Type: hclsyntax.TokenBang, Bytes: []byte("!")}
+	default:
+		panic(fmt.Sprintf("unsupported unary operation: %v", op))
+	}
+}
+
+// transformTraversal converts an HCL scope traversal to PCL tokens.
+func transformTraversal(e *hclsyntax.ScopeTraversalExpr) hclwrite.Tokens {
 	switch e.Traversal.RootName() {
-	case "var":
-		// Remove "var." prefix: var.name → name
-		return []edit{{start, start + len("var."), ""}}
-	case "local":
-		// Remove "local." prefix: local.name → name
-		return []edit{{start, start + len("local."), ""}}
+	case "var", "local":
+		return hclwrite.TokensForTraversal(stripRoot(e.Traversal))
 	case "pulumi":
 		if len(e.Traversal) >= 2 {
 			if attr, ok := e.Traversal[1].(hcl.TraverseAttr); ok {
 				switch attr.Name {
 				case "stack":
-					return []edit{{start, end, "stack()"}}
+					return hclwrite.TokensForFunctionCall("stack")
 				case "project":
-					return []edit{{start, end, "project()"}}
+					return hclwrite.TokensForFunctionCall("project")
 				case "organization":
-					return []edit{{start, end, "organization()"}}
+					return hclwrite.TokensForFunctionCall("organization")
 				}
 			}
 		}
@@ -287,54 +356,44 @@ func traversalEdits(e *hclsyntax.ScopeTraversalExpr) []edit {
 			if attr, ok := e.Traversal[1].(hcl.TraverseAttr); ok {
 				switch attr.Name {
 				case "cwd":
-					return []edit{{start, end, "cwd()"}}
+					return hclwrite.TokensForFunctionCall("cwd")
 				case "root", "module":
-					return []edit{{start, end, "rootDirectory()"}}
+					return hclwrite.TokensForFunctionCall("rootDirectory")
 				}
 			}
 		}
 	}
-	return nil
+	return hclwrite.TokensForTraversal(e.Traversal)
 }
 
-// functionEdits returns edits for renamed HCL built-in functions.
-func functionEdits(e *hclsyntax.FunctionCallExpr) []edit {
-	start := e.NameRange.Start.Byte
-	end := e.NameRange.End.Byte
-	switch e.Name {
+// stripRoot converts a traversal like var.name.field to name.field by promoting the
+// second element to the root.
+func stripRoot(trav hcl.Traversal) hcl.Traversal {
+	if len(trav) < 2 {
+		return trav
+	}
+	attr, ok := trav[1].(hcl.TraverseAttr)
+	if !ok {
+		return trav
+	}
+	result := make(hcl.Traversal, len(trav)-1)
+	result[0] = hcl.TraverseRoot{Name: attr.Name}
+	copy(result[1:], trav[2:])
+	return result
+}
+
+// transformFunctionName maps HCL function names to their PCL equivalents.
+func transformFunctionName(name string) string {
+	switch name {
 	case "base64encode":
-		return []edit{{start, end, "toBase64"}}
+		return "toBase64"
 	case "base64decode":
-		return []edit{{start, end, "fromBase64"}}
+		return "fromBase64"
 	case "sensitive":
-		return []edit{{start, end, "secret"}}
+		return "secret"
 	case "one":
-		return []edit{{start, end, "singleOrNone"}}
+		return "singleOrNone"
+	default:
+		return name
 	}
-	return nil
-}
-
-// applyEdits applies a set of non-overlapping edits to src, returning the result.
-// Edits must use positions within src (already adjusted to be relative to src).
-func applyEdits(src []byte, edits []edit) []byte {
-	if len(edits) == 0 {
-		return src
-	}
-	sort.Slice(edits, func(i, j int) bool {
-		return edits[i].start < edits[j].start
-	})
-
-	var buf bytes.Buffer
-	pos := 0
-	for _, e := range edits {
-		if e.start < pos {
-			// Skip overlapping edits (shouldn't happen in practice).
-			continue
-		}
-		buf.Write(src[pos:e.start])
-		buf.WriteString(e.text)
-		pos = e.end
-	}
-	buf.Write(src[pos:])
-	return buf.Bytes()
 }

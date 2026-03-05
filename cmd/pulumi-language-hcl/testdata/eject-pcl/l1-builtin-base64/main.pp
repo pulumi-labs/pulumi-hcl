@@ -1,4 +1,5 @@
-config "input" "string" {}
+config "input" "string" {
+}
 
 bytes = fromBase64(input)
 
