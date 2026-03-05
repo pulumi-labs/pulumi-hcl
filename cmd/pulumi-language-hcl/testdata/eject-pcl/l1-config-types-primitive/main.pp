@@ -1,18 +1,21 @@
-config "aNumber" "number" {}
+config "aNumber" "number" {
+}
 
 output "theNumber" {
   value = aNumber + 1.25
 }
 
-config "aString" "string" {}
+config "aString" "string" {
+}
 
 output "theString" {
   value = "${aString} World"
 }
 
-config "aBool" "bool" {}
+config "aBool" "bool" {
+}
 
 output "theBool" {
-  value = ! aBool && true
+  value = !aBool && true
 }
 
