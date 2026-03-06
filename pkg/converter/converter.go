@@ -161,6 +161,13 @@ func transformHCLFileToPCL(src []byte, filename string, out *hclwrite.Body) (hcl
 			}
 			out.AppendNewline()
 
+		case "pulumi":
+			blk := out.AppendNewBlock("pulumi", nil)
+			for _, attr := range sortedAttributes(block.Body.Attributes) {
+				blk.Body().SetAttributeRaw(snakeToCamel(attr.Name), transformExpr(src, attr.Expr))
+			}
+			out.AppendNewline()
+
 		default:
 			resultDiags = append(resultDiags, &hcl.Diagnostic{
 				Severity: hcl.DiagError,
@@ -178,6 +185,17 @@ func transformHCLFileToPCL(src []byte, filename string, out *hclwrite.Body) (hcl
 	}
 
 	return resultDiags, nil
+}
+
+// snakeToCamel converts a snake_case identifier to camelCase.
+func snakeToCamel(s string) string {
+	parts := strings.Split(s, "_")
+	for i := 1; i < len(parts); i++ {
+		if len(parts[i]) > 0 {
+			parts[i] = strings.ToUpper(parts[i][:1]) + parts[i][1:]
+		}
+	}
+	return strings.Join(parts, "")
 }
 
 // sortedAttributes returns attributes sorted by source position.
