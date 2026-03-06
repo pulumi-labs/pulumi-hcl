@@ -158,6 +158,7 @@ type fileTransformer struct {
 	src             []byte
 	knownHCLTypes   map[string]bool               // set of HCL type labels used in resource blocks
 	stackRefNames   map[string]bool               // set of logical names of pulumi_stackreference resources
+	knownProviders  []string                      // provider names from terraform.required_providers
 	callBlocks      map[callReference]*hclsyntax.Body
 	dataBlocks      map[dataReference]*hclsyntax.Body
 	dataTokens      map[string]string             // key: hclType, value: resolved PCL token
@@ -179,6 +180,15 @@ func newFileTransformer(ctx context.Context, src []byte, body *hclsyntax.Body, l
 	}
 	var diags hcl.Diagnostics
 	for _, block := range body.Blocks {
+		if block.Type == "terraform" {
+			for _, sub := range block.Body.Blocks {
+				if sub.Type == "required_providers" {
+					for name := range sub.Body.Attributes {
+						ft.knownProviders = append(ft.knownProviders, name)
+					}
+				}
+			}
+		}
 		if block.Type == "resource" && len(block.Labels) >= 1 {
 			ft.knownHCLTypes[block.Labels[0]] = true
 			if block.Labels[0] == "pulumi_stackreference" && len(block.Labels) >= 2 {
@@ -193,7 +203,7 @@ func newFileTransformer(ctx context.Context, src []byte, body *hclsyntax.Body, l
 			name := block.Labels[1]
 			ft.dataBlocks[dataReference{hclType, name}] = block.Body
 			if _, seen := ft.dataTokens[hclType]; !seen {
-				fn, err := packages.ResolveFunction(ctx, loader, nil, hclType)
+				fn, err := packages.ResolveFunction(ctx, loader, ft.knownProviders, hclType)
 				if err != nil {
 					diags = append(diags, &hcl.Diagnostic{
 						Severity: hcl.DiagError,
@@ -217,7 +227,7 @@ func (ft *fileTransformer) resolveHCLType(ctx context.Context, hclType string) (
 	if res, ok := ft.resourceSchemas[hclType]; ok {
 		return res, nil
 	}
-	res, err := packages.ResolveResource(ctx, ft.loader, nil, hclType)
+	res, err := packages.ResolveResource(ctx, ft.loader, ft.knownProviders, hclType)
 	if err != nil {
 		return nil, fmt.Errorf("resolving resource type %q: %w", hclType, err)
 	}
