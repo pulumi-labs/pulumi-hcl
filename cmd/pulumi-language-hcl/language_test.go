@@ -139,7 +139,6 @@ var expectedFailures = map[string]string{
 // expected to fail because the converter does not yet support resources, data
 // sources, or other constructs used by those tests.
 var expectedEjectFailures = map[string]string{
-	"l2-invoke-dependencies":                       "converter does not support resource/data/call blocks",
 	"l2-invoke-options":                            "converter does not support resource/data/call blocks",
 	"l2-invoke-options-depends-on":                 "converter does not support resource/data/call blocks",
 	"l2-invoke-output-only":                        "converter does not support resource/data/call blocks",
