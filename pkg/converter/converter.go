@@ -241,7 +241,7 @@ func transformHCLFileToPCL(
 
 			blk := out.AppendNewBlock("resource", []string{logicalName, pclToken})
 			for _, attr := range sortedAttributes(block.Body.Attributes) {
-				blk.Body().SetAttributeRaw(attr.Name, ft.transformExpr(attr.Expr))
+				blk.Body().SetAttributeRaw(snakeToCamel(attr.Name), ft.transformExpr(attr.Expr))
 			}
 			if len(block.Body.Blocks) > 0 {
 				resultDiags = append(resultDiags, &hcl.Diagnostic{
@@ -469,7 +469,8 @@ func unaryOpToken(op *hclsyntax.Operation) *hclwrite.Token {
 func (ft *fileTransformer) transformTraversal(e *hclsyntax.ScopeTraversalExpr) hclwrite.Tokens {
 	root := e.Traversal.RootName()
 
-	// Resource traversal: strip the HCL type prefix (e.g., "pulumi_stash.myRes.prop" → "myRes.prop").
+	// Resource traversal: strip the HCL type prefix (e.g., "pulumi_stash.myRes.prop" → "myRes.prop"),
+	// and convert property attribute names from snake_case to camelCase.
 	if ft.knownHCLTypes[root] {
 		stripped := stripRoot(e.Traversal)
 		// StackReference: <type>.<name>.outputs["key"] → getOutput(<name>, "key")
@@ -484,7 +485,7 @@ func (ft *fileTransformer) transformTraversal(e *hclsyntax.ScopeTraversalExpr) h
 				return hclwrite.TokensForFunctionCall("getOutput", refTokens, keyTokens)
 			}
 		}
-		return hclwrite.TokensForTraversal(stripped)
+		return hclwrite.TokensForTraversal(camelCaseTraversalAttrs(stripped))
 	}
 
 	switch root {
@@ -516,6 +517,22 @@ func (ft *fileTransformer) transformTraversal(e *hclsyntax.ScopeTraversalExpr) h
 		}
 	}
 	return hclwrite.TokensForTraversal(e.Traversal)
+}
+
+// camelCaseTraversalAttrs converts all TraverseAttr names after the root to camelCase.
+// The root (logical resource name) is left unchanged.
+func camelCaseTraversalAttrs(trav hcl.Traversal) hcl.Traversal {
+	if len(trav) <= 1 {
+		return trav
+	}
+	result := make(hcl.Traversal, len(trav))
+	copy(result, trav)
+	for i := 1; i < len(result); i++ {
+		if attr, ok := result[i].(hcl.TraverseAttr); ok {
+			result[i] = hcl.TraverseAttr{Name: snakeToCamel(attr.Name)}
+		}
+	}
+	return result
 }
 
 // stripRoot converts a traversal like var.name.field to name.field by promoting the
