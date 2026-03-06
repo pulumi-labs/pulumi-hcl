@@ -139,7 +139,6 @@ var expectedFailures = map[string]string{
 // expected to fail because the converter does not yet support resources, data
 // sources, or other constructs used by those tests.
 var expectedEjectFailures = map[string]string{
-	"l1-builtin-object":                            "converter does not support resource/data/call blocks",
 	"l1-builtin-project-root":                      "converter does not support resource/data/call blocks",
 	"l1-builtin-project-root-main":                 "converter does not support resource/data/call blocks",
 	"l1-builtin-require-pulumi-version":            "converter does not support resource/data/call blocks",
