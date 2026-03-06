@@ -295,6 +295,13 @@ func sortedAttributes(attrs hclsyntax.Attributes) []*hclsyntax.Attribute {
 
 // convertHCLTypeExpr converts an HCL type constraint expression to a PCL type string.
 func convertHCLTypeExpr(src []byte, expr hclsyntax.Expression) string {
+	return convertHCLTypeExprInner(src, expr, false)
+}
+
+// convertHCLTypeExprInner converts an HCL type expression to a PCL type string.
+// inCollection is true when the expression is a type argument inside a collection
+// type (map, list, set, object), where HCL's "number" maps to PCL's "int".
+func convertHCLTypeExprInner(src []byte, expr hclsyntax.Expression, inCollection bool) string {
 	switch e := expr.(type) {
 	case *hclsyntax.ScopeTraversalExpr:
 		switch e.Traversal.RootName() {
@@ -303,10 +310,27 @@ func convertHCLTypeExpr(src []byte, expr hclsyntax.Expression) string {
 		case "bool":
 			return "bool"
 		case "number":
+			if inCollection {
+				return "int"
+			}
 			return "number"
 		case "any":
 			return "any"
 		}
+	case *hclsyntax.FunctionCallExpr:
+		args := make([]string, len(e.Args))
+		for i, arg := range e.Args {
+			args[i] = convertHCLTypeExprInner(src, arg, true)
+		}
+		return e.Name + "(" + strings.Join(args, ", ") + ")"
+	case *hclsyntax.ObjectConsExpr:
+		parts := make([]string, len(e.Items))
+		for i, item := range e.Items {
+			key := convertHCLTypeExprInner(src, item.KeyExpr, false)
+			val := convertHCLTypeExprInner(src, item.ValueExpr, true)
+			parts[i] = key + "=" + val
+		}
+		return "{" + strings.Join(parts, ", ") + "}"
 	}
 	// Fallback: use source bytes.
 	return string(src[expr.Range().Start.Byte:expr.Range().End.Byte])
