@@ -397,6 +397,10 @@ func SnakeCaseFromPulumiCase(s string) string {
 	return snakeCaseFromCamelCase(s)
 }
 
+func PulumiCaseFromSnakeCase(s string, props []*schema.Property) (string, *schema.Property) {
+	return camelCaseFromSnakeCase(s, props)
+}
+
 // Convert from camelCase to snake_case.
 //
 // This function looses information, since we cannot distinguish between SCREAM & scream.
