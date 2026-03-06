@@ -26,9 +26,12 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/blang/semver"
 	"github.com/hashicorp/hcl/v2"
 	"github.com/hashicorp/hcl/v2/hclsyntax"
 	"github.com/hashicorp/hcl/v2/hclwrite"
+	"github.com/pulumi/pulumi-language-hcl/pkg/hcl/packages"
+	"github.com/pulumi/pulumi/pkg/v3/codegen/schema"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/resource/plugin"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/util/contract"
 	"gopkg.in/yaml.v3"
@@ -50,6 +53,18 @@ func (*hclConverter) ConvertState(
 func (*hclConverter) ConvertProgram(
 	_ context.Context, req *plugin.ConvertProgramRequest,
 ) (*plugin.ConvertProgramResponse, error) {
+	var loader schema.ReferenceLoader
+	if req.LoaderTarget != "" {
+		client, err := schema.NewLoaderClient(req.LoaderTarget)
+		if err != nil {
+			return nil, fmt.Errorf("creating loader client: %w", err)
+		}
+		defer contract.IgnoreClose(client)
+		loader = client
+	} else {
+		loader = errLoader{}
+	}
+
 	// Read source Pulumi.yaml, extract project name, write target Pulumi.yaml with runtime: pcl.
 	pulumiYAMLBytes, err := os.ReadFile(filepath.Join(req.SourceDirectory, "Pulumi.yaml"))
 	if err != nil {
@@ -94,7 +109,7 @@ func (*hclConverter) ConvertProgram(
 		}
 
 		out := hclwrite.NewEmptyFile()
-		diags, err := transformHCLFileToPCL(content, entry.Name(), out.Body())
+		diags, err := transformHCLFileToPCL(content, entry.Name(), out.Body(), loader)
 		if err != nil {
 			return nil, err
 		}
@@ -114,15 +129,73 @@ func (*hclConverter) ConvertProgram(
 	return &plugin.ConvertProgramResponse{Diagnostics: allDiags}, nil
 }
 
+// errLoader is a schema.ReferenceLoader that returns errors for all packages.
+// It is used when no loader target is provided, which is safe because the built-in
+// "pulumi" package is resolved directly without calling the loader.
+type errLoader struct{}
+
+func (errLoader) LoadPackage(pkg string, _ *semver.Version) (*schema.Package, error) {
+	return nil, fmt.Errorf("no loader available for package %q", pkg)
+}
+
+func (errLoader) LoadPackageV2(_ context.Context, descriptor *schema.PackageDescriptor) (*schema.Package, error) {
+	return nil, fmt.Errorf("no loader available for package %q", descriptor.Name)
+}
+
+func (errLoader) LoadPackageReference(pkg string, _ *semver.Version) (schema.PackageReference, error) {
+	return nil, fmt.Errorf("no loader available for package %q", pkg)
+}
+
+func (errLoader) LoadPackageReferenceV2(_ context.Context, descriptor *schema.PackageDescriptor) (schema.PackageReference, error) {
+	return nil, fmt.Errorf("no loader available for package %q", descriptor.Name)
+}
+
+var _ schema.ReferenceLoader = errLoader{}
+
+// fileTransformer holds context for converting a single HCL file to PCL.
+type fileTransformer struct {
+	src           []byte
+	knownHCLTypes map[string]bool // set of HCL type labels used in resource blocks
+	loader        schema.ReferenceLoader
+}
+
+// newFileTransformer creates a fileTransformer by pre-scanning body for resource definitions.
+func newFileTransformer(src []byte, body *hclsyntax.Body, loader schema.ReferenceLoader) *fileTransformer {
+	ft := &fileTransformer{
+		src:           src,
+		knownHCLTypes: make(map[string]bool),
+		loader:        loader,
+	}
+	for _, block := range body.Blocks {
+		if block.Type == "resource" && len(block.Labels) >= 1 {
+			ft.knownHCLTypes[block.Labels[0]] = true
+		}
+	}
+	return ft
+}
+
+// hclTypeToPCLToken converts an HCL resource type (e.g., "pulumi_stash") to a PCL
+// token (e.g., "pulumi:index:Stash") using schema resolution.
+func (ft *fileTransformer) hclTypeToPCLToken(hclType string) (string, error) {
+	res, err := packages.ResolveResource(context.Background(), ft.loader, nil, hclType)
+	if err != nil {
+		return "", fmt.Errorf("resolving resource type %q: %w", hclType, err)
+	}
+	return res.Token, nil
+}
+
 // transformHCLFileToPCL converts HCL source bytes to PCL source bytes.
 // It returns any non-fatal diagnostics (e.g., unsupported block types).
-func transformHCLFileToPCL(src []byte, filename string, out *hclwrite.Body) (hcl.Diagnostics, error) {
+func transformHCLFileToPCL(
+	src []byte, filename string, out *hclwrite.Body, loader schema.ReferenceLoader,
+) (hcl.Diagnostics, error) {
 	file, diags := hclsyntax.ParseConfig(src, filename, hcl.Pos{Line: 1, Column: 1})
 	if diags.HasErrors() {
 		return diags, nil
 	}
 
 	body := file.Body.(*hclsyntax.Body)
+	ft := newFileTransformer(src, body, loader)
 
 	var resultDiags hcl.Diagnostics
 
@@ -146,7 +219,7 @@ func transformHCLFileToPCL(src []byte, filename string, out *hclwrite.Body) (hcl
 
 		case "locals":
 			for _, attr := range sortedAttributes(block.Body.Attributes) {
-				out.SetAttributeRaw(attr.Name, transformExpr(src, attr.Expr))
+				out.SetAttributeRaw(attr.Name, ft.transformExpr(attr.Expr))
 				out.AppendNewline()
 			}
 
@@ -157,14 +230,52 @@ func transformHCLFileToPCL(src []byte, filename string, out *hclwrite.Body) (hcl
 			name := block.Labels[0]
 			blk := out.AppendNewBlock("output", []string{name})
 			for _, attr := range sortedAttributes(block.Body.Attributes) {
-				blk.Body().SetAttributeRaw(attr.Name, transformExpr(src, attr.Expr))
+				blk.Body().SetAttributeRaw(attr.Name, ft.transformExpr(attr.Expr))
+			}
+			out.AppendNewline()
+
+		case "resource":
+			if len(block.Labels) < 2 {
+				resultDiags = append(resultDiags, &hcl.Diagnostic{
+					Severity: hcl.DiagError,
+					Summary:  "malformed resource block",
+					Detail:   "resource block requires exactly 2 labels: <type> and <name>",
+					Subject:  block.TypeRange.Ptr(),
+				})
+				continue
+			}
+			hclType := block.Labels[0]
+			logicalName := block.Labels[1]
+
+			pclToken, err := ft.hclTypeToPCLToken(hclType)
+			if err != nil {
+				resultDiags = append(resultDiags, &hcl.Diagnostic{
+					Severity: hcl.DiagError,
+					Summary:  "unknown resource type",
+					Detail:   fmt.Sprintf("cannot convert HCL type %q to PCL token: %v", hclType, err),
+					Subject:  block.TypeRange.Ptr(),
+				})
+				continue
+			}
+
+			blk := out.AppendNewBlock("resource", []string{logicalName, pclToken})
+			for _, attr := range sortedAttributes(block.Body.Attributes) {
+				blk.Body().SetAttributeRaw(attr.Name, ft.transformExpr(attr.Expr))
+			}
+			if len(block.Body.Blocks) > 0 {
+				resultDiags = append(resultDiags, &hcl.Diagnostic{
+					Severity: hcl.DiagError,
+					Summary:  "unsupported resource sub-blocks",
+					Detail:   "nested blocks within resource blocks are not yet supported by the HCL converter",
+					Subject:  block.TypeRange.Ptr(),
+				})
 			}
 			out.AppendNewline()
 
 		case "pulumi":
 			blk := out.AppendNewBlock("pulumi", nil)
 			for _, attr := range sortedAttributes(block.Body.Attributes) {
-				blk.Body().SetAttributeRaw(snakeToCamel(attr.Name), transformExpr(src, attr.Expr))
+				blk.Body().SetAttributeRaw(snakeToCamel(attr.Name), ft.transformExpr(attr.Expr))
 			}
 			out.AppendNewline()
 
@@ -180,7 +291,7 @@ func transformHCLFileToPCL(src []byte, filename string, out *hclwrite.Body) (hcl
 
 	// Top-level attributes (uncommon in HCL input, but pass through with transforms).
 	for _, attr := range sortedAttributes(body.Attributes) {
-		out.SetAttributeRaw(attr.Name, transformExpr(src, attr.Expr))
+		out.SetAttributeRaw(attr.Name, ft.transformExpr(attr.Expr))
 		out.AppendNewline()
 	}
 
@@ -227,38 +338,47 @@ func convertHCLTypeExpr(src []byte, expr hclsyntax.Expression) string {
 }
 
 // transformExpr converts an HCL expression to PCL hclwrite tokens by walking the AST.
-func transformExpr(src []byte, expr hclsyntax.Expression) hclwrite.Tokens {
+func (ft *fileTransformer) transformExpr(expr hclsyntax.Expression) hclwrite.Tokens {
 	switch e := expr.(type) {
 	case *hclsyntax.ScopeTraversalExpr:
-		return transformTraversal(e)
+		return ft.transformTraversal(e)
 	case *hclsyntax.FunctionCallExpr:
 		args := make([]hclwrite.Tokens, len(e.Args))
 		for i, arg := range e.Args {
-			args[i] = transformExpr(src, arg)
+			args[i] = ft.transformExpr(arg)
 		}
 		return hclwrite.TokensForFunctionCall(transformFunctionName(e.Name), args...)
 	case *hclsyntax.TemplateExpr:
-		return transformTemplate(src, e)
+		return ft.transformTemplate(e)
 	case *hclsyntax.TemplateWrapExpr:
-		return transformExpr(src, e.Wrapped)
+		return ft.transformExpr(e.Wrapped)
 	case *hclsyntax.TupleConsExpr:
 		var elems []hclwrite.Tokens
 		for _, item := range e.Exprs {
-			elems = append(elems, transformExpr(src, item))
+			elems = append(elems, ft.transformExpr(item))
 		}
 		return hclwrite.TokensForTuple(elems)
+	case *hclsyntax.ObjectConsExpr:
+		var attrs []hclwrite.ObjectAttrTokens
+		for _, item := range e.Items {
+			attrs = append(attrs, hclwrite.ObjectAttrTokens{
+				Name:  ft.transformExpr(item.KeyExpr),
+				Value: ft.transformExpr(item.ValueExpr),
+			})
+		}
+		return hclwrite.TokensForObject(attrs)
 	case *hclsyntax.BinaryOpExpr:
-		lhs := transformExpr(src, e.LHS)
+		lhs := ft.transformExpr(e.LHS)
 		op := binaryOpToken(e.Op)
 		op.SpacesBefore = 1
-		rhs := transformExpr(src, e.RHS)
+		rhs := ft.transformExpr(e.RHS)
 		if len(rhs) > 0 {
 			rhs[0].SpacesBefore = 1
 		}
 		return append(append(lhs, op), rhs...)
 	case *hclsyntax.UnaryOpExpr:
 		op := unaryOpToken(e.Op)
-		val := transformExpr(src, e.Val)
+		val := ft.transformExpr(e.Val)
 		if len(val) > 0 {
 			val[0].SpacesBefore = 1
 		}
@@ -266,12 +386,12 @@ func transformExpr(src []byte, expr hclsyntax.Expression) hclwrite.Tokens {
 	default:
 		r := expr.Range()
 		return hclwrite.Tokens{
-			&hclwrite.Token{Type: hclsyntax.TokenIdent, Bytes: src[r.Start.Byte:r.End.Byte]},
+			&hclwrite.Token{Type: hclsyntax.TokenIdent, Bytes: ft.src[r.Start.Byte:r.End.Byte]},
 		}
 	}
 }
 
-func transformTemplate(src []byte, e *hclsyntax.TemplateExpr) hclwrite.Tokens {
+func (ft *fileTransformer) transformTemplate(e *hclsyntax.TemplateExpr) hclwrite.Tokens {
 	tokens := hclwrite.Tokens{
 		&hclwrite.Token{Type: hclsyntax.TokenOQuote, Bytes: []byte{'"'}},
 	}
@@ -280,13 +400,13 @@ func transformTemplate(src []byte, e *hclsyntax.TemplateExpr) hclwrite.Tokens {
 			r := lit.SrcRange
 			tokens = append(tokens, &hclwrite.Token{
 				Type:  hclsyntax.TokenQuotedLit,
-				Bytes: src[r.Start.Byte:r.End.Byte],
+				Bytes: ft.src[r.Start.Byte:r.End.Byte],
 			})
 		} else {
 			tokens = append(tokens,
 				&hclwrite.Token{Type: hclsyntax.TokenTemplateInterp, Bytes: []byte("${")},
 			)
-			tokens = append(tokens, transformExpr(src, part)...)
+			tokens = append(tokens, ft.transformExpr(part)...)
 			tokens = append(tokens,
 				&hclwrite.Token{Type: hclsyntax.TokenTemplateSeqEnd, Bytes: []byte("}")},
 			)
@@ -341,8 +461,15 @@ func unaryOpToken(op *hclsyntax.Operation) *hclwrite.Token {
 }
 
 // transformTraversal converts an HCL scope traversal to PCL tokens.
-func transformTraversal(e *hclsyntax.ScopeTraversalExpr) hclwrite.Tokens {
-	switch e.Traversal.RootName() {
+func (ft *fileTransformer) transformTraversal(e *hclsyntax.ScopeTraversalExpr) hclwrite.Tokens {
+	root := e.Traversal.RootName()
+
+	// Resource traversal: strip the HCL type prefix (e.g., "pulumi_stash.myRes.prop" → "myRes.prop").
+	if ft.knownHCLTypes[root] {
+		return hclwrite.TokensForTraversal(stripRoot(e.Traversal))
+	}
+
+	switch root {
 	case "var", "local":
 		return hclwrite.TokensForTraversal(stripRoot(e.Traversal))
 	case "pulumi":
