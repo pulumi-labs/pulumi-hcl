@@ -137,11 +137,12 @@ func transformHCLFileToPCL(src []byte, filename string, out *hclwrite.Body) (hcl
 				continue
 			}
 			name := block.Labels[0]
-			typeStr := "string"
 			if typeAttr, ok := block.Body.Attributes["type"]; ok {
-				typeStr = convertHCLTypeExpr(src, typeAttr.Expr)
+				typeStr := convertHCLTypeExpr(src, typeAttr.Expr)
+				out.AppendNewBlock("config", []string{name, typeStr})
+			} else {
+				out.AppendNewBlock("config", []string{name})
 			}
-			out.AppendNewBlock("config", []string{name, typeStr})
 			out.AppendNewline()
 
 		case "locals":
@@ -201,23 +202,6 @@ func convertHCLTypeExpr(src []byte, expr hclsyntax.Expression) string {
 		case "number":
 			return "number"
 		case "any":
-			return "any"
-		}
-	case *hclsyntax.FunctionCallExpr:
-		switch e.Name {
-		case "list":
-			if len(e.Args) == 1 {
-				return "List<" + convertHCLTypeExpr(src, e.Args[0]) + ">"
-			}
-		case "map":
-			if len(e.Args) == 1 {
-				return "Map<" + convertHCLTypeExpr(src, e.Args[0]) + ">"
-			}
-		case "set":
-			if len(e.Args) == 1 {
-				return "Set<" + convertHCLTypeExpr(src, e.Args[0]) + ">"
-			}
-		case "object", "tuple":
 			return "any"
 		}
 	}
