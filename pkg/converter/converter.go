@@ -31,6 +31,7 @@ import (
 	"github.com/hashicorp/hcl/v2/hclwrite"
 	"github.com/zclconf/go-cty/cty"
 	"github.com/pulumi/pulumi-language-hcl/pkg/hcl/packages"
+	"github.com/pulumi/pulumi-language-hcl/pkg/hcl/transform"
 	"github.com/pulumi/pulumi/pkg/v3/codegen/schema"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/resource/plugin"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/util/contract"
@@ -130,19 +131,21 @@ func (*hclConverter) ConvertProgram(
 
 // fileTransformer holds context for converting a single HCL file to PCL.
 type fileTransformer struct {
-	src           []byte
-	knownHCLTypes map[string]bool // set of HCL type labels used in resource blocks
-	stackRefNames map[string]bool // set of logical names of pulumi_stackreference resources
-	loader        schema.ReferenceLoader
+	src             []byte
+	knownHCLTypes   map[string]bool           // set of HCL type labels used in resource blocks
+	stackRefNames   map[string]bool           // set of logical names of pulumi_stackreference resources
+	loader          schema.ReferenceLoader
+	resourceSchemas map[string]*schema.Resource // cache: HCL type label → resolved schema resource
 }
 
 // newFileTransformer creates a fileTransformer by pre-scanning body for resource definitions.
 func newFileTransformer(src []byte, body *hclsyntax.Body, loader schema.ReferenceLoader) *fileTransformer {
 	ft := &fileTransformer{
-		src:           src,
-		knownHCLTypes: make(map[string]bool),
-		stackRefNames: make(map[string]bool),
-		loader:        loader,
+		src:             src,
+		knownHCLTypes:   make(map[string]bool),
+		stackRefNames:   make(map[string]bool),
+		loader:          loader,
+		resourceSchemas: make(map[string]*schema.Resource),
 	}
 	for _, block := range body.Blocks {
 		if block.Type == "resource" && len(block.Labels) >= 1 {
@@ -155,14 +158,18 @@ func newFileTransformer(src []byte, body *hclsyntax.Body, loader schema.Referenc
 	return ft
 }
 
-// hclTypeToPCLToken converts an HCL resource type (e.g., "pulumi_stash") to a PCL
-// token (e.g., "pulumi:index:Stash") using schema resolution.
-func (ft *fileTransformer) hclTypeToPCLToken(hclType string) (string, error) {
+// resolveHCLType resolves an HCL resource type label (e.g., "pulumi_stash") to a schema
+// resource, caching the result for subsequent calls.
+func (ft *fileTransformer) resolveHCLType(hclType string) (*schema.Resource, error) {
+	if res, ok := ft.resourceSchemas[hclType]; ok {
+		return res, nil
+	}
 	res, err := packages.ResolveResource(context.Background(), ft.loader, nil, hclType)
 	if err != nil {
-		return "", fmt.Errorf("resolving resource type %q: %w", hclType, err)
+		return nil, fmt.Errorf("resolving resource type %q: %w", hclType, err)
 	}
-	return res.Token, nil
+	ft.resourceSchemas[hclType] = res
+	return res, nil
 }
 
 // transformHCLFileToPCL converts HCL source bytes to PCL source bytes.
@@ -228,7 +235,7 @@ func transformHCLFileToPCL(
 			hclType := block.Labels[0]
 			logicalName := block.Labels[1]
 
-			pclToken, err := ft.hclTypeToPCLToken(hclType)
+			res, err := ft.resolveHCLType(hclType)
 			if err != nil {
 				resultDiags = append(resultDiags, &hcl.Diagnostic{
 					Severity: hcl.DiagError,
@@ -239,9 +246,10 @@ func transformHCLFileToPCL(
 				continue
 			}
 
-			blk := out.AppendNewBlock("resource", []string{logicalName, pclToken})
+			blk := out.AppendNewBlock("resource", []string{logicalName, res.Token})
 			for _, attr := range sortedAttributes(block.Body.Attributes) {
-				blk.Body().SetAttributeRaw(snakeToCamel(attr.Name), ft.transformExpr(attr.Expr))
+				name, _ := transform.PulumiCaseFromSnakeCase(attr.Name, res.InputProperties)
+				blk.Body().SetAttributeRaw(name, ft.transformExpr(attr.Expr))
 			}
 			if len(block.Body.Blocks) > 0 {
 				resultDiags = append(resultDiags, &hcl.Diagnostic{
@@ -256,7 +264,8 @@ func transformHCLFileToPCL(
 		case "pulumi":
 			blk := out.AppendNewBlock("pulumi", nil)
 			for _, attr := range sortedAttributes(block.Body.Attributes) {
-				blk.Body().SetAttributeRaw(snakeToCamel(attr.Name), ft.transformExpr(attr.Expr))
+				name, _ := transform.PulumiCaseFromSnakeCase(attr.Name, nil)
+				blk.Body().SetAttributeRaw(name, ft.transformExpr(attr.Expr))
 			}
 			out.AppendNewline()
 
@@ -277,17 +286,6 @@ func transformHCLFileToPCL(
 	}
 
 	return resultDiags, nil
-}
-
-// snakeToCamel converts a snake_case identifier to camelCase.
-func snakeToCamel(s string) string {
-	parts := strings.Split(s, "_")
-	for i := 1; i < len(parts); i++ {
-		if len(parts[i]) > 0 {
-			parts[i] = strings.ToUpper(parts[i][:1]) + parts[i][1:]
-		}
-	}
-	return strings.Join(parts, "")
 }
 
 // sortedAttributes returns attributes sorted by source position.
@@ -485,7 +483,7 @@ func (ft *fileTransformer) transformTraversal(e *hclsyntax.ScopeTraversalExpr) h
 				return hclwrite.TokensForFunctionCall("getOutput", refTokens, keyTokens)
 			}
 		}
-		return hclwrite.TokensForTraversal(camelCaseTraversalAttrs(stripped))
+		return hclwrite.TokensForTraversal(ft.camelCaseTraversalAttrs(stripped, root))
 	}
 
 	switch root {
@@ -519,17 +517,23 @@ func (ft *fileTransformer) transformTraversal(e *hclsyntax.ScopeTraversalExpr) h
 	return hclwrite.TokensForTraversal(e.Traversal)
 }
 
-// camelCaseTraversalAttrs converts all TraverseAttr names after the root to camelCase.
+// camelCaseTraversalAttrs converts all TraverseAttr names after the root to camelCase,
+// using schema-aware lookup when a cached schema is available for hclType.
 // The root (logical resource name) is left unchanged.
-func camelCaseTraversalAttrs(trav hcl.Traversal) hcl.Traversal {
+func (ft *fileTransformer) camelCaseTraversalAttrs(trav hcl.Traversal, hclType string) hcl.Traversal {
 	if len(trav) <= 1 {
 		return trav
+	}
+	var props []*schema.Property
+	if res := ft.resourceSchemas[hclType]; res != nil {
+		props = res.Properties
 	}
 	result := make(hcl.Traversal, len(trav))
 	copy(result, trav)
 	for i := 1; i < len(result); i++ {
 		if attr, ok := result[i].(hcl.TraverseAttr); ok {
-			result[i] = hcl.TraverseAttr{Name: snakeToCamel(attr.Name)}
+			name, _ := transform.PulumiCaseFromSnakeCase(attr.Name, props)
+			result[i] = hcl.TraverseAttr{Name: name}
 		}
 	}
 	return result
