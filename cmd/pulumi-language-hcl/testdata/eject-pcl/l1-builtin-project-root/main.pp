@@ -1,0 +1,4 @@
+output "rootDirectoryOutput" {
+  value = rootDirectory()
+}
+
