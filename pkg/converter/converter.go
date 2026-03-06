@@ -235,6 +235,16 @@ func (ft *fileTransformer) resolveHCLType(ctx context.Context, hclType string) (
 	return res, nil
 }
 
+// invokeOptionHCLToPCL maps HCL data-block attribute names that represent invoke
+// options (written by genInvokeOptions) to their PCL invoke-options object keys.
+var invokeOptionHCLToPCL = map[string]string{
+	"depends_on":          "dependsOn",
+	"parent":              "parent",
+	"plugin_download_url": "pluginDownloadUrl",
+	"provider":            "provider",
+	"version":             "version",
+}
+
 // resourceOptionHCLToPCL maps HCL attribute names (written by genResourceOptions)
 // to the corresponding PCL options-block attribute names (camelCase).
 var resourceOptionHCLToPCL = map[string]string{
@@ -772,27 +782,35 @@ func (ft *fileTransformer) callExprTokens(resourceName, snakeMethod string) hclw
 	return hclwrite.TokensForFunctionCall("call", resTokens, methodTokens, argsTokens)
 }
 
-// invokeExprTokens generates PCL tokens for invoke("token", {args...}).
-// It looks up the matching data block to extract the argument object.
+// invokeExprTokens generates PCL tokens for invoke("token", {args...}) or
+// invoke("token", {args...}, {opts...}) when invoke options are present.
+// It looks up the matching data block to extract the argument and option objects.
 func (ft *fileTransformer) invokeExprTokens(hclType, dsName string) hclwrite.Tokens {
 	tokenTokens := hclwrite.TokensForValue(cty.StringVal(ft.dataTokens[hclType]))
 
-	var argsTokens hclwrite.Tokens
-	if body, ok := ft.dataBlocks[dataReference{hclType, dsName}]; ok && len(body.Attributes) > 0 {
-		var attrs []hclwrite.ObjectAttrTokens
+	var argAttrs, optAttrs []hclwrite.ObjectAttrTokens
+	if body, ok := ft.dataBlocks[dataReference{hclType, dsName}]; ok {
 		for _, attr := range sortedAttributes(body.Attributes) {
-			name, _ := transform.PulumiCaseFromSnakeCase(attr.Name, nil)
-			attrs = append(attrs, hclwrite.ObjectAttrTokens{
-				Name:  hclwrite.TokensForIdentifier(name),
-				Value: ft.transformExpr(attr.Expr),
-			})
+			if pclName, isOpt := invokeOptionHCLToPCL[attr.Name]; isOpt {
+				optAttrs = append(optAttrs, hclwrite.ObjectAttrTokens{
+					Name:  hclwrite.TokensForIdentifier(pclName),
+					Value: ft.transformExpr(attr.Expr),
+				})
+			} else {
+				name, _ := transform.PulumiCaseFromSnakeCase(attr.Name, nil)
+				argAttrs = append(argAttrs, hclwrite.ObjectAttrTokens{
+					Name:  hclwrite.TokensForIdentifier(name),
+					Value: ft.transformExpr(attr.Expr),
+				})
+			}
 		}
-		argsTokens = hclwrite.TokensForObject(attrs)
-	} else {
-		argsTokens = hclwrite.TokensForObject(nil)
 	}
 
-	return hclwrite.TokensForFunctionCall("invoke", tokenTokens, argsTokens)
+	argsTokens := hclwrite.TokensForObject(argAttrs)
+	if len(optAttrs) == 0 {
+		return hclwrite.TokensForFunctionCall("invoke", tokenTokens, argsTokens)
+	}
+	return hclwrite.TokensForFunctionCall("invoke", tokenTokens, argsTokens, hclwrite.TokensForObject(optAttrs))
 }
 
 // invertTokens inverts a boolean token expression: if tokens is "!<expr>",
