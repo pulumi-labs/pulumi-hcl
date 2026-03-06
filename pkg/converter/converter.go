@@ -26,7 +26,6 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/blang/semver"
 	"github.com/hashicorp/hcl/v2"
 	"github.com/hashicorp/hcl/v2/hclsyntax"
 	"github.com/hashicorp/hcl/v2/hclwrite"
@@ -53,17 +52,16 @@ func (*hclConverter) ConvertState(
 func (*hclConverter) ConvertProgram(
 	_ context.Context, req *plugin.ConvertProgramRequest,
 ) (*plugin.ConvertProgramResponse, error) {
-	var loader schema.ReferenceLoader
-	if req.LoaderTarget != "" {
-		client, err := schema.NewLoaderClient(req.LoaderTarget)
-		if err != nil {
-			return nil, fmt.Errorf("creating loader client: %w", err)
-		}
-		defer contract.IgnoreClose(client)
-		loader = client
-	} else {
-		loader = errLoader{}
+	if req.LoaderTarget == "" {
+		return nil, fmt.Errorf("missing loader address")
 	}
+
+	client, err := schema.NewLoaderClient(req.LoaderTarget)
+	if err != nil {
+		return nil, fmt.Errorf("creating loader client: %w", err)
+	}
+	defer contract.IgnoreClose(client)
+	loader := schema.NewCachedLoader(client)
 
 	// Read source Pulumi.yaml, extract project name, write target Pulumi.yaml with runtime: pcl.
 	pulumiYAMLBytes, err := os.ReadFile(filepath.Join(req.SourceDirectory, "Pulumi.yaml"))
@@ -128,29 +126,6 @@ func (*hclConverter) ConvertProgram(
 
 	return &plugin.ConvertProgramResponse{Diagnostics: allDiags}, nil
 }
-
-// errLoader is a schema.ReferenceLoader that returns errors for all packages.
-// It is used when no loader target is provided, which is safe because the built-in
-// "pulumi" package is resolved directly without calling the loader.
-type errLoader struct{}
-
-func (errLoader) LoadPackage(pkg string, _ *semver.Version) (*schema.Package, error) {
-	return nil, fmt.Errorf("no loader available for package %q", pkg)
-}
-
-func (errLoader) LoadPackageV2(_ context.Context, descriptor *schema.PackageDescriptor) (*schema.Package, error) {
-	return nil, fmt.Errorf("no loader available for package %q", descriptor.Name)
-}
-
-func (errLoader) LoadPackageReference(pkg string, _ *semver.Version) (schema.PackageReference, error) {
-	return nil, fmt.Errorf("no loader available for package %q", pkg)
-}
-
-func (errLoader) LoadPackageReferenceV2(_ context.Context, descriptor *schema.PackageDescriptor) (schema.PackageReference, error) {
-	return nil, fmt.Errorf("no loader available for package %q", descriptor.Name)
-}
-
-var _ schema.ReferenceLoader = errLoader{}
 
 // fileTransformer holds context for converting a single HCL file to PCL.
 type fileTransformer struct {
