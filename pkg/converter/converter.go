@@ -136,13 +136,12 @@ func transformHCLFileToPCL(src []byte, filename string, out *hclwrite.Body) (hcl
 			if len(block.Labels) == 0 {
 				continue
 			}
-			name := block.Labels[0]
+			labels := []string{block.Labels[0] /* name */}
+
 			if typeAttr, ok := block.Body.Attributes["type"]; ok {
-				typeStr := convertHCLTypeExpr(src, typeAttr.Expr)
-				out.AppendNewBlock("config", []string{name, typeStr})
-			} else {
-				out.AppendNewBlock("config", []string{name})
+				labels = append(labels, convertHCLTypeExpr(src, typeAttr.Expr))
 			}
+			out.AppendNewBlock("config", labels)
 			out.AppendNewline()
 
 		case "locals":
@@ -224,6 +223,12 @@ func transformExpr(src []byte, expr hclsyntax.Expression) hclwrite.Tokens {
 		return transformTemplate(src, e)
 	case *hclsyntax.TemplateWrapExpr:
 		return transformExpr(src, e.Wrapped)
+	case *hclsyntax.TupleConsExpr:
+		var elems []hclwrite.Tokens
+		for _, item := range e.Exprs {
+			elems = append(elems, transformExpr(src, item))
+		}
+		return hclwrite.TokensForTuple(elems)
 	case *hclsyntax.BinaryOpExpr:
 		lhs := transformExpr(src, e.LHS)
 		op := binaryOpToken(e.Op)
