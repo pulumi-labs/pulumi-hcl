@@ -17,6 +17,8 @@ package converter
 
 import (
 	"context"
+	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"maps"
@@ -35,6 +37,7 @@ import (
 	"github.com/pulumi/pulumi/pkg/v3/codegen/schema"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/resource/plugin"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/util/contract"
+	"github.com/pulumi/pulumi/sdk/v3/go/common/workspace"
 	"gopkg.in/yaml.v3"
 )
 
@@ -63,7 +66,16 @@ func (*hclConverter) ConvertProgram(
 		return nil, fmt.Errorf("creating loader client: %w", err)
 	}
 	defer contract.IgnoreClose(client)
-	loader := schema.NewCachedLoader(client)
+
+	paramInfos, err := readParameterizationInfos(req.SourceDirectory)
+	if err != nil {
+		return nil, fmt.Errorf("reading parameterization infos: %w", err)
+	}
+
+	loader := schema.ReferenceLoader(schema.NewCachedLoader(client))
+	if len(paramInfos) > 0 {
+		loader = packages.NewParameterizationAwareLoader(loader, paramInfos)
+	}
 
 	// Read source Pulumi.yaml, extract project name, write target Pulumi.yaml with runtime: pcl.
 	pulumiYAMLBytes, err := os.ReadFile(filepath.Join(req.SourceDirectory, "Pulumi.yaml"))
@@ -109,7 +121,7 @@ func (*hclConverter) ConvertProgram(
 		}
 
 		out := hclwrite.NewEmptyFile()
-		diags, err := transformHCLFileToPCL(content, entry.Name(), out.Body(), loader)
+		diags, err := transformHCLFileToPCL(content, entry.Name(), out.Body(), loader, paramInfos)
 		if err != nil {
 			return nil, err
 		}
@@ -201,10 +213,34 @@ func (ft *fileTransformer) resolveHCLType(hclType string) (*schema.Resource, err
 	return res, nil
 }
 
+// resourceOptionHCLToPCL maps HCL attribute names (written by genResourceOptions)
+// to the corresponding PCL options-block attribute names (camelCase).
+var resourceOptionHCLToPCL = map[string]string{
+	"aliases":                   "aliases",
+	"additional_secret_outputs": "additionalSecretOutputs",
+	"deleted_with":              "deletedWith",
+	"depends_on":                "dependsOn",
+	"env_var_mappings":          "envVarMappings",
+	"hide_diffs":                "hideDiffs",
+	"import_id":                 "import",
+	"parent":                    "parent",
+	"plugin_download_url":       "pluginDownloadURL",
+	"provider":                  "provider",
+	"providers":                 "providers",
+	"range":                     "range",
+	"replace_on_changes":        "replaceOnChanges",
+	"replace_with":              "replaceWith",
+	"replacement_trigger":       "replacementTrigger",
+	"retain_on_delete":          "retainOnDelete",
+	"version":                   "version",
+}
+
 // transformHCLFileToPCL converts HCL source bytes to PCL source bytes.
 // It returns any non-fatal diagnostics (e.g., unsupported block types).
 func transformHCLFileToPCL(
-	src []byte, filename string, out *hclwrite.Body, loader schema.ReferenceLoader,
+	src []byte, filename string, out *hclwrite.Body,
+	loader schema.ReferenceLoader,
+	paramInfos map[string]workspace.PackageDescriptor,
 ) (hcl.Diagnostics, error) {
 	file, diags := hclsyntax.ParseConfig(src, filename, hcl.Pos{Line: 1, Column: 1})
 	if diags.HasErrors() {
@@ -215,6 +251,10 @@ func transformHCLFileToPCL(
 	ft, resultDiags := newFileTransformer(src, body, loader)
 	if resultDiags.HasErrors() {
 		return resultDiags, nil
+	}
+
+	for _, alias := range sortedKeys(paramInfos) {
+		emitPackageBlock(out, alias, paramInfos[alias])
 	}
 
 	for _, block := range body.Blocks {
@@ -283,17 +323,74 @@ func transformHCLFileToPCL(
 			}
 
 			blk := out.AppendNewBlock("resource", []string{logicalName, res.Token})
+
+			// Emit input properties first (skip resource option attributes).
 			for _, attr := range sortedAttributes(block.Body.Attributes) {
+				if _, isOpt := resourceOptionHCLToPCL[attr.Name]; isOpt {
+					continue
+				}
 				name, _ := transform.PulumiCaseFromSnakeCase(attr.Name, res.InputProperties)
 				blk.Body().SetAttributeRaw(name, ft.transformExpr(attr.Expr))
 			}
-			if len(block.Body.Blocks) > 0 {
-				resultDiags = append(resultDiags, &hcl.Diagnostic{
-					Severity: hcl.DiagError,
-					Summary:  "unsupported resource sub-blocks",
-					Detail:   "nested blocks within resource blocks are not yet supported by the HCL converter",
-					Subject:  block.TypeRange.Ptr(),
-				})
+
+			// Collect resource options from attributes and sub-blocks.
+			type optEntry struct {
+				name   string
+				tokens hclwrite.Tokens
+			}
+			var opts []optEntry
+			for _, attr := range sortedAttributes(block.Body.Attributes) {
+				if pclName, isOpt := resourceOptionHCLToPCL[attr.Name]; isOpt {
+					opts = append(opts, optEntry{pclName, ft.transformExpr(attr.Expr)})
+				}
+			}
+			for _, subBlock := range block.Body.Blocks {
+				switch subBlock.Type {
+				case "lifecycle":
+					for _, attr := range sortedAttributes(subBlock.Body.Attributes) {
+						switch attr.Name {
+						case "prevent_destroy":
+							opts = append(opts, optEntry{"protect", ft.transformExpr(attr.Expr)})
+						case "ignore_changes":
+							opts = append(opts, optEntry{"ignoreChanges", ft.transformExpr(attr.Expr)})
+						case "create_before_destroy":
+							// The codegen writes create_before_destroy = !deleteBeforeReplace.
+							// Invert to recover deleteBeforeReplace.
+							opts = append(opts, optEntry{"deleteBeforeReplace", invertTokens(ft.transformExpr(attr.Expr))})
+						default:
+							resultDiags = append(resultDiags, &hcl.Diagnostic{
+								Severity: hcl.DiagError,
+								Summary:  "unsupported lifecycle attribute",
+								Detail:   fmt.Sprintf("lifecycle attribute %q is not supported by the HCL converter", attr.Name),
+								Subject:  attr.NameRange.Ptr(),
+							})
+						}
+					}
+				case "timeouts":
+					var timeoutAttrs []hclwrite.ObjectAttrTokens
+					for _, attr := range sortedAttributes(subBlock.Body.Attributes) {
+						timeoutAttrs = append(timeoutAttrs, hclwrite.ObjectAttrTokens{
+							Name:  hclwrite.TokensForIdentifier(attr.Name),
+							Value: ft.transformExpr(attr.Expr),
+						})
+					}
+					if len(timeoutAttrs) > 0 {
+						opts = append(opts, optEntry{"customTimeouts", hclwrite.TokensForObject(timeoutAttrs)})
+					}
+				default:
+					resultDiags = append(resultDiags, &hcl.Diagnostic{
+						Severity: hcl.DiagError,
+						Summary:  "unsupported resource sub-block",
+						Detail:   fmt.Sprintf("resource sub-block %q is not supported by the HCL converter", subBlock.Type),
+						Subject:  subBlock.TypeRange.Ptr(),
+					})
+				}
+			}
+			if len(opts) > 0 {
+				optBlk := blk.Body().AppendNewBlock("options", nil)
+				for _, o := range opts {
+					optBlk.Body().SetAttributeRaw(o.name, o.tokens)
+				}
 			}
 			out.AppendNewline()
 
@@ -673,6 +770,78 @@ func (ft *fileTransformer) invokeExprTokens(hclType, dsName string) hclwrite.Tok
 	}
 
 	return hclwrite.TokensForFunctionCall("invoke", tokenTokens, argsTokens)
+}
+
+// invertTokens inverts a boolean token expression: if tokens is "!<expr>",
+// returns "<expr>"; otherwise returns "!<tokens>".
+func invertTokens(tokens hclwrite.Tokens) hclwrite.Tokens {
+	if len(tokens) > 0 && tokens[0].Type == hclsyntax.TokenBang {
+		rest := tokens[1:]
+		if len(rest) > 0 {
+			rest[0].SpacesBefore = tokens[0].SpacesBefore
+		}
+		return rest
+	}
+	return append(hclwrite.Tokens{{Type: hclsyntax.TokenBang, Bytes: []byte("!")}}, tokens...)
+}
+
+// sortedKeys returns the keys of a map in sorted order.
+func sortedKeys[V any](m map[string]V) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
+}
+
+// emitPackageBlock writes a PCL "package" block from a workspace.PackageDescriptor.
+func emitPackageBlock(out *hclwrite.Body, alias string, desc workspace.PackageDescriptor) {
+	if desc.Parameterization == nil {
+		return
+	}
+	blk := out.AppendNewBlock("package", []string{alias})
+	blk.Body().SetAttributeValue("baseProviderName", cty.StringVal(desc.Name))
+	if desc.Version != nil {
+		blk.Body().SetAttributeValue("baseProviderVersion", cty.StringVal(desc.Version.String()))
+	}
+	paramBlk := blk.Body().AppendNewBlock("parameterization", nil)
+	paramBlk.Body().SetAttributeValue("name", cty.StringVal(desc.Parameterization.Name))
+	paramBlk.Body().SetAttributeValue("version", cty.StringVal(desc.Parameterization.Version.String()))
+	paramBlk.Body().SetAttributeValue("value", cty.StringVal(base64.StdEncoding.EncodeToString(desc.Parameterization.Value)))
+	out.AppendNewline()
+}
+
+// readParameterizationInfos reads .hcl/sdks/*/hcl.sdk.json files from dir
+// and returns parameterized package descriptors keyed by alias.
+func readParameterizationInfos(dir string) (map[string]workspace.PackageDescriptor, error) {
+	sdksDir := filepath.Join(dir, ".hcl", "sdks")
+	entries, err := os.ReadDir(sdksDir)
+	if os.IsNotExist(err) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	result := make(map[string]workspace.PackageDescriptor, len(entries))
+	var errs []error
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		path := filepath.Join(sdksDir, entry.Name(), "hcl.sdk.json")
+		data, err := os.ReadFile(path)
+		if err != nil {
+			continue
+		}
+		var d workspace.PackageDescriptor
+		if err := json.Unmarshal(data, &d); err != nil {
+			errs = append(errs, fmt.Errorf("%q: %w", path, err))
+		} else {
+			result[entry.Name()] = d
+		}
+	}
+	return result, errors.Join(errs...)
 }
 
 // transformFunctionName maps HCL function names to their PCL equivalents.
