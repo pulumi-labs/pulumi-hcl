@@ -134,6 +134,7 @@ type fileTransformer struct {
 	src             []byte
 	knownHCLTypes   map[string]bool           // set of HCL type labels used in resource blocks
 	stackRefNames   map[string]bool           // set of logical names of pulumi_stackreference resources
+	callBlocks      map[string]*hclsyntax.Body // key: "resourceName\x00methodName"
 	loader          schema.ReferenceLoader
 	resourceSchemas map[string]*schema.Resource // cache: HCL type label → resolved schema resource
 }
@@ -144,6 +145,7 @@ func newFileTransformer(src []byte, body *hclsyntax.Body, loader schema.Referenc
 		src:             src,
 		knownHCLTypes:   make(map[string]bool),
 		stackRefNames:   make(map[string]bool),
+		callBlocks:      make(map[string]*hclsyntax.Body),
 		loader:          loader,
 		resourceSchemas: make(map[string]*schema.Resource),
 	}
@@ -153,6 +155,9 @@ func newFileTransformer(src []byte, body *hclsyntax.Body, loader schema.Referenc
 			if block.Labels[0] == "pulumi_stackreference" && len(block.Labels) >= 2 {
 				ft.stackRefNames[block.Labels[1]] = true
 			}
+		}
+		if block.Type == "call" && len(block.Labels) == 2 {
+			ft.callBlocks[block.Labels[0]+"\x00"+block.Labels[1]] = block.Body
 		}
 	}
 	return ft
@@ -192,6 +197,9 @@ func transformHCLFileToPCL(
 
 		case "terraform":
 			// Skip: no PCL equivalent.
+
+		case "call":
+			// Call blocks are inlined into expressions as call() function calls; skip block output.
 
 		case "variable":
 			if len(block.Labels) == 0 {
@@ -487,6 +495,24 @@ func (ft *fileTransformer) transformTraversal(e *hclsyntax.ScopeTraversalExpr) h
 	}
 
 	switch root {
+	case "call":
+		// call.resourceName.methodName[.prop...] → call(resourceName, "methodName", {args...})[.prop...]
+		if len(e.Traversal) >= 3 {
+			resAttr, ok1 := e.Traversal[1].(hcl.TraverseAttr)
+			methodAttr, ok2 := e.Traversal[2].(hcl.TraverseAttr)
+			if ok1 && ok2 {
+				tokens := ft.callExprTokens(resAttr.Name, methodAttr.Name)
+				for _, step := range e.Traversal[3:] {
+					if attr, ok := step.(hcl.TraverseAttr); ok {
+						tokens = append(tokens,
+							&hclwrite.Token{Type: hclsyntax.TokenDot, Bytes: []byte(".")},
+							&hclwrite.Token{Type: hclsyntax.TokenIdent, Bytes: []byte(attr.Name)},
+						)
+					}
+				}
+				return tokens
+			}
+		}
 	case "var", "local":
 		return hclwrite.TokensForTraversal(stripRoot(e.Traversal))
 	case "pulumi":
@@ -553,6 +579,31 @@ func stripRoot(trav hcl.Traversal) hcl.Traversal {
 	result[0] = hcl.TraverseRoot{Name: attr.Name}
 	copy(result[1:], trav[2:])
 	return result
+}
+
+// callExprTokens generates PCL tokens for call(resourceName, "camelMethod", {args...}).
+// It looks up the matching call block to extract the argument object.
+func (ft *fileTransformer) callExprTokens(resourceName, snakeMethod string) hclwrite.Tokens {
+	camelMethod, _ := transform.PulumiCaseFromSnakeCase(snakeMethod, nil)
+	resTokens := hclwrite.TokensForTraversal(hcl.Traversal{hcl.TraverseRoot{Name: resourceName}})
+	methodTokens := hclwrite.TokensForValue(cty.StringVal(camelMethod))
+
+	var argsTokens hclwrite.Tokens
+	if body, ok := ft.callBlocks[resourceName+"\x00"+snakeMethod]; ok && len(body.Attributes) > 0 {
+		var attrs []hclwrite.ObjectAttrTokens
+		for _, attr := range sortedAttributes(body.Attributes) {
+			name, _ := transform.PulumiCaseFromSnakeCase(attr.Name, nil)
+			attrs = append(attrs, hclwrite.ObjectAttrTokens{
+				Name:  hclwrite.TokensForIdentifier(name),
+				Value: ft.transformExpr(attr.Expr),
+			})
+		}
+		argsTokens = hclwrite.TokensForObject(attrs)
+	} else {
+		argsTokens = hclwrite.TokensForObject(nil)
+	}
+
+	return hclwrite.TokensForFunctionCall("call", resTokens, methodTokens, argsTokens)
 }
 
 // transformFunctionName maps HCL function names to their PCL equivalents.
