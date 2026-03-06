@@ -29,6 +29,7 @@ import (
 	"github.com/hashicorp/hcl/v2"
 	"github.com/hashicorp/hcl/v2/hclsyntax"
 	"github.com/hashicorp/hcl/v2/hclwrite"
+	"github.com/zclconf/go-cty/cty"
 	"github.com/pulumi/pulumi-language-hcl/pkg/hcl/packages"
 	"github.com/pulumi/pulumi/pkg/v3/codegen/schema"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/resource/plugin"
@@ -131,6 +132,7 @@ func (*hclConverter) ConvertProgram(
 type fileTransformer struct {
 	src           []byte
 	knownHCLTypes map[string]bool // set of HCL type labels used in resource blocks
+	stackRefNames map[string]bool // set of logical names of pulumi_stackreference resources
 	loader        schema.ReferenceLoader
 }
 
@@ -139,11 +141,15 @@ func newFileTransformer(src []byte, body *hclsyntax.Body, loader schema.Referenc
 	ft := &fileTransformer{
 		src:           src,
 		knownHCLTypes: make(map[string]bool),
+		stackRefNames: make(map[string]bool),
 		loader:        loader,
 	}
 	for _, block := range body.Blocks {
 		if block.Type == "resource" && len(block.Labels) >= 1 {
 			ft.knownHCLTypes[block.Labels[0]] = true
+			if block.Labels[0] == "pulumi_stackreference" && len(block.Labels) >= 2 {
+				ft.stackRefNames[block.Labels[1]] = true
+			}
 		}
 	}
 	return ft
@@ -465,7 +471,20 @@ func (ft *fileTransformer) transformTraversal(e *hclsyntax.ScopeTraversalExpr) h
 
 	// Resource traversal: strip the HCL type prefix (e.g., "pulumi_stash.myRes.prop" → "myRes.prop").
 	if ft.knownHCLTypes[root] {
-		return hclwrite.TokensForTraversal(stripRoot(e.Traversal))
+		stripped := stripRoot(e.Traversal)
+		// StackReference: <type>.<name>.outputs["key"] → getOutput(<name>, "key")
+		if len(stripped) == 3 {
+			logicalName, ok1 := stripped[0].(hcl.TraverseRoot)
+			attr, ok2 := stripped[1].(hcl.TraverseAttr)
+			idx, ok3 := stripped[2].(hcl.TraverseIndex)
+			if ok1 && ok2 && ok3 && attr.Name == "outputs" &&
+				ft.stackRefNames[logicalName.Name] && idx.Key.Type() == cty.String {
+				refTokens := hclwrite.TokensForTraversal(hcl.Traversal{hcl.TraverseRoot{Name: logicalName.Name}})
+				keyTokens := hclwrite.TokensForValue(idx.Key)
+				return hclwrite.TokensForFunctionCall("getOutput", refTokens, keyTokens)
+			}
+		}
+		return hclwrite.TokensForTraversal(stripped)
 	}
 
 	switch root {
