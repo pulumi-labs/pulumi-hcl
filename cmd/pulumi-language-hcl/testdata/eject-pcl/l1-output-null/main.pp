@@ -1,0 +1,4 @@
+output "array" {
+  value = [null]
+}
+

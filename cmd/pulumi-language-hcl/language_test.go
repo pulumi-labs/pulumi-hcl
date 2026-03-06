@@ -139,7 +139,6 @@ var expectedFailures = map[string]string{
 // expected to fail because the converter does not yet support resources, data
 // sources, or other constructs used by those tests.
 var expectedEjectFailures = map[string]string{
-	"l1-output-null":                               "converter does not support resource/data/call blocks",
 	"l1-output-object":                             "converter does not support resource/data/call blocks",
 	"l1-proxy-index":                               "converter does not support resource/data/call blocks",
 	"l1-stack-reference":                           "converter does not support resource/data/call blocks",
