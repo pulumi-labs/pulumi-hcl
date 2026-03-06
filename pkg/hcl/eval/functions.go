@@ -1530,14 +1530,19 @@ var cidrSubnetsFunc = function.New(&function.Spec{
 
 var nonsensitiveFunc = function.New(&function.Spec{
 	Params: []function.Parameter{
-		{Name: "value", Type: cty.DynamicPseudoType},
+		{Name: "value", Type: cty.DynamicPseudoType, AllowMarked: true},
 	},
 	Type: func(args []cty.Value) (cty.Type, error) {
-		return args[0].Type(), nil
+		val, _ := args[0].Unmark()
+		return val.Type(), nil
 	},
 	Impl: func(args []cty.Value, retType cty.Type) (cty.Value, error) {
-		// In our implementation, we don't track sensitivity at the cty level
-		return args[0], nil
+		val, marks := args[0].Unmark()
+		delete(marks, "sensitive")
+		if len(marks) == 0 {
+			return val, nil
+		}
+		return val.WithMarks(marks), nil
 	},
 })
 

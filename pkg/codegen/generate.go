@@ -744,7 +744,6 @@ func wrapListAsMapForEach(listTokens hclwrite.Tokens) hclwrite.Tokens {
 	return tokens
 }
 
-
 // genProviders generates the HCL `providers` attribute as a list.
 // PCL providers can be a list [p1, p2] or a map {pkg = p}; we always emit a list
 // since the package name is recoverable from the provider resource type at runtime.
@@ -1181,6 +1180,8 @@ func (g *generator) funcCallTokens(expr *model.FunctionCallExpression) (hclwrite
 		return g.getOutputTokens(expr)
 	case "secret":
 		return g.passthroughFuncCallTokens("sensitive", expr.Args)
+	case "unsecret":
+		return g.passthroughFuncCallTokens("nonsensitive", expr.Args)
 	case "singleOrNone":
 		return g.passthroughFuncCallTokens("one", expr.Args)
 	case "toBase64":

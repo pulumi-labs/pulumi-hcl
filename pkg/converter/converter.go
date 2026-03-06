@@ -393,6 +393,8 @@ func transformFunctionName(name string) string {
 		return "secret"
 	case "one":
 		return "singleOrNone"
+	case "nonsensitive":
+		return "unsecret"
 	default:
 		return name
 	}
