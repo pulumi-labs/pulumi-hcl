@@ -55,7 +55,7 @@ func (*hclConverter) ConvertState(
 }
 
 func (*hclConverter) ConvertProgram(
-	_ context.Context, req *plugin.ConvertProgramRequest,
+	ctx context.Context, req *plugin.ConvertProgramRequest,
 ) (*plugin.ConvertProgramResponse, error) {
 	if req.LoaderTarget == "" {
 		return nil, fmt.Errorf("missing loader address")
@@ -121,7 +121,7 @@ func (*hclConverter) ConvertProgram(
 		}
 
 		out := hclwrite.NewEmptyFile()
-		diags, err := transformHCLFileToPCL(content, entry.Name(), out.Body(), loader, paramInfos)
+		diags, err := transformHCLFileToPCL(ctx, content, entry.Name(), out.Body(), loader, paramInfos)
 		if err != nil {
 			return nil, err
 		}
@@ -141,26 +141,38 @@ func (*hclConverter) ConvertProgram(
 	return &plugin.ConvertProgramResponse{Diagnostics: allDiags}, nil
 }
 
+// callReference identifies a call block by resource name and method name.
+type callReference struct {
+	resourceName string
+	methodName   string
+}
+
+// dataReference identifies a data block by HCL type and logical name.
+type dataReference struct {
+	hclType string
+	name    string
+}
+
 // fileTransformer holds context for converting a single HCL file to PCL.
 type fileTransformer struct {
 	src             []byte
-	knownHCLTypes   map[string]bool            // set of HCL type labels used in resource blocks
-	stackRefNames   map[string]bool            // set of logical names of pulumi_stackreference resources
-	callBlocks      map[string]*hclsyntax.Body // key: "resourceName\x00methodName"
-	dataBlocks      map[string]*hclsyntax.Body // key: "hclType\x00name"
-	dataTokens      map[string]string          // key: hclType, value: resolved PCL token
+	knownHCLTypes   map[string]bool               // set of HCL type labels used in resource blocks
+	stackRefNames   map[string]bool               // set of logical names of pulumi_stackreference resources
+	callBlocks      map[callReference]*hclsyntax.Body
+	dataBlocks      map[dataReference]*hclsyntax.Body
+	dataTokens      map[string]string             // key: hclType, value: resolved PCL token
 	loader          schema.ReferenceLoader
-	resourceSchemas map[string]*schema.Resource // cache: HCL type label → resolved schema resource
+	resourceSchemas map[string]*schema.Resource   // cache: HCL type label → resolved schema resource
 }
 
 // newFileTransformer creates a fileTransformer by pre-scanning body for resource and data definitions.
-func newFileTransformer(src []byte, body *hclsyntax.Body, loader schema.ReferenceLoader) (*fileTransformer, hcl.Diagnostics) {
+func newFileTransformer(ctx context.Context, src []byte, body *hclsyntax.Body, loader schema.ReferenceLoader) (*fileTransformer, hcl.Diagnostics) {
 	ft := &fileTransformer{
 		src:             src,
 		knownHCLTypes:   make(map[string]bool),
 		stackRefNames:   make(map[string]bool),
-		callBlocks:      make(map[string]*hclsyntax.Body),
-		dataBlocks:      make(map[string]*hclsyntax.Body),
+		callBlocks:      make(map[callReference]*hclsyntax.Body),
+		dataBlocks:      make(map[dataReference]*hclsyntax.Body),
 		dataTokens:      make(map[string]string),
 		loader:          loader,
 		resourceSchemas: make(map[string]*schema.Resource),
@@ -174,14 +186,14 @@ func newFileTransformer(src []byte, body *hclsyntax.Body, loader schema.Referenc
 			}
 		}
 		if block.Type == "call" && len(block.Labels) == 2 {
-			ft.callBlocks[block.Labels[0]+"\x00"+block.Labels[1]] = block.Body
+			ft.callBlocks[callReference{block.Labels[0], block.Labels[1]}] = block.Body
 		}
 		if block.Type == "data" && len(block.Labels) == 2 {
 			hclType := block.Labels[0]
 			name := block.Labels[1]
-			ft.dataBlocks[hclType+"\x00"+name] = block.Body
+			ft.dataBlocks[dataReference{hclType, name}] = block.Body
 			if _, seen := ft.dataTokens[hclType]; !seen {
-				fn, err := packages.ResolveFunction(context.Background(), loader, nil, hclType)
+				fn, err := packages.ResolveFunction(ctx, loader, nil, hclType)
 				if err != nil {
 					diags = append(diags, &hcl.Diagnostic{
 						Severity: hcl.DiagError,
@@ -201,11 +213,11 @@ func newFileTransformer(src []byte, body *hclsyntax.Body, loader schema.Referenc
 
 // resolveHCLType resolves an HCL resource type label (e.g., "pulumi_stash") to a schema
 // resource, caching the result for subsequent calls.
-func (ft *fileTransformer) resolveHCLType(hclType string) (*schema.Resource, error) {
+func (ft *fileTransformer) resolveHCLType(ctx context.Context, hclType string) (*schema.Resource, error) {
 	if res, ok := ft.resourceSchemas[hclType]; ok {
 		return res, nil
 	}
-	res, err := packages.ResolveResource(context.Background(), ft.loader, nil, hclType)
+	res, err := packages.ResolveResource(ctx, ft.loader, nil, hclType)
 	if err != nil {
 		return nil, fmt.Errorf("resolving resource type %q: %w", hclType, err)
 	}
@@ -238,6 +250,7 @@ var resourceOptionHCLToPCL = map[string]string{
 // transformHCLFileToPCL converts HCL source bytes to PCL source bytes.
 // It returns any non-fatal diagnostics (e.g., unsupported block types).
 func transformHCLFileToPCL(
+	ctx context.Context,
 	src []byte, filename string, out *hclwrite.Body,
 	loader schema.ReferenceLoader,
 	paramInfos map[string]workspace.PackageDescriptor,
@@ -248,7 +261,7 @@ func transformHCLFileToPCL(
 	}
 
 	body := file.Body.(*hclsyntax.Body)
-	ft, resultDiags := newFileTransformer(src, body, loader)
+	ft, resultDiags := newFileTransformer(ctx, src, body, loader)
 	if resultDiags.HasErrors() {
 		return resultDiags, nil
 	}
@@ -311,7 +324,7 @@ func transformHCLFileToPCL(
 			hclType := block.Labels[0]
 			logicalName := block.Labels[1]
 
-			res, err := ft.resolveHCLType(hclType)
+			res, err := ft.resolveHCLType(ctx, hclType)
 			if err != nil {
 				resultDiags = append(resultDiags, &hcl.Diagnostic{
 					Severity: hcl.DiagError,
@@ -732,7 +745,7 @@ func (ft *fileTransformer) callExprTokens(resourceName, snakeMethod string) hclw
 	methodTokens := hclwrite.TokensForValue(cty.StringVal(camelMethod))
 
 	var argsTokens hclwrite.Tokens
-	if body, ok := ft.callBlocks[resourceName+"\x00"+snakeMethod]; ok && len(body.Attributes) > 0 {
+	if body, ok := ft.callBlocks[callReference{resourceName, snakeMethod}]; ok && len(body.Attributes) > 0 {
 		var attrs []hclwrite.ObjectAttrTokens
 		for _, attr := range sortedAttributes(body.Attributes) {
 			name, _ := transform.PulumiCaseFromSnakeCase(attr.Name, nil)
@@ -755,7 +768,7 @@ func (ft *fileTransformer) invokeExprTokens(hclType, dsName string) hclwrite.Tok
 	tokenTokens := hclwrite.TokensForValue(cty.StringVal(ft.dataTokens[hclType]))
 
 	var argsTokens hclwrite.Tokens
-	if body, ok := ft.dataBlocks[hclType+"\x00"+dsName]; ok && len(body.Attributes) > 0 {
+	if body, ok := ft.dataBlocks[dataReference{hclType, dsName}]; ok && len(body.Attributes) > 0 {
 		var attrs []hclwrite.ObjectAttrTokens
 		for _, attr := range sortedAttributes(body.Attributes) {
 			name, _ := transform.PulumiCaseFromSnakeCase(attr.Name, nil)
