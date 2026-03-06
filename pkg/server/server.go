@@ -503,6 +503,41 @@ func (host *LanguageHost) GenerateProgram(
 		return nil, fmt.Errorf("generating program: %w", err)
 	}
 
+	// Include .hcl/sdks/<alias>/hcl.sdk.json for parameterized packages so that
+	// ConvertProgram can load their schemas when the round-trip test writes these
+	// files to a temp directory and then calls ConvertProgram on that directory.
+	for _, ref := range program.PackageReferences() {
+		if ref.Name() == "pulumi" {
+			continue
+		}
+		pkg, pkgErr := ref.Definition()
+		if pkgErr != nil || pkg.Parameterization == nil {
+			continue
+		}
+		baseVersion := pkg.Parameterization.BaseProvider.Version
+		var paramVersion semver.Version
+		if pkg.Version != nil {
+			paramVersion = *pkg.Version
+		}
+		desc := workspace.PackageDescriptor{
+			PluginDescriptor: workspace.PluginDescriptor{
+				Name:    pkg.Parameterization.BaseProvider.Name,
+				Version: &baseVersion,
+				Kind:    apitype.ResourcePlugin,
+			},
+			Parameterization: &workspace.Parameterization{
+				Name:    pkg.Name,
+				Version: paramVersion,
+				Value:   pkg.Parameterization.Parameter,
+			},
+		}
+		data, marshalErr := json.Marshal(desc)
+		if marshalErr != nil {
+			continue
+		}
+		files[".hcl/sdks/"+pkg.Name+"/hcl.sdk.json"] = data
+	}
+
 	return &pulumirpc.GenerateProgramResponse{
 		Diagnostics: plugin.HclDiagnosticsToRPCDiagnostics(genDiags),
 		Source:      files,
