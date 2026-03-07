@@ -139,7 +139,6 @@ var expectedFailures = map[string]string{
 // expected to fail because the converter does not yet support resources, data
 // sources, or other constructs used by those tests.
 var expectedEjectFailures = map[string]string{
-	"l2-large-string":                              "converter does not support resource/data/call blocks",
 	"l2-map-keys":                                  "converter does not support resource/data/call blocks",
 	"l2-module-format":                             "converter does not support resource/data/call blocks",
 	"l2-namespaced-provider":                       "converter does not support resource/data/call blocks",
@@ -277,7 +276,7 @@ func TestLanguage(t *testing.T) {
 				Token:            prepare.Token,
 				Test:             tt,
 				SkipConvertTests: has(expectedEjectFailures, tt),
-			})
+			}, grpc.MaxCallRecvMsgSize(1024*1024*1024))
 
 			require.NoError(t, err)
 			for _, msg := range result.Messages {
