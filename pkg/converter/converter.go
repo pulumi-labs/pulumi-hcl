@@ -374,7 +374,14 @@ func transformHCLFileToPCL(
 			var opts []optEntry
 			for _, attr := range sortedAttributes(block.Body.Attributes) {
 				if pclName, isOpt := resourceOptionHCLToPCL[attr.Name]; isOpt {
-					opts = append(opts, optEntry{pclName, ft.transformExpr(attr.Expr)})
+					var tokens hclwrite.Tokens
+					switch attr.Name {
+					case "replace_on_changes":
+						tokens = ft.transformPropertyPathList(attr.Expr)
+					default:
+						tokens = ft.transformExpr(attr.Expr)
+					}
+					opts = append(opts, optEntry{pclName, tokens})
 				}
 			}
 			for _, subBlock := range block.Body.Blocks {
@@ -385,7 +392,7 @@ func transformHCLFileToPCL(
 						case "prevent_destroy":
 							opts = append(opts, optEntry{"protect", ft.transformExpr(attr.Expr)})
 						case "ignore_changes":
-							opts = append(opts, optEntry{"ignoreChanges", ft.transformExpr(attr.Expr)})
+							opts = append(opts, optEntry{"ignoreChanges", ft.transformPropertyPathList(attr.Expr)})
 						case "create_before_destroy":
 							// The codegen writes create_before_destroy = !deleteBeforeReplace.
 							// Invert to recover deleteBeforeReplace.
@@ -820,6 +827,26 @@ func (ft *fileTransformer) invokeExprTokens(hclType, dsName string) hclwrite.Tok
 		return hclwrite.TokensForFunctionCall("invoke", tokenTokens, argsTokens)
 	}
 	return hclwrite.TokensForFunctionCall("invoke", tokenTokens, argsTokens, hclwrite.TokensForObject(optAttrs))
+}
+
+// transformPropertyPathList converts a tuple of string literals (as used in HCL for
+// replace_on_changes, ignore_changes) to a tuple of identifiers (as used in PCL for
+// replaceOnChanges, ignoreChanges).
+func (ft *fileTransformer) transformPropertyPathList(expr hclsyntax.Expression) hclwrite.Tokens {
+	tuple, ok := expr.(*hclsyntax.TupleConsExpr)
+	if !ok {
+		return ft.transformExpr(expr)
+	}
+	var elems []hclwrite.Tokens
+	for _, elem := range tuple.Exprs {
+		val, diags := elem.Value(nil)
+		if !diags.HasErrors() && val.Type() == cty.String {
+			elems = append(elems, hclwrite.TokensForIdentifier(val.AsString()))
+		} else {
+			elems = append(elems, ft.transformExpr(elem))
+		}
+	}
+	return hclwrite.TokensForTuple(elems)
 }
 
 // invertTokens inverts a boolean token expression: if tokens is "!<expr>",
