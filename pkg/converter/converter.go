@@ -527,6 +527,14 @@ func (ft *fileTransformer) transformExpr(expr hclsyntax.Expression) hclwrite.Tok
 			elems = append(elems, ft.transformExpr(item))
 		}
 		return hclwrite.TokensForTuple(elems)
+	case *hclsyntax.ObjectConsKeyExpr:
+		// Identifier keys (e.g., bool_array) are property names: convert snake_case → camelCase.
+		// Quoted string keys (e.g., "my key") are map keys: pass through the wrapped expression.
+		if name := hcl.ExprAsKeyword(e); name != "" {
+			camel, _ := transform.PulumiCaseFromSnakeCase(name, nil)
+			return hclwrite.TokensForIdentifier(camel)
+		}
+		return ft.transformExpr(e.Wrapped)
 	case *hclsyntax.ObjectConsExpr:
 		var attrs []hclwrite.ObjectAttrTokens
 		for _, item := range e.Items {
