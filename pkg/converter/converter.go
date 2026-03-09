@@ -376,7 +376,7 @@ func transformHCLFileToPCL(
 				if pclName, isOpt := resourceOptionHCLToPCL[attr.Name]; isOpt {
 					var tokens hclwrite.Tokens
 					switch attr.Name {
-					case "replace_on_changes":
+					case "hide_diffs", "replace_on_changes":
 						tokens = ft.transformPropertyPathList(attr.Expr)
 					default:
 						tokens = ft.transformExpr(attr.Expr)
