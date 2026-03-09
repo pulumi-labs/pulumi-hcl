@@ -670,9 +670,10 @@ func (ft *fileTransformer) transformTraversal(e *hclsyntax.ScopeTraversalExpr) h
 				tokens := ft.invokeExprTokens(typeAttr.Name, nameAttr.Name)
 				for _, step := range e.Traversal[3:] {
 					if attr, ok := step.(hcl.TraverseAttr); ok {
+						camel, _ := transform.PulumiCaseFromSnakeCase(attr.Name, nil)
 						tokens = append(tokens,
 							&hclwrite.Token{Type: hclsyntax.TokenDot, Bytes: []byte(".")},
-							&hclwrite.Token{Type: hclsyntax.TokenIdent, Bytes: []byte(attr.Name)},
+							&hclwrite.Token{Type: hclsyntax.TokenIdent, Bytes: []byte(camel)},
 						)
 					}
 				}
