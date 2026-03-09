@@ -140,7 +140,6 @@ var expectedFailures = map[string]string{
 // sources, or other constructs used by those tests.
 var expectedEjectFailures = map[string]string{
 	"l2-plain":                                     "converter does not support resource/data/call blocks",
-	"l2-provider-call-explicit":                    "converter does not support resource/data/call blocks",
 	"l2-provider-grpc-config":                      "converter does not support resource/data/call blocks",
 	"l2-provider-grpc-config-schema-secret":        "converter does not support resource/data/call blocks",
 	"l2-provider-grpc-config-secret":               "converter does not support resource/data/call blocks",
