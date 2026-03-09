@@ -34,7 +34,6 @@ import (
 	"github.com/pulumi/pulumi-language-hcl/pkg/hcl/parser"
 	"github.com/pulumi/pulumi-language-hcl/pkg/hcl/run"
 	"github.com/pulumi/pulumi-language-hcl/pkg/version"
-	"github.com/pulumi/pulumi/pkg/v3/codegen/hcl2/syntax"
 	"github.com/pulumi/pulumi/pkg/v3/codegen/pcl"
 	"github.com/pulumi/pulumi/pkg/v3/codegen/schema"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/apitype"
@@ -468,16 +467,21 @@ func (host *LanguageHost) GenerateProgram(
 		}, nil
 	}
 
-	p := syntax.NewParser()
-	for k, v := range req.Source {
-		if err := p.ParseFile(strings.NewReader(v), k); err != nil {
-			return nil, fmt.Errorf("parsing %s: %w", k, err)
-		}
+	// Write source files to a temp directory so that BindDirectory can resolve
+	// component references (which require a directory path on the filesystem).
+	tmpDir, err := os.MkdirTemp("", "hcl-generate-*")
+	if err != nil {
+		return nil, fmt.Errorf("creating temp directory: %w", err)
 	}
-	if p.Diagnostics.HasErrors() {
-		return &pulumirpc.GenerateProgramResponse{
-			Diagnostics: plugin.HclDiagnosticsToRPCDiagnostics(p.Diagnostics),
-		}, nil
+	defer contract.IgnoreError(os.RemoveAll(tmpDir))
+	for k, v := range req.Source {
+		p := filepath.Join(tmpDir, k)
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			return nil, fmt.Errorf("creating directory for %s: %w", k, err)
+		}
+		if err := os.WriteFile(p, []byte(v), 0o644); err != nil {
+			return nil, fmt.Errorf("writing %s: %w", k, err)
+		}
 	}
 
 	loaderClient, err := schema.NewLoaderClient(req.LoaderTarget)
@@ -488,7 +492,7 @@ func (host *LanguageHost) GenerateProgram(
 	if !req.Strict {
 		binderOpts = append(binderOpts, pcl.NonStrictBindOptions()...)
 	}
-	program, bindDiags, err := pcl.BindProgram(p.Files, binderOpts...)
+	program, bindDiags, err := pcl.BindDirectory(tmpDir, nil, binderOpts...)
 	if err != nil {
 		return nil, fmt.Errorf("binding program: %w", err)
 	}
