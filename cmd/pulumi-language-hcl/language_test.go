@@ -139,7 +139,6 @@ var expectedFailures = map[string]string{
 // expected to fail because the converter does not yet support resources, data
 // sources, or other constructs used by those tests.
 var expectedEjectFailures = map[string]string{
-	"l2-resource-option-depends-on":                "converter does not support resource/data/call blocks",
 	"l2-resource-option-env-var-mappings":          "converter does not support resource/data/call blocks",
 	"l2-resource-option-hide-diffs":                "converter does not support resource/data/call blocks",
 	"l2-resource-option-ignore-changes":            "converter does not support resource/data/call blocks",
