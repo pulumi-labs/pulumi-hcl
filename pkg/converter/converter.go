@@ -273,9 +273,11 @@ var invokeOptionHCLToPCL = map[string]string{
 var resourceOptionHCLToPCL = map[string]string{
 	"aliases":                   "aliases",
 	"additional_secret_outputs": "additionalSecretOutputs",
+	"count":                     "range",
 	"deleted_with":              "deletedWith",
 	"depends_on":                "dependsOn",
 	"env_var_mappings":          "envVarMappings",
+	"for_each":                  "range",
 	"hide_diffs":                "hideDiffs",
 	"import_id":                 "import",
 	"parent":                    "parent",
@@ -439,6 +441,8 @@ func transformHCLFileToPCL(
 					switch attr.Name {
 					case "hide_diffs", "replace_on_changes":
 						tokens = ft.transformPropertyPathList(attr.Expr)
+					case "for_each":
+						tokens = ft.transformForEachExpr(attr.Expr)
 					default:
 						tokens = ft.transformExpr(attr.Expr)
 					}
@@ -766,6 +770,24 @@ func (ft *fileTransformer) transformTraversal(e *hclsyntax.ScopeTraversalExpr) h
 				return tokens
 			}
 		}
+	case "count":
+		// count.index → range.value
+		trav := make(hcl.Traversal, len(e.Traversal))
+		trav[0] = hcl.TraverseRoot{Name: "range"}
+		for i := 1; i < len(e.Traversal); i++ {
+			if attr, ok := e.Traversal[i].(hcl.TraverseAttr); ok && attr.Name == "index" {
+				trav[i] = hcl.TraverseAttr{Name: "value"}
+			} else {
+				trav[i] = e.Traversal[i]
+			}
+		}
+		return hclwrite.TokensForTraversal(trav)
+	case "each":
+		// each.key → range.key, each.value → range.value
+		trav := make(hcl.Traversal, len(e.Traversal))
+		trav[0] = hcl.TraverseRoot{Name: "range"}
+		copy(trav[1:], e.Traversal[1:])
+		return hclwrite.TokensForTraversal(trav)
 	case "var", "local", "module":
 		return hclwrite.TokensForTraversal(stripRoot(e.Traversal))
 	case "pulumi":
@@ -888,6 +910,16 @@ func (ft *fileTransformer) invokeExprTokens(hclType, dsName string) hclwrite.Tok
 		return hclwrite.TokensForFunctionCall("invoke", tokenTokens, argsTokens)
 	}
 	return hclwrite.TokensForFunctionCall("invoke", tokenTokens, argsTokens, hclwrite.TokensForObject(optAttrs))
+}
+
+// transformForEachExpr converts a for_each expression to PCL range tokens.
+// The HCL codegen wraps list values as `{ for __key, __value in <list> : tostring(__key) => __value }`;
+// this unwraps that pattern back to just `<list>`. Map expressions pass through unchanged.
+func (ft *fileTransformer) transformForEachExpr(expr hclsyntax.Expression) hclwrite.Tokens {
+	if forExpr, ok := expr.(*hclsyntax.ForExpr); ok && forExpr.KeyExpr != nil {
+		return ft.transformExpr(forExpr.CollExpr)
+	}
+	return ft.transformExpr(expr)
 }
 
 // transformPropertyPathList converts a tuple of string literals (as used in HCL for
