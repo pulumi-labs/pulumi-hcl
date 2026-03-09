@@ -102,40 +102,63 @@ func (*hclConverter) ConvertProgram(
 		return nil, fmt.Errorf("writing Pulumi.yaml: %w", err)
 	}
 
-	// Walk source dir for .hcl files, transform each to a .pp PCL file.
-	entries, err := os.ReadDir(req.SourceDirectory)
-	if err != nil {
-		return nil, fmt.Errorf("reading source directory: %w", err)
-	}
-
+	// Walk source dir tree for .hcl files, transform each to a .pp PCL file.
 	var allDiags hcl.Diagnostics
 
-	for _, entry := range entries {
-		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".hcl") {
-			continue
+	err = filepath.WalkDir(req.SourceDirectory, func(path string, d os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if d.IsDir() {
+			if strings.HasPrefix(d.Name(), ".") {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if !strings.HasSuffix(d.Name(), ".hcl") {
+			return nil
 		}
 
-		content, err := os.ReadFile(filepath.Join(req.SourceDirectory, entry.Name()))
+		relPath, err := filepath.Rel(req.SourceDirectory, path)
 		if err != nil {
-			return nil, fmt.Errorf("reading %s: %w", entry.Name(), err)
+			return fmt.Errorf("computing relative path for %s: %w", path, err)
+		}
+
+		content, err := os.ReadFile(path)
+		if err != nil {
+			return fmt.Errorf("reading %s: %w", relPath, err)
 		}
 
 		out := hclwrite.NewEmptyFile()
-		diags, err := transformHCLFileToPCL(ctx, content, entry.Name(), out.Body(), loader, paramInfos)
+		// Only emit package blocks for root-level files.
+		var pi map[string]workspace.PackageDescriptor
+		if filepath.Dir(relPath) == "." {
+			pi = paramInfos
+		}
+		diags, err := transformHCLFileToPCL(ctx, content, d.Name(), out.Body(), loader, pi)
 		if err != nil {
-			return nil, err
+			return err
 		}
 		allDiags = append(allDiags, diags...)
 
-		dstName := strings.TrimSuffix(entry.Name(), ".hcl") + ".pp"
-		f, err := os.Create(filepath.Join(req.TargetDirectory, dstName))
+		dstRelPath := strings.TrimSuffix(relPath, ".hcl") + ".pp"
+		dstPath := filepath.Join(req.TargetDirectory, dstRelPath)
+		if err := os.MkdirAll(filepath.Dir(dstPath), 0o755); err != nil {
+			return fmt.Errorf("creating directory for %s: %w", dstRelPath, err)
+		}
+
+		f, err := os.Create(dstPath)
 		if err != nil {
-			return nil, fmt.Errorf("opening %s: %w", dstName, err)
+			return fmt.Errorf("opening %s: %w", dstRelPath, err)
 		}
 		defer contract.IgnoreClose(f)
 		if _, err := out.WriteTo(f); err != nil {
-			return nil, fmt.Errorf("writing to %s: %w", dstName, err)
+			return fmt.Errorf("writing to %s: %w", dstRelPath, err)
 		}
+		return nil
+	})
+	if err != nil {
+		return nil, fmt.Errorf("walking source directory: %w", err)
 	}
 
 	return &plugin.ConvertProgramResponse{Diagnostics: allDiags}, nil
@@ -327,6 +350,44 @@ func transformHCLFileToPCL(
 			name := block.Labels[0]
 			blk := out.AppendNewBlock("output", []string{name})
 			for _, attr := range sortedAttributes(block.Body.Attributes) {
+				blk.Body().SetAttributeRaw(attr.Name, ft.transformExpr(attr.Expr))
+			}
+			out.AppendNewline()
+
+		case "module":
+			if len(block.Labels) == 0 {
+				continue
+			}
+			logicalName := block.Labels[0]
+			sourceAttr, ok := block.Body.Attributes["source"]
+			if !ok {
+				resultDiags = append(resultDiags, &hcl.Diagnostic{
+					Severity: hcl.DiagError,
+					Summary:  "missing source attribute",
+					Detail:   "module block requires a \"source\" attribute",
+					Subject:  block.TypeRange.Ptr(),
+				})
+				continue
+			}
+			sourceVal, valDiags := sourceAttr.Expr.Value(nil)
+			if valDiags.HasErrors() {
+				resultDiags = append(resultDiags, valDiags...)
+				continue
+			}
+			if sourceVal.Type() != cty.String {
+				resultDiags = append(resultDiags, &hcl.Diagnostic{
+					Severity: hcl.DiagError,
+					Summary:  "invalid source attribute",
+					Detail:   "module \"source\" must be a string",
+					Subject:  sourceAttr.Expr.Range().Ptr(),
+				})
+				continue
+			}
+			blk := out.AppendNewBlock("component", []string{logicalName, sourceVal.AsString()})
+			for _, attr := range sortedAttributes(block.Body.Attributes) {
+				if attr.Name == "source" {
+					continue
+				}
 				blk.Body().SetAttributeRaw(attr.Name, ft.transformExpr(attr.Expr))
 			}
 			out.AppendNewline()
@@ -705,7 +766,7 @@ func (ft *fileTransformer) transformTraversal(e *hclsyntax.ScopeTraversalExpr) h
 				return tokens
 			}
 		}
-	case "var", "local":
+	case "var", "local", "module":
 		return hclwrite.TokensForTraversal(stripRoot(e.Traversal))
 	case "pulumi":
 		if len(e.Traversal) >= 2 {
