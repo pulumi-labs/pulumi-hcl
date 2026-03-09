@@ -1,0 +1,12 @@
+{
+  "Name": "parameterized",
+  "Kind": "resource",
+  "Version": "1.2.3",
+  "PluginDownloadURL": "",
+  "Checksums": null,
+  "Parameterization": {
+    "Name": "hipackage",
+    "Version": "2.0.0",
+    "Value": "SGVsbG9Xb3JsZA=="
+  }
+}
