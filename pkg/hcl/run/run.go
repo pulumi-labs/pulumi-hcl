@@ -1204,7 +1204,8 @@ func (e *Engine) buildResourceOptions(res *ast.Resource, instance *graph.Expande
 		depKey := graph.FormatTraversal(res.ResourceParent)
 		if depKey != "" {
 			if parentOpts, ok := e.resourceInheritableOpts.Get(depKey); ok {
-				if res.Provider == nil && opts.Provider == "" && parentOpts.Provider != "" {
+				if res.Provider == nil && opts.Provider == "" && parentOpts.Provider != "" &&
+					providerPackage(parentOpts.Provider) == packageNameFromResourceType(res.Type) {
 					opts.Provider = parentOpts.Provider
 				}
 				if (res.Lifecycle == nil || res.Lifecycle.PreventDestroy == nil) &&
@@ -1324,6 +1325,18 @@ func packageNameFromResourceType(token string) string {
 		return name
 	}
 	return strings.SplitN(token, "_", 2)[0]
+}
+
+// providerPackage extracts the package name from a provider reference string.
+// The format is "urn:pulumi:STACK::PROJECT::pulumi:providers:PACKAGE::NAME::ID".
+func providerPackage(providerRef string) string {
+	const prefix = "pulumi:providers:"
+	_, after, found := strings.Cut(providerRef, prefix)
+	if !found {
+		return ""
+	}
+	pkg, _, _ := strings.Cut(after, "::")
+	return pkg
 }
 
 // packageRefForType returns the RegisterPackage ref for the given HCL resource type, or empty if none.
