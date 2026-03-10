@@ -42,7 +42,11 @@ const SensativeMark = "sensitive"
 
 var resourceRefCapsuleType = cty.Capsule("resource_reference", reflect.TypeOf(property.ResourceReference{}))
 
-type EvalFunc = func(resource.PropertyKey, hcl.Expression) (cty.Value, hcl.Diagnostics)
+// EvalFunc evaluates an HCL expression.
+//
+// When extraVars is non-nil, the expression should be evaluated with these
+// additional variables in scope (e.g. iterator variables for dynamic blocks).
+type EvalFunc = func(propKey resource.PropertyKey, expr hcl.Expression, extraVars map[string]cty.Value) (cty.Value, hcl.Diagnostics)
 
 func EvalFunctionWithSchema(config hcl.Body, r *schema.Function, eval EvalFunc) (property.Map, hcl.Diagnostics) {
 	var props []*schema.Property
@@ -111,7 +115,7 @@ func evalBlockWithSchema(config hcl.Body, props []*schema.Property, eval EvalFun
 		_, prop := camelCaseFromSnakeCase(name, props)
 		contract.Assertf(prop != nil, "unable to find schema for validated property")
 
-		out, attrDiag := eval(resource.PropertyKey(prop.Name), attr.Expr)
+		out, attrDiag := eval(resource.PropertyKey(prop.Name), attr.Expr, nil)
 		diags = diags.Extend(attrDiag)
 		if attrDiag.HasErrors() {
 			return cty.Value{}, diags
@@ -120,6 +124,15 @@ func evalBlockWithSchema(config hcl.Body, props []*schema.Property, eval EvalFun
 	}
 
 	for name, blocks := range body.Blocks.ByType() {
+		if name == "dynamic" {
+			d := evalDynamicBlocks(blocks, props, resourceInputs, eval)
+			diags = diags.Extend(d)
+			if d.HasErrors() {
+				return cty.Value{}, diags
+			}
+			continue
+		}
+
 		var prop *schema.Property
 		for _, p := range props {
 			if snakeCaseFromCamelCase(p.Name) == name {
@@ -130,14 +143,159 @@ func evalBlockWithSchema(config hcl.Body, props []*schema.Property, eval EvalFun
 		contract.Assertf(prop != nil, "unable to find schema for validated property")
 
 		blockType, _ := AsHCLBlockType(prop.Type)
-		values, diags := evalBlocksWithSchema(blocks, blockType.Properties, eval)
-		if diags.HasErrors() {
+		values, d := evalBlocksWithSchema(blocks, blockType.Properties, eval)
+		if d.HasErrors() {
+			diags = diags.Extend(d)
 			return cty.Value{}, diags
 		}
 		resourceInputs[name] = cty.ListVal(values)
 	}
 
 	return cty.ObjectVal(resourceInputs), diags
+}
+
+// dynamicBlockSchema is the body schema for the inside of a dynamic block.
+var dynamicBlockSchema = &hcl.BodySchema{
+	Attributes: []hcl.AttributeSchema{
+		{Name: "for_each", Required: true},
+		{Name: "iterator"},
+	},
+	Blocks: []hcl.BlockHeaderSchema{
+		{Type: "content"},
+	},
+}
+
+// evalDynamicBlocks expands dynamic blocks and merges results into resourceInputs.
+//
+// A dynamic block has the form:
+//
+//	dynamic "prop_name" {
+//	  for_each = <collection>
+//	  content {
+//	    <attrs evaluated with iterator bound>
+//	  }
+//	}
+func evalDynamicBlocks(
+	blocks hcl.Blocks, props []*schema.Property,
+	resourceInputs map[string]cty.Value, eval EvalFunc,
+) hcl.Diagnostics {
+	var diags hcl.Diagnostics
+	for _, block := range blocks {
+		propName := block.Labels[0]
+
+		var prop *schema.Property
+		for _, p := range props {
+			if snakeCaseFromCamelCase(p.Name) == propName {
+				prop = p
+				break
+			}
+		}
+		if prop == nil {
+			diags = append(diags, &hcl.Diagnostic{
+				Severity: hcl.DiagError,
+				Summary:  "invalid dynamic block type",
+				Detail:   fmt.Sprintf("no property %q found in schema", propName),
+				Subject:  block.DefRange.Ptr(),
+			})
+			return diags
+		}
+
+		blockType, ok := AsHCLBlockType(prop.Type)
+		if !ok {
+			diags = append(diags, &hcl.Diagnostic{
+				Severity: hcl.DiagError,
+				Summary:  "invalid dynamic block type",
+				Detail:   fmt.Sprintf("property %q is not a block type (List<Object>)", propName),
+				Subject:  block.DefRange.Ptr(),
+			})
+			return diags
+		}
+
+		content, d := block.Body.Content(dynamicBlockSchema)
+		diags = diags.Extend(d)
+		if d.HasErrors() {
+			return diags
+		}
+
+		forEachVal, d := eval("", content.Attributes["for_each"].Expr, nil)
+		diags = diags.Extend(d)
+		if d.HasErrors() {
+			return diags
+		}
+
+		// Determine the iterator variable name (defaults to block label).
+		iteratorName := propName
+		if iterAttr, ok := content.Attributes["iterator"]; ok {
+			iterVal, d := eval("", iterAttr.Expr, nil)
+			diags = diags.Extend(d)
+			if d.HasErrors() {
+				return diags
+			}
+			iteratorName = iterVal.AsString()
+		}
+
+		// Find the content block.
+		var contentBody hcl.Body
+		for _, b := range content.Blocks {
+			if b.Type == "content" {
+				contentBody = b.Body
+				break
+			}
+		}
+		if contentBody == nil {
+			diags = append(diags, &hcl.Diagnostic{
+				Severity: hcl.DiagError,
+				Summary:  "missing content block",
+				Detail:   "dynamic block requires a content block",
+				Subject:  block.DefRange.Ptr(),
+			})
+			return diags
+		}
+
+		// Evaluate the content block for each element.
+		var values []cty.Value
+		it := forEachVal.ElementIterator()
+		for it.Next() {
+			key, value := it.Element()
+
+			iterVars := map[string]cty.Value{
+				iteratorName: cty.ObjectVal(map[string]cty.Value{
+					"key":   key,
+					"value": value,
+				}),
+			}
+
+			dynamicEval := func(propKey resource.PropertyKey, expr hcl.Expression, extraVars map[string]cty.Value) (cty.Value, hcl.Diagnostics) {
+				merged := make(map[string]cty.Value, len(iterVars)+len(extraVars))
+				for k, v := range iterVars {
+					merged[k] = v
+				}
+				for k, v := range extraVars {
+					merged[k] = v
+				}
+				return eval(propKey, expr, merged)
+			}
+
+			evaluated, d := evalBlockWithSchema(contentBody, blockType.Properties, dynamicEval)
+			diags = diags.Extend(d)
+			if d.HasErrors() {
+				return diags
+			}
+			values = append(values, evaluated)
+		}
+
+		if len(values) > 0 {
+			if existing, ok := resourceInputs[propName]; ok {
+				// Merge with existing static blocks.
+				for it := existing.ElementIterator(); it.Next(); {
+					_, v := it.Element()
+					values = append(values, v)
+				}
+			}
+			resourceInputs[propName] = cty.ListVal(values)
+		}
+	}
+	return diags
 }
 
 func conformCtyToType(val cty.Value, typ cty.Type) cty.Value {
@@ -174,17 +332,25 @@ func AsHCLBlockType(typ schema.Type) (*schema.ObjectType, bool) {
 
 func inputBodyFromProperties(r []*schema.Property) *hcl.BodySchema {
 	body := new(hcl.BodySchema)
+	var hasBlockTypes bool
 	for _, p := range r {
 		typeName := snakeCaseFromCamelCase(p.Name)
 		if _, ok := AsHCLBlockType(p.Type); ok {
 			body.Blocks = append(body.Blocks, hcl.BlockHeaderSchema{
 				Type: typeName,
 			})
+			hasBlockTypes = true
 			continue
 		}
 		body.Attributes = append(body.Attributes, hcl.AttributeSchema{
 			Name:     typeName,
 			Required: p.IsRequired(),
+		})
+	}
+	if hasBlockTypes {
+		body.Blocks = append(body.Blocks, hcl.BlockHeaderSchema{
+			Type:       "dynamic",
+			LabelNames: []string{"type"},
 		})
 	}
 	return body

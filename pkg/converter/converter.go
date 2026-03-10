@@ -455,6 +455,9 @@ func transformHCLFileToPCL(
 			}
 			for _, subBlock := range block.Body.Blocks {
 				switch subBlock.Type {
+				case "dynamic":
+					d := ft.convertDynamicBlock(blk.Body(), subBlock, res.InputProperties)
+					resultDiags = append(resultDiags, d...)
 				case "lifecycle":
 					for _, attr := range sortedAttributes(subBlock.Body.Attributes) {
 						switch attr.Name {
@@ -636,6 +639,8 @@ func (ft *fileTransformer) transformExpr(expr hclsyntax.Expression) hclwrite.Tok
 			val[0].SpacesBefore = 1
 		}
 		return append(hclwrite.Tokens{op}, val...)
+	case *hclsyntax.ForExpr:
+		return ft.transformForExpr(e)
 	default:
 		r := expr.Range()
 		return hclwrite.Tokens{
@@ -1027,6 +1032,224 @@ func (ft *fileTransformer) blocksToObjectAttrs(blocks []*hclsyntax.Block, props 
 		})
 	}
 	return result
+}
+
+// convertDynamicBlock converts an HCL dynamic block back to a PCL for-expression attribute.
+//
+// dynamic "details" {
+//
+//	for_each = collection
+//	content { key = details.value.key }
+//
+// }
+//
+// → details = [for __key, __value in collection : { key = __value.key }]
+func (ft *fileTransformer) convertDynamicBlock(
+	body *hclwrite.Body, block *hclsyntax.Block, props []*schema.Property,
+) hcl.Diagnostics {
+	if len(block.Labels) == 0 {
+		return hcl.Diagnostics{{
+			Severity: hcl.DiagError,
+			Summary:  "malformed dynamic block",
+			Detail:   "dynamic block requires a label",
+			Subject:  block.TypeRange.Ptr(),
+		}}
+	}
+	propSnakeName := block.Labels[0]
+	propName, matched := transform.PulumiCaseFromSnakeCase(propSnakeName, props)
+
+	var elemProps []*schema.Property
+	if matched != nil {
+		elemProps = propertiesOf(elementTypeOf(matched.Type))
+	}
+
+	forEachAttr, ok := block.Body.Attributes["for_each"]
+	if !ok {
+		return hcl.Diagnostics{{
+			Severity: hcl.DiagError,
+			Summary:  "missing for_each",
+			Detail:   "dynamic block requires a for_each attribute",
+			Subject:  block.TypeRange.Ptr(),
+		}}
+	}
+
+	// Find the iterator name (defaults to block label).
+	iteratorName := propSnakeName
+	if iterAttr, ok := block.Body.Attributes["iterator"]; ok {
+		if keyword := hcl.ExprAsKeyword(iterAttr.Expr); keyword != "" {
+			iteratorName = keyword
+		}
+	}
+
+	// Find the content block.
+	var contentBlock *hclsyntax.Block
+	for _, sub := range block.Body.Blocks {
+		if sub.Type == "content" {
+			contentBlock = sub
+			break
+		}
+	}
+	if contentBlock == nil {
+		return hcl.Diagnostics{{
+			Severity: hcl.DiagError,
+			Summary:  "missing content block",
+			Detail:   "dynamic block requires a content block",
+			Subject:  block.TypeRange.Ptr(),
+		}}
+	}
+
+	// Build the for-expression body: an object with each attribute from the content block.
+	var objAttrs []hclwrite.ObjectAttrTokens
+	for _, attr := range sortedAttributes(contentBlock.Body.Attributes) {
+		attrName, _ := transform.PulumiCaseFromSnakeCase(attr.Name, elemProps)
+		// Transform the value expression, rewriting iterator references.
+		valueTokens := ft.transformExprWithIterator(attr.Expr, iteratorName)
+		objAttrs = append(objAttrs, hclwrite.ObjectAttrTokens{
+			Name:  hclwrite.TokensForIdentifier(attrName),
+			Value: valueTokens,
+		})
+	}
+
+	// Build: [for __key, __value in <collection> : { <attrs> }]
+	collectionTokens := ft.transformExpr(forEachAttr.Expr)
+	objTokens := hclwrite.TokensForObject(objAttrs)
+
+	forExprTokens := buildForExprTokens(collectionTokens, objTokens)
+	body.SetAttributeRaw(propName, forExprTokens)
+	return nil
+}
+
+// buildForExprTokens builds tokens for: [for __key, __value in <collection> : <value>]
+func buildForExprTokens(collection, value hclwrite.Tokens) hclwrite.Tokens {
+	tokens := hclwrite.Tokens{
+		{Type: hclsyntax.TokenOBrack, Bytes: []byte("[")},
+		{Type: hclsyntax.TokenIdent, Bytes: []byte("for"), SpacesBefore: 0},
+		{Type: hclsyntax.TokenIdent, Bytes: []byte("__key"), SpacesBefore: 1},
+		{Type: hclsyntax.TokenComma, Bytes: []byte(",")},
+		{Type: hclsyntax.TokenIdent, Bytes: []byte("__value"), SpacesBefore: 1},
+		{Type: hclsyntax.TokenIdent, Bytes: []byte("in"), SpacesBefore: 1},
+	}
+	if len(collection) > 0 {
+		collection[0].SpacesBefore = 1
+	}
+	tokens = append(tokens, collection...)
+	tokens = append(tokens, &hclwrite.Token{Type: hclsyntax.TokenColon, Bytes: []byte(":"), SpacesBefore: 1})
+	if len(value) > 0 {
+		value[0].SpacesBefore = 1
+	}
+	tokens = append(tokens, value...)
+	tokens = append(tokens, &hclwrite.Token{Type: hclsyntax.TokenCBrack, Bytes: []byte("]")})
+	return tokens
+}
+
+// transformExprWithIterator transforms an expression while rewriting references to the
+// dynamic block iterator. <iteratorName>.value.x → __value.x, <iteratorName>.key → __key.
+func (ft *fileTransformer) transformExprWithIterator(expr hclsyntax.Expression, iteratorName string) hclwrite.Tokens {
+	if e, ok := expr.(*hclsyntax.ScopeTraversalExpr); ok && e.Traversal.RootName() == iteratorName {
+		return ft.transformDynamicIteratorTraversal(e.Traversal, iteratorName)
+	}
+	// For non-traversal expressions, fall through to normal transform.
+	// TODO: recursively handle nested expressions containing iterator references.
+	return ft.transformExpr(expr)
+}
+
+// transformDynamicIteratorTraversal rewrites a traversal rooted at the dynamic block iterator.
+// details.value.key → __value.key
+// details.key → __key
+func (ft *fileTransformer) transformDynamicIteratorTraversal(trav hcl.Traversal, iteratorName string) hclwrite.Tokens {
+	if len(trav) < 2 {
+		return hclwrite.TokensForTraversal(trav)
+	}
+	secondStep, ok := trav[1].(hcl.TraverseAttr)
+	if !ok {
+		return hclwrite.TokensForTraversal(trav)
+	}
+
+	switch secondStep.Name {
+	case "value":
+		// details.value.x → __value.x
+		rewritten := make(hcl.Traversal, 0, len(trav)-1)
+		rewritten = append(rewritten, hcl.TraverseRoot{Name: "__value"})
+		rewritten = append(rewritten, trav[2:]...)
+		return hclwrite.TokensForTraversal(rewritten)
+	case "key":
+		// details.key → __key
+		rewritten := make(hcl.Traversal, 0, len(trav)-1)
+		rewritten = append(rewritten, hcl.TraverseRoot{Name: "__key"})
+		rewritten = append(rewritten, trav[2:]...)
+		return hclwrite.TokensForTraversal(rewritten)
+	default:
+		return hclwrite.TokensForTraversal(trav)
+	}
+}
+
+// transformForExpr converts an HCL for-expression to PCL tokens, transforming
+// sub-expressions (e.g., var.names → names).
+func (ft *fileTransformer) transformForExpr(e *hclsyntax.ForExpr) hclwrite.Tokens {
+	collTokens := ft.transformExpr(e.CollExpr)
+	valTokens := ft.transformExpr(e.ValExpr)
+
+	isMap := e.KeyExpr != nil
+
+	var open, close byte
+	if isMap {
+		open, close = '{', '}'
+	} else {
+		open, close = '[', ']'
+	}
+
+	tokens := hclwrite.Tokens{
+		{Type: hclsyntax.TokenTemplateControl, Bytes: []byte{open}},
+		{Type: hclsyntax.TokenIdent, Bytes: []byte("for"), SpacesBefore: 0},
+	}
+
+	if e.KeyVar != "" {
+		tokens = append(tokens,
+			&hclwrite.Token{Type: hclsyntax.TokenIdent, Bytes: []byte(e.KeyVar), SpacesBefore: 1},
+			&hclwrite.Token{Type: hclsyntax.TokenComma, Bytes: []byte(",")},
+		)
+	}
+
+	tokens = append(tokens,
+		&hclwrite.Token{Type: hclsyntax.TokenIdent, Bytes: []byte(e.ValVar), SpacesBefore: 1},
+		&hclwrite.Token{Type: hclsyntax.TokenIdent, Bytes: []byte("in"), SpacesBefore: 1},
+	)
+
+	if len(collTokens) > 0 {
+		collTokens[0].SpacesBefore = 1
+	}
+	tokens = append(tokens, collTokens...)
+	tokens = append(tokens, &hclwrite.Token{Type: hclsyntax.TokenColon, Bytes: []byte(":"), SpacesBefore: 1})
+
+	if isMap {
+		keyTokens := ft.transformExpr(e.KeyExpr)
+		if len(keyTokens) > 0 {
+			keyTokens[0].SpacesBefore = 1
+		}
+		tokens = append(tokens, keyTokens...)
+		tokens = append(tokens, &hclwrite.Token{Type: hclsyntax.TokenFatArrow, Bytes: []byte("=>"), SpacesBefore: 1})
+	}
+
+	if len(valTokens) > 0 {
+		valTokens[0].SpacesBefore = 1
+	}
+	tokens = append(tokens, valTokens...)
+
+	if e.CondExpr != nil {
+		condTokens := ft.transformExpr(e.CondExpr)
+		tokens = append(tokens, &hclwrite.Token{Type: hclsyntax.TokenIdent, Bytes: []byte("if"), SpacesBefore: 1})
+		if len(condTokens) > 0 {
+			condTokens[0].SpacesBefore = 1
+		}
+		tokens = append(tokens, condTokens...)
+	}
+
+	if e.Group {
+		tokens = append(tokens, &hclwrite.Token{Type: hclsyntax.TokenEllipsis, Bytes: []byte("..."), SpacesBefore: 0})
+	}
+
+	tokens = append(tokens, &hclwrite.Token{Type: hclsyntax.TokenTemplateSeqEnd, Bytes: []byte{close}})
+	return tokens
 }
 
 // transformForEachExpr converts a for_each expression to PCL range tokens.

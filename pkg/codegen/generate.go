@@ -126,12 +126,21 @@ const (
 	rangeKindForEach           // list/map → for_each
 )
 
+// dynamicBlockContext tracks the iterator variables of a dynamic block so that
+// references to them can be rewritten in scopeTraversalTokens.
+type dynamicBlockContext struct {
+	blockName     string
+	keyVariable   *model.Variable
+	valueVariable *model.Variable
+}
+
 // generator holds state during code generation, including invoke data sources.
 type generator struct {
 	program           *pcl.Program
 	invokeDataSources []spilledDataSource
 	callBlocks        []spilledCall
 	currentRangeKind  rangeKind
+	dynamicBlock      *dynamicBlockContext
 }
 
 type spilledDataSource struct {
@@ -1027,15 +1036,50 @@ func (g *generator) genPulumiBlock(body *hclwrite.Body, pb *pcl.PulumiBlock) hcl
 }
 
 func (g *generator) genBlocks(body *hclwrite.Body, name string, expr model.Expression, objType *schema.ObjectType) hcl.Diagnostics {
-	tuple, ok := expr.(*model.TupleConsExpression)
-	if !ok {
+	switch e := expr.(type) {
+	case *model.TupleConsExpression:
+		var diags hcl.Diagnostics
+		for _, elem := range e.Expressions {
+			d := g.genBlock(body, name, elem, objType)
+			diags = append(diags, d...)
+		}
+		return diags
+	case *model.ForExpression:
+		return g.genDynamicBlock(body, name, e, objType)
+	default:
 		return g.genBlock(body, name, expr, objType)
 	}
-	var diags hcl.Diagnostics
-	for _, elem := range tuple.Expressions {
-		d := g.genBlock(body, name, elem, objType)
-		diags = append(diags, d...)
+}
+
+// genDynamicBlock generates a dynamic block from a PCL ForExpression.
+//
+//	dynamic "name" {
+//	  for_each = <collection>
+//	  content {
+//	    <fields from Value expression, with iterator vars rewritten>
+//	  }
+//	}
+func (g *generator) genDynamicBlock(
+	body *hclwrite.Body, name string, expr *model.ForExpression, objType *schema.ObjectType,
+) hcl.Diagnostics {
+	block := body.AppendNewBlock("dynamic", []string{name})
+
+	collTokens, diags := g.exprTokens(expr.Collection, schema.AnyType)
+	if diags.HasErrors() {
+		return diags
 	}
+	block.Body().SetAttributeRaw("for_each", collTokens)
+
+	prev := g.dynamicBlock
+	g.dynamicBlock = &dynamicBlockContext{
+		blockName:     name,
+		keyVariable:   expr.KeyVariable,
+		valueVariable: expr.ValueVariable,
+	}
+	defer func() { g.dynamicBlock = prev }()
+
+	d := g.genBlock(block.Body(), "content", expr.Value, objType)
+	diags = append(diags, d...)
 	return diags
 }
 
@@ -1134,6 +1178,8 @@ func (g *generator) exprTokens(expr model.Expression, typ schema.Type) (hclwrite
 		return g.binaryOpTokens(e)
 	case *model.UnaryOpExpression:
 		return g.unaryOpTokens(e)
+	case *model.ForExpression:
+		return g.forExprTokens(e)
 	default:
 		return nil, hcl.Diagnostics{{
 			Severity: hcl.DiagError,
@@ -1141,6 +1187,96 @@ func (g *generator) exprTokens(expr model.Expression, typ schema.Type) (hclwrite
 			Detail:   fmt.Sprintf("expression type %T is not yet supported", expr),
 		}}
 	}
+}
+
+// forExprTokens generates HCL tokens for a PCL ForExpression.
+//
+// List result (Key == nil):  [for key, value in collection : valueExpr]
+// Map result (Key != nil):   {for key, value in collection : keyExpr => valueExpr}
+func (g *generator) forExprTokens(expr *model.ForExpression) (hclwrite.Tokens, hcl.Diagnostics) {
+	var diags hcl.Diagnostics
+
+	collTokens, d := g.exprTokens(expr.Collection, schema.AnyType)
+	diags = append(diags, d...)
+	if d.HasErrors() {
+		return nil, diags
+	}
+
+	valueTokens, d := g.exprTokens(expr.Value, schema.AnyType)
+	diags = append(diags, d...)
+	if d.HasErrors() {
+		return nil, diags
+	}
+
+	isMap := expr.Key != nil
+
+	var open, close byte
+	if isMap {
+		open, close = '{', '}'
+	} else {
+		open, close = '[', ']'
+	}
+
+	tokens := hclwrite.Tokens{
+		{Type: hclsyntax.TokenTemplateControl, Bytes: []byte{open}},
+		{Type: hclsyntax.TokenIdent, Bytes: []byte("for"), SpacesBefore: 0},
+	}
+
+	if expr.KeyVariable != nil {
+		tokens = append(tokens,
+			&hclwrite.Token{Type: hclsyntax.TokenIdent, Bytes: []byte(expr.KeyVariable.Name), SpacesBefore: 1},
+			&hclwrite.Token{Type: hclsyntax.TokenComma, Bytes: []byte(",")},
+		)
+	}
+
+	tokens = append(tokens,
+		&hclwrite.Token{Type: hclsyntax.TokenIdent, Bytes: []byte(expr.ValueVariable.Name), SpacesBefore: 1},
+		&hclwrite.Token{Type: hclsyntax.TokenIdent, Bytes: []byte("in"), SpacesBefore: 1},
+	)
+
+	if len(collTokens) > 0 {
+		collTokens[0].SpacesBefore = 1
+	}
+	tokens = append(tokens, collTokens...)
+	tokens = append(tokens, &hclwrite.Token{Type: hclsyntax.TokenColon, Bytes: []byte(":"), SpacesBefore: 1})
+
+	if isMap {
+		keyTokens, d := g.exprTokens(expr.Key, schema.AnyType)
+		diags = append(diags, d...)
+		if d.HasErrors() {
+			return nil, diags
+		}
+		if len(keyTokens) > 0 {
+			keyTokens[0].SpacesBefore = 1
+		}
+		tokens = append(tokens, keyTokens...)
+		tokens = append(tokens, &hclwrite.Token{Type: hclsyntax.TokenFatArrow, Bytes: []byte("=>"), SpacesBefore: 1})
+	}
+
+	if len(valueTokens) > 0 {
+		valueTokens[0].SpacesBefore = 1
+	}
+	tokens = append(tokens, valueTokens...)
+
+	if expr.Condition != nil {
+		condTokens, d := g.exprTokens(expr.Condition, schema.AnyType)
+		diags = append(diags, d...)
+		if d.HasErrors() {
+			return nil, diags
+		}
+		tokens = append(tokens, &hclwrite.Token{Type: hclsyntax.TokenIdent, Bytes: []byte("if"), SpacesBefore: 1})
+		if len(condTokens) > 0 {
+			condTokens[0].SpacesBefore = 1
+		}
+		tokens = append(tokens, condTokens...)
+	}
+
+	if expr.Group {
+		tokens = append(tokens, &hclwrite.Token{Type: hclsyntax.TokenEllipsis, Bytes: []byte("..."), SpacesBefore: 0})
+	}
+
+	tokens = append(tokens, &hclwrite.Token{Type: hclsyntax.TokenTemplateSeqEnd, Bytes: []byte{close}})
+	return tokens, diags
 }
 
 func (g *generator) funcCallTokens(expr *model.FunctionCallExpression) (hclwrite.Tokens, hcl.Diagnostics) {
@@ -1371,6 +1507,25 @@ func (g *generator) scopeTraversalTokens(expr *model.ScopeTraversalExpression) (
 				return hclwrite.TokensForTraversal(append(
 					hcl.Traversal{hcl.TraverseRoot{Name: "each"}}, traversal[1:]...,
 				)), nil
+			}
+		}
+		if db := g.dynamicBlock; db != nil {
+			// Rewrite references to the for-expression's iterator variables:
+			//   valueVar.field → blockName.value.field
+			//   keyVar         → blockName.key
+			if db.valueVariable != nil && part == db.valueVariable {
+				rewritten := hcl.Traversal{
+					hcl.TraverseRoot{Name: db.blockName},
+					hcl.TraverseAttr{Name: "value"},
+				}
+				return hclwrite.TokensForTraversal(append(rewritten, traversal[1:]...)), nil
+			}
+			if db.keyVariable != nil && part == db.keyVariable {
+				rewritten := hcl.Traversal{
+					hcl.TraverseRoot{Name: db.blockName},
+					hcl.TraverseAttr{Name: "key"},
+				}
+				return hclwrite.TokensForTraversal(append(rewritten, traversal[1:]...)), nil
 			}
 		}
 		return hclwrite.TokensForTraversal(traversal), nil
