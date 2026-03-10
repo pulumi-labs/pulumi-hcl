@@ -794,8 +794,16 @@ func (e *Engine) registerResourceInstance(
 	}
 
 	resourceInputs, diags := transform.EvalResourceWithSchema(res.Config, resSchema,
-		func(propKey resource.PropertyKey, expr hcl.Expression) (cty.Value, hcl.Diagnostics) {
-			val, diags := e.evaluator.EvaluateExpression(expr)
+		func(propKey resource.PropertyKey, expr hcl.Expression, extraVars map[string]cty.Value) (cty.Value, hcl.Diagnostics) {
+			var val cty.Value
+			var diags hcl.Diagnostics
+			if len(extraVars) > 0 {
+				childCtx := e.evaluator.Context().HCLContext().NewChild()
+				childCtx.Variables = extraVars
+				val, diags = expr.Value(childCtx)
+			} else {
+				val, diags = e.evaluator.EvaluateExpression(expr)
+			}
 			if diags.HasErrors() {
 				return val, diags
 			}
@@ -1540,8 +1548,16 @@ func (e *Engine) processDataSource(ctx context.Context, node *graph.Node) error 
 	var allDeps []resource.URN
 
 	inputs, diags := transform.EvalFunctionWithSchema(ds.Config, funcSchema,
-		func(propKey resource.PropertyKey, expr hcl.Expression) (cty.Value, hcl.Diagnostics) {
-			val, diags := e.evaluator.EvaluateExpression(expr)
+		func(propKey resource.PropertyKey, expr hcl.Expression, extraVars map[string]cty.Value) (cty.Value, hcl.Diagnostics) {
+			var val cty.Value
+			var diags hcl.Diagnostics
+			if len(extraVars) > 0 {
+				childCtx := e.evaluator.Context().HCLContext().NewChild()
+				childCtx.Variables = extraVars
+				val, diags = expr.Value(childCtx)
+			} else {
+				val, diags = e.evaluator.EvaluateExpression(expr)
+			}
 			if diags.HasErrors() {
 				return val, diags
 			}
@@ -1732,7 +1748,12 @@ func (e *Engine) processCall(ctx context.Context, node *graph.Node) error {
 	}
 
 	userArgs, diags := transform.EvalFunctionWithSchema(call.Config, &filteredFunc,
-		func(_ resource.PropertyKey, expr hcl.Expression) (cty.Value, hcl.Diagnostics) {
+		func(_ resource.PropertyKey, expr hcl.Expression, extraVars map[string]cty.Value) (cty.Value, hcl.Diagnostics) {
+			if len(extraVars) > 0 {
+				childCtx := e.evaluator.Context().HCLContext().NewChild()
+				childCtx.Variables = extraVars
+				return expr.Value(childCtx)
+			}
 			return e.evaluator.EvaluateExpression(expr)
 		})
 	if diags.HasErrors() {

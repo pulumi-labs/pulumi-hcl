@@ -25,6 +25,7 @@ import (
 	"slices"
 
 	"github.com/hashicorp/hcl/v2"
+	"github.com/hashicorp/hcl/v2/hclsyntax"
 	"github.com/pulumi/pulumi-language-hcl/pkg/hcl/ast"
 	"github.com/pulumi/pulumi-language-hcl/pkg/hcl/eval"
 	"github.com/pulumi/pulumi/pkg/v3/util/pdag"
@@ -475,14 +476,46 @@ func (g *Graph) extractProviderDependencies(provider *ast.Provider) []pdag.Node 
 	return slices.Collect(maps.Keys(seen))
 }
 
-// extractDependenciesFromBody extracts dependencies from an HCL body.
+// extractDependenciesFromBody extracts dependencies from an HCL body,
+// including attributes and nested blocks (e.g., dynamic blocks).
 func (g *Graph) extractDependenciesFromBody(body hcl.Body) []pdag.Node {
+	return g.extractDependenciesFromBodyExcluding(body, nil)
+}
+
+func (g *Graph) extractDependenciesFromBodyExcluding(body hcl.Body, exclude map[string]bool) []pdag.Node {
 	seen := make(map[pdag.Node]bool)
 
 	attrs, _ := body.JustAttributes()
 	for _, attr := range attrs {
-		for _, dep := range g.extractDependenciesFromExpression(attr.Expr) {
+		for _, dep := range g.extractDependenciesFromExpressionExcluding(attr.Expr, exclude) {
 			seen[dep] = true
+		}
+	}
+
+	if syntaxBody, ok := body.(*hclsyntax.Body); ok {
+		for _, block := range syntaxBody.Blocks {
+			if block.Type == "dynamic" && len(block.Labels) > 0 {
+				// The iterator variable defaults to the block label.
+				iterName := block.Labels[0]
+				// Check for an explicit "iterator" attribute.
+				if iterAttr, ok := block.Body.Attributes["iterator"]; ok {
+					if keyword := hcl.ExprAsKeyword(iterAttr.Expr); keyword != "" {
+						iterName = keyword
+					}
+				}
+				childExclude := make(map[string]bool, len(exclude)+1)
+				for k, v := range exclude {
+					childExclude[k] = v
+				}
+				childExclude[iterName] = true
+				for _, dep := range g.extractDependenciesFromBodyExcluding(block.Body, childExclude) {
+					seen[dep] = true
+				}
+			} else {
+				for _, dep := range g.extractDependenciesFromBodyExcluding(block.Body, exclude) {
+					seen[dep] = true
+				}
+			}
 		}
 	}
 
@@ -492,6 +525,10 @@ func (g *Graph) extractDependenciesFromBody(body hcl.Body) []pdag.Node {
 // extractDependenciesFromExpression extracts ALL dependencies from an expression,
 // including var and local references (unlike eval.ExtractDependencies which only extracts resource deps).
 func (g *Graph) extractDependenciesFromExpression(expr hcl.Expression) []pdag.Node {
+	return g.extractDependenciesFromExpressionExcluding(expr, nil)
+}
+
+func (g *Graph) extractDependenciesFromExpressionExcluding(expr hcl.Expression, exclude map[string]bool) []pdag.Node {
 	if expr == nil {
 		return nil
 	}
@@ -500,6 +537,10 @@ func (g *Graph) extractDependenciesFromExpression(expr hcl.Expression) []pdag.No
 
 	for _, traversal := range expr.Variables() {
 		namespace, parts := eval.ParseTraversal(traversal)
+
+		if exclude[namespace] {
+			continue
+		}
 
 		var dep string
 		switch namespace {
