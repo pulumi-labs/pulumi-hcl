@@ -128,7 +128,7 @@ func ResolveResource(ctx context.Context, loader schema.ReferenceLoader, knownPr
 	for iter := pkg.Resources().Range(); iter.Next(); {
 		mod := pkg.TokenToModule(iter.Token())
 		name := strings.Split(iter.Token(), ":")[2]
-		rKey := strings.ReplaceAll(strings.ToLower(mod+name), "/", "")
+		rKey := strings.NewReplacer("/", "", "_", "").Replace(strings.ToLower(mod + name))
 		if rKey == key {
 			return iter.Resource()
 		}
@@ -230,7 +230,7 @@ func ResolveFunction(ctx context.Context, loader schema.ReferenceLoader, knownPr
 	for iter := pkg.Functions().Range(); iter.Next(); {
 		mod := pkg.TokenToModule(iter.Token())
 		name := strings.Split(iter.Token(), ":")[2]
-		if strings.ReplaceAll(strings.ToLower(mod+name), "/", "") == key {
+		if strings.NewReplacer("/", "", "_", "").Replace(strings.ToLower(mod+name)) == key {
 			return iter.Function()
 		}
 	}
@@ -240,7 +240,7 @@ func ResolveFunction(ctx context.Context, loader schema.ReferenceLoader, knownPr
 	for iter := pkg.Functions().Range(); iter.Next(); {
 		mod := pkg.TokenToModule(iter.Token())
 		name := strings.Split(iter.Token(), ":")[2]
-		if strings.ReplaceAll(strings.ToLower(mod+name), "/", "") == implicitGetKey {
+		if strings.NewReplacer("/", "", "_", "").Replace(strings.ToLower(mod+name)) == implicitGetKey {
 			return iter.Function()
 		}
 	}

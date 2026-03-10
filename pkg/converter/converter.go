@@ -31,13 +31,14 @@ import (
 	"github.com/hashicorp/hcl/v2"
 	"github.com/hashicorp/hcl/v2/hclsyntax"
 	"github.com/hashicorp/hcl/v2/hclwrite"
-	"github.com/zclconf/go-cty/cty"
 	"github.com/pulumi/pulumi-language-hcl/pkg/hcl/packages"
 	"github.com/pulumi/pulumi-language-hcl/pkg/hcl/transform"
+	"github.com/pulumi/pulumi/pkg/v3/codegen"
 	"github.com/pulumi/pulumi/pkg/v3/codegen/schema"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/resource/plugin"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/util/contract"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/workspace"
+	"github.com/zclconf/go-cty/cty"
 	"gopkg.in/yaml.v3"
 )
 
@@ -179,14 +180,15 @@ type dataReference struct {
 // fileTransformer holds context for converting a single HCL file to PCL.
 type fileTransformer struct {
 	src             []byte
-	knownHCLTypes   map[string]bool               // set of HCL type labels used in resource blocks
-	stackRefNames   map[string]bool               // set of logical names of pulumi_stackreference resources
-	knownProviders  []string                      // provider names from terraform.required_providers
+	knownHCLTypes   map[string]bool // set of HCL type labels used in resource blocks
+	stackRefNames   map[string]bool // set of logical names of pulumi_stackreference resources
+	knownProviders  []string        // provider names from terraform.required_providers
 	callBlocks      map[callReference]*hclsyntax.Body
 	dataBlocks      map[dataReference]*hclsyntax.Body
-	dataTokens      map[string]string             // key: hclType, value: resolved PCL token
+	dataTokens      map[string]string // key: hclType, value: resolved PCL token
 	loader          schema.ReferenceLoader
-	resourceSchemas map[string]*schema.Resource   // cache: HCL type label → resolved schema resource
+	resourceSchemas map[string]*schema.Resource // cache: HCL type label → resolved schema resource
+	functionSchemas map[string]*schema.Function // cache: HCL type label → resolved schema function
 }
 
 // newFileTransformer creates a fileTransformer by pre-scanning body for resource and data definitions.
@@ -200,6 +202,7 @@ func newFileTransformer(ctx context.Context, src []byte, body *hclsyntax.Body, l
 		dataTokens:      make(map[string]string),
 		loader:          loader,
 		resourceSchemas: make(map[string]*schema.Resource),
+		functionSchemas: make(map[string]*schema.Function),
 	}
 	var diags hcl.Diagnostics
 	for _, block := range body.Blocks {
@@ -237,6 +240,7 @@ func newFileTransformer(ctx context.Context, src []byte, body *hclsyntax.Body, l
 					ft.dataTokens[hclType] = ""
 				} else {
 					ft.dataTokens[hclType] = fn.Token
+					ft.functionSchemas[hclType] = fn
 				}
 			}
 		}
@@ -729,7 +733,7 @@ func (ft *fileTransformer) transformTraversal(e *hclsyntax.ScopeTraversalExpr) h
 				return hclwrite.TokensForFunctionCall("getOutput", refTokens, keyTokens)
 			}
 		}
-		return hclwrite.TokensForTraversal(ft.camelCaseTraversalAttrs(stripped, root))
+		return hclwrite.TokensForTraversal(ft.traversalAttrs(stripped, root))
 	}
 
 	switch root {
@@ -740,13 +744,27 @@ func (ft *fileTransformer) transformTraversal(e *hclsyntax.ScopeTraversalExpr) h
 			nameAttr, ok2 := e.Traversal[2].(hcl.TraverseAttr)
 			if ok1 && ok2 {
 				tokens := ft.invokeExprTokens(typeAttr.Name, nameAttr.Name)
-				for _, step := range e.Traversal[3:] {
-					if attr, ok := step.(hcl.TraverseAttr); ok {
-						camel, _ := transform.PulumiCaseFromSnakeCase(attr.Name, nil)
-						tokens = append(tokens,
-							&hclwrite.Token{Type: hclsyntax.TokenDot, Bytes: []byte(".")},
-							&hclwrite.Token{Type: hclsyntax.TokenIdent, Bytes: []byte(camel)},
-						)
+				var returnProps []*schema.Property
+				if fn := ft.functionSchemas[typeAttr.Name]; fn != nil && fn.ReturnType != nil {
+					returnProps = propertiesOf(fn.ReturnType)
+				}
+				remaining := e.Traversal[3:]
+				if len(remaining) > 0 {
+					// Build a dummy traversal with a root so schemaAwareTraversalAttrs works.
+					dummy := make(hcl.Traversal, len(remaining)+1)
+					dummy[0] = hcl.TraverseRoot{Name: "_"}
+					copy(dummy[1:], remaining)
+					converted := schemaAwareTraversalAttrs(dummy, returnProps)
+					for _, step := range converted[1:] {
+						switch s := step.(type) {
+						case hcl.TraverseAttr:
+							tokens = append(tokens,
+								&hclwrite.Token{Type: hclsyntax.TokenDot, Bytes: []byte(".")},
+								&hclwrite.Token{Type: hclsyntax.TokenIdent, Bytes: []byte(s.Name)},
+							)
+						case hcl.TraverseIndex:
+							tokens = append(tokens, hclwrite.TokensForTraversal(hcl.Traversal{s})...)
+						}
 					}
 				}
 				return tokens
@@ -818,26 +836,70 @@ func (ft *fileTransformer) transformTraversal(e *hclsyntax.ScopeTraversalExpr) h
 	return hclwrite.TokensForTraversal(e.Traversal)
 }
 
-// camelCaseTraversalAttrs converts all TraverseAttr names after the root to camelCase,
+// traversalAttrs converts all TraverseAttr names after the root to camelCase,
 // using schema-aware lookup when a cached schema is available for hclType.
 // The root (logical resource name) is left unchanged.
-func (ft *fileTransformer) camelCaseTraversalAttrs(trav hcl.Traversal, hclType string) hcl.Traversal {
+// schemaAwareTraversalAttrs converts traversal attribute names from snake_case
+// to their schema property names, tracking the schema type through each step.
+func schemaAwareTraversalAttrs(trav hcl.Traversal, props []*schema.Property) hcl.Traversal {
 	if len(trav) <= 1 {
 		return trav
 	}
+	result := make(hcl.Traversal, len(trav))
+	copy(result, trav)
+	// currentType tracks the schema type at the current traversal position.
+	// We start with a synthetic object wrapping the top-level properties.
+	var currentType schema.Type
+	if len(props) > 0 {
+		currentType = &schema.ObjectType{Properties: props}
+	}
+	for i := 1; i < len(result); i++ {
+		switch step := result[i].(type) {
+		case hcl.TraverseAttr:
+			stepProps := propertiesOf(currentType)
+			name, matched := transform.PulumiCaseFromSnakeCase(step.Name, stepProps)
+			result[i] = hcl.TraverseAttr{Name: name}
+			if matched != nil {
+				currentType = matched.Type
+			} else {
+				currentType = nil
+			}
+		case hcl.TraverseIndex:
+			currentType = elementTypeOf(currentType)
+		}
+	}
+	return result
+}
+
+// propertiesOf extracts []*schema.Property from a schema type.
+func propertiesOf(t schema.Type) []*schema.Property {
+	if t == nil {
+		return nil
+	}
+	if obj, ok := codegen.UnwrapType(t).(*schema.ObjectType); ok {
+		return obj.Properties
+	}
+	return nil
+}
+
+// elementTypeOf unwraps one level of container (map or array).
+func elementTypeOf(t schema.Type) schema.Type {
+	switch t := codegen.UnwrapType(t).(type) {
+	case *schema.MapType:
+		return t.ElementType
+	case *schema.ArrayType:
+		return t.ElementType
+	default:
+		return nil
+	}
+}
+
+func (ft *fileTransformer) traversalAttrs(trav hcl.Traversal, hclType string) hcl.Traversal {
 	var props []*schema.Property
 	if res := ft.resourceSchemas[hclType]; res != nil {
 		props = res.Properties
 	}
-	result := make(hcl.Traversal, len(trav))
-	copy(result, trav)
-	for i := 1; i < len(result); i++ {
-		if attr, ok := result[i].(hcl.TraverseAttr); ok {
-			name, _ := transform.PulumiCaseFromSnakeCase(attr.Name, props)
-			result[i] = hcl.TraverseAttr{Name: name}
-		}
-	}
-	return result
+	return schemaAwareTraversalAttrs(trav, props)
 }
 
 // stripRoot converts a traversal like var.name.field to name.field by promoting the
@@ -887,6 +949,11 @@ func (ft *fileTransformer) callExprTokens(resourceName, snakeMethod string) hclw
 func (ft *fileTransformer) invokeExprTokens(hclType, dsName string) hclwrite.Tokens {
 	tokenTokens := hclwrite.TokensForValue(cty.StringVal(ft.dataTokens[hclType]))
 
+	var inputProps []*schema.Property
+	if fn := ft.functionSchemas[hclType]; fn != nil && fn.Inputs != nil {
+		inputProps = fn.Inputs.Properties
+	}
+
 	var argAttrs, optAttrs []hclwrite.ObjectAttrTokens
 	if body, ok := ft.dataBlocks[dataReference{hclType, dsName}]; ok {
 		for _, attr := range sortedAttributes(body.Attributes) {
@@ -896,13 +963,15 @@ func (ft *fileTransformer) invokeExprTokens(hclType, dsName string) hclwrite.Tok
 					Value: ft.transformExpr(attr.Expr),
 				})
 			} else {
-				name, _ := transform.PulumiCaseFromSnakeCase(attr.Name, nil)
+				name, _ := transform.PulumiCaseFromSnakeCase(attr.Name, inputProps)
 				argAttrs = append(argAttrs, hclwrite.ObjectAttrTokens{
 					Name:  hclwrite.TokensForIdentifier(name),
 					Value: ft.transformExpr(attr.Expr),
 				})
 			}
 		}
+		// Convert blocks (array-of-object properties) to PCL array arguments.
+		argAttrs = append(argAttrs, ft.blocksToObjectAttrs(body.Blocks, inputProps)...)
 	}
 
 	argsTokens := hclwrite.TokensForObject(argAttrs)
@@ -910,6 +979,54 @@ func (ft *fileTransformer) invokeExprTokens(hclType, dsName string) hclwrite.Tok
 		return hclwrite.TokensForFunctionCall("invoke", tokenTokens, argsTokens)
 	}
 	return hclwrite.TokensForFunctionCall("invoke", tokenTokens, argsTokens, hclwrite.TokensForObject(optAttrs))
+}
+
+// blocksToObjectAttrs converts HCL blocks (which represent array-of-object
+// properties) back to PCL object attributes with array values.
+func (ft *fileTransformer) blocksToObjectAttrs(blocks []*hclsyntax.Block, props []*schema.Property) []hclwrite.ObjectAttrTokens {
+	// Group blocks by their type name, preserving order of first occurrence.
+	type blockGroup struct {
+		name   string
+		blocks []*hclsyntax.Block
+	}
+	var groups []blockGroup
+	seen := map[string]int{}
+	for _, block := range blocks {
+		if idx, ok := seen[block.Type]; ok {
+			groups[idx].blocks = append(groups[idx].blocks, block)
+		} else {
+			seen[block.Type] = len(groups)
+			groups = append(groups, blockGroup{name: block.Type, blocks: []*hclsyntax.Block{block}})
+		}
+	}
+
+	var result []hclwrite.ObjectAttrTokens
+	for _, g := range groups {
+		name, matched := transform.PulumiCaseFromSnakeCase(g.name, props)
+		var elemProps []*schema.Property
+		if matched != nil {
+			// Block properties are array<object>; unwrap the array to get the object properties.
+			elemProps = propertiesOf(elementTypeOf(matched.Type))
+		}
+		var elems []hclwrite.Tokens
+		for _, block := range g.blocks {
+			var objAttrs []hclwrite.ObjectAttrTokens
+			for _, attr := range sortedAttributes(block.Body.Attributes) {
+				attrName, _ := transform.PulumiCaseFromSnakeCase(attr.Name, elemProps)
+				objAttrs = append(objAttrs, hclwrite.ObjectAttrTokens{
+					Name:  hclwrite.TokensForIdentifier(attrName),
+					Value: ft.transformExpr(attr.Expr),
+				})
+			}
+			objAttrs = append(objAttrs, ft.blocksToObjectAttrs(block.Body.Blocks, elemProps)...)
+			elems = append(elems, hclwrite.TokensForObject(objAttrs))
+		}
+		result = append(result, hclwrite.ObjectAttrTokens{
+			Name:  hclwrite.TokensForIdentifier(name),
+			Value: hclwrite.TokensForTuple(elems),
+		})
+	}
+	return result
 }
 
 // transformForEachExpr converts a for_each expression to PCL range tokens.
