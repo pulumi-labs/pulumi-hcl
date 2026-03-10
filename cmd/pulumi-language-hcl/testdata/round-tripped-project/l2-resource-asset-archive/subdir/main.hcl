@@ -27,3 +27,6 @@ resource "asset-archive_archiveresource" "assarc" {
 resource "asset-archive_assetresource" "remoteass" {
   value = remoteAsset("https://raw.githubusercontent.com/pulumi/pulumi/7b0eb7fb10694da2f31c0d15edf671df843e0d4c/cmd/pulumi-test-language/tests/testdata/l2-resource-asset-archive/test.txt")
 }
+resource "asset-archive_archiveresource" "remotearc" {
+  value = remoteArchive("https://raw.githubusercontent.com/pulumi/pulumi/7b0eb7fb10694da2f31c0d15edf671df843e0d4c/cmd/pulumi-test-language/tests/testdata/l2-resource-asset-archive/archive.tar")
+}
