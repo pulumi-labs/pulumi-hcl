@@ -6,8 +6,8 @@ require (
 	github.com/blang/semver v3.5.1+incompatible
 	github.com/google/uuid v1.6.0
 	github.com/hashicorp/hcl/v2 v2.23.0
-	github.com/pulumi/pulumi/pkg/v3 v3.225.2-0.20260310031301-e0d7ac3094e0
-	github.com/pulumi/pulumi/sdk/v3 v3.225.2-0.20260310031301-e0d7ac3094e0
+	github.com/pulumi/pulumi/pkg/v3 v3.225.2-0.20260310155428-128d61f990a2
+	github.com/pulumi/pulumi/sdk/v3 v3.225.2-0.20260310155428-128d61f990a2
 	github.com/stretchr/testify v1.11.1
 	github.com/zclconf/go-cty v1.16.2
 	golang.org/x/crypto v0.48.0
