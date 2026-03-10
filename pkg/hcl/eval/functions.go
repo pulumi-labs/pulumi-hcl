@@ -208,7 +208,8 @@ func Functions(baseDir string) map[string]function.Function {
 		"fileArchive":  fileArchiveFunc(baseDir),
 		"stringAsset":  stringAssetFunc(),
 		"assetArchive": assetArchiveFunc(),
-		"remoteAsset":  remoteAssetFunc(),
+		"remoteAsset":    remoteAssetFunc(),
+		"remoteArchive":  remoteArchiveFunc(),
 	}
 
 	return funcs
@@ -1968,6 +1969,21 @@ func remoteAssetFunc() function.Function {
 				return cty.NilVal, fmt.Errorf("remoteAsset: %w", err)
 			}
 			return cty.CapsuleVal(AssetCapsuleType, a), nil
+		},
+	})
+}
+
+func remoteArchiveFunc() function.Function {
+	return function.New(&function.Spec{
+		Params: []function.Parameter{{Name: "uri", Type: cty.String}},
+		Type:   function.StaticReturnType(ArchiveCapsuleType),
+		Impl: func(args []cty.Value, retType cty.Type) (cty.Value, error) {
+			uri := args[0].AsString()
+			a, err := archive.FromURI(uri)
+			if err != nil {
+				return cty.NilVal, fmt.Errorf("remoteArchive: %w", err)
+			}
+			return cty.CapsuleVal(ArchiveCapsuleType, a), nil
 		},
 	})
 }
