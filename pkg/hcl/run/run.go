@@ -155,7 +155,6 @@ type InvokeResponse struct {
 type CallRequest struct {
 	Token      string
 	Args       property.Map
-	Provider   string
 	PackageRef PackageRef
 }
 
@@ -167,7 +166,6 @@ type CallResponse struct {
 
 // inheritableOpts holds the resource options that child resources can inherit from their parent.
 type inheritableOpts struct {
-	Provider       string
 	Protect        *bool
 	RetainOnDelete *bool
 }
@@ -909,7 +907,7 @@ func (e *Engine) registerResourceInstance(
 	e.resourceOutputs.Set(instance.Key, cty.ObjectVal(outputObj))
 
 	// Store inheritable options so child resources can inherit from this resource.
-	iOpts := inheritableOpts{Provider: opts.Provider}
+	var iOpts inheritableOpts
 	if opts.Protect {
 		iOpts.Protect = new(true)
 	}
@@ -1204,10 +1202,6 @@ func (e *Engine) buildResourceOptions(res *ast.Resource, instance *graph.Expande
 		depKey := graph.FormatTraversal(res.ResourceParent)
 		if depKey != "" {
 			if parentOpts, ok := e.resourceInheritableOpts.Get(depKey); ok {
-				if res.Provider == nil && opts.Provider == "" && parentOpts.Provider != "" &&
-					providerPackage(parentOpts.Provider) == packageNameFromResourceType(res.Type) {
-					opts.Provider = parentOpts.Provider
-				}
 				if (res.Lifecycle == nil || res.Lifecycle.PreventDestroy == nil) &&
 					parentOpts.Protect != nil && *parentOpts.Protect {
 					opts.Protect = true
@@ -1325,18 +1319,6 @@ func packageNameFromResourceType(token string) string {
 		return name
 	}
 	return strings.SplitN(token, "_", 2)[0]
-}
-
-// providerPackage extracts the package name from a provider reference string.
-// The format is "urn:pulumi:STACK::PROJECT::pulumi:providers:PACKAGE::NAME::ID".
-func providerPackage(providerRef string) string {
-	const prefix = "pulumi:providers:"
-	_, after, found := strings.Cut(providerRef, prefix)
-	if !found {
-		return ""
-	}
-	pkg, _, _ := strings.Cut(after, "::")
-	return pkg
 }
 
 // packageRefForType returns the RegisterPackage ref for the given HCL resource type, or empty if none.
@@ -1661,7 +1643,6 @@ func (e *Engine) processCall(ctx context.Context, node *graph.Node) error {
 	var resKey string
 	var resType string
 	var resSchema *schema.Resource
-	var isProvider bool
 	var isProviderResource bool // true for resource "pulumi_providers_*" blocks
 
 	for k, res := range e.config.Resources {
@@ -1682,7 +1663,6 @@ func (e *Engine) processCall(ctx context.Context, node *graph.Node) error {
 		// Try providers
 		if _, exists := e.config.Providers[call.ResourceName]; exists {
 			resKey = call.ResourceName
-			isProvider = true
 			var err error
 			// Providers use their name as the key
 			providerToken := "pulumi_providers_" + e.config.Providers[call.ResourceName].Name
@@ -1721,21 +1701,6 @@ func (e *Engine) processCall(ctx context.Context, node *graph.Node) error {
 		return fmt.Errorf("resource %q missing URN", resKey)
 	}
 	urn := resource.URN(urnVal.AsString())
-
-	// Determine the provider reference for routing the call to the right provider instance.
-	// For provider resources, the provider IS the resource itself (urn::id).
-	// For custom resources, the provider is inherited from the resource's own provider.
-	var callProvider string
-	if isProvider || isProviderResource {
-		idVal := outputs.GetAttr("id")
-		if urnVal.Type() == cty.String && idVal.Type() == cty.String {
-			callProvider = urnVal.AsString() + "::" + idVal.AsString()
-		}
-	} else {
-		if iOpts, ok := e.resourceInheritableOpts.Get(resKey); ok {
-			callProvider = iOpts.Provider
-		}
-	}
 
 	// Build __self__ resource reference
 	var selfID property.Value
@@ -1777,7 +1742,6 @@ func (e *Engine) processCall(ctx context.Context, node *graph.Node) error {
 	ret, err := e.callMethod(ctx, CallRequest{
 		Token:      method.Function.Token,
 		Args:       userArgs.Set("__self__", selfRef),
-		Provider:   callProvider,
 		PackageRef: e.packageRefForType(resType),
 	})
 	if err != nil {

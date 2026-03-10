@@ -974,7 +974,6 @@ func (r *resourceMonitorAdapter) Call(
 	resp, err := r.monitorClient.Call(ctx, &pulumirpc.ResourceCallRequest{
 		Tok:        req.Token,
 		Args:       argsStruct,
-		Provider:   req.Provider,
 		PackageRef: string(req.PackageRef),
 	})
 	if err != nil {
