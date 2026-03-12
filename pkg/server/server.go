@@ -556,15 +556,60 @@ func (host *LanguageHost) GenerateProject(
 	logging.V(5).Infof("GenerateProject: sourceDirectory=%s, targetDirectory=%s",
 		req.SourceDirectory, req.TargetDirectory)
 
+	// Parse the project JSON to determine the "main" subdirectory (if any).
+	var project map[string]any
+	if err := json.Unmarshal([]byte(req.Project), &project); err != nil {
+		return nil, fmt.Errorf("parsing project JSON: %w", err)
+	}
+
+	// When the project specifies a "main" subdirectory, adjust the source
+	// and target directories. The source directory may already include the
+	// main subdir (when the caller has pre-adjusted it), so we only append
+	// main when the subdirectory actually exists within the source root.
+	sourceDir := req.SourceDirectory
+	programDir := req.TargetDirectory
+	if main, ok := project["main"].(string); ok && main != "" {
+		mainSourceDir := filepath.Join(req.SourceDirectory, main)
+		if info, statErr := os.Stat(mainSourceDir); statErr == nil && info.IsDir() {
+			sourceDir = mainSourceDir
+		}
+		programDir = filepath.Join(req.TargetDirectory, main)
+		if err := os.MkdirAll(programDir, 0755); err != nil {
+			return nil, fmt.Errorf("creating main directory: %w", err)
+		}
+	}
+
 	loaderClient, err := schema.NewLoaderClient(req.LoaderTarget)
 	if err != nil {
 		return nil, fmt.Errorf("unable to aquire loader: %w", err)
 	}
-	binderOpts := []pcl.BindOption{pcl.Loader(schema.NewCachedLoader(loaderClient))}
+
+	// Read parameterization info from local dependencies so that the schema
+	// loader can resolve parameterized package types during binding.
+	loader := schema.ReferenceLoader(loaderClient)
+	paramDescriptors := make(map[string]workspace.PackageDescriptor)
+	for alias, artifactPath := range req.LocalDependencies {
+		data, readErr := os.ReadFile(filepath.Join(artifactPath, "hcl.sdk.json"))
+		if readErr != nil {
+			continue
+		}
+		var desc workspace.PackageDescriptor
+		if unmarshalErr := json.Unmarshal(data, &desc); unmarshalErr != nil {
+			continue
+		}
+		if desc.Parameterization != nil {
+			paramDescriptors[alias] = desc
+		}
+	}
+	if len(paramDescriptors) > 0 {
+		loader = packages.NewParameterizationAwareLoader(loaderClient, paramDescriptors)
+	}
+
+	binderOpts := []pcl.BindOption{pcl.Loader(schema.NewCachedLoader(loader))}
 	if !req.Strict {
 		binderOpts = append(binderOpts, pcl.NonStrictBindOptions()...)
 	}
-	program, bindDiags, err := pcl.BindDirectory(req.SourceDirectory, nil, binderOpts...)
+	program, bindDiags, err := pcl.BindDirectory(sourceDir, nil, binderOpts...)
 	if err != nil {
 		return nil, fmt.Errorf("binding directory: %w", err)
 	}
@@ -577,20 +622,6 @@ func (host *LanguageHost) GenerateProject(
 	files, genDiags, err := codegen.GenerateProgram(program)
 	if err != nil {
 		return nil, fmt.Errorf("generating program: %w", err)
-	}
-
-	// Determine where to write program files. When the project specifies a
-	// "main" subdirectory, generated code goes into that subdirectory.
-	programDir := req.TargetDirectory
-	var project map[string]any
-	if err := json.Unmarshal([]byte(req.Project), &project); err != nil {
-		return nil, fmt.Errorf("parsing project JSON: %w", err)
-	}
-	if main, ok := project["main"].(string); ok && main != "" {
-		programDir = filepath.Join(req.TargetDirectory, main)
-		if err := os.MkdirAll(programDir, 0755); err != nil {
-			return nil, fmt.Errorf("creating main directory: %w", err)
-		}
 	}
 
 	for name, content := range files {
@@ -607,8 +638,16 @@ func (host *LanguageHost) GenerateProject(
 		return nil, fmt.Errorf("writing Pulumi.yaml: %w", err)
 	}
 
-	// For each parameterized local dependency, store the hcl.sdk.json so that
-	// GetRequiredPackages and Run can find the parameterization info later.
+	// Store .hcl/sdks/<alias>/hcl.sdk.json for parameterized packages so that
+	// the converter (ConvertProgram) and runtime (GetRequiredPackages, Run)
+	// can discover parameterization info.
+	//
+	// First, try to get parameterization info from local dependency artifacts.
+	// Then, for any parameterized packages discovered from the bound program
+	// that weren't covered by localDependencies, write their info too. This
+	// ensures that round-trip tests (where localDependencies is nil) still
+	// produce the necessary .hcl/sdks/ files.
+	writtenAliases := make(map[string]bool)
 	for alias, artifactPath := range req.LocalDependencies {
 		data, err := os.ReadFile(filepath.Join(artifactPath, "hcl.sdk.json"))
 		if err != nil {
@@ -627,6 +666,50 @@ func (host *LanguageHost) GenerateProject(
 		}
 		if err := os.WriteFile(filepath.Join(sdkDir, "hcl.sdk.json"), data, 0644); err != nil {
 			return nil, fmt.Errorf("writing hcl.sdk.json for %s: %w", alias, err)
+		}
+		writtenAliases[alias] = true
+	}
+
+	// Write .hcl/sdks/ for parameterized packages from the bound program that
+	// weren't already covered by localDependencies.
+	for _, ref := range program.PackageReferences() {
+		if ref.Name() == "pulumi" {
+			continue
+		}
+		pkg, pkgErr := ref.Definition()
+		if pkgErr != nil || pkg.Parameterization == nil {
+			continue
+		}
+		if writtenAliases[pkg.Name] {
+			continue
+		}
+		baseVersion := pkg.Parameterization.BaseProvider.Version
+		var paramVersion semver.Version
+		if pkg.Version != nil {
+			paramVersion = *pkg.Version
+		}
+		desc := workspace.PackageDescriptor{
+			PluginDescriptor: workspace.PluginDescriptor{
+				Name:    pkg.Parameterization.BaseProvider.Name,
+				Version: &baseVersion,
+				Kind:    apitype.ResourcePlugin,
+			},
+			Parameterization: &workspace.Parameterization{
+				Name:    pkg.Name,
+				Version: paramVersion,
+				Value:   pkg.Parameterization.Parameter,
+			},
+		}
+		data, marshalErr := json.Marshal(desc)
+		if marshalErr != nil {
+			continue
+		}
+		sdkDir := filepath.Join(programDir, ".hcl", "sdks", pkg.Name)
+		if err := os.MkdirAll(sdkDir, 0755); err != nil {
+			return nil, fmt.Errorf("creating sdk dir for %s: %w", pkg.Name, err)
+		}
+		if err := os.WriteFile(filepath.Join(sdkDir, "hcl.sdk.json"), data, 0644); err != nil {
+			return nil, fmt.Errorf("writing hcl.sdk.json for %s: %w", pkg.Name, err)
 		}
 	}
 
