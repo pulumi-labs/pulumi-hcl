@@ -2,6 +2,10 @@ module github.com/pulumi/pulumi-language-hcl
 
 go 1.26
 
+replace github.com/pulumi/pulumi/pkg/v3 => ../pulumi/pkg
+
+replace github.com/pulumi/pulumi/sdk/v3 => ../pulumi/sdk
+
 require (
 	github.com/blang/semver v3.5.1+incompatible
 	github.com/google/uuid v1.6.0

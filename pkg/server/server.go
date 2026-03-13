@@ -670,48 +670,48 @@ func (host *LanguageHost) GenerateProject(
 		writtenAliases[alias] = true
 	}
 
-	// Write .hcl/sdks/ for parameterized packages from the bound program that
-	// weren't already covered by localDependencies.
-	for _, ref := range program.PackageReferences() {
-		if ref.Name() == "pulumi" {
-			continue
-		}
-		pkg, pkgErr := ref.Definition()
-		if pkgErr != nil || pkg.Parameterization == nil {
-			continue
-		}
-		if writtenAliases[pkg.Name] {
-			continue
-		}
-		baseVersion := pkg.Parameterization.BaseProvider.Version
-		var paramVersion semver.Version
-		if pkg.Version != nil {
-			paramVersion = *pkg.Version
-		}
-		desc := workspace.PackageDescriptor{
-			PluginDescriptor: workspace.PluginDescriptor{
-				Name:    pkg.Parameterization.BaseProvider.Name,
-				Version: &baseVersion,
-				Kind:    apitype.ResourcePlugin,
-			},
-			Parameterization: &workspace.Parameterization{
-				Name:    pkg.Name,
-				Version: paramVersion,
-				Value:   pkg.Parameterization.Parameter,
-			},
-		}
-		data, marshalErr := json.Marshal(desc)
-		if marshalErr != nil {
-			continue
-		}
-		sdkDir := filepath.Join(programDir, ".hcl", "sdks", pkg.Name)
-		if err := os.MkdirAll(sdkDir, 0755); err != nil {
-			return nil, fmt.Errorf("creating sdk dir for %s: %w", pkg.Name, err)
-		}
-		if err := os.WriteFile(filepath.Join(sdkDir, "hcl.sdk.json"), data, 0644); err != nil {
-			return nil, fmt.Errorf("writing hcl.sdk.json for %s: %w", pkg.Name, err)
-		}
-	}
+	// // Write .hcl/sdks/ for parameterized packages from the bound program that
+	// // weren't already covered by localDependencies.
+	// for _, ref := range program.PackageReferences() {
+	// 	if ref.Name() == "pulumi" {
+	// 		continue
+	// 	}
+	// 	pkg, pkgErr := ref.Definition()
+	// 	if pkgErr != nil || pkg.Parameterization == nil {
+	// 		continue
+	// 	}
+	// 	if writtenAliases[pkg.Name] {
+	// 		continue
+	// 	}
+	// 	baseVersion := pkg.Parameterization.BaseProvider.Version
+	// 	var paramVersion semver.Version
+	// 	if pkg.Version != nil {
+	// 		paramVersion = *pkg.Version
+	// 	}
+	// 	desc := workspace.PackageDescriptor{
+	// 		PluginDescriptor: workspace.PluginDescriptor{
+	// 			Name:    pkg.Parameterization.BaseProvider.Name,
+	// 			Version: &baseVersion,
+	// 			Kind:    apitype.ResourcePlugin,
+	// 		},
+	// 		Parameterization: &workspace.Parameterization{
+	// 			Name:    pkg.Name,
+	// 			Version: paramVersion,
+	// 			Value:   pkg.Parameterization.Parameter,
+	// 		},
+	// 	}
+	// 	data, marshalErr := json.Marshal(desc)
+	// 	if marshalErr != nil {
+	// 		continue
+	// 	}
+	// 	sdkDir := filepath.Join(programDir, ".hcl", "sdks", pkg.Name)
+	// 	if err := os.MkdirAll(sdkDir, 0755); err != nil {
+	// 		return nil, fmt.Errorf("creating sdk dir for %s: %w", pkg.Name, err)
+	// 	}
+	// 	if err := os.WriteFile(filepath.Join(sdkDir, "hcl.sdk.json"), data, 0644); err != nil {
+	// 		return nil, fmt.Errorf("writing hcl.sdk.json for %s: %w", pkg.Name, err)
+	// 	}
+	// }
 
 	return &pulumirpc.GenerateProjectResponse{
 		Diagnostics: plugin.HclDiagnosticsToRPCDiagnostics(genDiags),
