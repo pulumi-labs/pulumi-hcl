@@ -189,6 +189,7 @@ func TestLanguage(t *testing.T) {
 		ConverterPluginTarget: fmt.Sprintf("127.0.0.1:%d", handle.Port),
 		TemporaryDirectory:    rootDir,
 		SnapshotDirectory:     snapshotDir,
+		ProvidersDirectory:    "testdata/providers",
 	})
 	require.NoError(t, err)
 
@@ -198,12 +199,11 @@ func TestLanguage(t *testing.T) {
 			if strings.HasPrefix(tt, "policy-") {
 				t.Skip("HCL does not support policy tests")
 			}
-			if strings.HasPrefix(tt, "provider-") {
-				t.Skip("HCL does not support provider tests")
-			}
-
 			if expected, ok := expectedFailures[tt]; ok {
 				t.Skipf("Skipping known failure: %s", expected)
+			}
+			if strings.HasPrefix(tt, "provider-") && tt != "provider-resource-component" {
+				t.Skip("WIP")
 			}
 
 			result, err := engine.RunLanguageTest(t.Context(), &testingrpc.RunLanguageTestRequest{
