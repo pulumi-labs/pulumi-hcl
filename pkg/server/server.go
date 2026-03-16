@@ -389,9 +389,9 @@ func (host *LanguageHost) RunPlugin(
 	}
 
 	// Create the provider
-	provider, err := NewHCLProvider(modulePath, name, version, "")
+	provider, err := NewHCLProvider(modulePath, name, version, req.LoaderTarget)
 	if err != nil {
-		errBytes := []byte(fmt.Sprintf("Error creating provider: %v\n", err))
+		errBytes := fmt.Appendf(nil, "Error creating provider: %v\n", err)
 		if err := server.Send(&pulumirpc.RunPluginResponse{
 			Output: &pulumirpc.RunPluginResponse_Stderr{Stderr: errBytes},
 		}); err != nil {
@@ -409,7 +409,7 @@ func (host *LanguageHost) RunPlugin(
 	// Listen on a random port
 	lis, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
-		errBytes := []byte(fmt.Sprintf("Error listening: %v\n", err))
+		errBytes := fmt.Appendf(nil, "Error listening: %v\n", err)
 		if err := server.Send(&pulumirpc.RunPluginResponse{
 			Output: &pulumirpc.RunPluginResponse_Stderr{Stderr: errBytes},
 		}); err != nil {
@@ -442,7 +442,7 @@ func (host *LanguageHost) RunPlugin(
 		grpcServer.GracefulStop()
 	case err := <-errCh:
 		if err != nil {
-			errBytes := []byte(fmt.Sprintf("Server error: %v\n", err))
+			errBytes := fmt.Appendf(nil, "Server error: %v\n", err)
 			if err := server.Send(&pulumirpc.RunPluginResponse{
 				Output: &pulumirpc.RunPluginResponse_Stderr{Stderr: errBytes},
 			}); err != nil {
@@ -728,6 +728,15 @@ func (host *LanguageHost) Pack(
 	return &pulumirpc.PackResponse{
 		ArtifactPath: artifactPath,
 	}, nil
+}
+
+// Link links local dependencies into a project. HCL programs don't have
+// traditional package management files, so this is a no-op.
+func (host *LanguageHost) Link(
+	ctx context.Context,
+	req *pulumirpc.LinkRequest,
+) (*pulumirpc.LinkResponse, error) {
+	return &pulumirpc.LinkResponse{}, nil
 }
 
 // Ensure LanguageHost implements the interface.
