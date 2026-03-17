@@ -224,6 +224,13 @@ func (host *LanguageHost) Run(
 		}, nil
 	}
 
+	if config.Pulumi != nil && (config.Pulumi.Component != nil || config.Pulumi.Package != nil) {
+		return &pulumirpc.RunResponse{
+			Error: "pulumi.component and pulumi.package blocks are only valid in " +
+				"multi-language component modules, not in regular programs",
+		}, nil
+	}
+
 	configMap := maps.Clone(req.Config)
 
 	schemaLoader, err := schema.NewLoaderClient(req.LoaderTarget)
@@ -372,26 +379,14 @@ func (host *LanguageHost) RunPlugin(
 
 	// Get the module path from the request
 	modulePath := req.Pwd
-	if req.Info != nil && req.Info.EntryPoint != "" {
-		modulePath = req.Info.EntryPoint
+	if req.Info != nil && req.Info.ProgramDirectory != "" {
+		modulePath = req.Info.ProgramDirectory
 	}
 
-	// Extract provider name and version from args
-	name := "hcl-component"
-	version := version.Version
-	for i, arg := range req.Args {
-		if arg == "--name" && i+1 < len(req.Args) {
-			name = req.Args[i+1]
-		}
-		if arg == "--version" && i+1 < len(req.Args) {
-			version = req.Args[i+1]
-		}
-	}
-
-	// Create the provider
-	provider, err := NewHCLProvider(modulePath, name, version, "")
+	// Create the provider (name and version are derived from the module's pulumi {} block)
+	provider, err := NewHCLProvider(modulePath, req.LoaderTarget)
 	if err != nil {
-		errBytes := []byte(fmt.Sprintf("Error creating provider: %v\n", err))
+		errBytes := fmt.Appendf(nil, "Error creating provider: %v\n", err)
 		if err := server.Send(&pulumirpc.RunPluginResponse{
 			Output: &pulumirpc.RunPluginResponse_Stderr{Stderr: errBytes},
 		}); err != nil {
@@ -409,7 +404,7 @@ func (host *LanguageHost) RunPlugin(
 	// Listen on a random port
 	lis, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
-		errBytes := []byte(fmt.Sprintf("Error listening: %v\n", err))
+		errBytes := fmt.Appendf(nil, "Error listening: %v\n", err)
 		if err := server.Send(&pulumirpc.RunPluginResponse{
 			Output: &pulumirpc.RunPluginResponse_Stderr{Stderr: errBytes},
 		}); err != nil {
@@ -442,7 +437,7 @@ func (host *LanguageHost) RunPlugin(
 		grpcServer.GracefulStop()
 	case err := <-errCh:
 		if err != nil {
-			errBytes := []byte(fmt.Sprintf("Server error: %v\n", err))
+			errBytes := fmt.Appendf(nil, "Server error: %v\n", err)
 			if err := server.Send(&pulumirpc.RunPluginResponse{
 				Output: &pulumirpc.RunPluginResponse_Stderr{Stderr: errBytes},
 			}); err != nil {
@@ -728,6 +723,15 @@ func (host *LanguageHost) Pack(
 	return &pulumirpc.PackResponse{
 		ArtifactPath: artifactPath,
 	}, nil
+}
+
+// Link links local dependencies into a project. HCL programs don't have
+// traditional package management files, so this is a no-op.
+func (host *LanguageHost) Link(
+	ctx context.Context,
+	req *pulumirpc.LinkRequest,
+) (*pulumirpc.LinkResponse, error) {
+	return &pulumirpc.LinkResponse{}, nil
 }
 
 // Ensure LanguageHost implements the interface.

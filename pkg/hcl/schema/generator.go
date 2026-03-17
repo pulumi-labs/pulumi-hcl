@@ -25,11 +25,17 @@ import (
 
 // ModuleSchema represents a generated schema for an HCL module.
 type ModuleSchema struct {
-	// Name is the module name.
-	Name string `json:"name"`
+	// PackageName is the package name used in the schema and token prefix.
+	PackageName string `json:"packageName"`
 
 	// Version is the module version.
 	Version string `json:"version,omitempty"`
+
+	// ComponentName is the component name used in the token suffix.
+	ComponentName string `json:"componentName"`
+
+	// Module is the module segment used in the token middle.
+	Module string `json:"module"`
 
 	// Description is the module description.
 	Description string `json:"description,omitempty"`
@@ -72,10 +78,12 @@ type PropertySpec struct {
 }
 
 // GenerateModuleSchema generates a Pulumi schema from an HCL module configuration.
-func GenerateModuleSchema(config *ast.Config, moduleName, version string) (*ModuleSchema, error) {
+func GenerateModuleSchema(config *ast.Config, pkgName, pkgVersion, componentName, module string) (*ModuleSchema, error) {
 	schema := &ModuleSchema{
-		Name:             moduleName,
-		Version:          version,
+		PackageName:      pkgName,
+		Version:          pkgVersion,
+		ComponentName:    componentName,
+		Module:           module,
 		InputProperties:  make(map[string]*PropertySpec),
 		OutputProperties: make(map[string]*PropertySpec),
 	}
@@ -225,9 +233,8 @@ func (s *ModuleSchema) ToJSON() ([]byte, error) {
 }
 
 // ToPulumiPackageSchema converts the module schema to a full Pulumi package schema format.
-// This is useful for generating SDKs or publishing to the Pulumi Registry.
-func (s *ModuleSchema) ToPulumiPackageSchema(namespace string) map[string]any {
-	componentToken := fmt.Sprintf("%s:modules:%s", namespace, s.Name)
+func (s *ModuleSchema) ToPulumiPackageSchema() map[string]any {
+	componentToken := fmt.Sprintf("%s:%s:%s", s.PackageName, s.Module, s.ComponentName)
 
 	// Build input properties
 	inputProps := make(map[string]any)
@@ -245,7 +252,7 @@ func (s *ModuleSchema) ToPulumiPackageSchema(namespace string) map[string]any {
 	}
 
 	return map[string]any{
-		"name":        s.Name,
+		"name":        s.PackageName,
 		"version":     s.Version,
 		"description": s.Description,
 		"resources": map[string]any{

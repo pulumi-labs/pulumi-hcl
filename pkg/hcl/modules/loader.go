@@ -26,6 +26,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	"github.com/pulumi/pulumi-language-hcl/pkg/hcl/ast"
@@ -86,10 +87,8 @@ func (l *Loader) LoadModule(source string, callerDir string) (*LoadedModule, err
 	}
 
 	// Check for cycles
-	for _, path := range l.callStack {
-		if path == resolvedPath {
-			return nil, fmt.Errorf("module cycle detected: %s", strings.Join(append(l.callStack, resolvedPath), " -> "))
-		}
+	if slices.Contains(l.callStack, resolvedPath) {
+		return nil, fmt.Errorf("module cycle detected: %s", strings.Join(append(l.callStack, resolvedPath), " -> "))
 	}
 
 	// Check cache

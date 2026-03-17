@@ -1,0 +1,30 @@
+pulumi {
+  component {
+    name = "Simple"
+  }
+  package {
+    name    = "conformance-component"
+    version = "22.0.0"
+  }
+}
+
+terraform {
+  required_providers {
+    simple = {
+      source  = "pulumi/simple"
+      version = "2.0.0"
+    }
+  }
+}
+
+variable "value" {
+  type = bool
+}
+
+resource "simple_resource" "child" {
+  value = !var.value
+}
+
+output "value" {
+  value = var.value
+}

@@ -17,9 +17,11 @@ package parser
 import (
 	"fmt"
 
+	"github.com/blang/semver"
 	"github.com/hashicorp/hcl/v2"
 	"github.com/hashicorp/hcl/v2/ext/typeexpr"
 	"github.com/pulumi/pulumi-language-hcl/pkg/hcl/ast"
+	"github.com/pulumi/pulumi/sdk/v3/go/common/tokens"
 	"github.com/zclconf/go-cty/cty"
 )
 
@@ -210,8 +212,127 @@ func (p *Parser) parsePulumiBlock(config *ast.Config, block *hcl.Block) hcl.Diag
 		pulumi.RequiredVersionRange = attr.Expr
 	}
 
+	for _, subBlock := range content.Blocks {
+		switch subBlock.Type {
+		case "component":
+			if pulumi.Component != nil {
+				diags = append(diags, &hcl.Diagnostic{
+					Severity: hcl.DiagError,
+					Summary:  "Duplicate component block",
+					Detail:   "Only one component block is allowed per pulumi block.",
+					Subject:  &subBlock.DefRange,
+				})
+				continue
+			}
+			comp, compDiags := p.parsePulumiComponentBlock(subBlock)
+			diags = append(diags, compDiags...)
+			pulumi.Component = comp
+		case "package":
+			if pulumi.Package != nil {
+				diags = append(diags, &hcl.Diagnostic{
+					Severity: hcl.DiagError,
+					Summary:  "Duplicate package block",
+					Detail:   "Only one package block is allowed per pulumi block.",
+					Subject:  &subBlock.DefRange,
+				})
+				continue
+			}
+			pkg, pkgDiags := p.parsePulumiPackageBlock(subBlock)
+			diags = append(diags, pkgDiags...)
+			pulumi.Package = pkg
+		}
+	}
+
 	config.Pulumi = pulumi
 	return diags
+}
+
+// parsePulumiComponentBlock parses a component sub-block within pulumi.
+func (p *Parser) parsePulumiComponentBlock(block *hcl.Block) (*ast.ComponentBlock, hcl.Diagnostics) {
+	content, diags := block.Body.Content(pulumiComponentSchema)
+
+	comp := &ast.ComponentBlock{
+		Module:    "index",
+		DeclRange: block.DefRange,
+	}
+
+	if attr, ok := content.Attributes["name"]; ok {
+		val, valDiags := attr.Expr.Value(nil)
+		diags = append(diags, valDiags...)
+		if val.Type() == cty.String {
+			comp.Name = val.AsString()
+			if !tokens.IsName(comp.Name) {
+				diags = append(diags, &hcl.Diagnostic{
+					Severity: hcl.DiagError,
+					Summary:  "Invalid component name",
+					Detail:   fmt.Sprintf("%q is not a valid Pulumi name.", comp.Name),
+					Subject:  attr.Expr.Range().Ptr(),
+				})
+			}
+		}
+	}
+
+	if attr, ok := content.Attributes["module"]; ok {
+		val, valDiags := attr.Expr.Value(nil)
+		diags = append(diags, valDiags...)
+		if val.Type() == cty.String {
+			comp.Module = val.AsString()
+			if !tokens.IsName(comp.Module) {
+				diags = append(diags, &hcl.Diagnostic{
+					Severity: hcl.DiagError,
+					Summary:  "Invalid component module",
+					Detail:   fmt.Sprintf("%q is not a valid Pulumi name.", comp.Module),
+					Subject:  attr.Expr.Range().Ptr(),
+				})
+			}
+		}
+	}
+
+	return comp, diags
+}
+
+// parsePulumiPackageBlock parses a package sub-block within pulumi.
+func (p *Parser) parsePulumiPackageBlock(block *hcl.Block) (*ast.PackageBlock, hcl.Diagnostics) {
+	content, diags := block.Body.Content(pulumiPackageSchema)
+
+	pkg := &ast.PackageBlock{
+		Version:   "0.0.0-dev",
+		DeclRange: block.DefRange,
+	}
+
+	if attr, ok := content.Attributes["name"]; ok {
+		val, valDiags := attr.Expr.Value(nil)
+		diags = append(diags, valDiags...)
+		if val.Type() == cty.String {
+			pkg.Name = val.AsString()
+			if !tokens.IsName(pkg.Name) {
+				diags = append(diags, &hcl.Diagnostic{
+					Severity: hcl.DiagError,
+					Summary:  "Invalid package name",
+					Detail:   fmt.Sprintf("%q is not a valid Pulumi name.", pkg.Name),
+					Subject:  attr.Expr.Range().Ptr(),
+				})
+			}
+		}
+	}
+
+	if attr, ok := content.Attributes["version"]; ok {
+		val, valDiags := attr.Expr.Value(nil)
+		diags = append(diags, valDiags...)
+		if val.Type() == cty.String {
+			pkg.Version = val.AsString()
+			if _, err := semver.Parse(pkg.Version); err != nil {
+				diags = append(diags, &hcl.Diagnostic{
+					Severity: hcl.DiagError,
+					Summary:  "Invalid package version",
+					Detail:   fmt.Sprintf("%q is not a valid semver version: %s", pkg.Version, err),
+					Subject:  attr.Expr.Range().Ptr(),
+				})
+			}
+		}
+	}
+
+	return pkg, diags
 }
 
 // parseRequiredProviders parses the required_providers block.
