@@ -1,2 +1,2 @@
-name: roundtrip
+name: l2-discriminated-union
 runtime: pcl

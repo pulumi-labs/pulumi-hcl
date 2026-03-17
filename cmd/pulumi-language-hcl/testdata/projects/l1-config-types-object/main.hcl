@@ -18,3 +18,11 @@ variable "anyObject" {
 output "theThing" {
   value = var.anyObject.a + var.anyObject.b
 }
+variable "optionalUntypedObject" {
+  default = {
+    "key" = "value"
+  }
+}
+output "defaultUntypedObject" {
+  value = var.optionalUntypedObject
+}

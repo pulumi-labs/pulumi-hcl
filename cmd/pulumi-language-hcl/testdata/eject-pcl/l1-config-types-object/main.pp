@@ -22,3 +22,13 @@ output "theThing" {
   value = anyObject.a + anyObject.b
 }
 
+config "optionalUntypedObject" {
+  default = {
+    "key" = "value"
+  }
+}
+
+output "defaultUntypedObject" {
+  value = optionalUntypedObject
+}
+

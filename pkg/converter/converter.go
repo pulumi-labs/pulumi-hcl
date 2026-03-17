@@ -340,7 +340,13 @@ func transformHCLFileToPCL(
 			if typeAttr, ok := block.Body.Attributes["type"]; ok {
 				labels = append(labels, convertHCLTypeExpr(src, typeAttr.Expr))
 			}
-			out.AppendNewBlock("config", labels)
+			blk := out.AppendNewBlock("config", labels)
+			for _, attr := range sortedAttributes(block.Body.Attributes) {
+				if attr.Name == "type" {
+					continue
+				}
+				blk.Body().SetAttributeRaw(attr.Name, ft.transformExpr(attr.Expr))
+			}
 			out.AppendNewline()
 
 		case "locals":
