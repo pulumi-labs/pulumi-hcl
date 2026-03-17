@@ -216,13 +216,25 @@ func (p *HCLProvider) Construct(ctx context.Context, req *pulumirpc.ConstructReq
 
 	// Create resource monitor adapter
 	resmon := &constructResourceMonitor{
-		client:          monitor,
-		ctx:             ctx,
-		parentURN:       req.Parent,
-		componentType:   req.Type,
-		componentName:   req.Name,
-		componentInputs: req.Inputs,
-		aliases:         req.Aliases,
+		client:                  monitor,
+		ctx:                     ctx,
+		parentURN:               req.Parent,
+		componentType:           req.Type,
+		componentName:           req.Name,
+		componentInputs:         req.Inputs,
+		aliases:                 req.Aliases,
+		protect:                 req.Protect,
+		dependencies:            req.Dependencies,
+		providers:               req.Providers,
+		ignoreChanges:           req.IgnoreChanges,
+		additionalSecretOutputs: req.AdditionalSecretOutputs,
+		deleteBeforeReplace:     req.DeleteBeforeReplace,
+		deletedWith:             req.DeletedWith,
+		retainOnDelete:          req.RetainOnDelete,
+		replaceOnChanges:        req.ReplaceOnChanges,
+		replaceWith:             req.ReplaceWith,
+		customTimeouts:          req.CustomTimeouts,
+		replacementTrigger:      req.ReplacementTrigger,
 	}
 
 	// Set up config from inputs, prefixing with project name as the engine expects.
@@ -303,9 +315,24 @@ type constructResourceMonitor struct {
 	componentType   string
 	componentName   string
 	componentInputs *structpb.Struct
-	aliases         []*pulumirpc.Alias
-	componentURN    string
-	outputs         property.Map
+	// Resource options from the ConstructRequest that must be forwarded
+	// when registering the component resource with the engine.
+	aliases                 []*pulumirpc.Alias
+	protect                 *bool
+	dependencies            []string
+	providers               map[string]string
+	ignoreChanges           []string
+	additionalSecretOutputs []string
+	deleteBeforeReplace     *bool
+	deletedWith             string
+	retainOnDelete          *bool
+	replaceOnChanges        []string
+	replaceWith             []string
+	customTimeouts          *pulumirpc.ConstructRequest_CustomTimeouts
+	replacementTrigger      *structpb.Value
+
+	componentURN string
+	outputs      property.Map
 }
 
 // RegisterResource registers a resource.
@@ -316,15 +343,39 @@ func (m *constructResourceMonitor) RegisterResource(
 	// Intercept the engine's internal stack registration and convert it to
 	// the component resource that the Construct caller expects.
 	if req.Type == "pulumi:pulumi:Stack" {
-		resp, err := m.client.RegisterResource(ctx, &pulumirpc.RegisterResourceRequest{
-			Type:            m.componentType,
-			Name:            m.componentName,
-			Parent:          m.parentURN,
-			Object:          m.componentInputs,
-			Aliases:         m.aliases,
-			AcceptSecrets:   true,
-			AcceptResources: true,
-		})
+		registerReq := &pulumirpc.RegisterResourceRequest{
+			Type:                    m.componentType,
+			Name:                    m.componentName,
+			Parent:                  m.parentURN,
+			Object:                  m.componentInputs,
+			Aliases:                 m.aliases,
+			Protect:                 m.protect,
+			Dependencies:            m.dependencies,
+			Providers:               m.providers,
+			IgnoreChanges:           m.ignoreChanges,
+			AdditionalSecretOutputs: m.additionalSecretOutputs,
+			DeletedWith:             m.deletedWith,
+			RetainOnDelete:          m.retainOnDelete,
+			ReplaceOnChanges:        m.replaceOnChanges,
+			ReplaceWith:             m.replaceWith,
+			AcceptSecrets:           true,
+			AcceptResources:         true,
+		}
+		if m.deleteBeforeReplace != nil {
+			registerReq.DeleteBeforeReplace = *m.deleteBeforeReplace
+			registerReq.DeleteBeforeReplaceDefined = true
+		}
+		if m.customTimeouts != nil {
+			registerReq.CustomTimeouts = &pulumirpc.RegisterResourceRequest_CustomTimeouts{
+				Create: m.customTimeouts.Create,
+				Update: m.customTimeouts.Update,
+				Delete: m.customTimeouts.Delete,
+			}
+		}
+		if m.replacementTrigger != nil {
+			registerReq.ReplacementTrigger = m.replacementTrigger
+		}
+		resp, err := m.client.RegisterResource(ctx, registerReq)
 		if err != nil {
 			return nil, err
 		}
@@ -350,9 +401,14 @@ func (m *constructResourceMonitor) RegisterResource(
 		parent = m.componentURN
 	}
 
+	// Prefix child resource names with the component name to ensure URN uniqueness
+	// across multiple instances of the same component type. This mirrors what other
+	// Pulumi SDKs do (e.g. NodeJS uses `${name}-child`).
+	name := m.componentName + "-" + req.Name
+
 	resp, err := m.client.RegisterResource(ctx, &pulumirpc.RegisterResourceRequest{
 		Type:                req.Type,
-		Name:                req.Name,
+		Name:                name,
 		Custom:              req.Custom,
 		Object:              inputs,
 		Parent:              parent,

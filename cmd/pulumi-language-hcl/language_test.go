@@ -134,7 +134,6 @@ var expectedFailures = map[string]string{
 		" requires that HCL can distinguish between an empty and null List<Object>" +
 		" - not compatible with block syntax",
 	"provider-replacement-trigger-component": "NYI",
-	"provider-ignore-changes-component": "NYI",
 }
 
 // expectedEjectFailures lists tests whose eject (HCL→PCL conversion) step is

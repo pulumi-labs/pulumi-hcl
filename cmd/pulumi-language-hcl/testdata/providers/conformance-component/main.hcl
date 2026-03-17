@@ -21,7 +21,7 @@ variable "value" {
   type = bool
 }
 
-resource "simple_resource" "res-child" {
+resource "simple_resource" "child" {
   value = !var.value
 }
 
