@@ -1,6 +1,6 @@
 terraform {
   required_providers {
-    conformance_component = {
+    conformance-component = {
       source  = "pulumi/conformance-component"
       version = "22.0.0"
     }
@@ -11,7 +11,7 @@ terraform {
   }
 }
 
-resource "conformance_component_simple" "res" {
+resource "conformance-component_simple" "res" {
   value = true
 }
 resource "simple_resource" "simpleResource" {

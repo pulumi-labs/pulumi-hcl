@@ -18,6 +18,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"path/filepath"
 
 	"github.com/pulumi/pulumi-language-hcl/pkg/hcl/modules"
 	"github.com/pulumi/pulumi-language-hcl/pkg/hcl/run"
@@ -64,7 +65,7 @@ type HCLProvider struct {
 }
 
 // NewHCLProvider creates a new HCL component provider.
-func NewHCLProvider(modulePath, name, version, addr string) (*HCLProvider, error) {
+func NewHCLProvider(modulePath, addr string) (*HCLProvider, error) {
 	loader := modules.NewLoader()
 	pkgLoader, err := pulumiSchema.NewLoaderClient(addr)
 	if err != nil {
@@ -77,8 +78,25 @@ func NewHCLProvider(modulePath, name, version, addr string) (*HCLProvider, error
 		return nil, fmt.Errorf("loading module: %w", err)
 	}
 
-	// Generate schema from the module
-	moduleSchema, err := schema.GenerateModuleSchema(loaded.Config, name, version)
+	if loaded.Config.Pulumi == nil || loaded.Config.Pulumi.Component == nil {
+		return nil, fmt.Errorf("module at %q is missing a pulumi { component { ... } } block", modulePath)
+	}
+
+	comp := loaded.Config.Pulumi.Component
+	pkg := loaded.Config.Pulumi.Package
+
+	pkgName := filepath.Base(modulePath)
+	pkgVersion := "0.0.0-dev"
+	if pkg != nil {
+		if pkg.Name != "" {
+			pkgName = pkg.Name
+		}
+		if pkg.Version != "" {
+			pkgVersion = pkg.Version
+		}
+	}
+
+	moduleSchema, err := schema.GenerateModuleSchema(loaded.Config, pkgName, pkgVersion, comp.Name, comp.Module)
 	if err != nil {
 		return nil, fmt.Errorf("generating schema: %w", err)
 	}
@@ -87,8 +105,8 @@ func NewHCLProvider(modulePath, name, version, addr string) (*HCLProvider, error
 		modulePath:   modulePath,
 		moduleLoader: loader,
 		pkgLoader:    pulumiSchema.NewCachedLoader(pkgLoader),
-		name:         name,
-		version:      version,
+		name:         pkgName,
+		version:      pkgVersion,
 		schema:       moduleSchema,
 	}, nil
 }
@@ -110,7 +128,7 @@ func (p *HCLProvider) Attach(ctx context.Context, req *pulumirpc.PluginAttach) (
 
 // GetSchema returns the schema for the HCL module.
 func (p *HCLProvider) GetSchema(ctx context.Context, req *pulumirpc.GetSchemaRequest) (*pulumirpc.GetSchemaResponse, error) {
-	schemaJSON, err := json.Marshal(p.schema.ToPulumiPackageSchema(p.name))
+	schemaJSON, err := json.Marshal(p.schema.ToPulumiPackageSchema())
 	if err != nil {
 		return nil, fmt.Errorf("marshaling schema: %w", err)
 	}
@@ -198,20 +216,23 @@ func (p *HCLProvider) Construct(ctx context.Context, req *pulumirpc.ConstructReq
 
 	// Create resource monitor adapter
 	resmon := &constructResourceMonitor{
-		client:    monitor,
-		ctx:       ctx,
-		parentURN: req.Parent,
+		client:          monitor,
+		ctx:             ctx,
+		parentURN:       req.Parent,
+		componentType:   req.Type,
+		componentName:   req.Name,
+		componentInputs: req.Inputs,
 	}
 
-	// Set up config from inputs
+	// Set up config from inputs, prefixing with project name as the engine expects.
 	config := make(map[string]string)
 	for k, v := range inputs {
+		configKey := req.Project + ":" + string(k)
 		if v.IsString() {
-			config[string(k)] = v.StringValue()
+			config[configKey] = v.StringValue()
 		} else {
-			// Convert non-string values to JSON
 			jsonVal, _ := json.Marshal(v.V)
-			config[string(k)] = string(jsonVal)
+			config[configKey] = string(jsonVal)
 		}
 	}
 
@@ -272,12 +293,17 @@ func (p *HCLProvider) GetMapping(ctx context.Context, req *pulumirpc.GetMappingR
 }
 
 // constructResourceMonitor wraps the resource monitor for Construct calls.
+// It intercepts the engine's stack registration and converts it into the
+// actual component resource registration expected by the Pulumi engine.
 type constructResourceMonitor struct {
-	client       pulumirpc.ResourceMonitorClient
-	ctx          context.Context
-	parentURN    string
-	componentURN string
-	outputs      property.Map
+	client          pulumirpc.ResourceMonitorClient
+	ctx             context.Context
+	parentURN       string
+	componentType   string
+	componentName   string
+	componentInputs *structpb.Struct
+	componentURN    string
+	outputs         property.Map
 }
 
 // RegisterResource registers a resource.
@@ -285,6 +311,27 @@ func (m *constructResourceMonitor) RegisterResource(
 	ctx context.Context,
 	req run.RegisterResourceRequest,
 ) (*run.RegisterResourceResponse, error) {
+	// Intercept the engine's internal stack registration and convert it to
+	// the component resource that the Construct caller expects.
+	if req.Type == "pulumi:pulumi:Stack" {
+		resp, err := m.client.RegisterResource(ctx, &pulumirpc.RegisterResourceRequest{
+			Type:            m.componentType,
+			Name:            m.componentName,
+			Parent:          m.parentURN,
+			Object:          m.componentInputs,
+			AcceptSecrets:   true,
+			AcceptResources: true,
+		})
+		if err != nil {
+			return nil, err
+		}
+		m.componentURN = resp.Urn
+		return &run.RegisterResourceResponse{
+			URN: resp.Urn,
+			ID:  resp.Id,
+		}, nil
+	}
+
 	// Convert PropertyMap to protobuf
 	inputs, err := plugin.MarshalProperties(resource.ToResourcePropertyMap(req.Inputs), plugin.MarshalOptions{
 		KeepSecrets:   true,
@@ -294,18 +341,20 @@ func (m *constructResourceMonitor) RegisterResource(
 		return nil, fmt.Errorf("marshaling inputs: %w", err)
 	}
 
-	// Use parent from request or fall back to construct parent
+	// Use parent from request or fall back to component URN
 	parent := req.Parent
 	if parent == "" {
-		parent = m.parentURN
+		parent = m.componentURN
 	}
 
 	resp, err := m.client.RegisterResource(ctx, &pulumirpc.RegisterResourceRequest{
 		Type:                req.Type,
 		Name:                req.Name,
+		Custom:              req.Custom,
 		Object:              inputs,
 		Parent:              parent,
 		Dependencies:        req.Dependencies,
+		Provider:            req.Provider,
 		Protect:             &req.Protect,
 		DeleteBeforeReplace: req.DeleteBeforeReplace,
 		IgnoreChanges:       req.IgnoreChanges,
@@ -314,11 +363,6 @@ func (m *constructResourceMonitor) RegisterResource(
 	})
 	if err != nil {
 		return nil, err
-	}
-
-	// Track the first component URN (the root stack)
-	if m.componentURN == "" {
-		m.componentURN = resp.Urn
 	}
 
 	// Convert outputs back to PropertyMap

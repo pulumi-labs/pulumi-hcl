@@ -350,6 +350,10 @@ For example, `aws_ec2_instance` → provider `aws`, lookup key `ec2instance` →
 Pulumi HCL expects `snake_case` properties. The plugin ensures that the engine sees Pulumi's `camelCase` property
 names. Map keys are not translated.
 
+## Multi-Language Components
+
+HCL modules can be published as reusable Pulumi components consumable from any language. See [docs/mlc.md](docs/mlc.md) for details on authoring MLCs with the `pulumi { component { ... } package { ... } }` syntax.
+
 ## Terraform Compatibility
 
 This plugin supports the majority of Terraform's HCL syntax. For detailed compatibility information and known limitations, see [docs/terraform-compatibility.md](docs/terraform-compatibility.md).

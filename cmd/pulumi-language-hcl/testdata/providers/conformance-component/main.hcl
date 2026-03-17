@@ -1,3 +1,13 @@
+pulumi {
+  component {
+    name = "Simple"
+  }
+  package {
+    name    = "conformance-component"
+    version = "22.0.0"
+  }
+}
+
 terraform {
   required_providers {
     simple = {

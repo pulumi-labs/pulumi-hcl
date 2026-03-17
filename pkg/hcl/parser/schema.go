@@ -54,6 +54,26 @@ var pulumiSchema = &hcl.BodySchema{
 	Attributes: []hcl.AttributeSchema{
 		{Name: "required_version_range"},
 	},
+	Blocks: []hcl.BlockHeaderSchema{
+		{Type: "component"},
+		{Type: "package"},
+	},
+}
+
+// pulumiComponentSchema defines the structure of a component sub-block.
+var pulumiComponentSchema = &hcl.BodySchema{
+	Attributes: []hcl.AttributeSchema{
+		{Name: "name", Required: true},
+		{Name: "module"},
+	},
+}
+
+// pulumiPackageSchema defines the structure of a package sub-block.
+var pulumiPackageSchema = &hcl.BodySchema{
+	Attributes: []hcl.AttributeSchema{
+		{Name: "name"},
+		{Name: "version"},
+	},
 }
 
 // providerSchema defines the structure of a provider block.
