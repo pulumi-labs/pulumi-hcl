@@ -222,6 +222,7 @@ func (p *HCLProvider) Construct(ctx context.Context, req *pulumirpc.ConstructReq
 		componentType:   req.Type,
 		componentName:   req.Name,
 		componentInputs: req.Inputs,
+		aliases:         req.Aliases,
 	}
 
 	// Set up config from inputs, prefixing with project name as the engine expects.
@@ -302,6 +303,7 @@ type constructResourceMonitor struct {
 	componentType   string
 	componentName   string
 	componentInputs *structpb.Struct
+	aliases         []*pulumirpc.Alias
 	componentURN    string
 	outputs         property.Map
 }
@@ -319,6 +321,7 @@ func (m *constructResourceMonitor) RegisterResource(
 			Name:            m.componentName,
 			Parent:          m.parentURN,
 			Object:          m.componentInputs,
+			Aliases:         m.aliases,
 			AcceptSecrets:   true,
 			AcceptResources: true,
 		})

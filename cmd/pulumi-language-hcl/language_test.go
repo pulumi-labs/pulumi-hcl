@@ -133,6 +133,8 @@ var expectedFailures = map[string]string{
 	"l2-plain": "unsupported in HCL:" +
 		" requires that HCL can distinguish between an empty and null List<Object>" +
 		" - not compatible with block syntax",
+	"provider-replacement-trigger-component": "NYI",
+	"provider-ignore-changes-component": "NYI",
 }
 
 // expectedEjectFailures lists tests whose eject (HCL→PCL conversion) step is
@@ -201,9 +203,6 @@ func TestLanguage(t *testing.T) {
 			}
 			if expected, ok := expectedFailures[tt]; ok {
 				t.Skipf("Skipping known failure: %s", expected)
-			}
-			if strings.HasPrefix(tt, "provider-") && tt != "provider-resource-component" {
-				t.Skip("WIP")
 			}
 
 			result, err := engine.RunLanguageTest(t.Context(), &testingrpc.RunLanguageTestRequest{
