@@ -559,7 +559,24 @@ func (host *LanguageHost) GenerateProject(
 	if !req.Strict {
 		binderOpts = append(binderOpts, pcl.NonStrictBindOptions()...)
 	}
-	program, bindDiags, err := pcl.BindDirectory(req.SourceDirectory, nil, binderOpts...)
+
+	// When the project specifies a "main" subdirectory, the PCL source files
+	// may live under that subdirectory (e.g. during round-trip testing where
+	// ConvertProgram preserves the directory structure). Check whether the
+	// subdirectory exists under SourceDirectory and, if so, bind from there.
+	sourceDir := req.SourceDirectory
+	var project map[string]any
+	if err := json.Unmarshal([]byte(req.Project), &project); err != nil {
+		return nil, fmt.Errorf("parsing project JSON: %w", err)
+	}
+	if main, ok := project["main"].(string); ok && main != "" {
+		mainDir := filepath.Join(sourceDir, main)
+		if info, err := os.Stat(mainDir); err == nil && info.IsDir() {
+			sourceDir = mainDir
+		}
+	}
+
+	program, bindDiags, err := pcl.BindDirectory(sourceDir, nil, binderOpts...)
 	if err != nil {
 		return nil, fmt.Errorf("binding directory: %w", err)
 	}
@@ -577,10 +594,6 @@ func (host *LanguageHost) GenerateProject(
 	// Determine where to write program files. When the project specifies a
 	// "main" subdirectory, generated code goes into that subdirectory.
 	programDir := req.TargetDirectory
-	var project map[string]any
-	if err := json.Unmarshal([]byte(req.Project), &project); err != nil {
-		return nil, fmt.Errorf("parsing project JSON: %w", err)
-	}
 	if main, ok := project["main"].(string); ok && main != "" {
 		programDir = filepath.Join(req.TargetDirectory, main)
 		if err := os.MkdirAll(programDir, 0755); err != nil {

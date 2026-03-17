@@ -1,2 +1,3 @@
-name: roundtrip
+main: subdir
+name: l1-builtin-project-root-main
 runtime: pcl

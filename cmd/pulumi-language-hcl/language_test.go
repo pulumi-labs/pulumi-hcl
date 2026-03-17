@@ -133,6 +133,10 @@ var expectedFailures = map[string]string{
 	"l2-plain": "unsupported in HCL:" +
 		" requires that HCL can distinguish between an empty and null List<Object>" +
 		" - not compatible with block syntax",
+	"l3-deferred-outputs": "unsupported in HCL: ConditionalExpression not yet implemented in codegen",
+	"l3-splat":            "unsupported in HCL: SplatExpression not yet implemented in codegen",
+	"l2-logical-name": "unsupported in HCL: __logicalName support not yet implemented" +
+		" - requires mapping between lexical names (code references) and logical names (resource names)",
 }
 
 // expectedEjectFailures lists tests whose eject (HCL→PCL conversion) step is
