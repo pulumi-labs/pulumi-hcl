@@ -211,3 +211,79 @@ func TestBlocksToObjectAttrs(t *testing.T) {
 		})
 	}
 }
+
+func TestTransformSplatExpr(t *testing.T) {
+	t.Parallel()
+
+	// Schema: myRes has a property "detailItems" (camelCase) of type
+	// list(object({ nestedValue: string })).
+	// In HCL this would be written as "detail_items" and "nested_value".
+	innerObj := &schema.ObjectType{
+		Properties: []*schema.Property{
+			{Name: "nestedValue", Type: schema.StringType},
+		},
+	}
+
+	tests := []struct {
+		name     string
+		hcl      string
+		schemas  map[string]*schema.Resource
+		expected string
+	}{
+		{
+			name: "splat with camelCase schema property",
+			hcl:  `value = my_res.source.detail_items[*].nested_value`,
+			schemas: map[string]*schema.Resource{
+				"my_res": {
+					Properties: []*schema.Property{
+						{Name: "detailItems", Type: &schema.ArrayType{
+							ElementType: innerObj,
+						}},
+					},
+				},
+			},
+			expected: `source.detailItems[*].nestedValue`,
+		},
+		{
+			name: "splat with snake_case schema property",
+			hcl:  `value = my_res.source.detail_items[*].nested_value`,
+			schemas: map[string]*schema.Resource{
+				"my_res": {
+					Properties: []*schema.Property{
+						{Name: "detail_items", Type: &schema.ArrayType{
+							ElementType: &schema.ObjectType{
+								Properties: []*schema.Property{
+									{Name: "nested_value", Type: schema.StringType},
+								},
+							},
+						}},
+					},
+				},
+			},
+			expected: `source.detail_items[*].nested_value`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			src := []byte(tt.name + " {\n  " + tt.hcl + "\n}\n")
+			file, diags := hclsyntax.ParseConfig(src, "test.hcl", hcl.Pos{})
+			require.False(t, diags.HasErrors(), diags.Error())
+
+			ft := &fileTransformer{
+				src:             src,
+				knownHCLTypes:   map[string]bool{"my_res": true},
+				resourceSchemas: tt.schemas,
+			}
+
+			body := file.Body.(*hclsyntax.Body)
+			require.Len(t, body.Blocks, 1)
+			require.Contains(t, body.Blocks[0].Body.Attributes, "value")
+
+			tokens := ft.transformExpr(body.Blocks[0].Body.Attributes["value"].Expr)
+			assert.Equal(t, tt.expected, string(tokens.Bytes()))
+		})
+	}
+}

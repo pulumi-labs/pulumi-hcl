@@ -1180,6 +1180,8 @@ func (g *generator) exprTokens(expr model.Expression, typ schema.Type) (hclwrite
 		return g.unaryOpTokens(e)
 	case *model.ForExpression:
 		return g.forExprTokens(e)
+	case *model.SplatExpression:
+		return g.splatTokens(e)
 	default:
 		return nil, hcl.Diagnostics{{
 			Severity: hcl.DiagError,
@@ -1385,59 +1387,164 @@ func (g *generator) getOutputTokens(expr *model.FunctionCallExpression) (hclwrit
 	}), nil
 }
 
+// schemaAwareRewriteTraversal rewrites a traversal's attribute names from PCL (camelCase)
+// to HCL (snake_case), using schema property definitions to correctly map names through
+// nested objects, maps, and arrays. When schema information is unavailable for a step,
+// the remaining traversal is returned unchanged.
+func schemaAwareRewriteTraversal(props []*schema.Property, traversal hcl.Traversal) hcl.Traversal {
+	if len(traversal) == 0 || len(props) == 0 {
+		return traversal
+	}
+	t, ok := traversal[0].(hcl.TraverseAttr)
+	if !ok {
+		return traversal
+	}
+	for _, p := range props {
+		if p.Name == t.Name {
+			t = hcl.TraverseAttr{Name: transform.SnakeCaseFromPulumiCase(p.Name), SrcRange: t.SrcRange}
+			return append(hcl.Traversal{t}, schemaAwareRewriteTyped(p.Type, traversal[1:])...)
+		}
+	}
+	return traversal
+}
+
+// schemaAwareRewriteTyped rewrites a traversal's attribute names using schema type
+// information, dispatching to [schemaAwareRewriteTraversal] for object properties and
+// recursing through map/array element types for index steps.
+func schemaAwareRewriteTyped(typ schema.Type, traversal hcl.Traversal) hcl.Traversal {
+	if len(traversal) == 0 {
+		return traversal
+	}
+
+	switch t := traversal[0].(type) {
+	case hcl.TraverseAttr:
+		switch s := codegen.UnwrapType(typ).(type) {
+		case *schema.ResourceType:
+			return schemaAwareRewriteTraversal(s.Resource.Properties, traversal)
+		case *schema.ObjectType:
+			return schemaAwareRewriteTraversal(s.Properties, traversal)
+		default:
+			return traversal
+		}
+	case hcl.TraverseIndex:
+		switch s := codegen.UnwrapType(typ).(type) {
+		case *schema.MapType:
+			return append(hcl.Traversal{t}, schemaAwareRewriteTyped(s.ElementType, traversal[1:])...)
+		case *schema.ArrayType:
+			return append(hcl.Traversal{t}, schemaAwareRewriteTyped(s.ElementType, traversal[1:])...)
+		default:
+			return traversal
+		}
+	default:
+		return traversal
+	}
+}
+
+// traversalStepsToTokens converts traversal steps (attrs and indexes) to HCL write tokens.
+// Attribute names are emitted as-is — callers should rewrite names beforehand if needed.
+func traversalStepsToTokens(traversal hcl.Traversal) hclwrite.Tokens {
+	var tokens hclwrite.Tokens
+	for _, step := range traversal {
+		switch s := step.(type) {
+		case hcl.TraverseAttr:
+			tokens = append(tokens,
+				&hclwrite.Token{Type: hclsyntax.TokenDot, Bytes: []byte(".")},
+				&hclwrite.Token{Type: hclsyntax.TokenIdent, Bytes: []byte(s.Name)},
+			)
+		case hcl.TraverseIndex:
+			keyTokens := hclwrite.TokensForValue(s.Key)
+			tokens = append(tokens, &hclwrite.Token{Type: hclsyntax.TokenOBrack, Bytes: []byte("[")})
+			tokens = append(tokens, keyTokens...)
+			tokens = append(tokens, &hclwrite.Token{Type: hclsyntax.TokenCBrack, Bytes: []byte("]")})
+		}
+	}
+	return tokens
+}
+
+// naiveRewriteTraversal rewrites all TraverseAttr names in a traversal from camelCase to
+// snake_case without schema information. Used as a fallback when schema is unavailable.
+func naiveRewriteTraversal(traversal hcl.Traversal) hcl.Traversal {
+	rewritten := make(hcl.Traversal, len(traversal))
+	for i, step := range traversal {
+		if attr, ok := step.(hcl.TraverseAttr); ok {
+			rewritten[i] = hcl.TraverseAttr{
+				Name:     transform.SnakeCaseFromPulumiCase(attr.Name),
+				SrcRange: attr.SrcRange,
+			}
+		} else {
+			rewritten[i] = step
+		}
+	}
+	return rewritten
+}
+
+// splatElementProps resolves the schema properties of the element type that a splat
+// expression iterates over. It walks the Source expression's schema through its traversal
+// to find the array type, then returns the element's properties.
+func splatElementProps(source model.Expression) []*schema.Property {
+	scope, ok := source.(*model.ScopeTraversalExpression)
+	if !ok || len(scope.Parts) == 0 {
+		return nil
+	}
+	res, ok := scope.Parts[0].(*pcl.Resource)
+	if !ok || res.Schema == nil {
+		return nil
+	}
+	// Walk through the source traversal to find the final schema type.
+	// Start from the resource's properties, skip the root traversal step.
+	var typ schema.Type = &schema.ObjectType{Properties: res.Schema.Properties}
+	for _, step := range scope.Traversal[1:] {
+		if typ == nil {
+			return nil
+		}
+		typ = traverseSchemaType(typ, step)
+	}
+	// The source type should be an array; return the element's properties.
+	if arr, ok := codegen.UnwrapType(typ).(*schema.ArrayType); ok {
+		if obj, ok := codegen.UnwrapType(arr.ElementType).(*schema.ObjectType); ok {
+			return obj.Properties
+		}
+	}
+	return nil
+}
+
+// traverseSchemaType applies a single traversal step to a schema type, returning the
+// resulting type. Returns nil if the step cannot be applied.
+func traverseSchemaType(typ schema.Type, step hcl.Traverser) schema.Type {
+	switch s := step.(type) {
+	case hcl.TraverseAttr:
+		switch t := codegen.UnwrapType(typ).(type) {
+		case *schema.ResourceType:
+			return findPropertyType(t.Resource.Properties, s.Name)
+		case *schema.ObjectType:
+			return findPropertyType(t.Properties, s.Name)
+		}
+	case hcl.TraverseIndex:
+		switch t := codegen.UnwrapType(typ).(type) {
+		case *schema.MapType:
+			return t.ElementType
+		case *schema.ArrayType:
+			return t.ElementType
+		}
+	}
+	return nil
+}
+
+func findPropertyType(props []*schema.Property, name string) schema.Type {
+	for _, p := range props {
+		if p.Name == name {
+			return p.Type
+		}
+	}
+	return nil
+}
+
 // scopeTraversalTokens generates HCL tokens for a scope traversal expression.
 // PCL config variables become HCL `var.<name>`, local variables become `local.<name>`,
 // and resource references become `<resource_type>.<name>.<property>`.
 func (g *generator) scopeTraversalTokens(expr *model.ScopeTraversalExpression) (hclwrite.Tokens, hcl.Diagnostics) {
 	if len(expr.Parts) == 0 {
 		return hclwrite.TokensForTraversal(expr.Traversal), nil
-	}
-
-	var typedObjectTraversal func(props []*schema.Property, traversal hcl.Traversal) hcl.Traversal
-	var typedTraversal func(typ schema.Type, traversal hcl.Traversal) hcl.Traversal
-	typedTraversal = func(typ schema.Type, traversal hcl.Traversal) hcl.Traversal {
-		if len(traversal) == 0 {
-			return traversal
-		}
-
-		switch t := traversal[0].(type) {
-		case hcl.TraverseAttr:
-			switch s := codegen.UnwrapType(typ).(type) {
-			case *schema.ResourceType:
-				return typedObjectTraversal(s.Resource.Properties, traversal)
-			case *schema.ObjectType:
-				return typedObjectTraversal(s.Properties, traversal)
-			default:
-				return traversal // de-typed
-			}
-		case hcl.TraverseIndex:
-			switch s := codegen.UnwrapType(typ).(type) {
-			case *schema.MapType:
-				return append(hcl.Traversal{t}, typedTraversal(s.ElementType, traversal[1:])...)
-			case *schema.ArrayType:
-				return append(hcl.Traversal{t}, typedTraversal(s.ElementType, traversal[1:])...)
-			default:
-				return traversal // de-typed
-			}
-		default:
-			return traversal // de-typed
-		}
-	}
-	typedObjectTraversal = func(props []*schema.Property, traversal hcl.Traversal) hcl.Traversal {
-		if len(traversal) == 0 {
-			return traversal
-		}
-		t, ok := traversal[0].(hcl.TraverseAttr)
-		if !ok {
-			return traversal // de-typed
-		}
-		for _, p := range props {
-			if p.Name == t.Name {
-				t = hcl.TraverseAttr{Name: transform.SnakeCaseFromPulumiCase(p.Name), SrcRange: t.SrcRange}
-				return append(hcl.Traversal{t}, typedTraversal(p.Type, traversal[1:])...)
-			}
-		}
-		return traversal // de-typed
 	}
 
 	traversal := expr.Traversal
@@ -1488,7 +1595,7 @@ func (g *generator) scopeTraversalTokens(expr *model.ScopeTraversalExpression) (
 		rewritten := make(hcl.Traversal, 0, len(traversal)+1)
 		rewritten = append(rewritten, hcl.TraverseRoot{Name: hclType})
 		rewritten = append(rewritten, hcl.TraverseAttr{Name: traversal.RootName()})
-		return hclwrite.TokensForTraversal(append(rewritten, typedObjectTraversal(part.Schema.Properties, traversal[1:])...)), nil
+		return hclwrite.TokensForTraversal(append(rewritten, schemaAwareRewriteTraversal(part.Schema.Properties, traversal[1:])...)), nil
 	case *pcl.Component:
 		// Rewrite "someComponent.output" → "module.someComponent.output".
 		rewritten := make(hcl.Traversal, 0, len(traversal)+1)
@@ -1580,26 +1687,57 @@ func (g *generator) relativeTraversalTokens(expr *model.RelativeTraversalExpress
 	if diags.HasErrors() {
 		return nil, diags
 	}
-	// Append traversal steps as attribute access tokens.
-	for _, step := range expr.Traversal {
-		switch s := step.(type) {
-		case hcl.TraverseAttr:
-			sourceTokens = append(sourceTokens,
-				&hclwrite.Token{Type: hclsyntax.TokenDot, Bytes: []byte(".")},
-				&hclwrite.Token{Type: hclsyntax.TokenIdent, Bytes: []byte(transform.SnakeCaseFromPulumiCase(s.Name))},
-			)
-		case hcl.TraverseIndex:
-			keyTokens := hclwrite.TokensForValue(s.Key)
-			sourceTokens = append(sourceTokens,
-				&hclwrite.Token{Type: hclsyntax.TokenOBrack, Bytes: []byte("[")},
-			)
-			sourceTokens = append(sourceTokens, keyTokens...)
-			sourceTokens = append(sourceTokens,
-				&hclwrite.Token{Type: hclsyntax.TokenCBrack, Bytes: []byte("]")},
-			)
-		}
+	return append(sourceTokens, traversalStepsToTokens(naiveRewriteTraversal(expr.Traversal))...), diags
+}
+
+// splatTokens generates HCL tokens for a PCL SplatExpression.
+//
+// PCL:  source.details[*].value
+// HCL:  source.details[*].value
+//
+// The PCL binder merges the relative traversal after [*] into the
+// ScopeTraversalExpression rooted at the SplatVariable. So Each is typically a
+// ScopeTraversalExpression with Parts[0]=SplatVariable and traversal steps
+// [TraverseRoot, TraverseAttr("value"), ...]. We emit source, [*], then the
+// traversal steps after the root.
+func (g *generator) splatTokens(expr *model.SplatExpression) (hclwrite.Tokens, hcl.Diagnostics) {
+	sourceTokens, diags := g.exprTokens(expr.Source, schema.AnyType)
+	if diags.HasErrors() {
+		return nil, diags
 	}
-	return sourceTokens, diags
+
+	tokens := append(sourceTokens,
+		&hclwrite.Token{Type: hclsyntax.TokenOBrack, Bytes: []byte("[")},
+		&hclwrite.Token{Type: hclsyntax.TokenStar, Bytes: []byte("*")},
+		&hclwrite.Token{Type: hclsyntax.TokenCBrack, Bytes: []byte("]")},
+	)
+
+	// Extract the traversal from the Each expression, skipping the root
+	// (which is the SplatVariable, already represented by [*]).
+	var eachTraversal hcl.Traversal
+	switch each := expr.Each.(type) {
+	case *model.ScopeTraversalExpression:
+		eachTraversal = each.Traversal[1:]
+	case *model.RelativeTraversalExpression:
+		eachTraversal = each.Traversal
+	default:
+		return nil, hcl.Diagnostics{{
+			Severity: hcl.DiagError,
+			Summary:  "unsupported splat each expression",
+			Detail:   fmt.Sprintf("splat each expression type %T is not yet supported", expr.Each),
+		}}
+	}
+
+	// Rewrite attribute names using schema info from the source's element type,
+	// falling back to naive camelCase → snake_case conversion.
+	if props := splatElementProps(expr.Source); len(props) > 0 {
+		eachTraversal = schemaAwareRewriteTraversal(props, eachTraversal)
+	} else {
+		eachTraversal = naiveRewriteTraversal(eachTraversal)
+	}
+
+	tokens = append(tokens, traversalStepsToTokens(eachTraversal)...)
+	return tokens, diags
 }
 
 // extractStringLiteral extracts a string from a literal expression,
