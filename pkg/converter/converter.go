@@ -647,6 +647,115 @@ func (ft *fileTransformer) transformExpr(expr hclsyntax.Expression) hclwrite.Tok
 		return append(hclwrite.Tokens{op}, val...)
 	case *hclsyntax.ForExpr:
 		return ft.transformForExpr(e)
+	case *hclsyntax.SplatExpr:
+		return ft.transformSplatExpr(e)
+	default:
+		r := expr.Range()
+		return hclwrite.Tokens{
+			&hclwrite.Token{Type: hclsyntax.TokenIdent, Bytes: ft.src[r.Start.Byte:r.End.Byte]},
+		}
+	}
+}
+
+// transformSplatExpr converts a splat expression (source[*].attr) to PCL tokens.
+// The HCL and PCL syntax are identical, so we just need to transform the
+// sub-expressions while preserving the [*] structure.
+func (ft *fileTransformer) transformSplatExpr(e *hclsyntax.SplatExpr) hclwrite.Tokens {
+	tokens := ft.transformExpr(e.Source)
+	tokens = append(tokens,
+		&hclwrite.Token{Type: hclsyntax.TokenOBrack, Bytes: []byte("[")},
+		&hclwrite.Token{Type: hclsyntax.TokenStar, Bytes: []byte("*")},
+		&hclwrite.Token{Type: hclsyntax.TokenCBrack, Bytes: []byte("]")},
+	)
+
+	// Resolve the schema element type so we can do schema-aware name mapping
+	// on the traversal after [*].
+	var elementProps []*schema.Property
+	if src, ok := e.Source.(*hclsyntax.ScopeTraversalExpr); ok {
+		elementProps = ft.splatElementProps(src.Traversal)
+	}
+
+	tokens = append(tokens, ft.transformSplatEach(e.Each, elementProps)...)
+	return tokens
+}
+
+// splatElementProps resolves the schema properties of the element type at the
+// end of a resource traversal. For example, given traversal
+// "my_res.name.detail_items" where detail_items is Array<Object>, this returns
+// the Object's properties.
+func (ft *fileTransformer) splatElementProps(trav hcl.Traversal) []*schema.Property {
+	root := trav.RootName()
+	res := ft.resourceSchemas[root]
+	if res == nil {
+		return nil
+	}
+
+	// Walk the traversal (skipping root + resource name) to find the type at
+	// the splat point.
+	var currentType schema.Type = &schema.ObjectType{Properties: res.Properties}
+	for _, step := range trav[2:] {
+		switch attr := step.(type) {
+		case hcl.TraverseAttr:
+			props := propertiesOf(currentType)
+			var found bool
+			for _, p := range props {
+				snakeName := transform.SnakeCaseFromPulumiCase(p.Name)
+				if snakeName == attr.Name || p.Name == attr.Name {
+					currentType = p.Type
+					found = true
+					break
+				}
+			}
+			if !found {
+				return nil
+			}
+		case hcl.TraverseIndex:
+			currentType = elementTypeOf(currentType)
+		}
+		if currentType == nil {
+			return nil
+		}
+	}
+
+	// The splat operates on an array/list — unwrap to get element properties.
+	return propertiesOf(elementTypeOf(currentType))
+}
+
+// transformSplatEach transforms the "each" part of a splat expression,
+// producing tokens for the traversal after [*]. It uses schema properties
+// (when available) to do schema-aware name mapping via schemaAwareTraversalAttrs.
+func (ft *fileTransformer) transformSplatEach(expr hclsyntax.Expression, elementProps []*schema.Property) hclwrite.Tokens {
+	switch e := expr.(type) {
+	case *hclsyntax.RelativeTraversalExpr:
+		tokens := ft.transformSplatEach(e.Source, elementProps)
+
+		// Build a dummy traversal with root so schemaAwareTraversalAttrs works.
+		dummy := make(hcl.Traversal, len(e.Traversal)+1)
+		dummy[0] = hcl.TraverseRoot{Name: "_"}
+		copy(dummy[1:], e.Traversal)
+		converted := schemaAwareTraversalAttrs(dummy, elementProps)
+
+		for _, step := range converted[1:] {
+			switch s := step.(type) {
+			case hcl.TraverseAttr:
+				tokens = append(tokens,
+					&hclwrite.Token{Type: hclsyntax.TokenDot, Bytes: []byte(".")},
+					&hclwrite.Token{Type: hclsyntax.TokenIdent, Bytes: []byte(s.Name)},
+				)
+			case hcl.TraverseIndex:
+				keyTokens := hclwrite.TokensForValue(s.Key)
+				tokens = append(tokens,
+					&hclwrite.Token{Type: hclsyntax.TokenOBrack, Bytes: []byte("[")},
+				)
+				tokens = append(tokens, keyTokens...)
+				tokens = append(tokens,
+					&hclwrite.Token{Type: hclsyntax.TokenCBrack, Bytes: []byte("]")},
+				)
+			}
+		}
+		return tokens
+	case *hclsyntax.AnonSymbolExpr:
+		return nil
 	default:
 		r := expr.Range()
 		return hclwrite.Tokens{
