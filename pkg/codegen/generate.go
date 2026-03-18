@@ -1014,10 +1014,18 @@ func (g *generator) genOutput(body *hclwrite.Body, ov *pcl.OutputVariable) hcl.D
 }
 
 func (g *generator) genModule(body *hclwrite.Body, c *pcl.Component) hcl.Diagnostics {
+	defer func() { g.currentRangeKind = rangeKindNone }()
+
 	block := body.AppendNewBlock("module", []string{c.LogicalName()})
 	source := "./" + filepath.Base(c.DirPath())
 	block.Body().SetAttributeValue("source", cty.StringVal(source))
 	var diags hcl.Diagnostics
+
+	if c.Options != nil && c.Options.Range != nil {
+		d := g.genRange(block.Body(), c.Options.Range)
+		diags = append(diags, d...)
+	}
+
 	for _, attr := range c.Inputs {
 		d := g.genExpression(block.Body(), attr.Name, attr.Value, schema.AnyType)
 		diags = append(diags, d...)
@@ -1182,6 +1190,8 @@ func (g *generator) exprTokens(expr model.Expression, typ schema.Type) (hclwrite
 		return g.forExprTokens(e)
 	case *model.SplatExpression:
 		return g.splatTokens(e)
+	case *model.ConditionalExpression:
+		return g.conditionalTokens(e)
 	default:
 		return nil, hcl.Diagnostics{{
 			Severity: hcl.DiagError,
@@ -1944,6 +1954,43 @@ func (g *generator) binaryOpTokens(expr *model.BinaryOpExpression) (hclwrite.Tok
 		rightTokens[0].SpacesBefore = 1
 	}
 	tokens = append(tokens, rightTokens...)
+	return tokens, diags
+}
+
+// conditionalTokens generates HCL tokens for a conditional expression (condition ? true : false).
+func (g *generator) conditionalTokens(expr *model.ConditionalExpression) (hclwrite.Tokens, hcl.Diagnostics) {
+	condTokens, diags := g.exprTokens(expr.Condition, schema.AnyType)
+	if diags.HasErrors() {
+		return nil, diags
+	}
+
+	trueTokens, d := g.exprTokens(expr.TrueResult, schema.AnyType)
+	diags = append(diags, d...)
+	if d.HasErrors() {
+		return nil, diags
+	}
+
+	falseTokens, d := g.exprTokens(expr.FalseResult, schema.AnyType)
+	diags = append(diags, d...)
+	if d.HasErrors() {
+		return nil, diags
+	}
+
+	tokens := condTokens
+	tokens = append(tokens, &hclwrite.Token{
+		Type: hclsyntax.TokenQuestion, Bytes: []byte("?"), SpacesBefore: 1,
+	})
+	if len(trueTokens) > 0 {
+		trueTokens[0].SpacesBefore = 1
+	}
+	tokens = append(tokens, trueTokens...)
+	tokens = append(tokens, &hclwrite.Token{
+		Type: hclsyntax.TokenColon, Bytes: []byte(":"), SpacesBefore: 1,
+	})
+	if len(falseTokens) > 0 {
+		falseTokens[0].SpacesBefore = 1
+	}
+	tokens = append(tokens, falseTokens...)
 	return tokens, diags
 }
 

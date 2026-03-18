@@ -2006,7 +2006,7 @@ func (e *Engine) processModuleInstance(ctx context.Context, mod *ast.Module, ins
 	}
 
 	// Create a child engine to execute the module
-	childEngine := e.createChildEngine(loadedModule.Config, componentURN, loadedModule.SourcePath)
+	childEngine := e.createChildEngine(loadedModule.Config, componentURN)
 
 	// Set up the child engine's variables with module inputs
 	if diags := childEngine.setModuleInputs(attrs, e.evaluator.Context()); diags.HasErrors() {
@@ -2099,11 +2099,10 @@ func (e *Engine) registerComponentResource(
 }
 
 // createChildEngine creates a child engine for executing a module.
-func (e *Engine) createChildEngine(config *ast.Config, parentURN string, moduleDir string) *Engine {
+func (e *Engine) createChildEngine(config *ast.Config, parentURN string) *Engine {
 	return &Engine{
-		config: config,
-		evaluator: eval.NewEvaluator(eval.NewContext(moduleDir, moduleDir,
-			e.stackName, e.projectName, e.organization)),
+		config:                  config,
+		evaluator:               e.evaluator,
 		pkgLoader:               e.pkgLoader,
 		resmon:                  e.resmon,
 		resourceOutputs:         util.NewSyncMap[string, cty.Value](),
@@ -2113,7 +2112,7 @@ func (e *Engine) createChildEngine(config *ast.Config, parentURN string, moduleD
 		stackName:               e.stackName,
 		organization:            e.organization,
 		dryRun:                  e.dryRun,
-		workDir:                 moduleDir,
+		workDir:                 e.workDir,
 		pulumiConfig:            e.pulumiConfig,
 		configSecretKeys:        e.configSecretKeys,
 		moduleLoader:            e.moduleLoader,
