@@ -396,11 +396,22 @@ func transformHCLFileToPCL(
 				continue
 			}
 			blk := out.AppendNewBlock("component", []string{logicalName, sourceVal.AsString()})
+			var rangeExpr hclsyntax.Expression
 			for _, attr := range sortedAttributes(block.Body.Attributes) {
-				if attr.Name == "source" {
+				switch attr.Name {
+				case "source":
+					continue
+				case "count", "for_each":
+					rangeExpr = attr.Expr
+					continue
+				case "depends_on", "providers", "version":
 					continue
 				}
 				blk.Body().SetAttributeRaw(attr.Name, ft.transformExpr(attr.Expr))
+			}
+			if rangeExpr != nil {
+				optBlk := blk.Body().AppendNewBlock("options", nil)
+				optBlk.Body().SetAttributeRaw("range", ft.transformExpr(rangeExpr))
 			}
 			out.AppendNewline()
 

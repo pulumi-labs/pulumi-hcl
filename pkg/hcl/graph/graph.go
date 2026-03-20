@@ -32,6 +32,26 @@ import (
 	"github.com/pulumi/pulumi/sdk/v3/go/common/util/contract"
 )
 
+// ModuleInfo holds metadata for nodes that are part of an inlined module.
+type ModuleInfo struct {
+	Prefix       string     // e.g., "module.first." — prefixed to all internal keys
+	ModuleName   string     // e.g., "first"
+	Module       *ast.Module // the module block from the parent config
+	SourcePath   string     // resolved source path (for component type name)
+	ParentPrefix string     // "" for root-level modules, "module.outer." for nested
+}
+
+// LoadedModule represents a loaded and parsed module (used by ModuleLoader).
+type LoadedModule struct {
+	Config     *ast.Config
+	SourcePath string
+}
+
+// ModuleLoader loads module configurations from source paths.
+type ModuleLoader interface {
+	LoadModule(source string, workDir string) (*LoadedModule, error)
+}
+
 // Node represents a node in the dependency graph.
 type Node struct {
 	// Key is the unique identifier for this node (e.g., "aws_instance.web" or "local.common_tags")
@@ -60,6 +80,9 @@ type Node struct {
 
 	// Call is set for call nodes
 	Call *ast.Call
+
+	// ModuleInfo is set for nodes that belong to an inlined module.
+	ModuleInfo *ModuleInfo
 }
 
 // NodeType indicates what type of configuration element a node represents.
@@ -76,6 +99,7 @@ const (
 	NodeTypeProvider
 	NodeTypeBuiltin
 	NodeTypeCall
+	NodeTypeModuleInit
 )
 
 func (t NodeType) String() string {
@@ -98,6 +122,8 @@ func (t NodeType) String() string {
 		return "builtin"
 	case NodeTypeCall:
 		return "call"
+	case NodeTypeModuleInit:
+		return "module_init"
 	default:
 		return "unknown"
 	}
@@ -138,19 +164,16 @@ func (g *Graph) Walk(ctx context.Context, apply func(context.Context, *Node) err
 	}, pdag.MaxProcs(parallel))
 }
 
-// Inject a step to run after all nodes of kind nodeType, and before any other kind of node.
-//
-// This creates an inflection point in the graph. All nodes of type nodeType *must* come before all nodes of other
-// types.
-func (g *Graph) InjectAfter(f func(context.Context) error, nodeType NodeType) error {
+// InjectAfter injects a step to run after all nodes matching the predicate, and before any
+// other node. This creates an inflection point in the graph.
+func (g *Graph) InjectAfter(f func(context.Context) error, match func(*Node) bool) error {
 	n, done := g.dag.NewNode(dagNode{exec: f})
 	done()
 	for _, node := range g.seen {
 		var err error
-		switch node.n.Type {
-		case nodeType:
+		if match(node.n) {
 			err = g.dag.NewEdge(node.i, n)
-		default:
+		} else {
 			err = g.dag.NewEdge(n, node.i)
 		}
 		if err != nil {
@@ -189,7 +212,8 @@ func (g *Graph) AddNode(node *Node, deps []pdag.Node) error {
 }
 
 // BuildFromConfig builds a dependency graph from an HCL configuration.
-func BuildFromConfig(config *ast.Config) (*Graph, error) {
+// moduleLoader is required when config contains modules.
+func BuildFromConfig(config *ast.Config, moduleLoader ModuleLoader, workDir string) (*Graph, error) {
 	g := NewGraph()
 
 	contract.AssertNoErrorf(errors.Join(
@@ -221,7 +245,7 @@ func BuildFromConfig(config *ast.Config) (*Graph, error) {
 
 	// Add local value nodes
 	for name, local := range config.Locals {
-		deps := g.extractDependenciesFromExpression(local.Value)
+		deps := g.exprDeps(local.Value, "")
 		err := g.AddNode(&Node{
 			Key:   "local." + name,
 			Type:  NodeTypeLocal,
@@ -234,7 +258,7 @@ func BuildFromConfig(config *ast.Config) (*Graph, error) {
 
 	// Add provider nodes (must come before resources since resources can reference them)
 	for key, provider := range config.Providers {
-		deps := g.extractProviderDependencies(provider)
+		deps := g.providerDeps(provider, "")
 		err := g.AddNode(&Node{
 			Key:      key,
 			Type:     NodeTypeProvider,
@@ -247,7 +271,7 @@ func BuildFromConfig(config *ast.Config) (*Graph, error) {
 
 	// Add resource nodes
 	for key, resource := range config.Resources {
-		deps := g.extractResourceDependencies(resource)
+		deps := g.resourceDeps(resource, "")
 		err := g.AddNode(&Node{
 			Key:      key,
 			Type:     NodeTypeResource,
@@ -260,7 +284,7 @@ func BuildFromConfig(config *ast.Config) (*Graph, error) {
 
 	// Add data source nodes
 	for key, dataSource := range config.DataSources {
-		deps := g.extractResourceDependencies(dataSource)
+		deps := g.resourceDeps(dataSource, "")
 		err := g.AddNode(&Node{
 			Key:      "data." + key,
 			Type:     NodeTypeDataSource,
@@ -271,54 +295,20 @@ func BuildFromConfig(config *ast.Config) (*Graph, error) {
 		}
 	}
 
-	// Add module nodes
+	// Inline module contents into the graph for fine-grained dependency tracking.
 	for name, module := range config.Modules {
-		deps := g.extractModuleDependencies(module)
-		err := g.AddNode(&Node{
-			Key:    "module." + name,
-			Type:   NodeTypeModule,
-			Module: module,
-		}, deps)
-		if err != nil {
-			return nil, err
+		if err := g.inlineModule(name, module, "", moduleLoader, workDir); err != nil {
+			return nil, fmt.Errorf("inlining module %s: %w", name, err)
 		}
 	}
 
-	// Add call nodes (method invocations on resources)
-	for key, call := range config.Calls {
-		var deps []pdag.Node
-
-		// Depend on the resource or provider being called
-		for resKey, res := range config.Resources {
-			if res.Name == call.ResourceName {
-				_, idx := g.newNode(resKey)
-				deps = append(deps, idx)
-				break
-			}
-		}
-		if _, exists := config.Providers[call.ResourceName]; exists {
-			_, idx := g.newNode(call.ResourceName)
-			deps = append(deps, idx)
-		}
-
-		// Extract expression deps from args body
-		if call.Config != nil {
-			deps = append(deps, g.extractDependenciesFromBody(call.Config)...)
-		}
-
-		err := g.AddNode(&Node{
-			Key:  "call." + key,
-			Type: NodeTypeCall,
-			Call: call,
-		}, deps)
-		if err != nil {
-			return nil, err
-		}
+	if err := g.addCallNodes(config, "", nil); err != nil {
+		return nil, err
 	}
 
 	// Add output nodes
 	for name, output := range config.Outputs {
-		deps := g.extractDependenciesFromExpression(output.Value)
+		deps := g.exprDeps(output.Value, "")
 		err := g.AddNode(&Node{
 			Key:    "output." + name,
 			Type:   NodeTypeOutput,
@@ -332,162 +322,87 @@ func BuildFromConfig(config *ast.Config) (*Graph, error) {
 	return g, nil
 }
 
-// extractResourceDependencies extracts all dependencies from a resource.
-func (g *Graph) extractResourceDependencies(resource *ast.Resource) []pdag.Node {
+// resourceDeps extracts all dependencies from a resource, applying prefix to resolved keys.
+func (g *Graph) resourceDeps(resource *ast.Resource, prefix string) []pdag.Node {
 	seen := make(map[pdag.Node]bool)
 
-	// Extract from count expression
-	for _, dep := range g.extractDependenciesFromExpression(resource.Count) {
+	for _, dep := range g.exprDeps(resource.Count, prefix) {
 		seen[dep] = true
 	}
-
-	// Extract from for_each expression
-	for _, dep := range g.extractDependenciesFromExpression(resource.ForEach) {
+	for _, dep := range g.exprDeps(resource.ForEach, prefix) {
 		seen[dep] = true
 	}
-
-	// Extract from explicit depends_on
 	for _, traversal := range resource.DependsOn {
-		dep := formatTraversal(traversal)
-		if dep != "" {
-			_, idx := g.newNode(dep)
+		if dep := formatTraversal(traversal); dep != "" {
+			_, idx := g.newNode(prefix + dep)
 			seen[idx] = true
 		}
 	}
-
-	// Extract from parent resource reference
 	if resource.ResourceParent != nil {
-		dep := formatTraversal(resource.ResourceParent)
-		if dep != "" {
-			_, idx := g.newNode(dep)
+		if dep := formatTraversal(resource.ResourceParent); dep != "" {
+			_, idx := g.newNode(prefix + dep)
 			seen[idx] = true
 		}
 	}
-
-	// Extract from provider reference
 	if resource.Provider != nil {
 		providerKey := resource.Provider.Name
 		if resource.Provider.Alias != "" {
 			providerKey = resource.Provider.Name + "." + resource.Provider.Alias
 		}
-		_, idx := g.newNode(providerKey)
+		_, idx := g.newNode(prefix + providerKey)
 		seen[idx] = true
 	}
-
-	// Extract from providers list
 	for _, traversal := range resource.Providers {
-		dep := formatTraversal(traversal)
-		if dep != "" {
-			_, idx := g.newNode(dep)
+		if dep := formatTraversal(traversal); dep != "" {
+			_, idx := g.newNode(prefix + dep)
 			seen[idx] = true
 		}
 	}
-
-	// Extract from resource body (config block)
 	if resource.Config != nil {
-		bodyDeps := g.extractDependenciesFromBody(resource.Config)
-		for _, dep := range bodyDeps {
+		for _, dep := range g.bodyDeps(resource.Config, prefix, nil) {
 			seen[dep] = true
 		}
 	}
-
-	// Extract from deleted_with (resource reference)
 	if resource.DeletedWith != nil {
-		dep := formatTraversal(resource.DeletedWith)
-		if dep != "" {
-			_, idx := g.newNode(dep)
+		if dep := formatTraversal(resource.DeletedWith); dep != "" {
+			_, idx := g.newNode(prefix + dep)
 			seen[idx] = true
 		}
 	}
-
-	// Extract from replace_with (list of resource references)
 	for _, traversal := range resource.ReplaceWith {
-		dep := formatTraversal(traversal)
-		if dep != "" {
-			_, idx := g.newNode(dep)
+		if dep := formatTraversal(traversal); dep != "" {
+			_, idx := g.newNode(prefix + dep)
 			seen[idx] = true
 		}
 	}
-
-	// Extract from replacement_trigger expression
-	for _, dep := range g.extractDependenciesFromExpression(resource.ReplacementTrigger) {
+	for _, dep := range g.exprDeps(resource.ReplacementTrigger, prefix) {
 		seen[dep] = true
 	}
-
-	// Extract from additional_secret_outputs expression
-	for _, dep := range g.extractDependenciesFromExpression(resource.AdditionalSecretOutputs) {
+	for _, dep := range g.exprDeps(resource.AdditionalSecretOutputs, prefix) {
 		seen[dep] = true
 	}
-
-	// Extract from aliases expression
-	for _, dep := range g.extractDependenciesFromExpression(resource.Aliases) {
+	for _, dep := range g.exprDeps(resource.Aliases, prefix) {
 		seen[dep] = true
 	}
 
 	return slices.Collect(maps.Keys(seen))
 }
 
-// extractModuleDependencies extracts all dependencies from a module block.
-func (g *Graph) extractModuleDependencies(module *ast.Module) []pdag.Node {
-	seen := make(map[pdag.Node]bool)
-
-	// Extract from count expression
-	for _, dep := range g.extractDependenciesFromExpression(module.Count) {
-		seen[dep] = true
+// providerDeps extracts all dependencies from a provider block, applying prefix to resolved keys.
+func (g *Graph) providerDeps(provider *ast.Provider, prefix string) []pdag.Node {
+	if provider.Config == nil {
+		return nil
 	}
-
-	// Extract from for_each expression
-	for _, dep := range g.extractDependenciesFromExpression(module.ForEach) {
-		seen[dep] = true
-	}
-
-	// Extract from explicit depends_on
-	for _, traversal := range module.DependsOn {
-		dep := formatTraversal(traversal)
-		if dep != "" {
-			_, idx := g.newNode(dep)
-			seen[idx] = true
-		}
-	}
-
-	// Extract from module config body
-	if module.Config != nil {
-		bodyDeps := g.extractDependenciesFromBody(module.Config)
-		for _, dep := range bodyDeps {
-			seen[dep] = true
-		}
-	}
-
-	return slices.Collect(maps.Keys(seen))
+	return g.bodyDeps(provider.Config, prefix, nil)
 }
 
-// extractProviderDependencies extracts all dependencies from a provider block.
-func (g *Graph) extractProviderDependencies(provider *ast.Provider) []pdag.Node {
-	seen := make(map[pdag.Node]bool)
-
-	// Extract from provider config body
-	if provider.Config != nil {
-		bodyDeps := g.extractDependenciesFromBody(provider.Config)
-		for _, dep := range bodyDeps {
-			seen[dep] = true
-		}
-	}
-
-	return slices.Collect(maps.Keys(seen))
-}
-
-// extractDependenciesFromBody extracts dependencies from an HCL body,
-// including attributes and nested blocks (e.g., dynamic blocks).
-func (g *Graph) extractDependenciesFromBody(body hcl.Body) []pdag.Node {
-	return g.extractDependenciesFromBodyExcluding(body, nil)
-}
-
-func (g *Graph) extractDependenciesFromBodyExcluding(body hcl.Body, exclude map[string]bool) []pdag.Node {
+// bodyDeps extracts dependencies from an HCL body, applying prefix to resolved keys.
+func (g *Graph) bodyDeps(body hcl.Body, prefix string, exclude map[string]bool) []pdag.Node {
 	seen := make(map[pdag.Node]bool)
 
 	attrs, _ := body.JustAttributes()
 	for _, attr := range attrs {
-		for _, dep := range g.extractDependenciesFromExpressionExcluding(attr.Expr, exclude) {
+		for _, dep := range g.exprDepsExcluding(attr.Expr, prefix, exclude) {
 			seen[dep] = true
 		}
 	}
@@ -495,24 +410,20 @@ func (g *Graph) extractDependenciesFromBodyExcluding(body hcl.Body, exclude map[
 	if syntaxBody, ok := body.(*hclsyntax.Body); ok {
 		for _, block := range syntaxBody.Blocks {
 			if block.Type == "dynamic" && len(block.Labels) > 0 {
-				// The iterator variable defaults to the block label.
 				iterName := block.Labels[0]
-				// Check for an explicit "iterator" attribute.
 				if iterAttr, ok := block.Body.Attributes["iterator"]; ok {
 					if keyword := hcl.ExprAsKeyword(iterAttr.Expr); keyword != "" {
 						iterName = keyword
 					}
 				}
 				childExclude := make(map[string]bool, len(exclude)+1)
-				for k, v := range exclude {
-					childExclude[k] = v
-				}
+				maps.Copy(childExclude, exclude)
 				childExclude[iterName] = true
-				for _, dep := range g.extractDependenciesFromBodyExcluding(block.Body, childExclude) {
+				for _, dep := range g.bodyDeps(block.Body, prefix, childExclude) {
 					seen[dep] = true
 				}
 			} else {
-				for _, dep := range g.extractDependenciesFromBodyExcluding(block.Body, exclude) {
+				for _, dep := range g.bodyDeps(block.Body, prefix, exclude) {
 					seen[dep] = true
 				}
 			}
@@ -522,13 +433,12 @@ func (g *Graph) extractDependenciesFromBodyExcluding(body hcl.Body, exclude map[
 	return slices.Collect(maps.Keys(seen))
 }
 
-// extractDependenciesFromExpression extracts ALL dependencies from an expression,
-// including var and local references (unlike eval.ExtractDependencies which only extracts resource deps).
-func (g *Graph) extractDependenciesFromExpression(expr hcl.Expression) []pdag.Node {
-	return g.extractDependenciesFromExpressionExcluding(expr, nil)
+// exprDeps extracts all dependencies from an expression, applying prefix to resolved keys.
+func (g *Graph) exprDeps(expr hcl.Expression, prefix string) []pdag.Node {
+	return g.exprDepsExcluding(expr, prefix, nil)
 }
 
-func (g *Graph) extractDependenciesFromExpressionExcluding(expr hcl.Expression, exclude map[string]bool) []pdag.Node {
+func (g *Graph) exprDepsExcluding(expr hcl.Expression, prefix string, exclude map[string]bool) []pdag.Node {
 	if expr == nil {
 		return nil
 	}
@@ -545,37 +455,32 @@ func (g *Graph) extractDependenciesFromExpressionExcluding(expr hcl.Expression, 
 		var dep string
 		switch namespace {
 		case "var":
-			// Variable reference: var.name
 			if len(parts) >= 1 {
-				dep = fmt.Sprintf("var.%s", parts[0])
+				dep = fmt.Sprintf("%svar.%s", prefix, parts[0])
 			}
 		case "local":
-			// Local reference: local.name
 			if len(parts) >= 1 {
-				dep = fmt.Sprintf("local.%s", parts[0])
+				dep = fmt.Sprintf("%slocal.%s", prefix, parts[0])
 			}
 		case "path", "terraform", "count", "each", "self":
-			// These are not node dependencies
 			continue
 		case "data":
-			// Data source reference: data.type.name
 			if len(parts) >= 2 {
-				dep = fmt.Sprintf("data.%s.%s", parts[0], parts[1])
+				dep = fmt.Sprintf("%sdata.%s.%s", prefix, parts[0], parts[1])
 			}
 		case "module":
-			// Module reference: module.name
-			if len(parts) >= 1 {
-				dep = fmt.Sprintf("module.%s", parts[0])
+			if len(parts) >= 2 {
+				dep = fmt.Sprintf("%smodule.%s.output.%s", prefix, parts[0], parts[1])
+			} else if len(parts) >= 1 {
+				dep = fmt.Sprintf("%smodule.%s", prefix, parts[0])
 			}
 		case "call":
-			// Call reference: call.resourceName.methodName
 			if len(parts) >= 2 {
-				dep = fmt.Sprintf("call.%s.%s", parts[0], parts[1])
+				dep = fmt.Sprintf("%scall.%s.%s", prefix, parts[0], parts[1])
 			}
 		default:
-			// Resource reference: type.name (namespace is the type)
 			if len(parts) >= 1 {
-				dep = fmt.Sprintf("%s.%s", namespace, parts[0])
+				dep = fmt.Sprintf("%s%s.%s", prefix, namespace, parts[0])
 			}
 		}
 
@@ -589,7 +494,6 @@ func (g *Graph) extractDependenciesFromExpressionExcluding(expr hcl.Expression, 
 		_, n := g.newNode(dep)
 		result[i] = n
 	}
-
 	return result
 }
 
@@ -651,6 +555,189 @@ func (g *Graph) Validate() []error {
 	}
 
 	return errors
+}
+
+// inlineModule loads a module and inlines its contents into the graph with a prefix.
+func (g *Graph) inlineModule(
+	name string, mod *ast.Module, parentPrefix string,
+	moduleLoader ModuleLoader, workDir string,
+) error {
+	loaded, err := moduleLoader.LoadModule(mod.Source, workDir)
+	if err != nil {
+		return fmt.Errorf("loading module %s: %w", name, err)
+	}
+
+	prefix := parentPrefix + "module." + name + "."
+	modInfo := &ModuleInfo{
+		Prefix:       prefix,
+		ModuleName:   name,
+		Module:       mod,
+		SourcePath:   loaded.SourcePath,
+		ParentPrefix: parentPrefix,
+	}
+
+	// Init node: depends on count/for_each/depends_on from parent scope.
+	initKey := prefix + "__init__"
+	var initDeps []pdag.Node
+	initDeps = append(initDeps, g.exprDeps(mod.Count, parentPrefix)...)
+	initDeps = append(initDeps, g.exprDeps(mod.ForEach, parentPrefix)...)
+	for _, traversal := range mod.DependsOn {
+		if dep := formatTraversal(traversal); dep != "" {
+			_, idx := g.newNode(parentPrefix + dep)
+			initDeps = append(initDeps, idx)
+		}
+	}
+	if err := g.AddNode(&Node{
+		Key:        initKey,
+		Type:       NodeTypeModuleInit,
+		Module:     mod,
+		ModuleInfo: modInfo,
+	}, initDeps); err != nil {
+		return err
+	}
+
+	_, initIdx := g.newNode(initKey)
+
+	// Variables: each depends on init + the corresponding input expression from the module block.
+	moduleInputAttrs, _ := mod.Config.JustAttributes()
+	for varName, v := range loaded.Config.Variables {
+		varDeps := []pdag.Node{initIdx}
+		if inputAttr, ok := moduleInputAttrs[varName]; ok {
+			varDeps = append(varDeps, g.exprDeps(inputAttr.Expr, parentPrefix)...)
+		}
+		if err := g.AddNode(&Node{
+			Key:        prefix + "var." + varName,
+			Type:       NodeTypeVariable,
+			Variable:   v,
+			ModuleInfo: modInfo,
+		}, varDeps); err != nil {
+			return err
+		}
+	}
+
+	// Locals
+	for localName, local := range loaded.Config.Locals {
+		if err := g.AddNode(&Node{
+			Key:        prefix + "local." + localName,
+			Type:       NodeTypeLocal,
+			Local:      local,
+			ModuleInfo: modInfo,
+		}, g.exprDeps(local.Value, prefix)); err != nil {
+			return err
+		}
+	}
+
+	// Providers
+	for key, provider := range loaded.Config.Providers {
+		if err := g.AddNode(&Node{
+			Key:        prefix + key,
+			Type:       NodeTypeProvider,
+			Provider:   provider,
+			ModuleInfo: modInfo,
+		}, g.providerDeps(provider, prefix)); err != nil {
+			return err
+		}
+	}
+
+	// Resources
+	for key, resource := range loaded.Config.Resources {
+		deps := g.resourceDeps(resource, prefix)
+		deps = append(deps, initIdx)
+		if err := g.AddNode(&Node{
+			Key:        prefix + key,
+			Type:       NodeTypeResource,
+			Resource:   resource,
+			ModuleInfo: modInfo,
+		}, deps); err != nil {
+			return err
+		}
+	}
+
+	// Data sources
+	for key, ds := range loaded.Config.DataSources {
+		deps := g.resourceDeps(ds, prefix)
+		deps = append(deps, initIdx)
+		if err := g.AddNode(&Node{
+			Key:        prefix + "data." + key,
+			Type:       NodeTypeDataSource,
+			Resource:   ds,
+			ModuleInfo: modInfo,
+		}, deps); err != nil {
+			return err
+		}
+	}
+
+	// Outputs
+	for outputName, output := range loaded.Config.Outputs {
+		if err := g.AddNode(&Node{
+			Key:        prefix + "output." + outputName,
+			Type:       NodeTypeOutput,
+			Output:     output,
+			ModuleInfo: modInfo,
+		}, g.exprDeps(output.Value, prefix)); err != nil {
+			return err
+		}
+	}
+
+	// Completion node: depends on all outputs + init.
+	completionKey := parentPrefix + "module." + name
+	completionDeps := []pdag.Node{initIdx}
+	for outputName := range loaded.Config.Outputs {
+		_, idx := g.newNode(prefix + "output." + outputName)
+		completionDeps = append(completionDeps, idx)
+	}
+	if err := g.AddNode(&Node{
+		Key:        completionKey,
+		Type:       NodeTypeModule,
+		Module:     mod,
+		ModuleInfo: modInfo,
+	}, completionDeps); err != nil {
+		return err
+	}
+
+	if err := g.addCallNodes(loaded.Config, prefix, modInfo); err != nil {
+		return err
+	}
+
+	// Nested modules
+	for nestedName, nestedMod := range loaded.Config.Modules {
+		if err := g.inlineModule(nestedName, nestedMod, prefix, moduleLoader, loaded.SourcePath); err != nil {
+			return fmt.Errorf("inlining nested module %s: %w", nestedName, err)
+		}
+	}
+
+	return nil
+}
+
+// addCallNodes adds call nodes from config into the graph with the given prefix.
+func (g *Graph) addCallNodes(config *ast.Config, prefix string, modInfo *ModuleInfo) error {
+	for key, call := range config.Calls {
+		callKey := prefix + "call." + key
+		var deps []pdag.Node
+		for resKey, res := range config.Resources {
+			if res.Name == call.ResourceName {
+				_, idx := g.newNode(prefix + resKey)
+				deps = append(deps, idx)
+				break
+			}
+		}
+		if _, exists := config.Providers[call.ResourceName]; exists {
+			_, idx := g.newNode(prefix + call.ResourceName)
+			deps = append(deps, idx)
+		}
+		if call.Config != nil {
+			deps = append(deps, g.bodyDeps(call.Config, prefix, nil)...)
+		}
+		if err := g.AddNode(&Node{
+			Key:        callKey,
+			Type:       NodeTypeCall,
+			Call:       call,
+			ModuleInfo: modInfo,
+		}, deps); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func addToSortedListAsSet[S ~[]E, E cmp.Ordered](s *S, element E) {

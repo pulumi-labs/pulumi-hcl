@@ -164,6 +164,17 @@ type CallResponse struct {
 	Failures []string
 }
 
+// moduleInstance represents a single runtime instance of an inlined module.
+type moduleInstance struct {
+	Key     string        // e.g., "module.first" or "module.first[0]"
+	EvalCtx *eval.Context // per-instance evaluation context
+	URN     string        // component URN
+	Index   *int          // count index (nil if not using count)
+	EachKey *cty.Value    // for_each key (nil if not using for_each)
+	EachVal *cty.Value    // for_each value (nil if not using for_each)
+	Outputs map[string]cty.Value // collected output values
+}
+
 // inheritableOpts holds the resource options that child resources can inherit from their parent.
 type inheritableOpts struct {
 	Protect        *bool
@@ -229,11 +240,8 @@ type Engine struct {
 	// moduleLoader loads and caches module configurations.
 	moduleLoader *modules.Loader
 
-	// moduleOutputs maps module keys to their output values.
-	moduleOutputs map[string]cty.Value
-
-	// parentURN is the parent resource URN (for child modules).
-	parentURN string
+	// moduleInstances maps module prefix → list of instances for inlined modules.
+	moduleInstances *util.SyncMap[string, []*moduleInstance]
 
 	parallel int
 
@@ -308,7 +316,7 @@ func NewEngine(config *ast.Config, opts *EngineOptions) *Engine {
 		packages:                opts.Packages,
 		packageRefs:             make(map[string]PackageRef),
 		moduleLoader:            modules.NewLoader(),
-		moduleOutputs:           make(map[string]cty.Value),
+		moduleInstances:         util.NewSyncMap[string, []*moduleInstance](),
 		parallel:                opts.Parallel,
 		failedNodes:             util.NewSyncMap[string, error](),
 	}
@@ -331,8 +339,8 @@ func (e *Engine) Run(ctx context.Context) error {
 		return fmt.Errorf("registering stack: %w", err)
 	}
 
-	// Build the dependency graph
-	g, err := graph.BuildFromConfig(e.config)
+	// Build the dependency graph with module inlining
+	g, err := graph.BuildFromConfig(e.config, &moduleLoaderAdapter{e.moduleLoader}, e.workDir)
 	if err != nil {
 		return fmt.Errorf("building dependency graph: %w", err)
 	}
@@ -409,17 +417,20 @@ func (e *Engine) processNode(ctx context.Context, node *graph.Node) error {
 		return e.processResource(ctx, node)
 	case graph.NodeTypeDataSource:
 		return e.processDataSource(ctx, node)
+	case graph.NodeTypeModuleInit:
+		return e.processModuleInit(ctx, node)
 	case graph.NodeTypeModule:
-		return e.processModule(ctx, node)
+		return e.processModuleComplete(ctx, node)
 	case graph.NodeTypeCall:
 		return e.processCall(ctx, node)
 	case graph.NodeTypeOutput:
-		// Outputs are processed after the main loop
+		if node.ModuleInfo != nil {
+			return e.processModuleOutput(ctx, node)
+		}
 		return nil
 	case graph.NodeTypeProvider:
 		return e.processProvider(ctx, node)
 	case graph.NodeTypeBuiltin:
-		// We don't need to evaluate builtins
 		return nil
 	case graph.NodeTypeUnknown:
 		return errors.New("unknown node type")
@@ -429,7 +440,9 @@ func (e *Engine) processNode(ctx context.Context, node *graph.Node) error {
 }
 
 func (e *Engine) processGraph(ctx context.Context, g *graph.Graph) error {
-	if err := g.InjectAfter(e.checkPulumiVersion, graph.NodeTypeVariable); err != nil {
+	if err := g.InjectAfter(e.checkPulumiVersion, func(n *graph.Node) bool {
+		return n.Type == graph.NodeTypeVariable && n.ModuleInfo == nil
+	}); err != nil {
 		return err
 	}
 	return g.Walk(ctx, e.processNode, e.parallel)
@@ -442,25 +455,23 @@ func (e *Engine) processVariable(_ context.Context, node *graph.Node) error {
 		return fmt.Errorf("variable node missing Variable field")
 	}
 
+	// Module variable: evaluate input expression in parent context, store in each instance context.
+	if node.ModuleInfo != nil {
+		return e.processModuleVariable(node)
+	}
+
 	varName := node.Key[4:] // Remove "var." prefix
 	var val cty.Value
 	var isSecret bool
 	var valueSource string
 
 	// Variable value precedence (highest to lowest):
-	// 0. Already there (as produced by the parent when this is a child module)
 	// 1. Environment variable TF_VAR_<name>
 	// 2. Pulumi stack config (projectName:<name>)
 	// 3. Default value
 
 	if e.evaluator.Context().HCLContext().Variables["var"].Type().HasAttribute(varName) {
-		// This would imply that there are multiple variables setting the same name.
-		if e.parentURN == "" {
-			return fmt.Errorf("%q already evaluated", varName)
-		}
-
-		// The variable is already set, so we don't need to do anything.
-		return nil
+		return fmt.Errorf("%q already evaluated", varName)
 	}
 
 	// Check environment variable first
@@ -624,13 +635,23 @@ func (e *Engine) processLocal(ctx context.Context, node *graph.Node) error {
 		return fmt.Errorf("local node missing Local field")
 	}
 
-	// Evaluate the local value expression, intercepting can() calls.
+	if node.ModuleInfo != nil {
+		return e.forEachModuleInstance(node, func(inst *moduleInstance) error {
+			localName := strings.TrimPrefix(node.Key, node.ModuleInfo.Prefix+"local.")
+			val, diags := local.Value.Value(inst.EvalCtx.HCLContext())
+			if diags.HasErrors() {
+				return fmt.Errorf("evaluating local value %s: %s", localName, diags.Error())
+			}
+			inst.EvalCtx.SetLocal(localName, val)
+			return nil
+		})
+	}
+
 	val, diags := e.evaluator.EvaluateExpression(local.Value)
 	if diags.HasErrors() {
 		return fmt.Errorf("evaluating local value: %s", diags.Error())
 	}
 
-	// Store in eval context
 	localName := node.Key[6:] // Remove "local." prefix
 	e.evaluator.Context().SetLocal(localName, val)
 
@@ -644,22 +665,31 @@ func (e *Engine) processProvider(ctx context.Context, node *graph.Node) error {
 		return fmt.Errorf("provider node missing Provider field")
 	}
 
-	// Construct the provider type token: "pulumi:providers:<provider-name>"
+	if node.ModuleInfo != nil {
+		return e.forEachModuleInstance(node, func(inst *moduleInstance) error {
+			return e.registerProviderInContext(ctx, node, provider, inst.EvalCtx, inst.URN, inst)
+		})
+	}
+
+	return e.registerProviderInContext(ctx, node, provider, e.evaluator.Context(), e.stackURN, nil)
+}
+
+func (e *Engine) registerProviderInContext(
+	ctx context.Context, node *graph.Node, provider *ast.Provider,
+	evalCtx *eval.Context, parentURN string, modInst *moduleInstance,
+) error {
 	typeToken := "pulumi:providers:" + provider.Name
 
-	// Evaluate provider configuration
 	attrs, _ := provider.Config.JustAttributes()
 	inputs := make(map[string]property.Value)
 
-	// TODO: This needs to lookup a resource schema & then use transform methods
-
+	hclCtx := evalCtx.HCLContext()
 	for name, attr := range attrs {
-		// Skip the alias attribute as it's not part of the provider configuration
 		if name == "alias" {
 			continue
 		}
 
-		val, diags := e.evaluator.EvaluateExpression(attr.Expr)
+		val, diags := attr.Expr.Value(hclCtx)
 		if diags.HasErrors() {
 			return fmt.Errorf("evaluating provider attribute %s: %s", name, diags.Error())
 		}
@@ -672,11 +702,13 @@ func (e *Engine) processProvider(ctx context.Context, node *graph.Node) error {
 		inputs[name] = pv
 	}
 
-	// Register the provider resource
-	// The logical name for the provider is its alias (stored in node.Key)
 	logicalName := provider.Alias
 	if logicalName == "" {
 		logicalName = provider.Name
+	}
+	if modInst != nil {
+		modInstanceName := extractResourceName(modInst.Key)
+		logicalName = modInstanceName + "-" + logicalName
 	}
 
 	resp, err := e.resmon.RegisterResource(ctx, RegisterResourceRequest{
@@ -684,15 +716,14 @@ func (e *Engine) processProvider(ctx context.Context, node *graph.Node) error {
 		Name:   logicalName,
 		Inputs: property.NewMap(inputs),
 		Custom: true,
+		Parent: parentURN,
 	})
 	if err != nil {
 		return fmt.Errorf("registering provider %s: %w", node.Key, err)
 	}
 
-	// Provider resources should return an ID from the engine
 	providerID := resp.ID
 
-	// Store the provider outputs in the same format as regular resources
 	outputObj := make(map[string]cty.Value)
 	outputObj["id"] = cty.StringVal(providerID)
 	outputObj["urn"] = cty.StringVal(resp.URN)
@@ -703,7 +734,14 @@ func (e *Engine) processProvider(ctx context.Context, node *graph.Node) error {
 	}
 
 	e.resourceOutputs.Set(node.Key, cty.ObjectVal(outputObj))
-	e.evaluator.Context().SetResource(node.Key, cty.ObjectVal(outputObj))
+
+	if node.ModuleInfo != nil {
+		// Strip prefix for module-internal references
+		bareKey := strings.TrimPrefix(node.Key, node.ModuleInfo.Prefix)
+		evalCtx.SetResource(bareKey, cty.ObjectVal(outputObj))
+	} else {
+		evalCtx.SetResource(node.Key, cty.ObjectVal(outputObj))
+	}
 
 	return nil
 }
@@ -715,17 +753,30 @@ func (e *Engine) processResource(ctx context.Context, node *graph.Node) error {
 		return fmt.Errorf("resource node missing Resource field")
 	}
 
-	// Resolve the resource type to a Pulumi type token.
+	if node.ModuleInfo != nil {
+		return e.forEachModuleInstance(node, func(inst *moduleInstance) error {
+			return e.processResourceInContext(ctx, node, res, inst.EvalCtx, inst.URN, inst)
+		})
+	}
+
+	return e.processResourceInContext(ctx, node, res, e.evaluator.Context(), e.stackURN, nil)
+}
+
+func (e *Engine) processResourceInContext(
+	ctx context.Context, node *graph.Node, res *ast.Resource,
+	evalCtx *eval.Context, parentURN string, modInst *moduleInstance,
+) error {
 	resSchema, err := packages.ResolveResource(ctx, e.pkgLoader, e.knownProviders(), res.Type)
 	if err != nil {
 		return fmt.Errorf("resolving resource type %s: %w", res.Type, err)
 	}
 
-	// Check for count/for_each expansion
+	tempEvaluator := eval.NewEvaluator(evalCtx)
+
 	expander := graph.NewResourceExpander()
 
 	if res.Count != nil {
-		count, isBool, diags := e.evaluator.EvaluateCount(res.Count)
+		count, isBool, diags := tempEvaluator.EvaluateCount(res.Count)
 		if diags.HasErrors() {
 			return fmt.Errorf("evaluating count: %s", diags.Error())
 		}
@@ -737,24 +788,23 @@ func (e *Engine) processResource(ctx context.Context, node *graph.Node) error {
 	}
 
 	if res.ForEach != nil {
-		forEach, diags := e.evaluator.EvaluateForEach(res.ForEach)
+		forEach, diags := tempEvaluator.EvaluateForEach(res.ForEach)
 		if diags.HasErrors() {
 			return fmt.Errorf("evaluating for_each: %s", diags.Error())
 		}
 		expander.SetForEach(node.Key, forEach)
 	}
 
-	// Expand the resource
 	result := expander.Expand(node)
 
-	// Register each instance
 	for _, instance := range result.Instances {
-		// Skip this instance if any of the resource's dependencies failed.
 		if e.hasFailedDependency(res) {
 			e.failedNodes.Set(instance.Key, fmt.Errorf("skipped: dependency failed"))
 			continue
 		}
-		if err := e.registerResourceInstance(ctx, res, resSchema, instance); err != nil {
+		if err := e.registerResourceInstanceInContext(
+			ctx, node, res, resSchema, instance, evalCtx, parentURN, modInst,
+		); err != nil {
 			return fmt.Errorf("registering %s: %w", instance.Key, err)
 		}
 	}
@@ -762,22 +812,27 @@ func (e *Engine) processResource(ctx context.Context, node *graph.Node) error {
 	return nil
 }
 
-// registerResourceInstance registers a single resource instance with Pulumi.
-func (e *Engine) registerResourceInstance(
+// registerResourceInstanceInContext registers a single resource instance with Pulumi.
+func (e *Engine) registerResourceInstanceInContext(
 	ctx context.Context,
+	node *graph.Node,
 	res *ast.Resource,
 	resSchema *schema.Resource,
 	instance *graph.ExpandedResource,
+	evalCtx *eval.Context,
+	parentURN string,
+	modInst *moduleInstance,
 ) error {
-	// Set up instance-specific context (count.index, each.key, etc.)
 	if instance.Index != nil {
-		e.evaluator.Context().SetCount(*instance.Index)
-		defer e.evaluator.Context().ClearCount()
+		evalCtx.SetCount(*instance.Index)
+		defer evalCtx.ClearCount()
 	}
 	if instance.EachKey != nil && instance.EachValue != nil {
-		e.evaluator.Context().SetEach(*instance.EachKey, *instance.EachValue)
-		defer e.evaluator.Context().ClearEach()
+		evalCtx.SetEach(*instance.EachKey, *instance.EachValue)
+		defer evalCtx.ClearEach()
 	}
+
+	hclCtx := evalCtx.HCLContext()
 
 	dependsOn := make(map[string][]string)
 	addToDependsOn := func(prop, urn string) {
@@ -798,32 +853,31 @@ func (e *Engine) registerResourceInstance(
 			var val cty.Value
 			var diags hcl.Diagnostics
 			if len(extraVars) > 0 {
-				childCtx := e.evaluator.Context().HCLContext().NewChild()
+				childCtx := hclCtx.NewChild()
 				childCtx.Variables = extraVars
 				val, diags = expr.Value(childCtx)
 			} else {
-				val, diags = e.evaluator.EvaluateExpression(expr)
+				val, diags = expr.Value(hclCtx)
 			}
 			if diags.HasErrors() {
 				return val, diags
 			}
 
-			// Plain properties are passed as direct values, not as tracked outputs,
-			// so no property dependency tracking is needed.
 			if plainInputProps[string(propKey)] {
 				return val, diags
 			}
 
-			// Extract dependencies from this attribute's expression
 			for _, dep := range eval.ExtractDependencies(expr) {
-				// Look up the URN for this dependency
-				if resOutputs, ok := e.resourceOutputs.Get(dep); ok {
+				fullDep := dep
+				if node.ModuleInfo != nil {
+					fullDep = node.ModuleInfo.Prefix + dep
+				}
+				if resOutputs, ok := e.resourceOutputs.Get(fullDep); ok {
 					if urnVal := resOutputs.GetAttr("urn"); urnVal.Type() == cty.String {
 						addToDependsOn(string(propKey), urnVal.AsString())
 					}
 				}
-				// For data source dependencies, inherit their dependencies transitively
-				if dsKey, ok := strings.CutPrefix(dep, "data."); ok {
+				if dsKey, ok := strings.CutPrefix(fullDep, "data."); ok {
 					if dsDeps, exists := e.dataSourceDependencies.Get(dsKey); exists {
 						for _, urn := range dsDeps {
 							addToDependsOn(string(propKey), string(urn))
@@ -838,17 +892,14 @@ func (e *Engine) registerResourceInstance(
 		return diags
 	}
 
-	// For provider resources, plugin_download_url is a configuration input property but
-	// the parser extracts it as a meta-argument. Re-add it to the resource inputs.
 	if strings.HasPrefix(res.Type, "pulumi_providers_") && res.PluginDownloadURL != nil {
-		val, valDiags := res.PluginDownloadURL.Value(e.evaluator.Context().HCLContext())
+		val, valDiags := res.PluginDownloadURL.Value(hclCtx)
 		if !valDiags.HasErrors() && val.Type() == cty.String {
 			resourceInputs = resourceInputs.Set("pluginDownloadURL", property.New(val.AsString()))
 		}
 	}
 
-	// Build resource options
-	opts := e.buildResourceOptions(res, instance)
+	opts := e.buildResourceOptionsInContext(res, instance, evalCtx, parentURN, node.ModuleInfo)
 	opts.Custom = !resSchema.IsComponent
 	opts.Remote = resSchema.IsComponent
 	opts.PropertyDependencies = dependsOn
@@ -861,7 +912,6 @@ func (e *Engine) registerResourceInstance(
 	}
 	slices.Sort(opts.DependsOn)
 
-	// Set version from required_providers if not explicitly set by resource options.
 	if opts.Version == "" {
 		pkgName := packageNameFromResourceType(res.Type)
 		if e.config.Terraform != nil {
@@ -871,28 +921,22 @@ func (e *Engine) registerResourceInstance(
 		}
 	}
 
-	// Set plugin download URL from package schema if not explicitly set.
 	if opts.PluginDownloadURL == "" && resSchema.PackageReference != nil {
 		opts.PluginDownloadURL = resSchema.PackageReference.PluginDownloadURL()
 	}
 
 	opts.PackageRef = e.packageRefForType(res.Type)
 
-	// Evaluate preconditions before resource creation
 	if len(res.Preconditions) > 0 {
 		if err := e.evaluateCheckRules(res.Preconditions, instance.Key, "precondition"); err != nil {
 			return err
 		}
 	}
 
-	// Register the resource
-	// Extract the resource name from the instance key (e.g., "pulumi_stash.myStash" -> "myStash")
-	resourceName := extractResourceName(instance.Key)
+	resourceName := e.extractModuleResourceName(instance.Key, node.ModuleInfo, modInst)
 
 	urn, id, outputs, err := e.registerResource(ctx, resSchema.Token, resourceName, resourceInputs, opts)
 	if err != nil {
-		// Store the failure so dependent resources can detect it and skip.
-		// Return nil so the PDAG walk continues and independent resources proceed.
 		e.failedNodes.Set(instance.Key, fmt.Errorf("registering resource: %w", err))
 		return nil
 	}
@@ -904,7 +948,6 @@ func (e *Engine) registerResourceInstance(
 		return fmt.Errorf("resolving resource references in outputs: %w", err)
 	}
 
-	// Store outputs for future references
 	outputObj, err := transform.ResourceOutputToCty(outputs, resSchema, e.dryRun)
 	if err != nil {
 		return fmt.Errorf("converting resource outputs to HCL types: %w", err)
@@ -914,7 +957,6 @@ func (e *Engine) registerResourceInstance(
 
 	e.resourceOutputs.Set(instance.Key, cty.ObjectVal(outputObj))
 
-	// Store inheritable options so child resources can inherit from this resource.
 	var iOpts inheritableOpts
 	if opts.Protect {
 		iOpts.Protect = new(true)
@@ -922,20 +964,21 @@ func (e *Engine) registerResourceInstance(
 	iOpts.RetainOnDelete = opts.RetainOnDelete
 	e.resourceInheritableOpts.Set(instance.Key, iOpts)
 
-	// Also store in eval context for expression references
-	e.evaluator.Context().SetResource(instance.Key, cty.ObjectVal(outputObj))
+	if node.ModuleInfo != nil {
+		bareKey := strings.TrimPrefix(instance.Key, node.ModuleInfo.Prefix)
+		evalCtx.SetResource(bareKey, cty.ObjectVal(outputObj))
+	} else {
+		evalCtx.SetResource(instance.Key, cty.ObjectVal(outputObj))
+	}
 
-	// Evaluate postconditions after resource creation
-	// Set self to the resource outputs so postconditions can reference self
 	if len(res.Postconditions) > 0 {
-		e.evaluator.Context().SetSelf(cty.ObjectVal(outputObj))
-		defer e.evaluator.Context().ClearSelf()
+		evalCtx.SetSelf(cty.ObjectVal(outputObj))
+		defer evalCtx.ClearSelf()
 		if err := e.evaluateCheckRules(res.Postconditions, instance.Key, "postcondition"); err != nil {
 			return err
 		}
 	}
 
-	// Process provisioners after resource creation
 	if len(res.Provisioners) > 0 {
 		if err := e.processProvisioners(ctx, res, urn, cty.ObjectVal(outputObj), instance.Key); err != nil {
 			return fmt.Errorf("processing provisioners: %w", err)
@@ -945,24 +988,26 @@ func (e *Engine) registerResourceInstance(
 	return nil
 }
 
-// buildResourceOptions builds resource options from the resource definition.
-func (e *Engine) buildResourceOptions(res *ast.Resource, instance *graph.ExpandedResource) *ResourceOptions {
+// buildResourceOptionsInContext builds resource options using the provided eval context and parent URN.
+func (e *Engine) buildResourceOptionsInContext(
+	res *ast.Resource, instance *graph.ExpandedResource,
+	evalCtx *eval.Context, parentURN string,
+	modInfo *graph.ModuleInfo,
+) *ResourceOptions {
 	opts := &ResourceOptions{}
+	opts.Parent = parentURN
 
-	// Default parent: use the module component URN for child engines, or the stack URN for top-level.
-	if e.parentURN != "" {
-		opts.Parent = e.parentURN
-	} else {
-		opts.Parent = e.stackURN
+	resPrefix := ""
+	if modInfo != nil {
+		resPrefix = modInfo.Prefix
 	}
 
-	// Handle depends_on - resolve to URNs
 	for _, dep := range res.DependsOn {
 		depKey := graph.FormatTraversal(dep)
 		if depKey == "" {
 			continue
 		}
-		if outputs, ok := e.resourceOutputs.Get(depKey); ok {
+		if outputs, ok := e.resourceOutputs.Get(resPrefix + depKey); ok {
 			urnVal := outputs.GetAttr("urn")
 			if urnVal.Type() == cty.String {
 				opts.DependsOn = append(opts.DependsOn, urnVal.AsString())
@@ -1008,11 +1053,10 @@ func (e *Engine) buildResourceOptions(res *ast.Resource, instance *graph.Expande
 		}
 	}
 
-	// Handle parent resource reference
 	if res.ResourceParent != nil {
 		depKey := graph.FormatTraversal(res.ResourceParent)
 		if depKey != "" {
-			if outputs, ok := e.resourceOutputs.Get(depKey); ok {
+			if outputs, ok := e.resourceOutputs.Get(resPrefix + depKey); ok {
 				urnVal := outputs.GetAttr("urn")
 				if urnVal.Type() == cty.String {
 					opts.Parent = urnVal.AsString()
@@ -1021,15 +1065,12 @@ func (e *Engine) buildResourceOptions(res *ast.Resource, instance *graph.Expande
 		}
 	}
 
-	// Handle provider reference
 	if res.Provider != nil {
 		providerKey := res.Provider.Name
 		if res.Provider.Alias != "" {
 			providerKey = res.Provider.Name + "." + res.Provider.Alias
 		}
-		// Look up the provider URN and ID
-		if providerOutputs, ok := e.resourceOutputs.Get(providerKey); ok {
-			// Provider reference format: "<urn>::<id>"
+		if providerOutputs, ok := e.resourceOutputs.Get(resPrefix + providerKey); ok {
 			urnVal := providerOutputs.GetAttr("urn")
 			idVal := providerOutputs.GetAttr("id")
 			if urnVal.Type() == cty.String && idVal.Type() == cty.String {
@@ -1038,13 +1079,12 @@ func (e *Engine) buildResourceOptions(res *ast.Resource, instance *graph.Expande
 		}
 	}
 
-	// Handle providers list (for component resources)
 	for _, traversal := range res.Providers {
 		providerKey := graph.FormatTraversal(traversal)
 		if providerKey == "" {
 			continue
 		}
-		if providerOutputs, ok := e.resourceOutputs.Get(providerKey); ok {
+		if providerOutputs, ok := e.resourceOutputs.Get(resPrefix + providerKey); ok {
 			urnVal := providerOutputs.GetAttr("urn")
 			idVal := providerOutputs.GetAttr("id")
 			if urnVal.Type() == cty.String && idVal.Type() == cty.String {
@@ -1099,9 +1139,10 @@ func (e *Engine) buildResourceOptions(res *ast.Resource, instance *graph.Expande
 	// Handle import blocks - resolve import ID from import blocks that target this resource
 	opts.ImportId = e.resolveImportId(res)
 
-	// Handle additional_secret_outputs
+	hclCtx := evalCtx.HCLContext()
+
 	if res.AdditionalSecretOutputs != nil {
-		secretOutputsVal, diags := res.AdditionalSecretOutputs.Value(e.evaluator.Context().HCLContext())
+		secretOutputsVal, diags := res.AdditionalSecretOutputs.Value(hclCtx)
 		if !diags.HasErrors() && (secretOutputsVal.Type().IsListType() || secretOutputsVal.Type().IsTupleType()) {
 			it := secretOutputsVal.ElementIterator()
 			for it.Next() {
@@ -1113,20 +1154,18 @@ func (e *Engine) buildResourceOptions(res *ast.Resource, instance *graph.Expande
 		}
 	}
 
-	// Handle retain_on_delete
 	if res.RetainOnDelete != nil {
-		val, diags := res.RetainOnDelete.Value(e.evaluator.Context().HCLContext())
+		val, diags := res.RetainOnDelete.Value(hclCtx)
 		if !diags.HasErrors() && val.Type() == cty.Bool {
 			b := val.True()
 			opts.RetainOnDelete = &b
 		}
 	}
 
-	// Handle deleted_with - resolve to URN
 	if res.DeletedWith != nil {
 		depKey := graph.FormatTraversal(res.DeletedWith)
 		if depKey != "" {
-			if outputs, ok := e.resourceOutputs.Get(depKey); ok {
+			if outputs, ok := e.resourceOutputs.Get(resPrefix + depKey); ok {
 				urnVal := outputs.GetAttr("urn")
 				if urnVal.Type() == cty.String {
 					opts.DeletedWith = urnVal.AsString()
@@ -1135,13 +1174,12 @@ func (e *Engine) buildResourceOptions(res *ast.Resource, instance *graph.Expande
 		}
 	}
 
-	// Handle replace_with - resolve each resource reference to URN
 	for _, ref := range res.ReplaceWith {
 		depKey := graph.FormatTraversal(ref)
 		if depKey == "" {
 			continue
 		}
-		if outputs, ok := e.resourceOutputs.Get(depKey); ok {
+		if outputs, ok := e.resourceOutputs.Get(resPrefix + depKey); ok {
 			urnVal := outputs.GetAttr("urn")
 			if urnVal.Type() == cty.String {
 				opts.ReplaceWith = append(opts.ReplaceWith, urnVal.AsString())
@@ -1155,9 +1193,8 @@ func (e *Engine) buildResourceOptions(res *ast.Resource, instance *graph.Expande
 	// Handle replace_on_changes - property paths (already in camelCase)
 	opts.ReplaceOnChanges = append(opts.ReplaceOnChanges, res.ReplaceOnChanges...)
 
-	// Handle replacement_trigger
 	if res.ReplacementTrigger != nil {
-		val, diags := res.ReplacementTrigger.Value(e.evaluator.Context().HCLContext())
+		val, diags := res.ReplacementTrigger.Value(hclCtx)
 		if !diags.HasErrors() {
 			pv, err := transform.CtyToPropertyValue(val)
 			if err == nil {
@@ -1171,9 +1208,8 @@ func (e *Engine) buildResourceOptions(res *ast.Resource, instance *graph.Expande
 		opts.ImportId = res.ImportID
 	}
 
-	// Handle env_var_mappings
 	if res.EnvVarMappings != nil {
-		val, diags := res.EnvVarMappings.Value(e.evaluator.Context().HCLContext())
+		val, diags := res.EnvVarMappings.Value(hclCtx)
 		if !diags.HasErrors() && (val.Type().IsObjectType() || val.Type().IsMapType()) {
 			mappings := make(map[string]string)
 			for k, v := range val.AsValueMap() {
@@ -1187,29 +1223,24 @@ func (e *Engine) buildResourceOptions(res *ast.Resource, instance *graph.Expande
 		}
 	}
 
-	// Handle version
 	if res.Version != nil {
-		val, diags := res.Version.Value(e.evaluator.Context().HCLContext())
+		val, diags := res.Version.Value(hclCtx)
 		if !diags.HasErrors() && val.Type() == cty.String {
 			opts.Version = val.AsString()
 		}
 	}
 
-	// Handle plugin_download_url as a resource option.
-	// For provider resources (pulumi_providers_*), plugin_download_url is a provider
-	// configuration property, not a resource option, so it should not be set here.
 	if res.PluginDownloadURL != nil && !strings.HasPrefix(res.Type, "pulumi_providers_") {
-		val, diags := res.PluginDownloadURL.Value(e.evaluator.Context().HCLContext())
+		val, diags := res.PluginDownloadURL.Value(hclCtx)
 		if !diags.HasErrors() && val.Type() == cty.String {
 			opts.PluginDownloadURL = val.AsString()
 		}
 	}
 
-	// Inherit options from parent resource if not explicitly set.
 	if res.ResourceParent != nil {
 		depKey := graph.FormatTraversal(res.ResourceParent)
 		if depKey != "" {
-			if parentOpts, ok := e.resourceInheritableOpts.Get(depKey); ok {
+			if parentOpts, ok := e.resourceInheritableOpts.Get(resPrefix + depKey); ok {
 				if (res.Lifecycle == nil || res.Lifecycle.PreventDestroy == nil) &&
 					parentOpts.Protect != nil && *parentOpts.Protect {
 					opts.Protect = true
@@ -1411,19 +1442,38 @@ func extractResourceName(key string) string {
 	baseKey, index, eachKey := graph.ParseInstanceKey(key)
 
 	// Strip the "type." prefix from the base key to get the logical name.
-	dotIndex := strings.Index(baseKey, ".")
-	name := baseKey
-	if dotIndex != -1 {
-		name = baseKey[dotIndex+1:]
+	if _, after, ok := strings.Cut(baseKey, "."); ok {
+		baseKey = after
 	}
 
 	if index != nil {
-		return fmt.Sprintf("%s-%d", name, *index)
+		return fmt.Sprintf("%s-%d", baseKey, *index)
 	}
 	if eachKey != nil {
-		return fmt.Sprintf("%s-%s", name, *eachKey)
+		return fmt.Sprintf("%s-%s", baseKey, *eachKey)
 	}
-	return name
+	return baseKey
+}
+
+// extractModuleResourceName computes the Pulumi resource name for a resource inside a module.
+// Resources inside a component are prefixed with the component instance name.
+// For example, resource "res" inside component "comp" becomes "comp-res",
+// and inside "comp[0]" becomes "comp[0]-res".
+func (*Engine) extractModuleResourceName(
+	instanceKey string, modInfo *graph.ModuleInfo, modInst *moduleInstance,
+) string {
+	if modInfo == nil || modInst == nil {
+		return extractResourceName(instanceKey)
+	}
+
+	// Strip the module prefix to get the bare resource key (e.g., "simple_resource.name").
+	bareKey := strings.TrimPrefix(instanceKey, modInfo.Prefix)
+	bareResourceName := extractResourceName(bareKey)
+
+	// Extract the module instance name (e.g., "many" or "many[0]").
+	modInstanceName := extractResourceName(modInst.Key)
+
+	return modInstanceName + "-" + bareResourceName
 }
 
 // formatTraversalForIgnoreChanges formats a traversal for ignore_changes.
@@ -1865,182 +1915,381 @@ func (e *Engine) resolveResourceRefsInOutputs(
 // processModule processes a module call.
 // Terraform modules map to Pulumi component resources. The module's resources
 // become children of the component, and module outputs are collected for references.
-func (e *Engine) processModule(ctx context.Context, node *graph.Node) error {
-	mod := node.Module
-	if mod == nil {
-		return fmt.Errorf("module node missing Module field")
-	}
+// moduleLoaderAdapter adapts modules.Loader to graph.ModuleLoader.
+type moduleLoaderAdapter struct {
+	loader *modules.Loader
+}
 
-	// Expand the module for count/for_each
-	instances, err := e.expandModuleInstances(mod)
+func (a *moduleLoaderAdapter) LoadModule(source, workDir string) (*graph.LoadedModule, error) {
+	loaded, err := a.loader.LoadModule(source, workDir)
 	if err != nil {
-		return fmt.Errorf("expanding module instances: %w", err)
+		return nil, err
+	}
+	return &graph.LoadedModule{
+		Config:     loaded.Config,
+		SourcePath: loaded.SourcePath,
+	}, nil
+}
+
+// forEachModuleInstance iterates over all instances of the module identified by node.ModuleInfo.Prefix.
+func (e *Engine) forEachModuleInstance(node *graph.Node, fn func(inst *moduleInstance) error) error {
+	instances, ok := e.moduleInstances.Get(node.ModuleInfo.Prefix)
+	if !ok {
+		return fmt.Errorf("no module instances for prefix %q", node.ModuleInfo.Prefix)
+	}
+	for _, inst := range instances {
+		if err := fn(inst); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// processModuleVariable evaluates a module variable's input expression in the parent context
+// and stores the result in each module instance's eval context.
+func (e *Engine) processModuleVariable(node *graph.Node) error {
+	v := node.Variable
+	modInfo := node.ModuleInfo
+	varName := strings.TrimPrefix(node.Key, modInfo.Prefix+"var.")
+
+	moduleInputAttrs, _ := modInfo.Module.Config.JustAttributes()
+	inputAttr, hasInput := moduleInputAttrs[varName]
+
+	return e.forEachModuleInstance(node, func(inst *moduleInstance) error {
+		var val cty.Value
+
+		if hasInput {
+			// Evaluate the input expression in the parent context.
+			// The parent context is the eval context that contains count/each for this instance.
+			parentCtx := e.evaluator.Context()
+			if modInfo.ParentPrefix != "" {
+				parentCtx = inst.EvalCtx
+			}
+
+			// Need the parent eval context, not the module instance's context.
+			// For root-level modules, the parent is e.evaluator.Context() with count/each set.
+			var diags hcl.Diagnostics
+			parentHCL := parentCtx.HCLContext()
+			if inst.Index != nil {
+				parentHCL = e.evaluator.Context().Clone().HCLContext()
+				// We need a parent context with the right count/each set
+			}
+			// Use the root evaluator's context for parent expressions
+			val, diags = inputAttr.Expr.Value(e.evaluator.Context().HCLContext())
+			_ = parentHCL // TODO: for nested modules, use parent instance context
+			if diags.HasErrors() {
+				return fmt.Errorf("evaluating module input %s: %s", varName, diags.Error())
+			}
+		} else {
+			// No input: fall through to default/env/config
+			envVarName := "TF_VAR_" + varName
+			if envVal := os.Getenv(envVarName); envVal != "" {
+				val = cty.StringVal(envVal)
+			} else if v.Default != nil {
+				var diags hcl.Diagnostics
+				val, diags = v.Default.Value(inst.EvalCtx.HCLContext())
+				if diags.HasErrors() {
+					return fmt.Errorf("evaluating variable default for %s: %s", varName, diags.Error())
+				}
+			} else if v.Nullable {
+				val = cty.NullVal(cty.DynamicPseudoType)
+			} else {
+				return fmt.Errorf("variable %q is required but no value was provided", varName)
+			}
+		}
+
+		if v.Sensitive {
+			val = val.Mark("sensitive")
+		}
+
+		inst.EvalCtx.SetVariable(varName, val)
+		return nil
+	})
+}
+
+// processModuleInit processes a module init node: registers component resources and creates instances.
+func (e *Engine) processModuleInit(ctx context.Context, node *graph.Node) error {
+	modInfo := node.ModuleInfo
+	mod := modInfo.Module
+
+	componentType := fmt.Sprintf("components:index:%s", componentTypeName(modInfo.SourcePath))
+
+	// For simple (non-counted) modules, create a single instance.
+	// For count/for_each, evaluate and create multiple instances.
+
+	parentURN := e.stackURN
+	parentEvalCtx := e.evaluator.Context()
+
+	// If this is a nested module, look up the parent instance URN.
+	if modInfo.ParentPrefix != "" {
+		parentInstances, ok := e.moduleInstances.Get(modInfo.ParentPrefix)
+		if ok && len(parentInstances) > 0 {
+			parentURN = parentInstances[0].URN
+			parentEvalCtx = parentInstances[0].EvalCtx
+		}
 	}
 
-	for _, instance := range instances {
-		if err := e.processModuleInstance(ctx, mod, instance); err != nil {
-			return err
+	baseKey := modInfo.ParentPrefix + "module." + modInfo.ModuleName
+
+	// Evaluate module inputs for the component resource registration
+	inputs := make(map[string]property.Value)
+	attrs, _ := mod.Config.JustAttributes()
+	for name, attr := range attrs {
+		val, diags := attr.Expr.Value(parentEvalCtx.HCLContext())
+		if diags.HasErrors() {
+			continue
+		}
+		pv, err := transform.CtyToPropertyValue(val)
+		if err == nil {
+			inputs[name] = pv
+		}
+	}
+
+	// No count/for_each: single instance.
+	if mod.Count == nil && mod.ForEach == nil {
+		componentOpts := &ResourceOptions{Parent: parentURN}
+		componentURN, _, _, err := e.registerComponentResource(ctx, componentType, baseKey, property.NewMap(inputs), componentOpts)
+		if err != nil {
+			return fmt.Errorf("registering module component: %w", err)
+		}
+
+		instCtx := eval.NewContext(
+			modInfo.SourcePath, e.workDir,
+			e.stackName, e.projectName, e.organization,
+		)
+
+		e.moduleInstances.Set(modInfo.Prefix, []*moduleInstance{{
+			Key:     baseKey,
+			EvalCtx: instCtx,
+			URN:     componentURN,
+		}})
+		return nil
+	}
+
+	// Count expansion
+	if mod.Count != nil {
+		countVal, diags := mod.Count.Value(parentEvalCtx.HCLContext())
+		if diags.HasErrors() {
+			return fmt.Errorf("evaluating module count: %s", diags.Error())
+		}
+		if !countVal.Type().Equals(cty.Number) {
+			return fmt.Errorf("module count must be a number")
+		}
+		count, _ := countVal.AsBigFloat().Int64()
+		var instances []*moduleInstance
+		for i := int64(0); i < count; i++ {
+			idx := int(i)
+			instKey := fmt.Sprintf("%s[%d]", baseKey, i)
+			componentOpts := &ResourceOptions{Parent: parentURN}
+			componentURN, _, _, err := e.registerComponentResource(ctx, componentType, instKey, property.NewMap(inputs), componentOpts)
+			if err != nil {
+				return fmt.Errorf("registering module component %s: %w", instKey, err)
+			}
+			instCtx := eval.NewContext(
+				modInfo.SourcePath, e.workDir,
+				e.stackName, e.projectName, e.organization,
+			)
+			instCtx.SetCount(idx)
+			instances = append(instances, &moduleInstance{
+				Key:     instKey,
+				EvalCtx: instCtx,
+				URN:     componentURN,
+				Index:   &idx,
+			})
+		}
+		e.moduleInstances.Set(modInfo.Prefix, instances)
+		return nil
+	}
+
+	// ForEach expansion
+	forEachVal, diags := mod.ForEach.Value(parentEvalCtx.HCLContext())
+	if diags.HasErrors() {
+		return fmt.Errorf("evaluating module for_each: %s", diags.Error())
+	}
+	if !forEachVal.CanIterateElements() {
+		return fmt.Errorf("module for_each must be a set or map")
+	}
+	var instances []*moduleInstance
+	it := forEachVal.ElementIterator()
+	for it.Next() {
+		k, v := it.Element()
+		keyStr := k.AsString()
+		instKey := fmt.Sprintf("%s[\"%s\"]", baseKey, keyStr)
+		componentOpts := &ResourceOptions{Parent: parentURN}
+		componentURN, _, _, err := e.registerComponentResource(ctx, componentType, instKey, property.NewMap(inputs), componentOpts)
+		if err != nil {
+			return fmt.Errorf("registering module component %s: %w", instKey, err)
+		}
+		instCtx := eval.NewContext(
+			modInfo.SourcePath, e.workDir,
+			e.stackName, e.projectName, e.organization,
+		)
+		instCtx.SetEach(k, v)
+		instances = append(instances, &moduleInstance{
+			Key:     instKey,
+			EvalCtx: instCtx,
+			URN:     componentURN,
+			EachKey: &k,
+			EachVal: &v,
+		})
+	}
+	e.moduleInstances.Set(modInfo.Prefix, instances)
+	return nil
+}
+
+// processModuleOutput evaluates a module output in each instance and stores it in the parent context.
+func (e *Engine) processModuleOutput(_ context.Context, node *graph.Node) error {
+	output := node.Output
+	modInfo := node.ModuleInfo
+	outputName := strings.TrimPrefix(node.Key, modInfo.Prefix+"output.")
+	mod := modInfo.Module
+	isCounted := mod.Count != nil
+	isForEach := mod.ForEach != nil
+
+	err := e.forEachModuleInstance(node, func(inst *moduleInstance) error {
+		val, diags := output.Value.Value(inst.EvalCtx.HCLContext())
+		if diags.HasErrors() {
+			return fmt.Errorf("evaluating module output %s: %s", outputName, diags.Error())
+		}
+		if inst.Outputs == nil {
+			inst.Outputs = make(map[string]cty.Value)
+		}
+		inst.Outputs[outputName] = val
+		return nil
+	})
+	if err != nil {
+		return err
+	}
+
+	// Eagerly publish outputs to the parent context so other module variables
+	// can reference them before the completion node runs.
+	parentCtx := e.evaluator.Context()
+	instances, ok := e.moduleInstances.Get(modInfo.Prefix)
+	if !ok {
+		return nil
+	}
+
+	if !isCounted && !isForEach {
+		if len(instances) == 1 {
+			if v, has := instances[0].Outputs[outputName]; has {
+				parentCtx.SetModuleOutput(modInfo.ModuleName, outputName, v)
+			}
+		}
+	} else if isCounted {
+		// Rebuild the full tuple from all collected outputs so far.
+		tupleVals := make([]cty.Value, len(instances))
+		for i, inst := range instances {
+			if len(inst.Outputs) > 0 {
+				tupleVals[i] = cty.ObjectVal(inst.Outputs)
+			} else {
+				tupleVals[i] = cty.EmptyObjectVal
+			}
+		}
+		if len(tupleVals) > 0 {
+			parentCtx.SetModule(modInfo.ModuleName, cty.TupleVal(tupleVals))
+		} else {
+			parentCtx.SetModule(modInfo.ModuleName, cty.EmptyTupleVal)
+		}
+	} else {
+		// ForEach: rebuild the map.
+		mapVals := make(map[string]cty.Value, len(instances))
+		for _, inst := range instances {
+			if inst.EachKey == nil {
+				continue
+			}
+			keyStr := inst.EachKey.AsString()
+			if len(inst.Outputs) > 0 {
+				mapVals[keyStr] = cty.ObjectVal(inst.Outputs)
+			} else {
+				mapVals[keyStr] = cty.EmptyObjectVal
+			}
+		}
+		if len(mapVals) > 0 {
+			parentCtx.SetModule(modInfo.ModuleName, cty.ObjectVal(mapVals))
+		} else {
+			parentCtx.SetModule(modInfo.ModuleName, cty.EmptyObjectVal)
 		}
 	}
 
 	return nil
 }
 
-// expandedModule represents an expanded module instance (for count/for_each).
-type expandedModule struct {
-	Key     string     // e.g., "module.vpc" or "module.vpc[0]"
-	Index   *int       // count index if using count
-	EachKey *cty.Value // for_each key if using for_each
-	EachVal *cty.Value // for_each value if using for_each
-}
-
-// expandModuleInstances expands a module for count/for_each.
-func (e *Engine) expandModuleInstances(mod *ast.Module) ([]*expandedModule, error) {
-	baseKey := "module." + mod.Name
-
-	// Handle count
-	if mod.Count != nil {
-		countVal, diags := e.evaluator.EvaluateExpression(mod.Count)
-		if diags.HasErrors() {
-			return nil, fmt.Errorf("evaluating count: %s", diags.Error())
-		}
-
-		if !countVal.Type().Equals(cty.Number) {
-			return nil, fmt.Errorf("count must be a number")
-		}
-
-		count, _ := countVal.AsBigFloat().Int64()
-		if count < 0 {
-			return nil, fmt.Errorf("count cannot be negative")
-		}
-
-		var instances []*expandedModule
-		for i := int64(0); i < count; i++ {
-			idx := int(i)
-			instances = append(instances, &expandedModule{
-				Key:   fmt.Sprintf("%s[%d]", baseKey, i),
-				Index: &idx,
-			})
-		}
-		return instances, nil
+// processModuleComplete handles the module completion node: registers component outputs
+// and assembles the full module value in the parent context.
+func (e *Engine) processModuleComplete(ctx context.Context, node *graph.Node) error {
+	modInfo := node.ModuleInfo
+	if modInfo == nil {
+		return fmt.Errorf("module completion node missing ModuleInfo")
 	}
 
-	// Handle for_each
-	if mod.ForEach != nil {
-		forEachVal, diags := e.evaluator.EvaluateExpression(mod.ForEach)
-		if diags.HasErrors() {
-			return nil, fmt.Errorf("evaluating for_each: %s", diags.Error())
-		}
-
-		if !forEachVal.CanIterateElements() {
-			return nil, fmt.Errorf("for_each must be a set or map")
-		}
-
-		var instances []*expandedModule
-		it := forEachVal.ElementIterator()
-		for it.Next() {
-			k, v := it.Element()
-			keyStr := k.AsString()
-			instances = append(instances, &expandedModule{
-				Key:     fmt.Sprintf("%s[\"%s\"]", baseKey, keyStr),
-				EachKey: &k,
-				EachVal: &v,
-			})
-		}
-		return instances, nil
+	instances, ok := e.moduleInstances.Get(modInfo.Prefix)
+	if !ok {
+		return fmt.Errorf("no module instances for prefix %q", modInfo.Prefix)
 	}
 
-	// No count or for_each - single instance
-	return []*expandedModule{{Key: baseKey}}, nil
-}
+	mod := modInfo.Module
+	isCounted := mod.Count != nil
+	isForEach := mod.ForEach != nil
 
-// processModuleInstance processes a single module instance.
-func (e *Engine) processModuleInstance(ctx context.Context, mod *ast.Module, instance *expandedModule) error {
-	// Set up instance-specific context (count.index, each.key, etc.)
-	if instance.Index != nil {
-		e.evaluator.Context().SetCount(*instance.Index)
-		defer e.evaluator.Context().ClearCount()
-	}
-	if instance.EachKey != nil && instance.EachVal != nil {
-		e.evaluator.Context().SetEach(*instance.EachKey, *instance.EachVal)
-		defer e.evaluator.Context().ClearEach()
-	}
-
-	// Load the module source
-	loadedModule, err := e.moduleLoader.LoadModule(mod.Source, e.workDir)
-	if err != nil {
-		return fmt.Errorf("loading module %s: %w", mod.Name, err)
-	}
-
-	// Evaluate module inputs from the module block
-	inputs := make(map[string]property.Value)
-	attrs, _ := mod.Config.JustAttributes()
-	for name, attr := range attrs {
-		val, diags := e.evaluator.EvaluateExpression(attr.Expr)
-		if diags.HasErrors() {
-			return fmt.Errorf("evaluating module input %s: %s", name, diags.Error())
-		}
-		pv, err := transform.CtyToPropertyValue(val)
-		if err != nil {
-			return fmt.Errorf("converting module input %s: %w", name, err)
-		}
-		inputs[name] = pv
-	}
-
-	componentType := fmt.Sprintf("components:index:%s", componentTypeName(loadedModule.SourcePath))
-	componentOpts := &ResourceOptions{
-		Parent: e.parentURN,
-	}
-
-	// Handle depends_on
-	for _, dep := range mod.DependsOn {
-		depKey := graph.FormatTraversal(dep)
-		if depKey != "" {
-			componentOpts.DependsOn = append(componentOpts.DependsOn, depKey)
-		}
-	}
-
-	componentURN, _, _, err := e.registerComponentResource(ctx, componentType, instance.Key, property.NewMap(inputs), componentOpts)
-	if err != nil {
-		return fmt.Errorf("registering module component: %w", err)
-	}
-
-	// Create a child engine to execute the module
-	childEngine := e.createChildEngine(loadedModule.Config, componentURN, loadedModule.SourcePath)
-
-	// Set up the child engine's variables with module inputs
-	if diags := childEngine.setModuleInputs(attrs, e.evaluator.Context()); diags.HasErrors() {
-		return diags
-	}
-
-	// Execute the module
-	if err := childEngine.runModule(ctx); err != nil {
-		return fmt.Errorf("executing module %s: %w", mod.Name, err)
-	}
-
-	// Collect module outputs and make them available
-	moduleOutputs := childEngine.collectModuleOutputs()
-	e.moduleOutputs[instance.Key] = moduleOutputs
-
-	// Set module in eval context using just the module name or indexed key
-	// instance.Key is like "module.vpc" or "module.vpc[0]"
-	// We need to store at "vpc" or "vpc[0]" for module.vpc.output_name to work
-	moduleRefKey := strings.TrimPrefix(instance.Key, "module.")
-	e.evaluator.Context().SetModule(moduleRefKey, moduleOutputs)
-
-	// Register the component outputs
-	if e.resmon != nil {
-		outputProps := make(map[string]property.Value)
-		if moduleOutputs.Type().IsObjectType() {
-			for name, val := range moduleOutputs.AsValueMap() {
-				pv, err := transform.CtyToPropertyValue(val)
+	// Register component outputs and collect per-instance output objects.
+	for _, inst := range instances {
+		if e.resmon != nil {
+			outputProps := make(map[string]property.Value)
+			for k, v := range inst.Outputs {
+				pv, err := transform.CtyToPropertyValue(v)
 				if err == nil {
-					outputProps[name] = pv
+					outputProps[k] = pv
 				}
 			}
+			if err := e.resmon.RegisterResourceOutputs(ctx, inst.URN, property.NewMap(outputProps)); err != nil {
+				return fmt.Errorf("registering module outputs: %w", err)
+			}
 		}
-		if err := e.resmon.RegisterResourceOutputs(ctx, componentURN, property.NewMap(outputProps)); err != nil {
-			return fmt.Errorf("registering module outputs: %w", err)
+	}
+
+	// Assemble module value in parent eval context.
+	parentCtx := e.evaluator.Context()
+
+	if !isCounted && !isForEach {
+		// Single instance: module.X is an object of outputs.
+		if len(instances) == 1 {
+			for k, v := range instances[0].Outputs {
+				parentCtx.SetModuleOutput(modInfo.ModuleName, k, v)
+			}
+		}
+	} else if isCounted {
+		// Counted: module.X is a tuple/list of output objects.
+		tupleVals := make([]cty.Value, len(instances))
+		for i, inst := range instances {
+			if len(inst.Outputs) > 0 {
+				tupleVals[i] = cty.ObjectVal(inst.Outputs)
+			} else {
+				tupleVals[i] = cty.EmptyObjectVal
+			}
+		}
+		if len(tupleVals) > 0 {
+			parentCtx.SetModule(modInfo.ModuleName, cty.TupleVal(tupleVals))
+		} else {
+			parentCtx.SetModule(modInfo.ModuleName, cty.EmptyTupleVal)
+		}
+	} else {
+		// ForEach: module.X is a map of key → output object.
+		mapVals := make(map[string]cty.Value, len(instances))
+		for _, inst := range instances {
+			if inst.EachKey == nil {
+				continue
+			}
+			keyStr := inst.EachKey.AsString()
+			if len(inst.Outputs) > 0 {
+				mapVals[keyStr] = cty.ObjectVal(inst.Outputs)
+			} else {
+				mapVals[keyStr] = cty.EmptyObjectVal
+			}
+		}
+		if len(mapVals) > 0 {
+			parentCtx.SetModule(modInfo.ModuleName, cty.ObjectVal(mapVals))
+		} else {
+			parentCtx.SetModule(modInfo.ModuleName, cty.EmptyObjectVal)
 		}
 	}
 
@@ -2072,96 +2321,25 @@ func (e *Engine) registerComponentResource(
 	inputs property.Map,
 	opts *ResourceOptions,
 ) (string, string, property.Map, error) {
-	if e.resmon == nil { // TODO: Remove this check
-		// No resource monitor - return synthetic values for testing
+	if e.resmon == nil {
 		urn := fmt.Sprintf("urn:pulumi:%s::%s::%s::%s",
 			e.stackName, e.projectName, typeToken, name)
 		return urn, "", inputs, nil
 	}
 
-	// Build dependencies list
 	deps := opts.DependsOn
-
-	// Register with the resource monitor - Custom=false for components
 	resp, err := e.resmon.RegisterResource(ctx, RegisterResourceRequest{
 		Type:         typeToken,
 		Name:         name,
 		Inputs:       inputs,
 		Dependencies: deps,
 		Parent:       opts.Parent,
-		// Note: Custom=false for components, but we handle this in server.go
 	})
 	if err != nil {
 		return "", "", property.Map{}, err
 	}
 
 	return resp.URN, resp.ID, resp.Outputs, nil
-}
-
-// createChildEngine creates a child engine for executing a module.
-func (e *Engine) createChildEngine(config *ast.Config, parentURN string, moduleDir string) *Engine {
-	return &Engine{
-		config: config,
-		evaluator: eval.NewEvaluator(eval.NewContext(moduleDir, moduleDir,
-			e.stackName, e.projectName, e.organization)),
-		pkgLoader:               e.pkgLoader,
-		resmon:                  e.resmon,
-		resourceOutputs:         util.NewSyncMap[string, cty.Value](),
-		resourceInheritableOpts: util.NewSyncMap[string, inheritableOpts](),
-		stackOutputs:            make(map[string]property.Value),
-		projectName:             e.projectName,
-		stackName:               e.stackName,
-		organization:            e.organization,
-		dryRun:                  e.dryRun,
-		workDir:                 moduleDir,
-		pulumiConfig:            e.pulumiConfig,
-		configSecretKeys:        e.configSecretKeys,
-		moduleLoader:            e.moduleLoader,
-		moduleOutputs:           make(map[string]cty.Value),
-		parentURN:               parentURN,
-	}
-}
-
-// setModuleInputs sets up the module's variables with input values.
-func (e *Engine) setModuleInputs(inputs hcl.Attributes, parentContext *eval.Context) hcl.Diagnostics {
-	var diags hcl.Diagnostics
-	for name, attr := range inputs {
-		val, diag := attr.Expr.Value(parentContext.HCLContext())
-		if !diag.HasErrors() {
-			e.evaluator.Context().SetVariable(name, val)
-		}
-		diags = diags.Extend(diag)
-	}
-	return diags
-}
-
-// runModule executes a module's contents (without registering a stack).
-func (e *Engine) runModule(ctx context.Context) error {
-	// Build dependency graph for the module
-	g, err := graph.BuildFromConfig(e.config)
-	if err != nil {
-		return fmt.Errorf("building module graph: %w", err)
-	}
-
-	return e.processGraph(ctx, g)
-}
-
-// collectModuleOutputs collects the module's output values.
-func (e *Engine) collectModuleOutputs() cty.Value {
-	outputMap := make(map[string]cty.Value)
-
-	for name, output := range e.config.Outputs {
-		val, diags := e.evaluator.EvaluateExpression(output.Value)
-		if !diags.HasErrors() {
-			outputMap[name] = val
-		}
-	}
-
-	if len(outputMap) == 0 {
-		return cty.EmptyObjectVal
-	}
-
-	return cty.ObjectVal(outputMap)
 }
 
 // processOutput processes an output definition.
@@ -2229,8 +2407,7 @@ func RunFromDirectory(ctx context.Context, dir string, opts *EngineOptions) erro
 func Validate(config *ast.Config) []error {
 	var errs []error
 
-	// Build and validate the dependency graph
-	g, err := graph.BuildFromConfig(config)
+	g, err := graph.BuildFromConfig(config, nil, "")
 	if err != nil {
 		errs = append(errs, err)
 		return errs

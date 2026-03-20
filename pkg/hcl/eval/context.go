@@ -57,6 +57,9 @@ type Context struct {
 	// modules contains module outputs (module.name.*)
 	modules map[string]cty.Value
 
+	// moduleOutputs stores incremental per-output values: moduleName → outputName → value
+	moduleOutputs map[string]map[string]cty.Value
+
 	// providers contains provider references (provider.name)
 	providers map[string]cty.Value
 
@@ -122,7 +125,8 @@ func NewContext(baseDir, rootDir, stack, project, organization string) *Context 
 		locals:      make(map[string]cty.Value),
 		resources:   make(map[string]cty.Value),
 		dataSources: make(map[string]cty.Value),
-		modules:     make(map[string]cty.Value),
+		modules:       make(map[string]cty.Value),
+		moduleOutputs: make(map[string]map[string]cty.Value),
 		providers:   make(map[string]cty.Value),
 		calls:       make(map[string]cty.Value),
 		path: PathContext{
@@ -173,6 +177,17 @@ func (c *Context) SetModule(name string, value cty.Value) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.modules[name] = value
+}
+
+// SetModuleOutput stores a single module output incrementally.
+// These are assembled into module namespace objects in HCLContext().
+func (c *Context) SetModuleOutput(moduleName, outputName string, value cty.Value) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.moduleOutputs[moduleName] == nil {
+		c.moduleOutputs[moduleName] = make(map[string]cty.Value)
+	}
+	c.moduleOutputs[moduleName][outputName] = value
 }
 
 // SetCall sets the result of a method call.
@@ -291,9 +306,19 @@ func (c *Context) HCLContext() *hcl.EvalContext {
 		vars["data"] = cty.EmptyObjectVal
 	}
 
-	// Add module.* namespace
-	if len(c.modules) > 0 {
-		vars["module"] = cty.ObjectVal(c.modules)
+	// Add module.* namespace — merge whole-module values and incremental outputs.
+	mergedModules := maps.Clone(c.modules)
+	for modName, outputs := range c.moduleOutputs {
+		if _, alreadySet := mergedModules[modName]; !alreadySet {
+			if len(outputs) > 0 {
+				mergedModules[modName] = cty.ObjectVal(outputs)
+			} else {
+				mergedModules[modName] = cty.EmptyObjectVal
+			}
+		}
+	}
+	if len(mergedModules) > 0 {
+		vars["module"] = cty.ObjectVal(mergedModules)
 	} else {
 		vars["module"] = cty.EmptyObjectVal
 	}
@@ -365,18 +390,24 @@ func (c *Context) Clone() *Context {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 
+	clonedModuleOutputs := make(map[string]map[string]cty.Value, len(c.moduleOutputs))
+	for k, v := range c.moduleOutputs {
+		clonedModuleOutputs[k] = maps.Clone(v)
+	}
+
 	clone := &Context{
-		baseDir:     c.baseDir,
-		variables:   maps.Clone(c.variables),
-		locals:      maps.Clone(c.locals),
-		resources:   maps.Clone(c.resources),
-		dataSources: maps.Clone(c.dataSources),
-		modules:     maps.Clone(c.modules),
-		providers:   maps.Clone(c.providers),
-		calls:       maps.Clone(c.calls),
-		path:        c.path,
-		pulumi:      c.pulumi,
-		self:        c.self,
+		baseDir:       c.baseDir,
+		variables:     maps.Clone(c.variables),
+		locals:        maps.Clone(c.locals),
+		resources:     maps.Clone(c.resources),
+		dataSources:   maps.Clone(c.dataSources),
+		modules:       maps.Clone(c.modules),
+		moduleOutputs: clonedModuleOutputs,
+		providers:     maps.Clone(c.providers),
+		calls:         maps.Clone(c.calls),
+		path:          c.path,
+		pulumi:        c.pulumi,
+		self:          c.self,
 	}
 
 	if c.count != nil {
