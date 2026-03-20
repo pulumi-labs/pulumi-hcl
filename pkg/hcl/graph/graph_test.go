@@ -47,7 +47,7 @@ output "instance_id" {
 	config, diags := p.ParseSource("test.hcl", src)
 	require.Empty(t, diags)
 
-	g, err := BuildFromConfig(config)
+	g, err := BuildFromConfig(config, nil, "")
 	require.NoError(t, err)
 
 	nodes := g.seen
