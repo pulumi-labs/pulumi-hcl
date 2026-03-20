@@ -990,255 +990,123 @@ variable "instance_type" {
 	}
 }
 
-func TestEngine_PreconditionPass(t *testing.T) {
+func TestEngine_Precondition(t *testing.T) {
 	t.Parallel()
 
-	src := []byte(`
-variable "ami_id" {
+	// Precondition checks startswith on a variable that feeds into the resource
+	// input. This validates that preconditions can reference resource inputs and
+	// that they run before RegisterResource.
+	hclTemplate := `
+variable "field_value" {
   type    = string
-  default = "ami-12345"
+  default = "%s"
 }
 
-resource "aws_instance" "web" {
-  ami = var.ami_id
+resource "test_resource" "res" {
+  field = var.field_value
 
   lifecycle {
     precondition {
-      condition     = startswith(var.ami_id, "ami-")
-      error_message = "AMI ID must start with 'ami-'."
+      condition     = startswith(var.field_value, "valid-")
+      error_message = "Field must start with 'valid-'."
     }
   }
 }
-`)
+`
 
-	p := parser.NewParser()
-	config, diags := p.ParseSource("test.hcl", src)
-	if diags.HasErrors() {
-		t.Fatalf("parse error: %s", diags.Error())
+	runWithField := func(t *testing.T, value string) (*mockResourceMonitor, error) {
+		t.Helper()
+		src := []byte(fmt.Sprintf(hclTemplate, value))
+		p := parser.NewParser()
+		config, diags := p.ParseSource("test.hcl", src)
+		require.False(t, diags.HasErrors(), diags.Error())
+
+		mock := &mockResourceMonitor{}
+		engine := NewEngine(config, &EngineOptions{
+			ProjectName:     "test-project",
+			StackName:       "dev",
+			ResourceMonitor: mock,
+			WorkDir:         t.TempDir(),
+			RootDir:         t.TempDir(),
+			SchemaLoader:    newMockReferenceLoader(t, testSchema()),
+		})
+		return mock, engine.Run(t.Context())
 	}
 
-	mock := &mockResourceMonitor{}
-	engine := NewEngine(config, &EngineOptions{
-		ProjectName:     "test-project",
-		StackName:       "dev",
-		ResourceMonitor: mock,
-		WorkDir:         t.TempDir(),
-		RootDir:         t.TempDir(),
-		SchemaLoader: newMockReferenceLoader(t, schema.PackageSpec{
-			Name: "aws",
-			Resources: map[string]schema.ResourceSpec{
-				"aws:index:Instance": {
-					InputProperties: map[string]schema.PropertySpec{
-						"ami": {TypeSpec: schema.TypeSpec{Type: "string"}},
-					},
-					ObjectTypeSpec: schema.ObjectTypeSpec{
-						Properties: map[string]schema.PropertySpec{
-							"ami": {TypeSpec: schema.TypeSpec{Type: "string"}},
-						},
-					},
-				},
-			},
-		}),
+	t.Run("true condition", func(t *testing.T) {
+		t.Parallel()
+		mock, err := runWithField(t, "valid-value")
+		require.NoError(t, err)
+		require.True(t, hasRegisteredResource(mock, "test:index:Resource"),
+			"expected resource to be registered when precondition passes")
 	})
 
-	err := engine.Run(t.Context())
-
-	// Should pass - precondition is satisfied
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-
-	// Resource should be registered
-	found := false
-	for _, r := range mock.registeredResources {
-		if r.Name == "web" {
-			found = true
-			break
-		}
-	}
-	if !found {
-		t.Fatal("expected resource web to be registered")
-	}
-}
-
-func TestEngine_PreconditionFail(t *testing.T) {
-	t.Parallel()
-
-	src := []byte(`
-variable "ami_id" {
-  type    = string
-  default = "invalid-ami"
-}
-
-resource "aws_instance" "web" {
-  ami = var.ami_id
-
-  lifecycle {
-    precondition {
-      condition     = startswith(var.ami_id, "ami-")
-      error_message = "AMI ID must start with 'ami-'."
-    }
-  }
-}
-`)
-
-	p := parser.NewParser()
-	config, diags := p.ParseSource("test.hcl", src)
-	if diags.HasErrors() {
-		t.Fatalf("parse error: %s", diags.Error())
-	}
-
-	mock := &mockResourceMonitor{}
-	engine := NewEngine(config, &EngineOptions{
-		ProjectName:     "test-project",
-		StackName:       "dev",
-		ResourceMonitor: mock,
-		WorkDir:         t.TempDir(),
-		RootDir:         t.TempDir(),
-		SchemaLoader: newMockReferenceLoader(t, schema.PackageSpec{
-			Name: "aws",
-			Resources: map[string]schema.ResourceSpec{
-				"aws:index:Instance": {
-					InputProperties: map[string]schema.PropertySpec{
-						"ami": {TypeSpec: schema.TypeSpec{Type: "string"}},
-					},
-					ObjectTypeSpec: schema.ObjectTypeSpec{
-						Properties: map[string]schema.PropertySpec{
-							"ami": {TypeSpec: schema.TypeSpec{Type: "string"}},
-						},
-					},
-				},
-			},
-		}),
+	t.Run("false condition", func(t *testing.T) {
+		t.Parallel()
+		mock, err := runWithField(t, "bad")
+		require.ErrorContains(t, err, "Field must start with 'valid-'.")
+		require.False(t, hasRegisteredResource(mock, "test:index:Resource"),
+			"resource must not be registered when precondition fails")
 	})
-
-	err := engine.Run(t.Context())
-
-	// Should error because precondition fails
-	if err == nil {
-		t.Fatal("expected error for precondition failure")
-	}
-	if !strings.Contains(err.Error(), "AMI ID must start with 'ami-'") {
-		t.Errorf("expected error message from precondition, got: %v", err)
-	}
-
-	// Resource should not be registered (only stack)
-	for _, r := range mock.registeredResources {
-		if r.Name == "web" {
-			t.Fatal("resource should not be registered when precondition fails")
-		}
-	}
 }
 
-func TestEngine_PostconditionPass(t *testing.T) {
+func TestEngine_Postcondition(t *testing.T) {
 	t.Parallel()
 
-	src := []byte(`
-resource "aws_instance" "web" {
-  ami = "ami-12345"
+	// Postcondition checks self.field against a known value. The mock echoes
+	// inputs as outputs, so self.field == the input value.
+	// A failing postcondition does NOT undo the resource creation — the resource
+	// is already registered with the engine. It only fails the current deploy.
+	hclTemplate := `
+resource "test_resource" "res" {
+  field = "%s"
 
   lifecycle {
     postcondition {
-      condition     = self.id != ""
-      error_message = "Instance ID must not be empty."
+      condition     = self.field == "expected"
+      error_message = "Field must be 'expected'."
     }
   }
 }
-`)
+`
 
-	p := parser.NewParser()
-	config, diags := p.ParseSource("test.hcl", src)
-	if diags.HasErrors() {
-		t.Fatalf("parse error: %s", diags.Error())
+	runWithField := func(t *testing.T, value string) (*mockResourceMonitor, error) {
+		t.Helper()
+		src := []byte(fmt.Sprintf(hclTemplate, value))
+		p := parser.NewParser()
+		config, diags := p.ParseSource("test.hcl", src)
+		require.False(t, diags.HasErrors(), diags.Error())
+
+		mock := &mockResourceMonitor{}
+		engine := NewEngine(config, &EngineOptions{
+			ProjectName:     "test-project",
+			StackName:       "dev",
+			ResourceMonitor: mock,
+			WorkDir:         t.TempDir(),
+			RootDir:         t.TempDir(),
+			SchemaLoader:    newMockReferenceLoader(t, testSchema()),
+		})
+		return mock, engine.Run(t.Context())
 	}
 
-	mock := &mockResourceMonitor{}
-	engine := NewEngine(config, &EngineOptions{
-		ProjectName:     "test-project",
-		StackName:       "dev",
-		ResourceMonitor: mock,
-		WorkDir:         t.TempDir(),
-		RootDir:         t.TempDir(),
-		SchemaLoader: newMockReferenceLoader(t, schema.PackageSpec{
-			Name: "aws",
-			Resources: map[string]schema.ResourceSpec{
-				"aws:index:Instance": {
-					InputProperties: map[string]schema.PropertySpec{
-						"ami": {TypeSpec: schema.TypeSpec{Type: "string"}},
-					},
-					ObjectTypeSpec: schema.ObjectTypeSpec{
-						Properties: map[string]schema.PropertySpec{
-							"ami": {TypeSpec: schema.TypeSpec{Type: "string"}},
-						},
-					},
-				},
-			},
-		}),
+	t.Run("true condition", func(t *testing.T) {
+		t.Parallel()
+		mock, err := runWithField(t, "expected")
+		require.NoError(t, err)
+		require.True(t, hasRegisteredResource(mock, "test:index:Resource"),
+			"expected resource to be registered when postcondition passes")
 	})
 
-	err := engine.Run(t.Context())
-
-	// Should pass - postcondition is satisfied (id is set by mock)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-}
-
-func TestEngine_PostconditionFail(t *testing.T) {
-	t.Parallel()
-
-	src := []byte(`
-resource "aws_instance" "web" {
-  ami = "ami-12345"
-
-  lifecycle {
-    postcondition {
-      condition     = self.ami == "ami-67890"
-      error_message = "AMI must be ami-67890."
-    }
-  }
-}
-`)
-
-	p := parser.NewParser()
-	config, diags := p.ParseSource("test.hcl", src)
-	if diags.HasErrors() {
-		t.Fatalf("parse error: %s", diags.Error())
-	}
-
-	mock := &mockResourceMonitor{}
-	engine := NewEngine(config, &EngineOptions{
-		ProjectName:     "test-project",
-		StackName:       "dev",
-		ResourceMonitor: mock,
-		WorkDir:         t.TempDir(),
-		RootDir:         t.TempDir(),
-		SchemaLoader: newMockReferenceLoader(t, schema.PackageSpec{
-			Name: "aws",
-			Resources: map[string]schema.ResourceSpec{
-				"aws:index:Instance": {
-					InputProperties: map[string]schema.PropertySpec{
-						"ami": {TypeSpec: schema.TypeSpec{Type: "string"}},
-					},
-					ObjectTypeSpec: schema.ObjectTypeSpec{
-						Properties: map[string]schema.PropertySpec{
-							"ami": {TypeSpec: schema.TypeSpec{Type: "string"}},
-						},
-					},
-				},
-			},
-		}),
+	t.Run("false condition", func(t *testing.T) {
+		t.Parallel()
+		mock, err := runWithField(t, "wrong")
+		require.ErrorContains(t, err, "Field must be 'expected'.")
+		// The resource IS registered even though postcondition failed — postconditions
+		// run after resource creation and only fail the deploy, they don't undo the
+		// resource registration.
+		require.True(t, hasRegisteredResource(mock, "test:index:Resource"),
+			"resource should still be registered even when postcondition fails")
 	})
-
-	err := engine.Run(t.Context())
-
-	// Should error because postcondition fails
-	if err == nil {
-		t.Fatal("expected error for postcondition failure")
-	}
-	if !strings.Contains(err.Error(), "AMI must be ami-67890") {
-		t.Errorf("expected error message from postcondition, got: %v", err)
-	}
 }
 
 func TestEngine_LocalExecProvisioner(t *testing.T) {
@@ -1857,4 +1725,67 @@ resource "aws_instance" "imported" {
 	if instanceReq.ImportId != "i-1234567890abcdef0" {
 		t.Errorf("expected ImportId 'i-1234567890abcdef0', got %q", instanceReq.ImportId)
 	}
+}
+
+// testSchema returns a minimal schema for a test_resource resource.
+func testSchema() schema.PackageSpec {
+	return schema.PackageSpec{
+		Name: "test",
+		Resources: map[string]schema.ResourceSpec{
+			"test:index:Resource": {
+				InputProperties: map[string]schema.PropertySpec{
+					"field": {TypeSpec: schema.TypeSpec{Type: "string"}},
+				},
+				ObjectTypeSpec: schema.ObjectTypeSpec{
+					Properties: map[string]schema.PropertySpec{
+						"field": {TypeSpec: schema.TypeSpec{Type: "string"}},
+					},
+				},
+			},
+		},
+	}
+}
+
+// hasRegisteredResource reports whether the mock has a registered resource with the given type.
+func hasRegisteredResource(mock *mockResourceMonitor, typ string) bool {
+	for _, r := range mock.registeredResources {
+		if r.Type == typ {
+			return true
+		}
+	}
+	return false
+}
+
+func TestEngine_ReplaceTriggeredByErrors(t *testing.T) {
+	t.Parallel()
+
+	src := []byte(`
+resource "test_resource" "res" {
+  field = "value"
+
+  lifecycle {
+    replace_triggered_by = [test_resource.res.field]
+  }
+}
+`)
+
+	p := parser.NewParser()
+	config, diags := p.ParseSource("test.hcl", src)
+	if diags.HasErrors() {
+		t.Fatalf("parse error: %s", diags.Error())
+	}
+
+	mock := &mockResourceMonitor{}
+	engine := NewEngine(config, &EngineOptions{
+		ProjectName:     "test-project",
+		StackName:       "dev",
+		ResourceMonitor: mock,
+		WorkDir:         t.TempDir(),
+		RootDir:         t.TempDir(),
+		SchemaLoader:    newMockReferenceLoader(t, testSchema()),
+	})
+
+	err := engine.Run(t.Context())
+	require.ErrorContains(t, err, "replace_triggered_by")
+	require.ErrorContains(t, err, "not supported")
 }

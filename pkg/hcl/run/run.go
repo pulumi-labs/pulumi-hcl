@@ -899,7 +899,10 @@ func (e *Engine) registerResourceInstanceInContext(
 		}
 	}
 
-	opts := e.buildResourceOptionsInContext(res, instance, evalCtx, parentURN, node.ModuleInfo)
+	opts, err := e.buildResourceOptionsInContext(res, instance, evalCtx, parentURN, node.ModuleInfo)
+	if err != nil {
+		return err
+	}
 	opts.Custom = !resSchema.IsComponent
 	opts.Remote = resSchema.IsComponent
 	opts.PropertyDependencies = dependsOn
@@ -993,7 +996,7 @@ func (e *Engine) buildResourceOptionsInContext(
 	res *ast.Resource, instance *graph.ExpandedResource,
 	evalCtx *eval.Context, parentURN string,
 	modInfo *graph.ModuleInfo,
-) *ResourceOptions {
+) (*ResourceOptions, error) {
 	opts := &ResourceOptions{}
 	opts.Parent = parentURN
 
@@ -1050,6 +1053,10 @@ func (e *Engine) buildResourceOptionsInContext(
 				opts.DeleteBeforeReplace = true
 				opts.DeleteBeforeReplaceDef = true
 			}
+		}
+		if len(res.Lifecycle.ReplaceTriggeredBy) > 0 {
+			return nil, fmt.Errorf("lifecycle \"replace_triggered_by\" on resource %q is not supported by Pulumi HCL",
+				res.Type+"."+res.Name)
 		}
 	}
 
@@ -1252,7 +1259,7 @@ func (e *Engine) buildResourceOptionsInContext(
 		}
 	}
 
-	return opts
+	return opts, nil
 }
 
 // resolveMovedAliases finds any moved blocks that target this resource and returns
