@@ -212,6 +212,55 @@ func TestBlocksToObjectAttrs(t *testing.T) {
 	}
 }
 
+func TestTransformFunctionCall(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		hcl      string
+		expected string
+	}{
+		{
+			name:     "pcl supported function passes through",
+			hcl:      `value = join(", ", split(",", "a,b,c"))`,
+			expected: `join(", ", split(",", "a,b,c"))`,
+		},
+		{
+			name:     "hcl function mapped to pcl equivalent",
+			hcl:      `value = base64encode("hello")`,
+			expected: `toBase64("hello")`,
+		},
+		{
+			name:     "hcl-only function wrapped in notImplemented",
+			hcl:      `value = upper("hello")`,
+			expected: `notImplemented("upper(\"hello\")")`,
+		},
+		{
+			name:     "hcl-only function with nested args wrapped in notImplemented",
+			hcl:      `value = lower(format("Hello %s", "world"))`,
+			expected: `notImplemented("lower(format(\"Hello %s\", \"world\"))")`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			src := []byte(tt.name + " {\n  " + tt.hcl + "\n}\n")
+			file, diags := hclsyntax.ParseConfig(src, "test.hcl", hcl.Pos{})
+			require.False(t, diags.HasErrors(), diags.Error())
+
+			ft := &fileTransformer{src: src}
+			body := file.Body.(*hclsyntax.Body)
+			require.Len(t, body.Blocks, 1)
+			require.Contains(t, body.Blocks[0].Body.Attributes, "value")
+
+			tokens := ft.transformExpr(body.Blocks[0].Body.Attributes["value"].Expr)
+			assert.Equal(t, tt.expected, string(tokens.Bytes()))
+		})
+	}
+}
+
 func TestTransformSplatExpr(t *testing.T) {
 	t.Parallel()
 
