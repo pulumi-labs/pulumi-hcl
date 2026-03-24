@@ -23,6 +23,7 @@ import (
 	"github.com/hashicorp/hcl/v2"
 	"github.com/hashicorp/hcl/v2/hclsyntax"
 	"github.com/hashicorp/hcl/v2/hclwrite"
+	"github.com/pulumi/pulumi-language-hcl/pkg/hcl/eval"
 	"github.com/pulumi/pulumi-language-hcl/pkg/hcl/packages"
 	"github.com/pulumi/pulumi-language-hcl/pkg/hcl/transform"
 	"github.com/pulumi/pulumi/pkg/v3/codegen"
@@ -1336,9 +1337,58 @@ func (g *generator) funcCallTokens(expr *model.FunctionCallExpression) (hclwrite
 		return g.passthroughFuncCallTokens("base64encode", expr.Args)
 	case "fromBase64":
 		return g.passthroughFuncCallTokens("base64decode", expr.Args)
+	case "notImplemented":
+		return g.notImplementedTokens(expr)
 	default:
 		return g.passthroughFuncCallTokens(expr.Name, expr.Args)
 	}
+}
+
+// notImplementedTokens handles PCL's notImplemented("expression") by extracting the original
+// expression text and emitting it as HCL when the expression uses a function that HCL supports.
+// If the expression doesn't parse, isn't a function call, or uses an unknown function,
+// it falls through to emit notImplemented(...) verbatim.
+func (g *generator) notImplementedTokens(expr *model.FunctionCallExpression) (hclwrite.Tokens, hcl.Diagnostics) {
+	if len(expr.Args) != 1 {
+		return g.passthroughFuncCallTokens(expr.Name, expr.Args)
+	}
+
+	exprText, ok := extractStringLiteral(expr.Args[0])
+	if !ok {
+		return g.passthroughFuncCallTokens(expr.Name, expr.Args)
+	}
+
+	parsed, diags := hclsyntax.ParseExpression([]byte(exprText), "", hcl.Pos{Line: 1, Column: 1})
+	if diags.HasErrors() {
+		return g.passthroughFuncCallTokens(expr.Name, expr.Args)
+	}
+
+	funcCall, ok := parsed.(*hclsyntax.FunctionCallExpr)
+	if !ok {
+		return g.passthroughFuncCallTokens(expr.Name, expr.Args)
+	}
+
+	knownFunctions := eval.Functions("")
+	if _, known := knownFunctions[funcCall.Name]; !known {
+		return g.passthroughFuncCallTokens(expr.Name, expr.Args)
+	}
+
+	syntaxTokens, diags := hclsyntax.LexExpression([]byte(exprText), "", hcl.Pos{Line: 1, Column: 1})
+	if diags.HasErrors() {
+		return g.passthroughFuncCallTokens(expr.Name, expr.Args)
+	}
+
+	var tokens hclwrite.Tokens
+	for _, t := range syntaxTokens {
+		if t.Type == hclsyntax.TokenEOF {
+			continue
+		}
+		tokens = append(tokens, &hclwrite.Token{
+			Type:  t.Type,
+			Bytes: t.Bytes,
+		})
+	}
+	return tokens, nil
 }
 
 // getOutputTokens generates tokens for getOutput(resource, "outputName").

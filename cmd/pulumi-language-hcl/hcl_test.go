@@ -276,6 +276,64 @@ func TestConvertedPCLRange(t *testing.T) {
 	})
 }
 
+func TestNotImplemented(t *testing.T) {
+	t.Parallel()
+
+	generateHCL := func(t *testing.T, pclSource string) string {
+		t.Helper()
+
+		loader := testutil.NewMockReferenceLoader(t)
+
+		p := syntax.NewParser()
+		err := p.ParseFile(strings.NewReader(pclSource), "main.pp")
+		require.NoError(t, err)
+		require.False(t, p.Diagnostics.HasErrors(), p.Diagnostics.Error())
+
+		program, bindDiags, err := pcl.BindProgram(p.Files, pcl.Loader(loader))
+		require.NoError(t, err)
+		require.False(t, bindDiags.HasErrors(), bindDiags.Error())
+
+		files, genDiags, err := codegen.GenerateProgram(program)
+		require.NoError(t, err)
+		require.False(t, genDiags.HasErrors(), genDiags.Error())
+
+		generatedHCL := string(files["main.hcl"])
+		require.NotEmpty(t, generatedHCL)
+
+		hclParser := parser.NewParser()
+		_, hclDiags := hclParser.ParseSource("main.hcl", files["main.hcl"])
+		require.False(t, hclDiags.HasErrors(), hclDiags.Error())
+
+		return generatedHCL
+	}
+
+	t.Run("known_function", func(t *testing.T) {
+		t.Parallel()
+
+		hcl := generateHCL(t, `output result {
+    value = notImplemented("upper(\"hello\")")
+}
+`)
+		assert.Equal(t, `output "result" {
+  value = upper("hello")
+}
+`, hcl)
+	})
+
+	t.Run("unknown_function", func(t *testing.T) {
+		t.Parallel()
+
+		hcl := generateHCL(t, `output result {
+    value = notImplemented("mystery_func(\"hello\")")
+}
+`)
+		assert.Equal(t, `output "result" {
+  value = notImplemented("mystery_func(\"hello\")")
+}
+`, hcl)
+	})
+}
+
 func testConvertedPCL(t *testing.T, pclSource string, schemas ...schema.PackageSpec) *testutil.MockResourceMonitor {
 	t.Helper()
 
