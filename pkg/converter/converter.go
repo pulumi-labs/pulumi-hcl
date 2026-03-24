@@ -608,11 +608,18 @@ func (ft *fileTransformer) transformExpr(expr hclsyntax.Expression) hclwrite.Tok
 	case *hclsyntax.ScopeTraversalExpr:
 		return ft.transformTraversal(e)
 	case *hclsyntax.FunctionCallExpr:
+		pclName := transformFunctionName(e.Name)
+		if !pclSupportedFunctions[pclName] {
+			r := e.Range()
+			originalExpr := string(ft.src[r.Start.Byte:r.End.Byte])
+			return hclwrite.TokensForFunctionCall("notImplemented",
+				hclwrite.TokensForValue(cty.StringVal(originalExpr)))
+		}
 		args := make([]hclwrite.Tokens, len(e.Args))
 		for i, arg := range e.Args {
 			args[i] = ft.transformExpr(arg)
 		}
-		return hclwrite.TokensForFunctionCall(transformFunctionName(e.Name), args...)
+		return hclwrite.TokensForFunctionCall(pclName, args...)
 	case *hclsyntax.TemplateExpr:
 		return ft.transformTemplate(e)
 	case *hclsyntax.TemplateWrapExpr:
@@ -1481,6 +1488,53 @@ func readParameterizationInfos(dir string) (map[string]workspace.PackageDescript
 }
 
 // transformFunctionName maps HCL function names to their PCL equivalents.
+// pclSupportedFunctions is the set of function names that PCL supports.
+// Functions not in this set will be wrapped in notImplemented() during eject.
+var pclSupportedFunctions = func() map[string]bool {
+	m := map[string]bool{}
+	for _, name := range []string{
+		"can",
+		"cwd",
+		"element",
+		"entries",
+		"fileArchive",
+		"fileAsset",
+		"filebase64",
+		"filebase64sha256",
+		"fromBase64",
+		"getOutput",
+		"join",
+		"length",
+		"lookup",
+		"mimeType",
+		"notImplemented",
+		"organization",
+		"project",
+		"pulumiResourceName",
+		"pulumiResourceType",
+		"range",
+		"readDir",
+		"readFile",
+		"remoteArchive",
+		"remoteAsset",
+		"rootDirectory",
+		"secret",
+		"sha1",
+		"singleOrNone",
+		"split",
+		"stack",
+		"stringAsset",
+		"assetArchive",
+		"toBase64",
+		"toJSON",
+		"try",
+		"unsecret",
+	} {
+		m[name] = true
+	}
+	return m
+}()
+
 func transformFunctionName(name string) string {
 	switch name {
 	case "base64encode":
