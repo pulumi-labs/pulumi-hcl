@@ -2055,7 +2055,7 @@ func (e *Engine) processModuleInit(ctx context.Context, node *graph.Node) error 
 	// No count/for_each: single instance.
 	if mod.Count == nil && mod.ForEach == nil {
 		componentOpts := &ResourceOptions{Parent: parentURN}
-		componentURN, _, _, err := e.registerComponentResource(ctx, componentType, baseKey, property.NewMap(inputs), componentOpts)
+		componentURN, _, _, err := e.registerComponentResource(ctx, componentType, extractResourceName(baseKey), property.NewMap(inputs), componentOpts)
 		if err != nil {
 			return fmt.Errorf("registering module component: %w", err)
 		}
@@ -2088,7 +2088,7 @@ func (e *Engine) processModuleInit(ctx context.Context, node *graph.Node) error 
 			idx := int(i)
 			instKey := fmt.Sprintf("%s[%d]", baseKey, i)
 			componentOpts := &ResourceOptions{Parent: parentURN}
-			componentURN, _, _, err := e.registerComponentResource(ctx, componentType, instKey, property.NewMap(inputs), componentOpts)
+			componentURN, _, _, err := e.registerComponentResource(ctx, componentType, extractResourceName(instKey), property.NewMap(inputs), componentOpts)
 			if err != nil {
 				return fmt.Errorf("registering module component %s: %w", instKey, err)
 			}
@@ -2123,7 +2123,7 @@ func (e *Engine) processModuleInit(ctx context.Context, node *graph.Node) error 
 		keyStr := k.AsString()
 		instKey := fmt.Sprintf("%s[\"%s\"]", baseKey, keyStr)
 		componentOpts := &ResourceOptions{Parent: parentURN}
-		componentURN, _, _, err := e.registerComponentResource(ctx, componentType, instKey, property.NewMap(inputs), componentOpts)
+		componentURN, _, _, err := e.registerComponentResource(ctx, componentType, extractResourceName(instKey), property.NewMap(inputs), componentOpts)
 		if err != nil {
 			return fmt.Errorf("registering module component %s: %w", instKey, err)
 		}

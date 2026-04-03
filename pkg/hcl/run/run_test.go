@@ -28,6 +28,7 @@ import (
 	"github.com/pulumi/pulumi/pkg/v3/codegen/schema"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/workspace"
 	"github.com/pulumi/pulumi/sdk/v3/go/property"
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
@@ -1459,10 +1460,8 @@ output "vpc_id" {
 		t.Errorf("expected module type %q, got %q", expectedType, moduleComponent.Type)
 	}
 
-	// Check that the module name includes the module name
-	if !strings.Contains(moduleComponent.Name, "module.vpc") {
-		t.Errorf("expected module name to contain 'module.vpc', got: %s", moduleComponent.Name)
-	}
+	// Check that the module name is the logical module name (without "module." prefix)
+	assert.Equal(t, "vpc", moduleComponent.Name)
 
 	// Find the VPC resource
 	var vpcResource *RegisterResourceRequest
