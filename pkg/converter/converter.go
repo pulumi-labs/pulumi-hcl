@@ -460,7 +460,7 @@ func transformHCLFileToPCL(
 				if pclName, isOpt := resourceOptionHCLToPCL[attr.Name]; isOpt {
 					var tokens hclwrite.Tokens
 					switch attr.Name {
-					case "hide_diffs", "replace_on_changes":
+					case "additional_secret_outputs", "hide_diffs", "replace_on_changes":
 						tokens = ft.transformPropertyPathList(attr.Expr)
 					case "for_each":
 						tokens = ft.transformForEachExpr(attr.Expr)

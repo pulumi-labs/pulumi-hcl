@@ -139,7 +139,6 @@ var expectedFailures = map[string]string{
 	"l2-resource-optional":                        "optional properties return Computed instead of null",
 	"l2-resource-primitive-defaults":               "failed to convert default integer property value",
 	"l2-resource-option-ignore-changes":            "unknown node tags.env - map-key ignore_changes not supported",
-	"l2-resource-option-additional-secret-outputs": "additionalSecretOutputs not propagated to resource",
 	"l3-component-simple":                          "component name prefixed with module.",
 	"l3-component-config-objects":                  "expected resource named plain not found",
 	"l3-component-config-primitives":               "expected resource named plain not found",

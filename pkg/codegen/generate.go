@@ -545,11 +545,7 @@ func (g *generator) genResourceOptions(body *hclwrite.Body, r *pcl.Resource) hcl
 	}
 
 	if opts.AdditionalSecretOutputs != nil {
-		tokens, d := g.exprTokens(opts.AdditionalSecretOutputs, schema.AnyResourceType)
-		diags = append(diags, d...)
-		if !d.HasErrors() {
-			body.SetAttributeRaw("additional_secret_outputs", tokens)
-		}
+		g.genPropertyPathList(body, "additional_secret_outputs", opts.AdditionalSecretOutputs, &diags)
 	}
 
 	if opts.RetainOnDelete != nil {
