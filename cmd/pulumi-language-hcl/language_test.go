@@ -137,7 +137,6 @@ var expectedFailures = map[string]string{
 		" - requires mapping between lexical names (code references) and logical names (resource names)",
 	"l1-builtin-to-json":                         "no function named toJSON",
 	"l2-resource-optional":                        "optional properties return Computed instead of null",
-	"l2-resource-primitive-defaults":               "failed to convert default integer property value",
 	"l2-resource-option-ignore-changes":            "unknown node tags.env - map-key ignore_changes not supported",
 	"l3-component-simple":                          "component name prefixed with module.",
 	"l3-component-config-objects":                  "expected resource named plain not found",
