@@ -433,7 +433,10 @@ func getDefault(path string, d *schema.DefaultValue, typ schema.Type) (property.
 		}
 	}
 	if v := d.Value; v != nil {
-		if i, ok := d.Value.(int); ok {
+		switch i := d.Value.(type) {
+		case int:
+			v = float64(i)
+		case int32:
 			v = float64(i)
 		}
 		v, err := property.Any(v)
