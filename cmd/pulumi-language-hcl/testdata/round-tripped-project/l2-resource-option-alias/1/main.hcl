@@ -35,3 +35,9 @@ resource "simple_resource" "aliasParent" {
   }]
   value = true
 }
+resource "simple_resource" "aliasType" {
+  aliases = [{
+    type = "component:index:Custom"
+  }]
+  value = true
+}

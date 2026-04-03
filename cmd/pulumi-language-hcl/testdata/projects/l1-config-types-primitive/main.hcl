@@ -6,10 +6,23 @@ output "theNumber" {
 }
 variable "optionalNumber" {
   type    = number
-  default = 41
+  default = 41.5
 }
 output "defaultNumber" {
-  value = var.optionalNumber + 1
+  value = var.optionalNumber + 1.2
+}
+variable "anInt" {
+  type = number
+}
+output "theInteger" {
+  value = var.anInt + 4
+}
+variable "optionalInt" {
+  type    = number
+  default = 1
+}
+output "defaultInteger" {
+  value = var.optionalInt + 2
 }
 variable "aString" {
   type = string

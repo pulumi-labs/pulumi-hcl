@@ -1,5 +1,9 @@
 terraform {
   required_providers {
+    component = {
+      source  = "pulumi/component"
+      version = "13.3.7"
+    }
     simple = {
       source  = "pulumi/simple"
       version = "2.0.0"
@@ -22,4 +26,7 @@ resource "simple_resource" "aliasNoParent" {
 resource "simple_resource" "aliasParent" {
   parent = simple_resource.aliasURN
   value  = true
+}
+resource "component_custom" "aliasType" {
+  value = "true"
 }

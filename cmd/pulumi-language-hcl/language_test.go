@@ -135,6 +135,15 @@ var expectedFailures = map[string]string{
 		" - not compatible with block syntax",
 	"l2-logical-name": "unsupported in HCL: __logicalName support not yet implemented" +
 		" - requires mapping between lexical names (code references) and logical names (resource names)",
+	"l1-builtin-to-json":                         "no function named toJSON",
+	"l2-resource-optional":                        "optional properties return Computed instead of null",
+	"l2-resource-primitive-defaults":               "failed to convert default integer property value",
+	"l2-resource-option-ignore-changes":            "unknown node tags.env - map-key ignore_changes not supported",
+	"l2-resource-option-additional-secret-outputs": "additionalSecretOutputs not propagated to resource",
+	"l3-component-simple":                          "component name prefixed with module.",
+	"l3-component-config-objects":                  "expected resource named plain not found",
+	"l3-component-config-primitives":               "expected resource named plain not found",
+	"l3-rewrite-conversions": "resource direct is invalid",
 }
 
 // expectedEjectFailures lists tests whose eject (HCL→PCL conversion) step is

@@ -21,3 +21,7 @@ resource "aliasParent" "simple:index:Resource" {
   }
 }
 
+resource "aliasType" "component:index:Custom" {
+  value = "true"
+}
+
