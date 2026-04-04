@@ -17,6 +17,7 @@ package transform
 
 import (
 	"fmt"
+	"maps"
 	"os"
 	"reflect"
 	"slices"
@@ -41,7 +42,7 @@ import (
 
 const SensativeMark = "sensitive"
 
-var resourceRefCapsuleType = cty.Capsule("resource_reference", reflect.TypeOf(property.ResourceReference{}))
+var resourceRefCapsuleType = cty.Capsule("resource_reference", reflect.TypeFor[property.ResourceReference]())
 
 // EvalFunc evaluates an HCL expression.
 //
@@ -268,12 +269,8 @@ func evalDynamicBlocks(
 
 			dynamicEval := func(propKey resource.PropertyKey, expr hcl.Expression, extraVars map[string]cty.Value) (cty.Value, hcl.Diagnostics) {
 				merged := make(map[string]cty.Value, len(iterVars)+len(extraVars))
-				for k, v := range iterVars {
-					merged[k] = v
-				}
-				for k, v := range extraVars {
-					merged[k] = v
-				}
+				maps.Copy(merged, iterVars)
+				maps.Copy(merged, extraVars)
 				return eval(propKey, expr, merged)
 			}
 

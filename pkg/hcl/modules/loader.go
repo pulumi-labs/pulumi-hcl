@@ -244,9 +244,9 @@ func (l *Loader) resolveGitSource(source string) (string, error) {
 	if idx := strings.Index(gitURL, "?"); idx != -1 {
 		query := gitURL[idx+1:]
 		gitURL = gitURL[:idx]
-		for _, param := range strings.Split(query, "&") {
-			if strings.HasPrefix(param, "ref=") {
-				ref = strings.TrimPrefix(param, "ref=")
+		for param := range strings.SplitSeq(query, "&") {
+			if after, ok := strings.CutPrefix(param, "ref="); ok {
+				ref = after
 			}
 		}
 	}
@@ -340,12 +340,11 @@ func (l *Loader) resolveRegistrySource(source string) (string, error) {
 	// Parse version from query string
 	version := ""
 	baseSource := source
-	if idx := strings.Index(source, "?"); idx != -1 {
-		query := source[idx+1:]
-		baseSource = source[:idx]
-		for _, param := range strings.Split(query, "&") {
-			if strings.HasPrefix(param, "version=") {
-				version = strings.TrimPrefix(param, "version=")
+	if before, query, ok := strings.Cut(source, "?"); ok {
+		baseSource = before
+		for param := range strings.SplitSeq(query, "&") {
+			if after, ok := strings.CutPrefix(param, "version="); ok {
+				version = after
 			}
 		}
 	}

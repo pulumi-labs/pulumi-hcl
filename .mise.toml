@@ -1,5 +1,5 @@
 [tools]
-go = "1.26"
+go = "1.26.1"
 gofumpt = "latest"
 golangci-lint = "2.9.0"
 jq = "latest"
