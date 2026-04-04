@@ -23,6 +23,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/hashicorp/hcl/v2"
@@ -172,6 +173,7 @@ type moduleInstance struct {
 	Index   *int                 // count index (nil if not using count)
 	EachKey *cty.Value           // for_each key (nil if not using for_each)
 	EachVal *cty.Value           // for_each value (nil if not using for_each)
+	mu      sync.Mutex           // protects Outputs
 	Outputs map[string]cty.Value // collected output values
 }
 
@@ -2072,6 +2074,7 @@ func (e *Engine) processModuleInit(ctx context.Context, node *graph.Node) error 
 			Key:     baseKey,
 			EvalCtx: instCtx,
 			URN:     componentURN,
+			Outputs: make(map[string]cty.Value),
 		}})
 		return nil
 	}
@@ -2105,6 +2108,7 @@ func (e *Engine) processModuleInit(ctx context.Context, node *graph.Node) error 
 				EvalCtx: instCtx,
 				URN:     componentURN,
 				Index:   &idx,
+				Outputs: make(map[string]cty.Value),
 			})
 		}
 		e.moduleInstances.Set(modInfo.Prefix, instances)
@@ -2141,6 +2145,7 @@ func (e *Engine) processModuleInit(ctx context.Context, node *graph.Node) error 
 			URN:     componentURN,
 			EachKey: &k,
 			EachVal: &v,
+			Outputs: make(map[string]cty.Value),
 		})
 	}
 	e.moduleInstances.Set(modInfo.Prefix, instances)
@@ -2161,10 +2166,9 @@ func (e *Engine) processModuleOutput(_ context.Context, node *graph.Node) error 
 		if diags.HasErrors() {
 			return fmt.Errorf("evaluating module output %s: %s", outputName, diags.Error())
 		}
-		if inst.Outputs == nil {
-			inst.Outputs = make(map[string]cty.Value)
-		}
+		inst.mu.Lock()
 		inst.Outputs[outputName] = val
+		inst.mu.Unlock()
 		return nil
 	})
 	if err != nil {
@@ -2181,7 +2185,11 @@ func (e *Engine) processModuleOutput(_ context.Context, node *graph.Node) error 
 
 	if !isCounted && !isForEach {
 		if len(instances) == 1 {
-			if v, has := instances[0].Outputs[outputName]; has {
+			inst := instances[0]
+			inst.mu.Lock()
+			v, has := inst.Outputs[outputName]
+			inst.mu.Unlock()
+			if has {
 				parentCtx.SetModuleOutput(modInfo.ModuleName, outputName, v)
 			}
 		}
@@ -2189,11 +2197,13 @@ func (e *Engine) processModuleOutput(_ context.Context, node *graph.Node) error 
 		// Rebuild the full tuple from all collected outputs so far.
 		tupleVals := make([]cty.Value, len(instances))
 		for i, inst := range instances {
+			inst.mu.Lock()
 			if len(inst.Outputs) > 0 {
 				tupleVals[i] = cty.ObjectVal(inst.Outputs)
 			} else {
 				tupleVals[i] = cty.EmptyObjectVal
 			}
+			inst.mu.Unlock()
 		}
 		if len(tupleVals) > 0 {
 			parentCtx.SetModule(modInfo.ModuleName, cty.TupleVal(tupleVals))
@@ -2208,11 +2218,13 @@ func (e *Engine) processModuleOutput(_ context.Context, node *graph.Node) error 
 				continue
 			}
 			keyStr := inst.EachKey.AsString()
+			inst.mu.Lock()
 			if len(inst.Outputs) > 0 {
 				mapVals[keyStr] = cty.ObjectVal(inst.Outputs)
 			} else {
 				mapVals[keyStr] = cty.EmptyObjectVal
 			}
+			inst.mu.Unlock()
 		}
 		if len(mapVals) > 0 {
 			parentCtx.SetModule(modInfo.ModuleName, cty.ObjectVal(mapVals))
