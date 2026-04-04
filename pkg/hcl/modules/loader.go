@@ -29,8 +29,8 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/pulumi/pulumi-language-hcl/pkg/hcl/ast"
-	"github.com/pulumi/pulumi-language-hcl/pkg/hcl/parser"
+	"github.com/pulumi-labs/pulumi-hcl/pkg/hcl/ast"
+	"github.com/pulumi-labs/pulumi-hcl/pkg/hcl/parser"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/util/contract"
 )
 

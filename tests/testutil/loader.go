@@ -20,7 +20,7 @@ import (
 	"testing"
 
 	"github.com/blang/semver"
-	"github.com/pulumi/pulumi-language-hcl/pkg/hcl/packages"
+	"github.com/pulumi-labs/pulumi-hcl/pkg/hcl/packages"
 	"github.com/pulumi/pulumi/pkg/v3/codegen/schema"
 	"github.com/stretchr/testify/require"
 )

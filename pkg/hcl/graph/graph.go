@@ -26,19 +26,19 @@ import (
 
 	"github.com/hashicorp/hcl/v2"
 	"github.com/hashicorp/hcl/v2/hclsyntax"
-	"github.com/pulumi/pulumi-language-hcl/pkg/hcl/ast"
-	"github.com/pulumi/pulumi-language-hcl/pkg/hcl/eval"
+	"github.com/pulumi-labs/pulumi-hcl/pkg/hcl/ast"
+	"github.com/pulumi-labs/pulumi-hcl/pkg/hcl/eval"
 	"github.com/pulumi/pulumi/pkg/v3/util/pdag"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/util/contract"
 )
 
 // ModuleInfo holds metadata for nodes that are part of an inlined module.
 type ModuleInfo struct {
-	Prefix       string     // e.g., "module.first." — prefixed to all internal keys
-	ModuleName   string     // e.g., "first"
+	Prefix       string      // e.g., "module.first." — prefixed to all internal keys
+	ModuleName   string      // e.g., "first"
 	Module       *ast.Module // the module block from the parent config
-	SourcePath   string     // resolved source path (for component type name)
-	ParentPrefix string     // "" for root-level modules, "module.outer." for nested
+	SourcePath   string      // resolved source path (for component type name)
+	ParentPrefix string      // "" for root-level modules, "module.outer." for nested
 }
 
 // LoadedModule represents a loaded and parsed module (used by ModuleLoader).

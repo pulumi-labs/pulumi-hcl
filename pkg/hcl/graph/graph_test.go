@@ -18,7 +18,7 @@ import (
 	"context"
 	"testing"
 
-	"github.com/pulumi/pulumi-language-hcl/pkg/hcl/parser"
+	"github.com/pulumi-labs/pulumi-hcl/pkg/hcl/parser"
 	"github.com/pulumi/pulumi/pkg/v3/util/pdag"
 	"github.com/stretchr/testify/require"
 	"github.com/zclconf/go-cty/cty"

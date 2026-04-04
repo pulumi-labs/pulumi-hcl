@@ -20,9 +20,9 @@ import (
 	"fmt"
 	"path/filepath"
 
-	"github.com/pulumi/pulumi-language-hcl/pkg/hcl/modules"
-	"github.com/pulumi/pulumi-language-hcl/pkg/hcl/run"
-	"github.com/pulumi/pulumi-language-hcl/pkg/hcl/schema"
+	"github.com/pulumi-labs/pulumi-hcl/pkg/hcl/modules"
+	"github.com/pulumi-labs/pulumi-hcl/pkg/hcl/run"
+	"github.com/pulumi-labs/pulumi-hcl/pkg/hcl/schema"
 	pulumiSchema "github.com/pulumi/pulumi/pkg/v3/codegen/schema"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/resource"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/resource/plugin"

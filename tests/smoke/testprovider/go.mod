@@ -1,4 +1,4 @@
-module github.com/pulumi/pulumi-language-hcl/tests/smoke/testprovider
+module github.com/pulumi-labs/pulumi-hcl/tests/smoke/testprovider
 
 go 1.25.7
 

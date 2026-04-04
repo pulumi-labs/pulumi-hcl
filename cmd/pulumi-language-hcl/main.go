@@ -24,8 +24,8 @@ import (
 	"os/signal"
 	"time"
 
-	"github.com/pulumi/pulumi-language-hcl/pkg/server"
-	"github.com/pulumi/pulumi-language-hcl/pkg/version"
+	"github.com/pulumi-labs/pulumi-hcl/pkg/server"
+	"github.com/pulumi-labs/pulumi-hcl/pkg/version"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/util/cmdutil"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/util/contract"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/util/logging"

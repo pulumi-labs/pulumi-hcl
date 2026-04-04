@@ -25,7 +25,7 @@ import (
 	"unicode"
 
 	"github.com/hashicorp/hcl/v2"
-	"github.com/pulumi/pulumi-language-hcl/pkg/hcl/eval"
+	"github.com/pulumi-labs/pulumi-hcl/pkg/hcl/eval"
 	"github.com/pulumi/pulumi/pkg/v3/codegen"
 	"github.com/pulumi/pulumi/pkg/v3/codegen/cgstrings"
 	"github.com/pulumi/pulumi/pkg/v3/codegen/schema"

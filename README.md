@@ -27,8 +27,8 @@ output "bucket_arn" {
 Install the plugin onto your path:
 
 ```bash
-go install github.com/pulumi/pulumi-language-hcl/cmd/pulumi-language-hcl # for the language
-go install github.com/pulumi/pulumi-language-hcl/cmd/pulumi-converter-hcl # for the converter
+go install github.com/pulumi-labs/pulumi-hcl/cmd/pulumi-language-hcl # for the language
+go install github.com/pulumi-labs/pulumi-hcl/cmd/pulumi-converter-hcl # for the converter
 ```
 
 ## Usage

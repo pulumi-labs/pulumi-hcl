@@ -53,8 +53,8 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/pulumi/pulumi-language-hcl/pkg/converter"
-	"github.com/pulumi/pulumi-language-hcl/pkg/server"
+	"github.com/pulumi-labs/pulumi-hcl/pkg/converter"
+	"github.com/pulumi-labs/pulumi-hcl/pkg/server"
 
 	"github.com/pulumi/pulumi/sdk/v3/go/common/resource/plugin"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/util/contract"
