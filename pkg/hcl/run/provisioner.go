@@ -19,8 +19,8 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/pulumi/pulumi-language-hcl/pkg/hcl/ast"
-	"github.com/pulumi/pulumi-language-hcl/pkg/hcl/transform"
+	"github.com/pulumi-labs/pulumi-hcl/pkg/hcl/ast"
+	"github.com/pulumi-labs/pulumi-hcl/pkg/hcl/transform"
 	"github.com/pulumi/pulumi/sdk/v3/go/property"
 	"github.com/zclconf/go-cty/cty"
 )

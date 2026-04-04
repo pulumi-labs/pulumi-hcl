@@ -22,7 +22,7 @@ import (
 	"os"
 	"os/signal"
 
-	"github.com/pulumi/pulumi-language-hcl/pkg/converter"
+	"github.com/pulumi-labs/pulumi-hcl/pkg/converter"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/resource/plugin"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/util/rpcutil"
 	pulumirpc "github.com/pulumi/pulumi/sdk/v3/proto/go"

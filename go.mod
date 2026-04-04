@@ -1,4 +1,4 @@
-module github.com/pulumi/pulumi-language-hcl
+module github.com/pulumi-labs/pulumi-hcl
 
 go 1.26
 

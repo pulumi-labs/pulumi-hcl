@@ -26,14 +26,14 @@ import (
 	"time"
 
 	"github.com/hashicorp/hcl/v2"
-	"github.com/pulumi/pulumi-language-hcl/pkg/hcl/ast"
-	"github.com/pulumi/pulumi-language-hcl/pkg/hcl/eval"
-	"github.com/pulumi/pulumi-language-hcl/pkg/hcl/graph"
-	"github.com/pulumi/pulumi-language-hcl/pkg/hcl/modules"
-	"github.com/pulumi/pulumi-language-hcl/pkg/hcl/packages"
-	"github.com/pulumi/pulumi-language-hcl/pkg/hcl/parser"
-	"github.com/pulumi/pulumi-language-hcl/pkg/hcl/transform"
-	"github.com/pulumi/pulumi-language-hcl/pkg/util"
+	"github.com/pulumi-labs/pulumi-hcl/pkg/hcl/ast"
+	"github.com/pulumi-labs/pulumi-hcl/pkg/hcl/eval"
+	"github.com/pulumi-labs/pulumi-hcl/pkg/hcl/graph"
+	"github.com/pulumi-labs/pulumi-hcl/pkg/hcl/modules"
+	"github.com/pulumi-labs/pulumi-hcl/pkg/hcl/packages"
+	"github.com/pulumi-labs/pulumi-hcl/pkg/hcl/parser"
+	"github.com/pulumi-labs/pulumi-hcl/pkg/hcl/transform"
+	"github.com/pulumi-labs/pulumi-hcl/pkg/util"
 	"github.com/pulumi/pulumi/pkg/v3/codegen/schema"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/resource"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/util/contract"
@@ -166,12 +166,12 @@ type CallResponse struct {
 
 // moduleInstance represents a single runtime instance of an inlined module.
 type moduleInstance struct {
-	Key     string        // e.g., "module.first" or "module.first[0]"
-	EvalCtx *eval.Context // per-instance evaluation context
-	URN     string        // component URN
-	Index   *int          // count index (nil if not using count)
-	EachKey *cty.Value    // for_each key (nil if not using for_each)
-	EachVal *cty.Value    // for_each value (nil if not using for_each)
+	Key     string               // e.g., "module.first" or "module.first[0]"
+	EvalCtx *eval.Context        // per-instance evaluation context
+	URN     string               // component URN
+	Index   *int                 // count index (nil if not using count)
+	EachKey *cty.Value           // for_each key (nil if not using for_each)
+	EachVal *cty.Value           // for_each value (nil if not using for_each)
 	Outputs map[string]cty.Value // collected output values
 }
 

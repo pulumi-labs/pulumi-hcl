@@ -20,7 +20,7 @@ import (
 	"github.com/blang/semver"
 	"github.com/hashicorp/hcl/v2"
 	"github.com/hashicorp/hcl/v2/ext/typeexpr"
-	"github.com/pulumi/pulumi-language-hcl/pkg/hcl/ast"
+	"github.com/pulumi-labs/pulumi-hcl/pkg/hcl/ast"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/tokens"
 	"github.com/zclconf/go-cty/cty"
 )

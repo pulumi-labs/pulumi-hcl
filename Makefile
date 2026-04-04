@@ -2,7 +2,7 @@
 
 # Version information
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo "0.0.1-dev")
-LDFLAGS := -ldflags "-X github.com/pulumi/pulumi-language-hcl/pkg/version.Version=$(VERSION)"
+LDFLAGS := -ldflags "-X github.com/pulumi-labs/pulumi-hcl/pkg/version.Version=$(VERSION)"
 
 # Build output directory
 BIN_DIR := bin
