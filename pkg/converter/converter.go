@@ -663,6 +663,26 @@ func (ft *fileTransformer) transformExpr(expr hclsyntax.Expression) hclwrite.Tok
 			val[0].SpacesBefore = 1
 		}
 		return append(hclwrite.Tokens{op}, val...)
+	case *hclsyntax.ConditionalExpr:
+		cond := ft.transformExpr(e.Condition)
+		trueVal := ft.transformExpr(e.TrueResult)
+		falseVal := ft.transformExpr(e.FalseResult)
+		tokens := cond
+		tokens = append(tokens, &hclwrite.Token{
+			Type: hclsyntax.TokenQuestion, Bytes: []byte("?"), SpacesBefore: 1,
+		})
+		if len(trueVal) > 0 {
+			trueVal[0].SpacesBefore = 1
+		}
+		tokens = append(tokens, trueVal...)
+		tokens = append(tokens, &hclwrite.Token{
+			Type: hclsyntax.TokenColon, Bytes: []byte(":"), SpacesBefore: 1,
+		})
+		if len(falseVal) > 0 {
+			falseVal[0].SpacesBefore = 1
+		}
+		tokens = append(tokens, falseVal...)
+		return tokens
 	case *hclsyntax.ForExpr:
 		return ft.transformForExpr(e)
 	case *hclsyntax.SplatExpr:
