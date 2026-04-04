@@ -137,7 +137,6 @@ var expectedFailures = map[string]string{
 		" - requires mapping between lexical names (code references) and logical names (resource names)",
 	"l2-resource-option-ignore-changes":            "unknown node tags.env - map-key ignore_changes not supported",
 	"l3-component-config-objects":                  "expected resource named plain not found",
-	"l3-component-config-primitives":               "expected resource named plain not found",
 	"l3-rewrite-conversions": "resource direct is invalid",
 }
 
