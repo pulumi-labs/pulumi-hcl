@@ -1,18 +1,29 @@
 terraform {
   required_providers {
-    simple = {
-      source  = "pulumi/simple"
-      version = "2.0.0"
+    nestedobject = {
+      source  = "pulumi/nestedobject"
+      version = "1.42.0"
     }
   }
 }
 
-resource "simple_resource" "ignoreChanges" {
+resource "nestedobject_receiver" "receiverIgnore" {
   lifecycle {
-    ignore_changes = [value]
+    ignore_changes = [details[0].key]
   }
-  value = true
+  details {
+    key   = "a"
+    value = "b"
+  }
 }
-resource "simple_resource" "notIgnoreChanges" {
-  value = true
+resource "nestedobject_mapcontainer" "mapIgnore" {
+  lifecycle {
+    ignore_changes = [tags["env"], tags["with.dot"], tags["with escaped \""]]
+  }
+  tags = {
+    "env" = "prod"
+  }
+}
+resource "nestedobject_target" "noIgnore" {
+  name = "nothing"
 }

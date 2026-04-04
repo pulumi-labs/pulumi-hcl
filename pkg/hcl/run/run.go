@@ -1490,28 +1490,31 @@ func formatTraversalForIgnoreChanges(traversal hcl.Traversal) string {
 		return ""
 	}
 
-	var parts []string
-	for _, step := range traversal {
+	var buf strings.Builder
+	for i, step := range traversal {
 		switch s := step.(type) {
 		case hcl.TraverseRoot:
-			parts = append(parts, s.Name)
+			buf.WriteString(s.Name)
 		case hcl.TraverseAttr:
-			parts = append(parts, s.Name)
+			if i > 0 {
+				buf.WriteByte('.')
+			}
+			buf.WriteString(s.Name)
 		case hcl.TraverseIndex:
-			// For index traversals, add [key] or [index]
+			// Index traversals use bracket notation without a leading dot.
 			key := s.Key
 			if key.Type() == cty.String {
-				parts = append(parts, fmt.Sprintf("[%q]", key.AsString()))
+				fmt.Fprintf(&buf, "[%q]", key.AsString())
 			} else if key.Type() == cty.Number {
 				bf := key.AsBigFloat()
 				if i64, acc := bf.Int64(); acc == 0 {
-					parts = append(parts, fmt.Sprintf("[%d]", i64))
+					fmt.Fprintf(&buf, "[%d]", i64)
 				}
 			}
 		}
 	}
 
-	return strings.Join(parts, ".")
+	return buf.String()
 }
 
 // ResourceOptions contains resource registration options.

@@ -470,6 +470,10 @@ func transformHCLFileToPCL(
 					opts = append(opts, optEntry{pclName, tokens})
 				}
 			}
+			// Separate special sub-blocks (lifecycle, timeouts, dynamic) from
+			// property sub-blocks (e.g. details { ... }) that represent
+			// array-of-object input properties.
+			var propertyBlocks []*hclsyntax.Block
 			for _, subBlock := range block.Body.Blocks {
 				switch subBlock.Type {
 				case "dynamic":
@@ -507,13 +511,13 @@ func transformHCLFileToPCL(
 						opts = append(opts, optEntry{"customTimeouts", hclwrite.TokensForObject(timeoutAttrs)})
 					}
 				default:
-					resultDiags = append(resultDiags, &hcl.Diagnostic{
-						Severity: hcl.DiagError,
-						Summary:  "unsupported resource sub-block",
-						Detail:   fmt.Sprintf("resource sub-block %q is not supported by the HCL converter", subBlock.Type),
-						Subject:  subBlock.TypeRange.Ptr(),
-					})
+					propertyBlocks = append(propertyBlocks, subBlock)
 				}
+			}
+			// Convert property sub-blocks to PCL object-list attributes.
+			for _, objAttr := range ft.blocksToObjectAttrs(propertyBlocks, res.InputProperties) {
+				name := strings.TrimSpace(string(objAttr.Name.Bytes()))
+				blk.Body().SetAttributeRaw(name, objAttr.Value)
 			}
 			if len(opts) > 0 {
 				optBlk := blk.Body().AppendNewBlock("options", nil)
