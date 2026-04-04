@@ -1017,7 +1017,7 @@ resource "test_resource" "res" {
 
 	runWithField := func(t *testing.T, value string) (*mockResourceMonitor, error) {
 		t.Helper()
-		src := []byte(fmt.Sprintf(hclTemplate, value))
+		src := fmt.Appendf(nil, hclTemplate, value)
 		p := parser.NewParser()
 		config, diags := p.ParseSource("test.hcl", src)
 		require.False(t, diags.HasErrors(), diags.Error())
@@ -1073,7 +1073,7 @@ resource "test_resource" "res" {
 
 	runWithField := func(t *testing.T, value string) (*mockResourceMonitor, error) {
 		t.Helper()
-		src := []byte(fmt.Sprintf(hclTemplate, value))
+		src := fmt.Appendf(nil, hclTemplate, value)
 		p := parser.NewParser()
 		config, diags := p.ParseSource("test.hcl", src)
 		require.False(t, diags.HasErrors(), diags.Error())
@@ -1174,9 +1174,7 @@ resource "aws_instance" "web" {
 		}
 	}
 
-	if provisionerReq == nil {
-		t.Fatal("expected command:local:Command provisioner to be registered")
-	}
+	require.NotNil(t, provisionerReq, "expected command:local:Command provisioner to be registered")
 
 	// Check that the command was mapped to create
 	if create, ok := provisionerReq.Inputs.GetOk("create"); ok {
@@ -1321,9 +1319,7 @@ resource "aws_instance" "web" {
 		}
 	}
 
-	if provisionerReq == nil {
-		t.Fatal("expected command:local:Command provisioner to be registered")
-	}
+	require.NotNil(t, provisionerReq, "expected command:local:Command provisioner to be registered")
 
 	// Check that self.id was resolved
 	if create, ok := provisionerReq.Inputs.GetOk("create"); ok {
@@ -1450,9 +1446,7 @@ output "vpc_id" {
 		}
 	}
 
-	if moduleComponent == nil {
-		t.Fatal("expected module component to be registered")
-	}
+	require.NotNil(t, moduleComponent, "expected module component to be registered")
 
 	// Verify the component type token format
 	expectedType := "components:index:Vpc"
@@ -1472,9 +1466,7 @@ output "vpc_id" {
 		}
 	}
 
-	if vpcResource == nil {
-		t.Fatal("expected aws:index:Vpc resource to be registered")
-	}
+	require.NotNil(t, vpcResource, "expected aws:index:Vpc resource to be registered")
 
 	// Check that the VPC has the correct cidr_block
 	if cidr, ok := vpcResource.Inputs.GetOk("cidrBlock"); ok {
@@ -1613,14 +1605,10 @@ resource "aws_instance" "web" {
 		}
 	}
 
-	if instanceReq == nil {
-		t.Fatal("expected aws:index:Instance resource to be registered")
-	}
+	require.NotNil(t, instanceReq, "expected aws:index:Instance resource to be registered")
 
 	// Check that timeouts were set
-	if instanceReq.CustomTimeouts == nil {
-		t.Fatal("expected CustomTimeouts to be set")
-	}
+	require.NotNil(t, instanceReq.CustomTimeouts, "expected CustomTimeouts to be set")
 
 	// 60m = 3600 seconds
 	if instanceReq.CustomTimeouts.Create != 3600 {
@@ -1699,9 +1687,7 @@ resource "aws_instance" "web" {
 		}
 	}
 
-	if instanceReq == nil {
-		t.Fatal("expected aws:index:Instance resource to be registered")
-	}
+	require.NotNil(t, instanceReq, "expected aws:index:Instance resource to be registered")
 
 	// Check that aliases include the old resource address
 	if len(instanceReq.Aliases) == 0 {
@@ -1781,9 +1767,7 @@ resource "aws_instance" "imported" {
 		}
 	}
 
-	if instanceReq == nil {
-		t.Fatal("expected aws:index:Instance resource to be registered")
-	}
+	require.NotNil(t, instanceReq, "expected aws:index:Instance resource to be registered")
 
 	// Check that ImportId was set
 	if instanceReq.ImportId != "i-1234567890abcdef0" {

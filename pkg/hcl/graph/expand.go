@@ -112,7 +112,7 @@ func (e *ResourceExpander) Expand(node *Node) *ExpandResult {
 		}
 
 		instances := make([]*ExpandedResource, count)
-		for i := 0; i < count; i++ {
+		for i := range count {
 			idx := i
 			instances[i] = &ExpandedResource{
 				Key:         fmt.Sprintf("%s[%d]", node.Key, i),

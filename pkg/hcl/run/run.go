@@ -2110,7 +2110,7 @@ func (e *Engine) processModuleInit(ctx context.Context, node *graph.Node) error 
 		}
 		count, _ := countVal.AsBigFloat().Int64()
 		var instances []*moduleInstance
-		for i := int64(0); i < count; i++ {
+		for i := range count {
 			idx := int(i)
 			instKey := fmt.Sprintf("%s[%d]", baseKey, i)
 			componentOpts := &ResourceOptions{Parent: parentURN}
