@@ -27,11 +27,11 @@ import (
 func splitResourceKey(key string) []string {
 	// Find the first dot to split type.name — resource types never contain dots,
 	// but logical names can.
-	idx := strings.Index(key, ".")
-	if idx < 0 {
+	before, after, found := strings.Cut(key, ".")
+	if !found {
 		return []string{key}
 	}
-	return []string{key[:idx], key[idx+1:]}
+	return []string{before, after}
 }
 
 // Context manages the evaluation context for HCL expressions.

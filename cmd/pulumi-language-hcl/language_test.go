@@ -138,9 +138,7 @@ var expectedFailures = map[string]string{
 // expectedEjectFailures lists tests whose eject (HCL→PCL conversion) step is
 // expected to fail because the converter does not yet support resources, data
 // sources, or other constructs used by those tests.
-var expectedEjectFailures = map[string]string{
-	"l2-logical-name": "converter does not yet emit __logicalName when the logical name is not a valid PCL identifier",
-}
+var expectedEjectFailures = map[string]string{}
 
 func has[K comparable, V any, M ~map[K]V](m M, k K) bool {
 	_, ok := m[k]
