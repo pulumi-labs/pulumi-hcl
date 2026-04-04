@@ -1333,6 +1333,8 @@ func (g *generator) funcCallTokens(expr *model.FunctionCallExpression) (hclwrite
 		return g.passthroughFuncCallTokens("base64encode", expr.Args)
 	case "fromBase64":
 		return g.passthroughFuncCallTokens("base64decode", expr.Args)
+	case "toJSON":
+		return g.passthroughFuncCallTokens("jsonencode", expr.Args)
 	case "notImplemented":
 		return g.notImplementedTokens(expr)
 	default:

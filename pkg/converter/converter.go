@@ -1541,6 +1541,8 @@ func transformFunctionName(name string) string {
 		return "toBase64"
 	case "base64decode":
 		return "fromBase64"
+	case "jsonencode":
+		return "toJSON"
 	case "sensitive":
 		return "secret"
 	case "one":
