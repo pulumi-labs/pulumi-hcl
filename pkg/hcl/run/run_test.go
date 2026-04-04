@@ -1486,6 +1486,71 @@ output "vpc_id" {
 	}
 }
 
+// TestEngine_ModuleOutputRace verifies that concurrent processing of multiple
+// module outputs does not trigger a data race on moduleInstance.Outputs.
+// This is a regression test for https://github.com/pulumi-labs/pulumi-hcl/issues/60.
+func TestEngine_ModuleOutputRace(t *testing.T) {
+	t.Parallel()
+
+	tmpDir := t.TempDir()
+
+	// Create a module with many outputs to maximize scheduling contention.
+	moduleDir := tmpDir + "/modules/multi"
+	if err := os.MkdirAll(moduleDir, 0755); err != nil {
+		t.Fatalf("creating module dir: %v", err)
+	}
+
+	moduleMain := `
+variable "input" {
+  type = string
+}
+
+output "out_a" { value = var.input }
+output "out_b" { value = var.input }
+output "out_c" { value = var.input }
+output "out_d" { value = var.input }
+output "out_e" { value = var.input }
+output "out_f" { value = var.input }
+output "out_g" { value = var.input }
+output "out_h" { value = var.input }
+`
+	if err := os.WriteFile(moduleDir+"/main.hcl", []byte(moduleMain), 0644); err != nil {
+		t.Fatalf("writing module file: %v", err)
+	}
+
+	rootMain := `
+module "multi" {
+  source = "./modules/multi"
+  input  = "hello"
+}
+`
+	if err := os.WriteFile(tmpDir+"/main.hcl", []byte(rootMain), 0644); err != nil {
+		t.Fatalf("writing root file: %v", err)
+	}
+
+	p := parser.NewParser()
+	config, diags := p.ParseDirectory(tmpDir)
+	if diags.HasErrors() {
+		t.Fatalf("parse error: %s", diags.Error())
+	}
+
+	mock := &mockResourceMonitor{}
+	engine := NewEngine(config, &EngineOptions{
+		ProjectName:     "test-project",
+		StackName:       "dev",
+		ResourceMonitor: mock,
+		WorkDir:         tmpDir,
+		RootDir:         tmpDir,
+		SchemaLoader:    newMockReferenceLoader(t, schema.PackageSpec{Name: "empty"}),
+	})
+
+	// Under -race this would fail before the fix due to concurrent map writes
+	// in processModuleOutput.
+	if err := engine.Run(t.Context()); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
 func TestEngine_Timeouts(t *testing.T) {
 	t.Parallel()
 
