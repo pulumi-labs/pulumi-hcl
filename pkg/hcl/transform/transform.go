@@ -36,6 +36,7 @@ import (
 	"github.com/pulumi/pulumi/sdk/v3/go/common/util/contract"
 	"github.com/pulumi/pulumi/sdk/v3/go/property"
 	"github.com/zclconf/go-cty/cty"
+	"github.com/zclconf/go-cty/cty/convert"
 )
 
 const SensativeMark = "sensitive"
@@ -298,6 +299,21 @@ func evalDynamicBlocks(
 	return diags
 }
 
+// schemaToCtyPrimitive returns the cty primitive type corresponding to a
+// Pulumi schema type, if applicable.
+func schemaToCtyPrimitive(typ schema.Type) (cty.Type, bool) {
+	switch codegen.UnwrapType(typ) {
+	case schema.BoolType:
+		return cty.Bool, true
+	case schema.IntType, schema.NumberType:
+		return cty.Number, true
+	case schema.StringType:
+		return cty.String, true
+	default:
+		return cty.NilType, false
+	}
+}
+
 func conformCtyToType(val cty.Value, typ cty.Type) cty.Value {
 	if val.Type().Equals(typ) {
 		return val
@@ -470,6 +486,18 @@ func ctyToResourceProperty(path string, val cty.Value, prop schema.Type, already
 		return property.Value{}, nil
 	case !val.IsKnown():
 		return property.New(property.Computed), nil
+	}
+
+	// Coerce the value to match the expected schema type when possible.
+	// This handles cases like boolean = "true" where the HCL literal is a
+	// string but the schema expects a boolean.
+	if targetCtyType, ok := schemaToCtyPrimitive(prop); ok && !val.Type().Equals(targetCtyType) {
+		if converted, err := convert.Convert(val, targetCtyType); err == nil {
+			val = converted
+		}
+	}
+
+	switch {
 	case val.Type().Equals(cty.String):
 		return property.New(val.AsString()), nil
 	case val.Type().Equals(cty.Bool):
