@@ -1597,6 +1597,16 @@ func findPropertyType(props []*schema.Property, name string) schema.Type {
 	return nil
 }
 
+// traverseNameStep returns a TraverseAttr for valid HCL identifiers (e.g. `.foo`),
+// or a TraverseIndex with a string key for names that contain special characters
+// (e.g. `["aA-Alpha_alpha.🤯⁉️"]`).
+func traverseNameStep(name string) hcl.Traverser {
+	if hclsyntax.ValidIdentifier(name) {
+		return hcl.TraverseAttr{Name: name}
+	}
+	return hcl.TraverseIndex{Key: cty.StringVal(name)}
+}
+
 // scopeTraversalTokens generates HCL tokens for a scope traversal expression.
 // PCL config variables become HCL `var.<name>`, local variables become `local.<name>`,
 // and resource references become `<resource_type>.<name>.<property>`.
@@ -1611,7 +1621,7 @@ func (g *generator) scopeTraversalTokens(expr *model.ScopeTraversalExpression) (
 		// Rewrite "aMap.x" → "var.aMap.x".
 		rewritten := make(hcl.Traversal, 0, len(traversal)+1)
 		rewritten = append(rewritten, hcl.TraverseRoot{Name: "var"})
-		rewritten = append(rewritten, hcl.TraverseAttr{Name: traversal.RootName()})
+		rewritten = append(rewritten, traverseNameStep(part.LogicalName()))
 		return hclwrite.TokensForTraversal(append(rewritten, traversal[1:]...)), nil
 	case *pcl.LocalVariable:
 		// If this local is backed by an invoke call, substitute the data source reference
@@ -1638,7 +1648,7 @@ func (g *generator) scopeTraversalTokens(expr *model.ScopeTraversalExpression) (
 		// Rewrite "myLocal.x" → "local.myLocal.x".
 		rewritten := make(hcl.Traversal, 0, len(traversal)+1)
 		rewritten = append(rewritten, hcl.TraverseRoot{Name: "local"})
-		rewritten = append(rewritten, hcl.TraverseAttr{Name: traversal.RootName()})
+		rewritten = append(rewritten, traverseNameStep(part.LogicalName()))
 		return hclwrite.TokensForTraversal(append(rewritten, traversal[1:]...)), nil
 	case *pcl.Resource:
 		// Rewrite "myResource.property" → "resource_type.myResource.property".
@@ -1652,13 +1662,13 @@ func (g *generator) scopeTraversalTokens(expr *model.ScopeTraversalExpression) (
 		}
 		rewritten := make(hcl.Traversal, 0, len(traversal)+1)
 		rewritten = append(rewritten, hcl.TraverseRoot{Name: hclType})
-		rewritten = append(rewritten, hcl.TraverseAttr{Name: traversal.RootName()})
+		rewritten = append(rewritten, traverseNameStep(part.LogicalName()))
 		return hclwrite.TokensForTraversal(append(rewritten, schemaAwareRewriteTraversal(part.Schema.Properties, traversal[1:])...)), nil
 	case *pcl.Component:
 		// Rewrite "someComponent.output" → "module.someComponent.output".
 		rewritten := make(hcl.Traversal, 0, len(traversal)+1)
 		rewritten = append(rewritten, hcl.TraverseRoot{Name: "module"})
-		rewritten = append(rewritten, hcl.TraverseAttr{Name: traversal.RootName()})
+		rewritten = append(rewritten, traverseNameStep(part.LogicalName()))
 		return hclwrite.TokensForTraversal(append(rewritten, traversal[1:]...)), nil
 	default:
 		if traversal.RootName() == "range" {

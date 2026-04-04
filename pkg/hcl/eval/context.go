@@ -25,8 +25,9 @@ import (
 
 // splitResourceKey splits a resource key like "aws_instance.web" into ["aws_instance", "web"].
 func splitResourceKey(key string) []string {
-	// Find the last dot to split type.name
-	idx := strings.LastIndex(key, ".")
+	// Find the first dot to split type.name — resource types never contain dots,
+	// but logical names can.
+	idx := strings.Index(key, ".")
 	if idx < 0 {
 		return []string{key}
 	}

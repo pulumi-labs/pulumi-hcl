@@ -1070,12 +1070,21 @@ func stripRoot(trav hcl.Traversal) hcl.Traversal {
 	if len(trav) < 2 {
 		return trav
 	}
-	attr, ok := trav[1].(hcl.TraverseAttr)
-	if !ok {
+	var name string
+	switch step := trav[1].(type) {
+	case hcl.TraverseAttr:
+		name = step.Name
+	case hcl.TraverseIndex:
+		if step.Key.Type() == cty.String {
+			name = step.Key.AsString()
+		} else {
+			return trav
+		}
+	default:
 		return trav
 	}
 	result := make(hcl.Traversal, len(trav)-1)
-	result[0] = hcl.TraverseRoot{Name: attr.Name}
+	result[0] = hcl.TraverseRoot{Name: name}
 	copy(result[1:], trav[2:])
 	return result
 }
