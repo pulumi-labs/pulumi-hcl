@@ -23,6 +23,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/hashicorp/hcl/v2"
@@ -172,6 +173,7 @@ type moduleInstance struct {
 	Index   *int                 // count index (nil if not using count)
 	EachKey *cty.Value           // for_each key (nil if not using for_each)
 	EachVal *cty.Value           // for_each value (nil if not using for_each)
+	mu      sync.Mutex           // guards Outputs
 	Outputs map[string]cty.Value // collected output values
 }
 
@@ -2161,10 +2163,12 @@ func (e *Engine) processModuleOutput(_ context.Context, node *graph.Node) error 
 		if diags.HasErrors() {
 			return fmt.Errorf("evaluating module output %s: %s", outputName, diags.Error())
 		}
+		inst.mu.Lock()
 		if inst.Outputs == nil {
 			inst.Outputs = make(map[string]cty.Value)
 		}
 		inst.Outputs[outputName] = val
+		inst.mu.Unlock()
 		return nil
 	})
 	if err != nil {
@@ -2181,7 +2185,11 @@ func (e *Engine) processModuleOutput(_ context.Context, node *graph.Node) error 
 
 	if !isCounted && !isForEach {
 		if len(instances) == 1 {
-			if v, has := instances[0].Outputs[outputName]; has {
+			inst := instances[0]
+			inst.mu.Lock()
+			v, has := inst.Outputs[outputName]
+			inst.mu.Unlock()
+			if has {
 				parentCtx.SetModuleOutput(modInfo.ModuleName, outputName, v)
 			}
 		}
@@ -2189,8 +2197,11 @@ func (e *Engine) processModuleOutput(_ context.Context, node *graph.Node) error 
 		// Rebuild the full tuple from all collected outputs so far.
 		tupleVals := make([]cty.Value, len(instances))
 		for i, inst := range instances {
-			if len(inst.Outputs) > 0 {
-				tupleVals[i] = cty.ObjectVal(inst.Outputs)
+			inst.mu.Lock()
+			snapshot := snapshotOutputs(inst.Outputs)
+			inst.mu.Unlock()
+			if len(snapshot) > 0 {
+				tupleVals[i] = cty.ObjectVal(snapshot)
 			} else {
 				tupleVals[i] = cty.EmptyObjectVal
 			}
@@ -2208,8 +2219,11 @@ func (e *Engine) processModuleOutput(_ context.Context, node *graph.Node) error 
 				continue
 			}
 			keyStr := inst.EachKey.AsString()
-			if len(inst.Outputs) > 0 {
-				mapVals[keyStr] = cty.ObjectVal(inst.Outputs)
+			inst.mu.Lock()
+			snapshot := snapshotOutputs(inst.Outputs)
+			inst.mu.Unlock()
+			if len(snapshot) > 0 {
+				mapVals[keyStr] = cty.ObjectVal(snapshot)
 			} else {
 				mapVals[keyStr] = cty.EmptyObjectVal
 			}
@@ -2222,6 +2236,18 @@ func (e *Engine) processModuleOutput(_ context.Context, node *graph.Node) error 
 	}
 
 	return nil
+}
+
+// snapshotOutputs returns a shallow copy of the outputs map.
+func snapshotOutputs(m map[string]cty.Value) map[string]cty.Value {
+	if len(m) == 0 {
+		return nil
+	}
+	cp := make(map[string]cty.Value, len(m))
+	for k, v := range m {
+		cp[k] = v
+	}
+	return cp
 }
 
 // processModuleComplete handles the module completion node: registers component outputs

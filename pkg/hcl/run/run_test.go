@@ -1486,6 +1486,62 @@ output "vpc_id" {
 	}
 }
 
+// TestEngine_ModuleOutputRace exercises concurrent writes to moduleInstance.Outputs
+// that happen when a module has multiple outputs processed in parallel during graph walk.
+// Before the fix, running this test with -race would report a data race.
+func TestEngine_ModuleOutputRace(t *testing.T) {
+	t.Parallel()
+
+	tmpDir := t.TempDir()
+
+	// Create module with many outputs so the graph walker processes them concurrently.
+	moduleDir := tmpDir + "/modules/multi"
+	if err := os.MkdirAll(moduleDir, 0755); err != nil {
+		t.Fatalf("creating module dir: %v", err)
+	}
+
+	// Generate a module with many outputs that have no interdependencies,
+	// maximizing the chance they are scheduled concurrently.
+	var moduleHCL strings.Builder
+	moduleHCL.WriteString(`variable "base" { type = string }` + "\n")
+	const numOutputs = 20
+	for i := 0; i < numOutputs; i++ {
+		fmt.Fprintf(&moduleHCL, "output \"out_%d\" { value = \"%d-${var.base}\" }\n", i, i)
+	}
+	if err := os.WriteFile(moduleDir+"/main.hcl", []byte(moduleHCL.String()), 0644); err != nil {
+		t.Fatalf("writing module file: %v", err)
+	}
+
+	rootMain := `
+module "multi" {
+  source = "./modules/multi"
+  base   = "hello"
+}
+`
+	if err := os.WriteFile(tmpDir+"/main.hcl", []byte(rootMain), 0644); err != nil {
+		t.Fatalf("writing root file: %v", err)
+	}
+
+	p := parser.NewParser()
+	config, diags := p.ParseDirectory(tmpDir)
+	if diags.HasErrors() {
+		t.Fatalf("parse error: %s", diags.Error())
+	}
+
+	mock := &mockResourceMonitor{}
+	engine := NewEngine(config, &EngineOptions{
+		ProjectName:     "test-project",
+		StackName:       "dev",
+		ResourceMonitor: mock,
+		WorkDir:         tmpDir,
+		RootDir:         tmpDir,
+		SchemaLoader:    newMockReferenceLoader(t),
+	})
+
+	err := engine.Run(t.Context())
+	require.NoError(t, err)
+}
+
 func TestEngine_Timeouts(t *testing.T) {
 	t.Parallel()
 
