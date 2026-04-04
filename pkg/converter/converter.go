@@ -189,6 +189,7 @@ type fileTransformer struct {
 	loader          schema.ReferenceLoader
 	resourceSchemas map[string]*schema.Resource // cache: HCL type label → resolved schema resource
 	functionSchemas map[string]*schema.Function // cache: HCL type label → resolved schema function
+	nameRewrites    map[string]string           // logical name → sanitized PCL identifier (only for invalid names)
 }
 
 // newFileTransformer creates a fileTransformer by pre-scanning body for resource and data definitions.
@@ -202,6 +203,7 @@ func newFileTransformer(ctx context.Context, src []byte, body *hclsyntax.Body, l
 		dataTokens:      make(map[string]string),
 		loader:          loader,
 		resourceSchemas: make(map[string]*schema.Resource),
+		nameRewrites:    make(map[string]string),
 		functionSchemas: make(map[string]*schema.Function),
 	}
 	var diags hcl.Diagnostics
@@ -245,7 +247,96 @@ func newFileTransformer(ctx context.Context, src []byte, body *hclsyntax.Body, l
 			}
 		}
 	}
+
+	// Pre-scan to build name rewrites for logical names that aren't valid PCL identifiers.
+	usedNames := make(map[string]bool)
+	// First pass: collect all names that are already valid identifiers.
+	for _, block := range body.Blocks {
+		var name string
+		switch block.Type {
+		case "resource":
+			if len(block.Labels) >= 2 {
+				name = block.Labels[1]
+			}
+		case "variable":
+			if len(block.Labels) >= 1 {
+				name = block.Labels[0]
+			}
+		case "output":
+			if len(block.Labels) >= 1 {
+				name = block.Labels[0]
+			}
+		case "module":
+			if len(block.Labels) >= 1 {
+				name = block.Labels[0]
+			}
+		}
+		if name != "" && hclsyntax.ValidIdentifier(name) {
+			usedNames[name] = true
+		}
+	}
+	// Second pass: generate sanitized names for invalid identifiers.
+	for _, block := range body.Blocks {
+		var name string
+		switch block.Type {
+		case "resource":
+			if len(block.Labels) >= 2 {
+				name = block.Labels[1]
+			}
+		case "variable":
+			if len(block.Labels) >= 1 {
+				name = block.Labels[0]
+			}
+		case "output":
+			// Outputs are never referenced in expressions, so they don't need rewriting.
+			continue
+		case "module":
+			if len(block.Labels) >= 1 {
+				name = block.Labels[0]
+			}
+		default:
+			continue
+		}
+		if name == "" || hclsyntax.ValidIdentifier(name) {
+			continue
+		}
+		sanitized := sanitizeIdentifier(name)
+		for usedNames[sanitized] {
+			sanitized = sanitized + "_"
+		}
+		usedNames[sanitized] = true
+		ft.nameRewrites[name] = sanitized
+	}
+
 	return ft, diags
+}
+
+// sanitizeIdentifier converts a string into a valid HCL identifier by replacing
+// invalid characters with underscores.
+func sanitizeIdentifier(name string) string {
+	var b strings.Builder
+	for _, r := range name {
+		switch {
+		case (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || r == '_':
+			b.WriteRune(r)
+		case r >= '0' && r <= '9':
+			if b.Len() == 0 {
+				b.WriteRune('_')
+			}
+			b.WriteRune(r)
+		case r == '-':
+			if b.Len() == 0 {
+				b.WriteRune('_')
+			}
+			b.WriteRune(r)
+		default:
+			b.WriteRune('_')
+		}
+	}
+	if b.Len() == 0 {
+		return "_"
+	}
+	return b.String()
 }
 
 // resolveHCLType resolves an HCL resource type label (e.g., "pulumi_stash") to a schema
@@ -335,12 +426,20 @@ func transformHCLFileToPCL(
 			if len(block.Labels) == 0 {
 				continue
 			}
-			labels := []string{block.Labels[0] /* name */}
+			name := block.Labels[0]
+			pclName := name
+			if rewritten, ok := ft.nameRewrites[name]; ok {
+				pclName = rewritten
+			}
+			labels := []string{pclName}
 
 			if typeAttr, ok := block.Body.Attributes["type"]; ok {
 				labels = append(labels, convertHCLTypeExpr(src, typeAttr.Expr))
 			}
 			blk := out.AppendNewBlock("config", labels)
+			if pclName != name {
+				blk.Body().SetAttributeRaw("__logicalName", hclwrite.TokensForValue(cty.StringVal(name)))
+			}
 			for _, attr := range sortedAttributes(block.Body.Attributes) {
 				if attr.Name == "type" {
 					continue
@@ -361,6 +460,9 @@ func transformHCLFileToPCL(
 			}
 			name := block.Labels[0]
 			blk := out.AppendNewBlock("output", []string{name})
+			if !hclsyntax.ValidIdentifier(name) {
+				blk.Body().SetAttributeRaw("__logicalName", hclwrite.TokensForValue(cty.StringVal(name)))
+			}
 			for _, attr := range sortedAttributes(block.Body.Attributes) {
 				blk.Body().SetAttributeRaw(attr.Name, ft.transformExpr(attr.Expr))
 			}
@@ -371,6 +473,10 @@ func transformHCLFileToPCL(
 				continue
 			}
 			logicalName := block.Labels[0]
+			pclName := logicalName
+			if rewritten, ok := ft.nameRewrites[logicalName]; ok {
+				pclName = rewritten
+			}
 			sourceAttr, ok := block.Body.Attributes["source"]
 			if !ok {
 				resultDiags = append(resultDiags, &hcl.Diagnostic{
@@ -395,7 +501,10 @@ func transformHCLFileToPCL(
 				})
 				continue
 			}
-			blk := out.AppendNewBlock("component", []string{logicalName, sourceVal.AsString()})
+			blk := out.AppendNewBlock("component", []string{pclName, sourceVal.AsString()})
+			if pclName != logicalName {
+				blk.Body().SetAttributeRaw("__logicalName", hclwrite.TokensForValue(cty.StringVal(logicalName)))
+			}
 			var rangeExpr hclsyntax.Expression
 			for _, attr := range sortedAttributes(block.Body.Attributes) {
 				switch attr.Name {
@@ -427,6 +536,10 @@ func transformHCLFileToPCL(
 			}
 			hclType := block.Labels[0]
 			logicalName := block.Labels[1]
+			pclName := logicalName
+			if rewritten, ok := ft.nameRewrites[logicalName]; ok {
+				pclName = rewritten
+			}
 
 			res, err := ft.resolveHCLType(ctx, hclType)
 			if err != nil {
@@ -439,7 +552,10 @@ func transformHCLFileToPCL(
 				continue
 			}
 
-			blk := out.AppendNewBlock("resource", []string{logicalName, res.Token})
+			blk := out.AppendNewBlock("resource", []string{pclName, res.Token})
+			if pclName != logicalName {
+				blk.Body().SetAttributeRaw("__logicalName", hclwrite.TokensForValue(cty.StringVal(logicalName)))
+			}
 
 			// Emit input properties first (skip resource option attributes).
 			for _, attr := range sortedAttributes(block.Body.Attributes) {
@@ -882,7 +998,7 @@ func (ft *fileTransformer) transformTraversal(e *hclsyntax.ScopeTraversalExpr) h
 	// Resource traversal: strip the HCL type prefix (e.g., "pulumi_stash.myRes.prop" → "myRes.prop"),
 	// and convert property attribute names from snake_case to camelCase.
 	if ft.knownHCLTypes[root] {
-		stripped := stripRoot(e.Traversal)
+		stripped := ft.rewriteTraversalRoot(stripRoot(e.Traversal))
 		// StackReference: <type>.<name>.outputs["key"] → getOutput(<name>, "key")
 		if len(stripped) == 3 {
 			logicalName, ok1 := stripped[0].(hcl.TraverseRoot)
@@ -969,7 +1085,7 @@ func (ft *fileTransformer) transformTraversal(e *hclsyntax.ScopeTraversalExpr) h
 		copy(trav[1:], e.Traversal[1:])
 		return hclwrite.TokensForTraversal(trav)
 	case "var", "local", "module":
-		return hclwrite.TokensForTraversal(stripRoot(e.Traversal))
+		return hclwrite.TokensForTraversal(ft.rewriteTraversalRoot(stripRoot(e.Traversal)))
 	case "pulumi":
 		if len(e.Traversal) >= 2 {
 			if attr, ok := e.Traversal[1].(hcl.TraverseAttr); ok {
@@ -1087,6 +1203,21 @@ func stripRoot(trav hcl.Traversal) hcl.Traversal {
 	result[0] = hcl.TraverseRoot{Name: name}
 	copy(result[1:], trav[2:])
 	return result
+}
+
+// rewriteTraversalRoot replaces the root name of a traversal if the name has
+// a rewrite mapping (i.e. it was not a valid PCL identifier).
+func (ft *fileTransformer) rewriteTraversalRoot(trav hcl.Traversal) hcl.Traversal {
+	if len(trav) == 0 {
+		return trav
+	}
+	if rewritten, ok := ft.nameRewrites[trav.RootName()]; ok {
+		result := make(hcl.Traversal, len(trav))
+		copy(result, trav)
+		result[0] = hcl.TraverseRoot{Name: rewritten}
+		return result
+	}
+	return trav
 }
 
 // callExprTokens generates PCL tokens for call(resourceName, "camelMethod", {args...}).
