@@ -422,6 +422,24 @@ func (g *Graph) bodyDeps(body hcl.Body, prefix string, exclude map[string]bool) 
 				for _, dep := range g.bodyDeps(block.Body, prefix, childExclude) {
 					seen[dep] = true
 				}
+			} else if block.Type == "lifecycle" {
+				// lifecycle blocks contain ignore_changes which holds property
+				// paths (e.g. tags["env"]), not dependency references. We must
+				// skip that attribute to avoid creating spurious graph nodes.
+				for attrName, attr := range block.Body.Attributes {
+					if attrName == "ignore_changes" {
+						continue
+					}
+					for _, dep := range g.exprDepsExcluding(attr.Expr, prefix, exclude) {
+						seen[dep] = true
+					}
+				}
+				// Still recurse into nested blocks (precondition, postcondition).
+				for _, nested := range block.Body.Blocks {
+					for _, dep := range g.bodyDeps(nested.Body, prefix, exclude) {
+						seen[dep] = true
+					}
+				}
 			} else {
 				for _, dep := range g.bodyDeps(block.Body, prefix, exclude) {
 					seen[dep] = true
