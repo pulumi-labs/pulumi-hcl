@@ -463,9 +463,11 @@ func ctyToResourceProperty(path string, val cty.Value, prop schema.Type, already
 	// Strip unneeded signifiers
 	prop = codegen.UnwrapType(prop)
 
-	// Handle primitive types & unknown
+	// Handle null & unknown
 
 	switch {
+	case val.IsNull():
+		return property.Value{}, nil
 	case !val.IsKnown():
 		return property.New(property.Computed), nil
 	case val.Type().Equals(cty.String):
@@ -747,7 +749,11 @@ func propertyObjectToCtyMap(path string, m property.Map, properties []*schema.Pr
 		hclName := snakeCaseFromCamelCase(p.Name)
 		v, ok := m.GetOk(p.Name)
 		if !ok {
-			result[hclName] = cty.UnknownVal(ctyTypeFromType(p.Type))
+			if dryRun {
+				result[hclName] = cty.UnknownVal(ctyTypeFromType(p.Type))
+			} else {
+				result[hclName] = cty.NullVal(ctyTypeFromType(p.Type))
+			}
 			continue
 		}
 		// During preview, required properties that are null are treated as unknown.
