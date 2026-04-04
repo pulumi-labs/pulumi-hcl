@@ -135,7 +135,6 @@ var expectedFailures = map[string]string{
 		" - not compatible with block syntax",
 	"l2-logical-name": "unsupported in HCL: __logicalName support not yet implemented" +
 		" - requires mapping between lexical names (code references) and logical names (resource names)",
-	"l3-rewrite-conversions": "resource direct is invalid",
 }
 
 // expectedEjectFailures lists tests whose eject (HCL→PCL conversion) step is

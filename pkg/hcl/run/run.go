@@ -40,6 +40,7 @@ import (
 	"github.com/pulumi/pulumi/sdk/v3/go/common/workspace"
 	"github.com/pulumi/pulumi/sdk/v3/go/property"
 	"github.com/zclconf/go-cty/cty"
+	ctyconvert "github.com/zclconf/go-cty/cty/convert"
 	"github.com/zclconf/go-cty/cty/function/stdlib"
 	"github.com/zclconf/go-cty/cty/json"
 )
@@ -2008,6 +2009,13 @@ func (e *Engine) processModuleVariable(node *graph.Node) error {
 			}
 		}
 
+		// Coerce the value to match the variable's type constraint.
+		if v.TypeConstraint != cty.NilType && !val.IsNull() && val.IsKnown() {
+			if converted, err := ctyconvert.Convert(val, v.TypeConstraint); err == nil {
+				val = converted
+			}
+		}
+
 		if v.Sensitive {
 			val = val.Mark("sensitive")
 		}
@@ -2041,6 +2049,12 @@ func (e *Engine) processModuleInit(ctx context.Context, node *graph.Node) error 
 
 	baseKey := modInfo.ParentPrefix + "module." + modInfo.ModuleName
 
+	// Load the child module to get variable type constraints for input coercion.
+	childMod, err := e.moduleLoader.LoadModule(mod.Source, e.workDir)
+	if err != nil {
+		return fmt.Errorf("loading module %s for input types: %w", mod.Source, err)
+	}
+
 	// Evaluate module inputs for the component resource registration
 	inputs := make(map[string]property.Value)
 	attrs, _ := mod.Config.JustAttributes()
@@ -2048,6 +2062,12 @@ func (e *Engine) processModuleInit(ctx context.Context, node *graph.Node) error 
 		val, diags := attr.Expr.Value(parentEvalCtx.HCLContext())
 		if diags.HasErrors() {
 			continue
+		}
+		// Coerce to the variable's declared type if available.
+		if v, ok := childMod.Config.Variables[name]; ok && v.TypeConstraint != cty.NilType {
+			if converted, convErr := ctyconvert.Convert(val, v.TypeConstraint); convErr == nil {
+				val = converted
+			}
 		}
 		pv, err := transform.CtyToPropertyValue(val)
 		if err == nil {
