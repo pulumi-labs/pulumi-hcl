@@ -16,6 +16,7 @@ package eval
 
 import (
 	"maps"
+	"sort"
 	"strings"
 	"sync"
 
@@ -51,6 +52,10 @@ type Context struct {
 
 	// resources contains resource outputs (resource_type.name.*)
 	resources map[string]cty.Value
+
+	// rangedResources contains resource instances from count/for_each expansion,
+	// keyed by the base resource key (e.g., "type.name").
+	rangedResources map[string][]rangedInstance
 
 	// dataSources contains data source outputs (data.type.name.*)
 	dataSources map[string]cty.Value
@@ -117,15 +122,25 @@ type EachContext struct {
 	Value cty.Value
 }
 
+// rangedInstance represents a single instance of a resource expanded via count or for_each.
+type rangedInstance struct {
+	value   cty.Value
+	index   int    // used when isCount is true
+	eachKey string // used when isEach is true
+	isCount bool
+	isEach  bool
+}
+
 // NewContext creates a new evaluation context.
 func NewContext(baseDir, rootDir, stack, project, organization string) *Context {
 	return &Context{
 		baseDir: baseDir,
 
-		variables:   make(map[string]cty.Value),
-		locals:      make(map[string]cty.Value),
-		resources:   make(map[string]cty.Value),
-		dataSources: make(map[string]cty.Value),
+		variables:       make(map[string]cty.Value),
+		locals:          make(map[string]cty.Value),
+		resources:       make(map[string]cty.Value),
+		rangedResources: make(map[string][]rangedInstance),
+		dataSources:     make(map[string]cty.Value),
 		modules:       make(map[string]cty.Value),
 		moduleOutputs: make(map[string]map[string]cty.Value),
 		providers:   make(map[string]cty.Value),
@@ -163,6 +178,26 @@ func (c *Context) SetResource(key string, value cty.Value) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.resources[key] = value
+}
+
+// SetCountResource stores a resource instance from count expansion.
+// baseKey is the resource key without the index suffix (e.g., "type.name").
+func (c *Context) SetCountResource(baseKey string, index int, value cty.Value) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.rangedResources[baseKey] = append(c.rangedResources[baseKey], rangedInstance{
+		value: value, index: index, isCount: true,
+	})
+}
+
+// SetEachResource stores a resource instance from for_each expansion.
+// baseKey is the resource key without the each key suffix (e.g., "type.name").
+func (c *Context) SetEachResource(baseKey string, eachKey string, value cty.Value) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.rangedResources[baseKey] = append(c.rangedResources[baseKey], rangedInstance{
+		value: value, eachKey: eachKey, isEach: true,
+	})
 }
 
 // SetDataSource sets a data source's output values.
@@ -258,11 +293,13 @@ func (c *Context) HCLContext() *hcl.EvalContext {
 	}
 
 	// Add resource references (resource_type.name.*)
-	// Resources are referenced directly by type.name, not under a "resource" namespace
-	// Group resources by type so aws_instance.web.id resolves correctly
+	// Resources are referenced directly by type.name, not under a "resource" namespace.
+	// Single instances go into c.resources; ranged instances (count/for_each) go into
+	// c.rangedResources and are assembled into tuples/objects here so HCL indexing works:
+	//   type.name[0].attr  -> tuple index
+	//   type.name["k"].attr -> object key
 	resourcesByType := make(map[string]map[string]cty.Value)
 	for key, value := range c.resources {
-		// Split "type.name" into type and name
 		parts := splitResourceKey(key)
 		if len(parts) == 2 {
 			typeName, resName := parts[0], parts[1]
@@ -271,10 +308,38 @@ func (c *Context) HCLContext() *hcl.EvalContext {
 			}
 			resourcesByType[typeName][resName] = value
 		} else {
-			// Fallback: use key directly
 			vars[key] = value
 		}
 	}
+
+	// Assemble ranged resource instances into tuples (count) or objects (for_each).
+	for baseKey, instances := range c.rangedResources {
+		parts := splitResourceKey(baseKey)
+		if len(parts) != 2 {
+			continue
+		}
+		typeName, resName := parts[0], parts[1]
+		if resourcesByType[typeName] == nil {
+			resourcesByType[typeName] = make(map[string]cty.Value)
+		}
+		if len(instances) > 0 && instances[0].isCount {
+			sort.Slice(instances, func(i, j int) bool {
+				return instances[i].index < instances[j].index
+			})
+			vals := make([]cty.Value, len(instances))
+			for i, inst := range instances {
+				vals[i] = inst.value
+			}
+			resourcesByType[typeName][resName] = cty.TupleVal(vals)
+		} else {
+			objMap := make(map[string]cty.Value, len(instances))
+			for _, inst := range instances {
+				objMap[inst.eachKey] = inst.value
+			}
+			resourcesByType[typeName][resName] = cty.ObjectVal(objMap)
+		}
+	}
+
 	for typeName, instances := range resourcesByType {
 		vars[typeName] = cty.ObjectVal(instances)
 	}
@@ -396,12 +461,18 @@ func (c *Context) Clone() *Context {
 		clonedModuleOutputs[k] = maps.Clone(v)
 	}
 
+	clonedRanged := make(map[string][]rangedInstance, len(c.rangedResources))
+	for k, v := range c.rangedResources {
+		clonedRanged[k] = append([]rangedInstance(nil), v...)
+	}
+
 	clone := &Context{
-		baseDir:       c.baseDir,
-		variables:     maps.Clone(c.variables),
-		locals:        maps.Clone(c.locals),
-		resources:     maps.Clone(c.resources),
-		dataSources:   maps.Clone(c.dataSources),
+		baseDir:         c.baseDir,
+		variables:       maps.Clone(c.variables),
+		locals:          maps.Clone(c.locals),
+		resources:       maps.Clone(c.resources),
+		rangedResources: clonedRanged,
+		dataSources:     maps.Clone(c.dataSources),
 		modules:       maps.Clone(c.modules),
 		moduleOutputs: clonedModuleOutputs,
 		providers:     maps.Clone(c.providers),
