@@ -38,7 +38,7 @@ func TestConvertedPCL(t *testing.T) {
 
 	t.Run("function_blocks", func(t *testing.T) {
 		t.Parallel()
-		t.Skip("Skipping: PCL-to-HCL conversion now emits list syntax instead of block syntax for invoke array-of-object inputs")
+		t.Skip("TODO: Skipping: PCL-to-HCL conversion now emits list syntax instead of block syntax for invoke array-of-object inputs")
 
 		pclSource := `output filteredId {
     value = invoke("test:index:getFiltered", {
@@ -275,6 +275,59 @@ func TestConvertedPCLRange(t *testing.T) {
 		assert.Equal(t, "test:index:Item", mock.RegisteredResources[1].Type)
 		assert.Equal(t, "test:index:Item", mock.RegisteredResources[2].Type)
 	})
+
+	t.Run("range_count_ref", func(t *testing.T) {
+		t.Parallel()
+
+		pclSource := `resource source "test:index:Item" {
+    options {
+        range = 2
+    }
+    name = "src-${range.value}"
+}
+resource target "test:index:Item" {
+    name = "${source[0].name}-ref"
+}
+`
+
+		mock := testConvertedPCL(t, pclSource, rangeSchema)
+
+		// stack + 2 source items + 1 target
+		require.Len(t, mock.RegisteredResources, 4, "expected stack + 2 sources + 1 target")
+		assert.Equal(t, "pulumi:pulumi:Stack", mock.RegisteredResources[0].Type)
+
+		target := mock.RegisteredResources[3]
+		assert.Equal(t, "test:index:Item", target.Type)
+		assert.Equal(t, property.New("src-0-ref"), target.Inputs.Get("name"))
+	})
+
+	t.Run("range_map_ref", func(t *testing.T) {
+		t.Parallel()
+
+		pclSource := `resource source "test:index:Item" {
+    options {
+        range = {
+            x = "alpha"
+            y = "bravo"
+        }
+    }
+    name = range.value
+}
+resource target "test:index:Item" {
+    name = "${source["x"].name}-ref"
+}
+`
+
+		mock := testConvertedPCL(t, pclSource, rangeSchema)
+
+		// stack + 2 source items + 1 target
+		require.Len(t, mock.RegisteredResources, 4, "expected stack + 2 sources + 1 target")
+
+		target := mock.RegisteredResources[3]
+		assert.Equal(t, "test:index:Item", target.Type)
+		assert.Equal(t, property.New("alpha-ref"), target.Inputs.Get("name"))
+	})
+
 }
 
 func TestNotImplemented(t *testing.T) {

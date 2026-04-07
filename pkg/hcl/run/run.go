@@ -970,7 +970,19 @@ func (e *Engine) registerResourceInstanceInContext(
 	iOpts.RetainOnDelete = opts.RetainOnDelete
 	e.resourceInheritableOpts.Set(instance.Key, iOpts)
 
-	if node.ModuleInfo != nil {
+	if instance.Index != nil {
+		baseKey := instance.OriginalKey
+		if node.ModuleInfo != nil {
+			baseKey = strings.TrimPrefix(baseKey, node.ModuleInfo.Prefix)
+		}
+		evalCtx.SetCountResource(baseKey, *instance.Index, cty.ObjectVal(outputObj))
+	} else if instance.EachKey != nil {
+		baseKey := instance.OriginalKey
+		if node.ModuleInfo != nil {
+			baseKey = strings.TrimPrefix(baseKey, node.ModuleInfo.Prefix)
+		}
+		evalCtx.SetEachResource(baseKey, instance.EachKey.AsString(), cty.ObjectVal(outputObj))
+	} else if node.ModuleInfo != nil {
 		bareKey := strings.TrimPrefix(instance.Key, node.ModuleInfo.Prefix)
 		evalCtx.SetResource(bareKey, cty.ObjectVal(outputObj))
 	} else {

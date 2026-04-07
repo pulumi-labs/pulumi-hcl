@@ -19,6 +19,8 @@ import (
 
 	"github.com/hashicorp/hcl/v2"
 	"github.com/hashicorp/hcl/v2/hclsyntax"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"github.com/zclconf/go-cty/cty"
 )
 
@@ -341,6 +343,73 @@ func TestContextTerraform(t *testing.T) {
 	if result != "production" {
 		t.Errorf("Expected 'production', got %q", result)
 	}
+}
+
+func TestContextRangedResources(t *testing.T) {
+	t.Run("count resources are accessible by index", func(t *testing.T) {
+		ctx := NewContext("/tmp", "/tmp", "", "", "")
+		ctx.SetCountResource("aws_instance.web", 0, cty.ObjectVal(map[string]cty.Value{
+			"id": cty.StringVal("i-000"),
+		}))
+		ctx.SetCountResource("aws_instance.web", 1, cty.ObjectVal(map[string]cty.Value{
+			"id": cty.StringVal("i-001"),
+		}))
+
+		eval := NewEvaluator(ctx)
+		result, diags := eval.EvaluateString(parseExpr(t, `aws_instance.web[0].id`))
+		require.False(t, diags.HasErrors(), diags.Error())
+		assert.Equal(t, "i-000", result)
+
+		result, diags = eval.EvaluateString(parseExpr(t, `aws_instance.web[1].id`))
+		require.False(t, diags.HasErrors(), diags.Error())
+		assert.Equal(t, "i-001", result)
+	})
+
+	t.Run("for_each resources are accessible by key", func(t *testing.T) {
+		ctx := NewContext("/tmp", "/tmp", "", "", "")
+		ctx.SetEachResource("aws_instance.web", "east", cty.ObjectVal(map[string]cty.Value{
+			"id": cty.StringVal("i-east"),
+		}))
+		ctx.SetEachResource("aws_instance.web", "west", cty.ObjectVal(map[string]cty.Value{
+			"id": cty.StringVal("i-west"),
+		}))
+
+		eval := NewEvaluator(ctx)
+		result, diags := eval.EvaluateString(parseExpr(t, `aws_instance.web["east"].id`))
+		require.False(t, diags.HasErrors(), diags.Error())
+		assert.Equal(t, "i-east", result)
+	})
+
+	t.Run("resource named with brackets is not confused with ranged", func(t *testing.T) {
+		ctx := NewContext("/tmp", "/tmp", "", "", "")
+		ctx.SetResource("aws_instance.foo[0]", cty.ObjectVal(map[string]cty.Value{
+			"id": cty.StringVal("i-literal"),
+		}))
+
+		hclCtx := ctx.HCLContext()
+		awsInst := hclCtx.Variables["aws_instance"]
+		attr := awsInst.GetAttr("foo[0]")
+		assert.Equal(t, "i-literal", attr.GetAttr("id").AsString())
+	})
+
+	t.Run("single and ranged resources coexist under same type", func(t *testing.T) {
+		ctx := NewContext("/tmp", "/tmp", "", "", "")
+		ctx.SetResource("aws_instance.single", cty.ObjectVal(map[string]cty.Value{
+			"id": cty.StringVal("i-single"),
+		}))
+		ctx.SetCountResource("aws_instance.multi", 0, cty.ObjectVal(map[string]cty.Value{
+			"id": cty.StringVal("i-multi-0"),
+		}))
+
+		eval := NewEvaluator(ctx)
+		result, diags := eval.EvaluateString(parseExpr(t, `aws_instance.single.id`))
+		require.False(t, diags.HasErrors(), diags.Error())
+		assert.Equal(t, "i-single", result)
+
+		result, diags = eval.EvaluateString(parseExpr(t, `aws_instance.multi[0].id`))
+		require.False(t, diags.HasErrors(), diags.Error())
+		assert.Equal(t, "i-multi-0", result)
+	})
 }
 
 func TestContextClone(t *testing.T) {
