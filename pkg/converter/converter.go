@@ -1713,6 +1713,8 @@ func transformFunctionName(name string) string {
 		return "singleOrNone"
 	case "nonsensitive":
 		return "unsecret"
+	case "file":
+		return "readFile"
 	default:
 		return name
 	}
