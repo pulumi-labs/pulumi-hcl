@@ -355,15 +355,13 @@ func (g *generator) genInvokeDataSource(body *hclwrite.Body, invoke *model.Funct
 	var invokeSchema *schema.Function
 	for _, p := range g.program.PackageReferences() {
 		if p.Name() == tokens.Type(token).Package().String() {
+			pkg, mod, name, _ := pcl.DecomposeToken(token, hcl.Range{})
+			// PCL normalizes "pkg:index:name" to "pkg::name", but schema
+			// stores the original token. Reconstruct the canonical form
+			// using DecomposeToken (which fills in "index" for an empty module)
+			// and retry.
+			token = pkg + ":" + mod + ":" + name
 			f, ok, err := p.Functions().Get(token)
-			if !ok && err == nil {
-				// PCL normalizes "pkg:index:name" to "pkg::name", but schema
-				// stores the original token. Retry with "index" module.
-				pkg, mod, name, _ := pcl.DecomposeToken(token, hcl.Range{})
-				if mod == "" {
-					f, ok, err = p.Functions().Get(pkg + ":index:" + name)
-				}
-			}
 			if err != nil {
 				return hcl.Diagnostics{{
 					Severity: hcl.DiagError,
