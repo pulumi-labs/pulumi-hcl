@@ -38,7 +38,10 @@ test:
 	go test -v -race ./...
 
 test_cover:
-	go test -v -race -coverprofile=coverage.out ./...
+	go test -v -coverpkg=./... -race -coverprofile=coverage.out ./...
+
+PHONY: coverage.html
+coverage.html: test_cover
 	go tool cover -html=coverage.out -o coverage.html
 
 lint:

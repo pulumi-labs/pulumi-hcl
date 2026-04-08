@@ -445,3 +445,102 @@ func testConvertedPCL(t *testing.T, pclSource string, schemas ...schema.PackageS
 
 	return mock
 }
+
+func TestLocalExecProvisioner(t *testing.T) {
+	t.Parallel()
+
+	src := `terraform {
+  required_providers {
+    aws = {
+      source  = "pulumi/aws"
+      version = "6.0.0"
+    }
+  }
+}
+
+resource "aws_instance" "web" {
+  ami           = "ami-12345"
+  instance_type = "t2.micro"
+
+  provisioner "local-exec" {
+    command     = "echo ${self.ami}"
+    working_dir = "/tmp"
+  }
+}
+
+output "instance_ami" {
+  value = aws_instance.web.ami
+}`
+
+	awsSchema := schema.PackageSpec{
+		Name:    "aws",
+		Version: "6.0.0",
+		Resources: map[string]schema.ResourceSpec{
+			"aws:index:Instance": {
+				InputProperties: map[string]schema.PropertySpec{
+					"ami":          {TypeSpec: schema.TypeSpec{Type: "string"}},
+					"instanceType": {TypeSpec: schema.TypeSpec{Type: "string"}},
+				},
+				ObjectTypeSpec: schema.ObjectTypeSpec{
+					Properties: map[string]schema.PropertySpec{
+						"ami":          {TypeSpec: schema.TypeSpec{Type: "string"}},
+						"instanceType": {TypeSpec: schema.TypeSpec{Type: "string"}},
+					},
+				},
+			},
+		},
+	}
+
+	loader := testutil.NewMockReferenceLoader(t, awsSchema)
+
+	hclParser := parser.NewParser()
+	config, hclDiags := hclParser.ParseSource("main.hcl", []byte(src))
+	require.False(t, hclDiags.HasErrors(), hclDiags.Error())
+
+	mock := &testutil.MockResourceMonitor{}
+	engine := hclrun.NewEngine(config, &hclrun.EngineOptions{
+		ProjectName:     "test-project",
+		StackName:       "dev",
+		ResourceMonitor: mock,
+		WorkDir:         t.TempDir(),
+		RootDir:         t.TempDir(),
+		SchemaLoader:    loader,
+	})
+
+	err := engine.Run(t.Context())
+	require.NoError(t, err)
+
+	// Expect: stack + aws_instance + command:local:Command provisioner
+	require.Len(t, mock.RegisteredResources, 3)
+
+	assert.Equal(t, "pulumi:pulumi:Stack", mock.RegisteredResources[0].Type)
+	assert.Equal(t, "aws:index:Instance", mock.RegisteredResources[1].Type)
+	assert.Equal(t, "web", mock.RegisteredResources[1].Name)
+	assert.Equal(t, "command:local:Command", mock.RegisteredResources[2].Type)
+	assert.Equal(t, "aws_instance.web-provisioner-0", mock.RegisteredResources[2].Name)
+
+	provInputs := mock.RegisteredResources[2].Inputs
+	create, ok := provInputs.GetOk("create")
+	require.True(t, ok, "expected 'create' input on provisioner")
+	assert.Equal(t, "echo ami-12345", create.AsString())
+
+	dir, ok := provInputs.GetOk("dir")
+	require.True(t, ok, "expected 'dir' input on provisioner")
+	assert.Equal(t, "/tmp", dir.AsString())
+
+	// Provisioner should depend on the parent resource.
+	assert.Equal(t, []string{
+		"urn:pulumi:test::project::aws:index:Instance::web",
+	}, mock.RegisteredResources[2].Dependencies)
+
+	// Provisioner should be parented to the resource.
+	assert.Equal(t,
+		"urn:pulumi:test::project::aws:index:Instance::web",
+		mock.RegisteredResources[2].Parent,
+	)
+
+	// Stack output should reflect the resource's ami.
+	ami, ok := mock.StackOutputs.GetOk("instance_ami")
+	require.True(t, ok)
+	assert.Equal(t, "ami-12345", ami.AsString())
+}
