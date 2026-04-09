@@ -19,6 +19,15 @@ data "module-format_mod_nested_concatworld" "invoke_2" {
 data "module-format_mod_nested_concatworld" "invoke_3" {
   value = "goodbye"
 }
+data "module-format_concatworld" "invoke_4" {
+  value = "bonjour"
+}
+data "module-format_concatworld" "invoke_5" {
+  value = "youkoso"
+}
+data "module-format_concatworld" "invoke_6" {
+  value = "guten tag"
+}
 
 call "res1" "call" {
   input = "x"
@@ -31,6 +40,15 @@ call "res3" "call" {
 }
 call "res4" "call" {
   input = "xx"
+}
+call "res5" "call" {
+  input = "x"
+}
+call "res6" "call" {
+  input = "xx"
+}
+call "res7" "call" {
+  input = "xxx"
 }
 
 resource "module-format_mod_resource" "res1" {
@@ -45,6 +63,15 @@ resource "module-format_mod_nested_resource" "res3" {
 resource "module-format_mod_nested_resource" "res4" {
   text = data.module-format_mod_nested_concatworld.invoke_3.result
 }
+resource "module-format_resource" "res5" {
+  text = data.module-format_concatworld.invoke_4.result
+}
+resource "module-format_resource" "res6" {
+  text = data.module-format_concatworld.invoke_5.result
+}
+resource "module-format_resource" "res7" {
+  text = data.module-format_concatworld.invoke_6.result
+}
 output "out1" {
   value = call.res1.call.output
 }
@@ -56,4 +83,13 @@ output "out3" {
 }
 output "out4" {
   value = call.res4.call.output
+}
+output "out5" {
+  value = call.res5.call.output
+}
+output "out6" {
+  value = call.res6.call.output
+}
+output "out7" {
+  value = call.res7.call.output
 }
