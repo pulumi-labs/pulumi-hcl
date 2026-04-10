@@ -20,6 +20,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/hashicorp/hcl/v2"
 	"github.com/pulumi-labs/pulumi-hcl/pkg/codegen"
 	"github.com/pulumi-labs/pulumi-hcl/pkg/hcl/parser"
 	hclrun "github.com/pulumi-labs/pulumi-hcl/pkg/hcl/run"
@@ -509,61 +510,7 @@ func TestNotImplemented(t *testing.T) {
 
 func testConvertedPCL(t *testing.T, pclSource string, schemas ...schema.PackageSpec) *testutil.MockResourceMonitor {
 	t.Helper()
-
-	loader := testutil.NewMockReferenceLoader(t, schemas...)
-
-	// Parse PCL
-	p := syntax.NewParser()
-	err := p.ParseFile(strings.NewReader(pclSource), "main.pp")
-	require.NoError(t, err)
-	require.False(t, p.Diagnostics.HasErrors(), p.Diagnostics.Error())
-
-	// Bind PCL
-	program, bindDiags, err := pcl.BindProgram(p.Files, pcl.Loader(loader))
-	require.NoError(t, err)
-	require.False(t, bindDiags.HasErrors(), bindDiags.Error())
-
-	// Generate HCL
-	files, genDiags, err := codegen.GenerateProgram(program)
-	require.NoError(t, err)
-	require.False(t, genDiags.HasErrors(), genDiags.Error())
-
-	generatedHCL := files["main.hcl"]
-	require.NotEmpty(t, generatedHCL, "expected generated HCL output")
-
-	// Golden file snapshot
-	goldenPath := filepath.Join("testdata", t.Name(), "main.hcl")
-	if cmdutil.IsTruthy(os.Getenv("PULUMI_ACCEPT")) {
-		err := os.MkdirAll(filepath.Dir(goldenPath), 0o755)
-		require.NoError(t, err)
-		err = os.WriteFile(goldenPath, generatedHCL, 0o644)
-		require.NoError(t, err)
-	} else {
-		expected, err := os.ReadFile(goldenPath)
-		require.NoError(t, err, "golden file not found; run with PULUMI_ACCEPT=1 to generate")
-		assert.Equal(t, string(expected), string(generatedHCL))
-	}
-
-	// Parse generated HCL
-	hclParser := parser.NewParser()
-	config, hclDiags := hclParser.ParseSource("main.hcl", generatedHCL)
-	require.False(t, hclDiags.HasErrors(), hclDiags.Error())
-
-	// Run through engine
-	mock := &testutil.MockResourceMonitor{}
-	engine := hclrun.NewEngine(config, &hclrun.EngineOptions{
-		ProjectName:     "test-project",
-		StackName:       "dev",
-		ResourceMonitor: mock,
-		WorkDir:         t.TempDir(),
-		RootDir:         t.TempDir(),
-		SchemaLoader:    loader,
-	})
-
-	err = engine.Run(t.Context())
-	require.NoError(t, err)
-
-	return mock
+	return testConvertedPCLWithComponent(t, pclSource, nil, schemas...)
 }
 
 func TestLocalExecProvisioner(t *testing.T) {
@@ -663,4 +610,172 @@ output "instance_ami" {
 	ami, ok := mock.StackOutputs.GetOk("instance_ami")
 	require.True(t, ok)
 	assert.Equal(t, "ami-12345", ami.AsString())
+}
+
+// TestModuleVariableResolution reproduces https://github.com/pulumi-labs/pulumi-hcl/issues/77:
+// module variable references don't resolve inside module scope.
+//
+// The bug is that processDataSource always evaluates expressions in the root
+// evaluator context instead of the module instance's context. This means
+// data source expressions that reference module variables (var.X) fail because
+// the root context doesn't contain the module's var namespace.
+func TestModuleVariableResolution(t *testing.T) {
+	t.Parallel()
+
+	t.Skip("known failure")
+
+	testSchema := schema.PackageSpec{
+		Name:    "test",
+		Version: "1.0.0",
+		Functions: map[string]schema.FunctionSpec{
+			"test:index:getLen": {
+				Inputs: &schema.ObjectTypeSpec{
+					Properties: map[string]schema.PropertySpec{
+						"items": {TypeSpec: schema.TypeSpec{
+							Type:  "array",
+							Items: &schema.TypeSpec{Type: "string"},
+						}},
+					},
+				},
+				Outputs: &schema.ObjectTypeSpec{
+					Properties: map[string]schema.PropertySpec{
+						"result": {TypeSpec: schema.TypeSpec{Type: "number"}},
+					},
+				},
+			},
+		},
+	}
+
+	// The component has a variable and a data source (invoke) that references
+	// it. The invoke becomes a `data` block in HCL, which exercises
+	// processDataSource — the function that fails to use the module instance's
+	// eval context.
+	componentPCL := `config "items" "list(string)" {
+}
+
+itemLen = invoke("test:index:getLen", {
+  items = items
+}).result
+
+output "result" {
+  value = itemLen
+}
+`
+	parentPCL := `component "mod" "./mod" {
+  items = ["a", "b", "c"]
+}
+
+output "result" {
+  value = mod.result
+}
+`
+	mock := testConvertedPCLWithComponent(t, parentPCL, map[string]string{
+		"./mod": componentPCL,
+	}, testSchema)
+
+	result, ok := mock.StackOutputs.GetOk("result")
+	require.True(t, ok, "expected 'result' stack output")
+	assert.Equal(t, property.New(float64(3)), result)
+}
+
+// testConvertedPCLWithComponent is like testConvertedPCL but supports PCL
+// programs that contain component blocks. componentSources maps component
+// directory names (e.g. "mod") to their PCL source.
+func testConvertedPCLWithComponent(
+	t *testing.T, parentPCL string,
+	componentSources map[string]string,
+	schemas ...schema.PackageSpec,
+) *testutil.MockResourceMonitor {
+	t.Helper()
+
+	loader := testutil.NewMockReferenceLoader(t, schemas...)
+
+	// Build an in-memory ComponentProgramBinder so we don't need files on disk
+	// for the PCL binding step.
+	componentBinder := func(args pcl.ComponentProgramBinderArgs) (*pcl.Program, hcl.Diagnostics, error) {
+		src, ok := componentSources[args.ComponentSource]
+		if !ok {
+			return nil, hcl.Diagnostics{{
+				Severity: hcl.DiagError,
+				Summary:  "unknown component",
+				Detail:   args.ComponentSource,
+			}}, nil
+		}
+		p := syntax.NewParser()
+		if err := p.ParseFile(strings.NewReader(src), "main.pp"); err != nil {
+			return nil, nil, err
+		}
+		if p.Diagnostics.HasErrors() {
+			return nil, p.Diagnostics, nil
+		}
+		opts := []pcl.BindOption{pcl.Loader(args.BinderLoader)}
+		if args.SkipResourceTypecheck {
+			opts = append(opts, pcl.SkipResourceTypechecking)
+		}
+		if args.SkipInvokeTypecheck {
+			opts = append(opts, pcl.SkipInvokeTypechecking)
+		}
+		return pcl.BindProgram(p.Files, opts...)
+	}
+
+	// Parse & bind the parent PCL with component support.
+	p := syntax.NewParser()
+	err := p.ParseFile(strings.NewReader(parentPCL), "main.pp")
+	require.NoError(t, err)
+	require.False(t, p.Diagnostics.HasErrors(), p.Diagnostics.Error())
+
+	program, bindDiags, err := pcl.BindProgram(p.Files,
+		pcl.Loader(loader),
+		pcl.DirPath("."), // arbitrary; the in-memory binder ignores it
+		pcl.ComponentBinder(componentBinder),
+	)
+	require.NoError(t, err)
+	require.False(t, bindDiags.HasErrors(), bindDiags.Error())
+
+	// Generate HCL (produces parent main.hcl + component subdirs).
+	files, genDiags, err := codegen.GenerateProgram(program)
+	require.NoError(t, err)
+	require.False(t, genDiags.HasErrors(), genDiags.Error())
+
+	// Golden file snapshot
+	for name, content := range files {
+		goldenPath := filepath.Join("testdata", t.Name(), name)
+		if cmdutil.IsTruthy(os.Getenv("PULUMI_ACCEPT")) {
+			require.NoError(t, os.MkdirAll(filepath.Dir(goldenPath), 0o755))
+			require.NoError(t, os.WriteFile(goldenPath, content, 0o644))
+		} else {
+			expected, err := os.ReadFile(goldenPath)
+			require.NoError(t, err, "golden file %s not found; run with PULUMI_ACCEPT=1 to generate", goldenPath)
+			assert.Equal(t, string(expected), string(content))
+		}
+	}
+
+	// Write generated HCL to a work directory for the engine's module loader.
+	outDir := t.TempDir()
+	for name, content := range files {
+		outPath := filepath.Join(outDir, name)
+		require.NoError(t, os.MkdirAll(filepath.Dir(outPath), 0o755))
+		require.NoError(t, os.WriteFile(outPath, content, 0o644))
+	}
+
+	// Parse the generated parent HCL.
+	hclParser := parser.NewParser()
+	config, hclDiags := hclParser.ParseDirectory(outDir)
+	require.False(t, hclDiags.HasErrors(), hclDiags.Error())
+
+	// Run through engine.
+	mock := &testutil.MockResourceMonitor{}
+	engine := hclrun.NewEngine(config, &hclrun.EngineOptions{
+		ProjectName:     "test-project",
+		StackName:       "dev",
+		ResourceMonitor: mock,
+		WorkDir:         outDir,
+		RootDir:         outDir,
+		SchemaLoader:    loader,
+	})
+
+	err = engine.Run(t.Context())
+	require.NoError(t, err)
+
+	return mock
 }
