@@ -744,6 +744,146 @@ output "name" {
 	assert.Equal(t, property.New("my-bucket"), result)
 }
 
+// TestModuleDataSourceDependencies verifies that data sources inside modules
+// correctly track dependencies on resources and other data sources, using the
+// module-prefixed keys.
+func TestModuleDataSourceDependencies(t *testing.T) {
+	t.Parallel()
+
+	testSchema := schema.PackageSpec{
+		Name:    "test",
+		Version: "1.0.0",
+		Resources: map[string]schema.ResourceSpec{
+			"test:index:Bucket": {
+				InputProperties: map[string]schema.PropertySpec{
+					"name": {TypeSpec: schema.TypeSpec{Type: "string"}},
+				},
+				ObjectTypeSpec: schema.ObjectTypeSpec{
+					Properties: map[string]schema.PropertySpec{
+						"name": {TypeSpec: schema.TypeSpec{Type: "string"}},
+					},
+				},
+			},
+		},
+		Functions: map[string]schema.FunctionSpec{
+			"test:index:getLen": {
+				Inputs: &schema.ObjectTypeSpec{
+					Properties: map[string]schema.PropertySpec{
+						"items": {TypeSpec: schema.TypeSpec{
+							Type:  "array",
+							Items: &schema.TypeSpec{Type: "string"},
+						}},
+					},
+				},
+				Outputs: &schema.ObjectTypeSpec{
+					Properties: map[string]schema.PropertySpec{
+						"result": {TypeSpec: schema.TypeSpec{Type: "number"}},
+					},
+				},
+			},
+		},
+	}
+	loader := testutil.NewMockReferenceLoader(t, testSchema)
+
+	// The module contains:
+	// - A resource (test_bucket.bucket)
+	// - A data source that references the resource's name AND has depends_on
+	//   pointing to the resource.
+	// This exercises the module-prefix dependency tracking in
+	// processDataSourceInContext for both expression dependencies and depends_on.
+	parentHCL := `
+terraform {
+  required_providers {
+    test = {
+      source  = "pulumi/test"
+      version = "1.0.0"
+    }
+  }
+}
+
+module "mod" {
+  source     = "./mod"
+  bucketName = "my-bucket"
+}
+
+output "result" {
+  value = module.mod.result
+}
+`
+	modHCL := `
+terraform {
+  required_providers {
+    test = {
+      source  = "pulumi/test"
+      version = "1.0.0"
+    }
+  }
+}
+
+variable "bucketName" {
+  type = string
+}
+
+resource "test_bucket" "bucket" {
+  name = var.bucketName
+}
+
+data "test_getlen" "invoke_0" {
+  items      = [test_bucket.bucket.name]
+  depends_on = [test_bucket.bucket]
+}
+
+locals {
+  itemLen = data.test_getlen.invoke_0.result
+}
+
+output "result" {
+  value = local.itemLen
+}
+`
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "main.hcl"), []byte(parentHCL), 0o644))
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "mod"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "mod", "main.hcl"), []byte(modHCL), 0o644))
+
+	hclParser := parser.NewParser()
+	config, diags := hclParser.ParseDirectory(dir)
+	require.False(t, diags.HasErrors(), diags.Error())
+
+	mock := &testutil.MockResourceMonitor{
+		InvokeHandler: func(_ context.Context, req hclrun.InvokeRequest) (*hclrun.InvokeResponse, error) {
+			if req.Token == "test:index:getLen" {
+				items, ok := req.Args.GetOk("items")
+				if ok && items.IsArray() {
+					return &hclrun.InvokeResponse{
+						Return: property.NewMap(map[string]property.Value{
+							"result": property.New(float64(items.AsArray().Len())),
+						}),
+					}, nil
+				}
+			}
+			return &hclrun.InvokeResponse{
+				Return: property.NewMap(map[string]property.Value{}),
+			}, nil
+		},
+	}
+	engine := hclrun.NewEngine(config, &hclrun.EngineOptions{
+		ProjectName:     "test-project",
+		StackName:       "dev",
+		ResourceMonitor: mock,
+		WorkDir:         dir,
+		RootDir:         dir,
+		SchemaLoader:    loader,
+	})
+
+	err := engine.Run(t.Context())
+	require.NoError(t, err)
+
+	result, ok := mock.StackOutputs.GetOk("result")
+	require.True(t, ok, "expected 'result' stack output")
+	assert.Equal(t, property.New(float64(1)), result)
+}
+
 // TestModuleScopeIsolation verifies that resources and data sources inside a
 // module cannot access variables from the parent scope.
 func TestModuleScopeIsolation(t *testing.T) {
