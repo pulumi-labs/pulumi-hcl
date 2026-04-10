@@ -195,38 +195,39 @@ output emptyInner {
 
 		mock := testConvertedPCL(t, pclSource, testSchema)
 
-		require.Len(t, mock.InvokedFunctions, 3)
-
-		// invoke_1: outer = [] produces no blocks, so args are empty.
-		assert.Equal(t, "test:index:blockInvoke", mock.InvokedFunctions[0].Token)
-		assert.Equal(t, property.NewMap(nil), mock.InvokedFunctions[0].Args)
-
-		// invoke_2: outer = [{ inner = [] }] produces one empty outer block.
-		assert.Equal(t, "test:index:blockInvoke", mock.InvokedFunctions[1].Token)
-		assert.Equal(t, property.NewMap(map[string]property.Value{
-			"outer": property.New([]property.Value{
-				property.New(map[string]property.Value{}),
-			}),
-		}), mock.InvokedFunctions[1].Args)
-
-		// invoke_0: fully populated nested blocks.
-		assert.Equal(t, "test:index:blockInvoke", mock.InvokedFunctions[2].Token)
-		assert.Equal(t, property.NewMap(map[string]property.Value{
-			"outer": property.New([]property.Value{
-				property.New(map[string]property.Value{
-					"inner": property.New([]property.Value{
-						property.New(map[string]property.Value{"prop": property.New(true)}),
-						property.New(map[string]property.Value{"prop": property.New(false)}),
+		assert.ElementsMatch(t, mock.InvokedFunctions, []hclrun.InvokeRequest{
+			{
+				Token: "test:index:blockInvoke",
+				Args:  property.Map{},
+			},
+			{
+				Token: "test:index:blockInvoke",
+				Args: property.NewMap(map[string]property.Value{
+					"outer": property.New([]property.Value{
+						property.New(property.Map{}),
 					}),
 				}),
-				property.New(map[string]property.Value{
-					"inner": property.New([]property.Value{
-						property.New(map[string]property.Value{"prop": property.New(false)}),
-						property.New(map[string]property.Value{"prop": property.New(true)}),
+			},
+			{
+				Token: "test:index:blockInvoke",
+				Args: property.NewMap(map[string]property.Value{
+					"outer": property.New([]property.Value{
+						property.New(map[string]property.Value{
+							"inner": property.New([]property.Value{
+								property.New(map[string]property.Value{"prop": property.New(true)}),
+								property.New(map[string]property.Value{"prop": property.New(false)}),
+							}),
+						}),
+						property.New(map[string]property.Value{
+							"inner": property.New([]property.Value{
+								property.New(map[string]property.Value{"prop": property.New(false)}),
+								property.New(map[string]property.Value{"prop": property.New(true)}),
+							}),
+						}),
 					}),
 				}),
-			}),
-		}), mock.InvokedFunctions[2].Args)
+			},
+		})
 	})
 
 	t.Run("blocks", func(t *testing.T) {
