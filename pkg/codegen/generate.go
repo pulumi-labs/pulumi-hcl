@@ -1100,7 +1100,12 @@ func (g *generator) genBlock(body *hclwrite.Body, name string, expr model.Expres
 		if p, ok := objType.Property(keyName); ok {
 			propType = p.Type
 		}
-		d := g.genExpression(block.Body(), snakeName, item.Value, propType)
+		var d hcl.Diagnostics
+		if innerObjType, ok := transform.AsHCLBlockType(propType); ok {
+			d = g.genBlocks(block.Body(), snakeName, item.Value, innerObjType)
+		} else {
+			d = g.genExpression(block.Body(), snakeName, item.Value, propType)
+		}
 		diags = append(diags, d...)
 	}
 	return diags
