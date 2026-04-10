@@ -15,11 +15,13 @@
 package main
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/hashicorp/hcl/v2"
 	"github.com/pulumi-labs/pulumi-hcl/pkg/codegen"
 	"github.com/pulumi-labs/pulumi-hcl/pkg/hcl/parser"
 	hclrun "github.com/pulumi-labs/pulumi-hcl/pkg/hcl/run"
@@ -509,61 +511,7 @@ func TestNotImplemented(t *testing.T) {
 
 func testConvertedPCL(t *testing.T, pclSource string, schemas ...schema.PackageSpec) *testutil.MockResourceMonitor {
 	t.Helper()
-
-	loader := testutil.NewMockReferenceLoader(t, schemas...)
-
-	// Parse PCL
-	p := syntax.NewParser()
-	err := p.ParseFile(strings.NewReader(pclSource), "main.pp")
-	require.NoError(t, err)
-	require.False(t, p.Diagnostics.HasErrors(), p.Diagnostics.Error())
-
-	// Bind PCL
-	program, bindDiags, err := pcl.BindProgram(p.Files, pcl.Loader(loader))
-	require.NoError(t, err)
-	require.False(t, bindDiags.HasErrors(), bindDiags.Error())
-
-	// Generate HCL
-	files, genDiags, err := codegen.GenerateProgram(program)
-	require.NoError(t, err)
-	require.False(t, genDiags.HasErrors(), genDiags.Error())
-
-	generatedHCL := files["main.hcl"]
-	require.NotEmpty(t, generatedHCL, "expected generated HCL output")
-
-	// Golden file snapshot
-	goldenPath := filepath.Join("testdata", t.Name(), "main.hcl")
-	if cmdutil.IsTruthy(os.Getenv("PULUMI_ACCEPT")) {
-		err := os.MkdirAll(filepath.Dir(goldenPath), 0o755)
-		require.NoError(t, err)
-		err = os.WriteFile(goldenPath, generatedHCL, 0o644)
-		require.NoError(t, err)
-	} else {
-		expected, err := os.ReadFile(goldenPath)
-		require.NoError(t, err, "golden file not found; run with PULUMI_ACCEPT=1 to generate")
-		assert.Equal(t, string(expected), string(generatedHCL))
-	}
-
-	// Parse generated HCL
-	hclParser := parser.NewParser()
-	config, hclDiags := hclParser.ParseSource("main.hcl", generatedHCL)
-	require.False(t, hclDiags.HasErrors(), hclDiags.Error())
-
-	// Run through engine
-	mock := &testutil.MockResourceMonitor{}
-	engine := hclrun.NewEngine(config, &hclrun.EngineOptions{
-		ProjectName:     "test-project",
-		StackName:       "dev",
-		ResourceMonitor: mock,
-		WorkDir:         t.TempDir(),
-		RootDir:         t.TempDir(),
-		SchemaLoader:    loader,
-	})
-
-	err = engine.Run(t.Context())
-	require.NoError(t, err)
-
-	return mock
+	return testConvertedPCLWithComponent(t, pclSource, nil, nil, schemas...)
 }
 
 func TestLocalExecProvisioner(t *testing.T) {
@@ -663,4 +611,525 @@ output "instance_ami" {
 	ami, ok := mock.StackOutputs.GetOk("instance_ami")
 	require.True(t, ok)
 	assert.Equal(t, "ami-12345", ami.AsString())
+}
+
+// TestModuleVariableResolution reproduces https://github.com/pulumi-labs/pulumi-hcl/issues/77:
+// module variable references don't resolve inside module scope.
+//
+// The bug is that processDataSource always evaluates expressions in the root
+// evaluator context instead of the module instance's context. This means
+// data source expressions that reference module variables (var.X) fail because
+// the root context doesn't contain the module's var namespace.
+func TestModuleVariableResolution(t *testing.T) {
+	t.Parallel()
+
+	testSchema := schema.PackageSpec{
+		Name:    "test",
+		Version: "1.0.0",
+		Functions: map[string]schema.FunctionSpec{
+			"test:index:getLen": {
+				Inputs: &schema.ObjectTypeSpec{
+					Properties: map[string]schema.PropertySpec{
+						"items": {TypeSpec: schema.TypeSpec{
+							Type:  "array",
+							Items: &schema.TypeSpec{Type: "string"},
+						}},
+					},
+				},
+				Outputs: &schema.ObjectTypeSpec{
+					Properties: map[string]schema.PropertySpec{
+						"result": {TypeSpec: schema.TypeSpec{Type: "number"}},
+					},
+				},
+			},
+		},
+	}
+
+	// The component has a variable and a data source (invoke) that references
+	// it. The invoke becomes a `data` block in HCL, which exercises
+	// processDataSource — the function that fails to use the module instance's
+	// eval context.
+	componentPCL := `config "items" "list(string)" {
+}
+
+itemLen = invoke("test:index:getLen", {
+  items = items
+}).result
+
+output "result" {
+  value = itemLen
+}
+`
+	parentPCL := `component "mod" "./mod" {
+  items = ["a", "b", "c"]
+}
+
+output "result" {
+  value = mod.result
+}
+`
+	monitor := &testutil.MockResourceMonitor{
+		InvokeHandler: func(_ context.Context, req hclrun.InvokeRequest) (*hclrun.InvokeResponse, error) {
+			if req.Token == "test:index:getLen" {
+				items, ok := req.Args.GetOk("items")
+				if ok && items.IsArray() {
+					return &hclrun.InvokeResponse{
+						Return: property.NewMap(map[string]property.Value{
+							"result": property.New(float64(items.AsArray().Len())),
+						}),
+					}, nil
+				}
+			}
+			return &hclrun.InvokeResponse{
+				Return: property.NewMap(map[string]property.Value{}),
+			}, nil
+		},
+	}
+	mock := testConvertedPCLWithComponent(t, parentPCL, map[string]string{
+		"./mod": componentPCL,
+	}, monitor, testSchema)
+
+	result, ok := mock.StackOutputs.GetOk("result")
+	require.True(t, ok, "expected 'result' stack output")
+	assert.Equal(t, property.New(float64(3)), result)
+}
+
+// TestModuleResourceVariableResolution verifies that a resource inside a module
+// can reference module variables (var.X) in its inputs.
+func TestModuleResourceVariableResolution(t *testing.T) {
+	t.Parallel()
+
+	testSchema := schema.PackageSpec{
+		Name:    "test",
+		Version: "1.0.0",
+		Resources: map[string]schema.ResourceSpec{
+			"test:index:Bucket": {
+				InputProperties: map[string]schema.PropertySpec{
+					"name": {TypeSpec: schema.TypeSpec{Type: "string"}},
+				},
+				ObjectTypeSpec: schema.ObjectTypeSpec{
+					Properties: map[string]schema.PropertySpec{
+						"name": {TypeSpec: schema.TypeSpec{Type: "string"}},
+					},
+				},
+			},
+		},
+	}
+
+	componentPCL := `config "bucketName" "string" {
+}
+
+resource "bucket" "test:index:Bucket" {
+  name = bucketName
+}
+
+output "name" {
+  value = bucket.name
+}
+`
+	parentPCL := `component "mod" "./mod" {
+  bucketName = "my-bucket"
+}
+
+output "name" {
+  value = mod.name
+}
+`
+	mock := testConvertedPCLWithComponent(t, parentPCL, map[string]string{
+		"./mod": componentPCL,
+	}, nil, testSchema)
+
+	result, ok := mock.StackOutputs.GetOk("name")
+	require.True(t, ok, "expected 'name' stack output")
+	assert.Equal(t, property.New("my-bucket"), result)
+}
+
+// TestModuleDataSourceDependencies verifies that data sources inside modules
+// correctly track dependencies on resources and other data sources, using the
+// module-prefixed keys.
+func TestModuleDataSourceDependencies(t *testing.T) {
+	t.Parallel()
+
+	testSchema := schema.PackageSpec{
+		Name:    "test",
+		Version: "1.0.0",
+		Resources: map[string]schema.ResourceSpec{
+			"test:index:Bucket": {
+				InputProperties: map[string]schema.PropertySpec{
+					"name": {TypeSpec: schema.TypeSpec{Type: "string"}},
+				},
+				ObjectTypeSpec: schema.ObjectTypeSpec{
+					Properties: map[string]schema.PropertySpec{
+						"name": {TypeSpec: schema.TypeSpec{Type: "string"}},
+					},
+				},
+			},
+		},
+		Functions: map[string]schema.FunctionSpec{
+			"test:index:getLen": {
+				Inputs: &schema.ObjectTypeSpec{
+					Properties: map[string]schema.PropertySpec{
+						"items": {TypeSpec: schema.TypeSpec{
+							Type:  "array",
+							Items: &schema.TypeSpec{Type: "string"},
+						}},
+					},
+				},
+				Outputs: &schema.ObjectTypeSpec{
+					Properties: map[string]schema.PropertySpec{
+						"result": {TypeSpec: schema.TypeSpec{Type: "number"}},
+					},
+				},
+			},
+		},
+	}
+	loader := testutil.NewMockReferenceLoader(t, testSchema)
+
+	// The module contains:
+	// - A resource (test_bucket.bucket)
+	// - A data source that references the resource's name AND has depends_on
+	//   pointing to the resource.
+	// This exercises the module-prefix dependency tracking in
+	// processDataSourceInContext for both expression dependencies and depends_on.
+	parentHCL := `
+terraform {
+  required_providers {
+    test = {
+      source  = "pulumi/test"
+      version = "1.0.0"
+    }
+  }
+}
+
+module "mod" {
+  source     = "./mod"
+  bucketName = "my-bucket"
+}
+
+output "result" {
+  value = module.mod.result
+}
+`
+	modHCL := `
+terraform {
+  required_providers {
+    test = {
+      source  = "pulumi/test"
+      version = "1.0.0"
+    }
+  }
+}
+
+variable "bucketName" {
+  type = string
+}
+
+resource "test_bucket" "bucket" {
+  name = var.bucketName
+}
+
+data "test_getlen" "invoke_0" {
+  items      = [test_bucket.bucket.name]
+  depends_on = [test_bucket.bucket]
+}
+
+locals {
+  itemLen = data.test_getlen.invoke_0.result
+}
+
+output "result" {
+  value = local.itemLen
+}
+`
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "main.hcl"), []byte(parentHCL), 0o644))
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "mod"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "mod", "main.hcl"), []byte(modHCL), 0o644))
+
+	hclParser := parser.NewParser()
+	config, diags := hclParser.ParseDirectory(dir)
+	require.False(t, diags.HasErrors(), diags.Error())
+
+	mock := &testutil.MockResourceMonitor{
+		InvokeHandler: func(_ context.Context, req hclrun.InvokeRequest) (*hclrun.InvokeResponse, error) {
+			if req.Token == "test:index:getLen" {
+				items, ok := req.Args.GetOk("items")
+				if ok && items.IsArray() {
+					return &hclrun.InvokeResponse{
+						Return: property.NewMap(map[string]property.Value{
+							"result": property.New(float64(items.AsArray().Len())),
+						}),
+					}, nil
+				}
+			}
+			return &hclrun.InvokeResponse{
+				Return: property.NewMap(map[string]property.Value{}),
+			}, nil
+		},
+	}
+	engine := hclrun.NewEngine(config, &hclrun.EngineOptions{
+		ProjectName:     "test-project",
+		StackName:       "dev",
+		ResourceMonitor: mock,
+		WorkDir:         dir,
+		RootDir:         dir,
+		SchemaLoader:    loader,
+	})
+
+	err := engine.Run(t.Context())
+	require.NoError(t, err)
+
+	result, ok := mock.StackOutputs.GetOk("result")
+	require.True(t, ok, "expected 'result' stack output")
+	assert.Equal(t, property.New(float64(1)), result)
+}
+
+// TestModuleScopeIsolation verifies that resources and data sources inside a
+// module cannot access variables from the parent scope.
+func TestModuleScopeIsolation(t *testing.T) {
+	t.Parallel()
+
+	testSchema := schema.PackageSpec{
+		Name:    "test",
+		Version: "1.0.0",
+		Resources: map[string]schema.ResourceSpec{
+			"test:index:Bucket": {
+				InputProperties: map[string]schema.PropertySpec{
+					"name": {TypeSpec: schema.TypeSpec{Type: "string"}},
+				},
+				ObjectTypeSpec: schema.ObjectTypeSpec{
+					Properties: map[string]schema.PropertySpec{
+						"name": {TypeSpec: schema.TypeSpec{Type: "string"}},
+					},
+				},
+			},
+		},
+		Functions: map[string]schema.FunctionSpec{
+			"test:index:getLen": {
+				Inputs: &schema.ObjectTypeSpec{
+					Properties: map[string]schema.PropertySpec{
+						"items": {TypeSpec: schema.TypeSpec{
+							Type:  "array",
+							Items: &schema.TypeSpec{Type: "string"},
+						}},
+					},
+				},
+				Outputs: &schema.ObjectTypeSpec{
+					Properties: map[string]schema.PropertySpec{
+						"result": {TypeSpec: schema.TypeSpec{Type: "number"}},
+					},
+				},
+			},
+		},
+	}
+	loader := testutil.NewMockReferenceLoader(t, testSchema)
+
+	// The parent defines a local that the module tries to reference.
+	parentHCL := `
+terraform {
+  required_providers {
+    test = {
+      source  = "pulumi/test"
+      version = "1.0.0"
+    }
+  }
+}
+
+locals {
+  parentName = "from-parent"
+}
+
+module "mod" {
+  source = "./mod"
+}
+`
+
+	t.Run("resource", func(t *testing.T) {
+		t.Parallel()
+
+		// The module's resource references local.parentName, which only
+		// exists in the parent scope and should not be visible here.
+		modHCL := `
+terraform {
+  required_providers {
+    test = {
+      source  = "pulumi/test"
+      version = "1.0.0"
+    }
+  }
+}
+
+resource "test_bucket" "bucket" {
+  name = local.parentName
+}
+`
+		dir := t.TempDir()
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "main.hcl"), []byte(parentHCL), 0o644))
+		require.NoError(t, os.MkdirAll(filepath.Join(dir, "mod"), 0o755))
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "mod", "main.hcl"), []byte(modHCL), 0o644))
+
+		hclParser := parser.NewParser()
+		config, diags := hclParser.ParseDirectory(dir)
+		require.False(t, diags.HasErrors(), diags.Error())
+
+		mock := &testutil.MockResourceMonitor{}
+		engine := hclrun.NewEngine(config, &hclrun.EngineOptions{
+			ProjectName:     "test-project",
+			StackName:       "dev",
+			ResourceMonitor: mock,
+			WorkDir:         dir,
+			RootDir:         dir,
+			SchemaLoader:    loader,
+		})
+
+		err := engine.Run(t.Context())
+		assert.EqualError(t, err, `unknown node "module.mod.local.parentName"`)
+	})
+
+	t.Run("data_source", func(t *testing.T) {
+		t.Parallel()
+
+		// The module's data source references local.parentName, which only
+		// exists in the parent scope and should not be visible here.
+		modHCL := `
+terraform {
+  required_providers {
+    test = {
+      source  = "pulumi/test"
+      version = "1.0.0"
+    }
+  }
+}
+
+data "test_getlen" "invoke_0" {
+  items = [local.parentName]
+}
+`
+		dir := t.TempDir()
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "main.hcl"), []byte(parentHCL), 0o644))
+		require.NoError(t, os.MkdirAll(filepath.Join(dir, "mod"), 0o755))
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "mod", "main.hcl"), []byte(modHCL), 0o644))
+
+		hclParser := parser.NewParser()
+		config, diags := hclParser.ParseDirectory(dir)
+		require.False(t, diags.HasErrors(), diags.Error())
+
+		mock := &testutil.MockResourceMonitor{}
+		engine := hclrun.NewEngine(config, &hclrun.EngineOptions{
+			ProjectName:     "test-project",
+			StackName:       "dev",
+			ResourceMonitor: mock,
+			WorkDir:         dir,
+			RootDir:         dir,
+			SchemaLoader:    loader,
+		})
+
+		err := engine.Run(t.Context())
+		assert.EqualError(t, err, `unknown node "module.mod.local.parentName"`)
+	})
+}
+
+// testConvertedPCLWithComponent is like testConvertedPCL but supports PCL
+// programs that contain component blocks. componentSources maps component
+// directory names (e.g. "mod") to their PCL source.
+func testConvertedPCLWithComponent(
+	t *testing.T, parentPCL string,
+	componentSources map[string]string,
+	mock *testutil.MockResourceMonitor,
+	schemas ...schema.PackageSpec,
+) *testutil.MockResourceMonitor {
+	t.Helper()
+
+	loader := testutil.NewMockReferenceLoader(t, schemas...)
+
+	// Build an in-memory ComponentProgramBinder so we don't need files on disk
+	// for the PCL binding step.
+	componentBinder := func(args pcl.ComponentProgramBinderArgs) (*pcl.Program, hcl.Diagnostics, error) {
+		src, ok := componentSources[args.ComponentSource]
+		if !ok {
+			return nil, hcl.Diagnostics{{
+				Severity: hcl.DiagError,
+				Summary:  "unknown component",
+				Detail:   args.ComponentSource,
+			}}, nil
+		}
+		p := syntax.NewParser()
+		if err := p.ParseFile(strings.NewReader(src), "main.pp"); err != nil {
+			return nil, nil, err
+		}
+		if p.Diagnostics.HasErrors() {
+			return nil, p.Diagnostics, nil
+		}
+		opts := []pcl.BindOption{pcl.Loader(args.BinderLoader)}
+		if args.SkipResourceTypecheck {
+			opts = append(opts, pcl.SkipResourceTypechecking)
+		}
+		if args.SkipInvokeTypecheck {
+			opts = append(opts, pcl.SkipInvokeTypechecking)
+		}
+		return pcl.BindProgram(p.Files, opts...)
+	}
+
+	// Parse & bind the parent PCL with component support.
+	p := syntax.NewParser()
+	err := p.ParseFile(strings.NewReader(parentPCL), "main.pp")
+	require.NoError(t, err)
+	require.False(t, p.Diagnostics.HasErrors(), p.Diagnostics.Error())
+
+	program, bindDiags, err := pcl.BindProgram(p.Files,
+		pcl.Loader(loader),
+		pcl.DirPath("."), // arbitrary; the in-memory binder ignores it
+		pcl.ComponentBinder(componentBinder),
+	)
+	require.NoError(t, err)
+	require.False(t, bindDiags.HasErrors(), bindDiags.Error())
+
+	// Generate HCL (produces parent main.hcl + component subdirs).
+	files, genDiags, err := codegen.GenerateProgram(program)
+	require.NoError(t, err)
+	require.False(t, genDiags.HasErrors(), genDiags.Error())
+
+	// Golden file snapshot
+	for name, content := range files {
+		goldenPath := filepath.Join("testdata", t.Name(), name)
+		if cmdutil.IsTruthy(os.Getenv("PULUMI_ACCEPT")) {
+			require.NoError(t, os.MkdirAll(filepath.Dir(goldenPath), 0o755))
+			require.NoError(t, os.WriteFile(goldenPath, content, 0o644))
+		} else {
+			expected, err := os.ReadFile(goldenPath)
+			require.NoError(t, err, "golden file %s not found; run with PULUMI_ACCEPT=1 to generate", goldenPath)
+			assert.Equal(t, string(expected), string(content))
+		}
+	}
+
+	// Write generated HCL to a work directory for the engine's module loader.
+	outDir := t.TempDir()
+	for name, content := range files {
+		outPath := filepath.Join(outDir, name)
+		require.NoError(t, os.MkdirAll(filepath.Dir(outPath), 0o755))
+		require.NoError(t, os.WriteFile(outPath, content, 0o644))
+	}
+
+	// Parse the generated parent HCL.
+	hclParser := parser.NewParser()
+	config, hclDiags := hclParser.ParseDirectory(outDir)
+	require.False(t, hclDiags.HasErrors(), hclDiags.Error())
+
+	// Run through engine.
+	if mock == nil {
+		mock = &testutil.MockResourceMonitor{}
+	}
+	engine := hclrun.NewEngine(config, &hclrun.EngineOptions{
+		ProjectName:     "test-project",
+		StackName:       "dev",
+		ResourceMonitor: mock,
+		WorkDir:         outDir,
+		RootDir:         outDir,
+		SchemaLoader:    loader,
+	})
+
+	err = engine.Run(t.Context())
+	require.NoError(t, err)
+
+	return mock
 }

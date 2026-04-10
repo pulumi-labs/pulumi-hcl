@@ -30,6 +30,9 @@ type MockResourceMonitor struct {
 	InvokedFunctions    []run.InvokeRequest
 	StackOutputs        property.Map
 	stackURN            string
+
+	// InvokeHandler, if set, is called for each Invoke instead of the default behavior.
+	InvokeHandler func(ctx context.Context, req run.InvokeRequest) (*run.InvokeResponse, error)
 }
 
 func (m *MockResourceMonitor) RegisterResource(ctx context.Context, req run.RegisterResourceRequest) (*run.RegisterResourceResponse, error) {
@@ -49,8 +52,13 @@ func (m *MockResourceMonitor) RegisterResource(ctx context.Context, req run.Regi
 
 func (m *MockResourceMonitor) Invoke(ctx context.Context, req run.InvokeRequest) (*run.InvokeResponse, error) {
 	m.mu.Lock()
-	defer m.mu.Unlock()
 	m.InvokedFunctions = append(m.InvokedFunctions, req)
+	handler := m.InvokeHandler
+	m.mu.Unlock()
+
+	if handler != nil {
+		return handler(ctx, req)
+	}
 	return &run.InvokeResponse{
 		Return: property.NewMap(map[string]property.Value{
 			"id": property.New("mock-id"),
