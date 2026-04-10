@@ -28,6 +28,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 
 	"github.com/pulumi-labs/pulumi-hcl/pkg/hcl/ast"
 	"github.com/pulumi-labs/pulumi-hcl/pkg/hcl/parser"
@@ -36,6 +37,8 @@ import (
 
 // Loader loads and parses module configurations.
 type Loader struct {
+	mu sync.Mutex
+
 	// parser is the HCL parser instance
 	parser *parser.Parser
 
@@ -80,6 +83,9 @@ func defaultCacheDir() string {
 // LoadModule loads a module from the given source, relative to the caller's directory.
 // It returns the loaded module configuration and resolved path.
 func (l *Loader) LoadModule(source string, callerDir string) (*LoadedModule, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
 	// Resolve the source to an absolute path
 	resolvedPath, err := l.resolveSource(source, callerDir)
 	if err != nil {
