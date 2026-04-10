@@ -1614,11 +1614,25 @@ func (e *Engine) processDataSource(ctx context.Context, node *graph.Node) error 
 		return fmt.Errorf("data source node missing Resource field")
 	}
 
+	if node.ModuleInfo != nil {
+		return e.forEachModuleInstance(node, func(inst *moduleInstance) error {
+			return e.processDataSourceInContext(ctx, node, ds, inst.EvalCtx)
+		})
+	}
+
+	return e.processDataSourceInContext(ctx, node, ds, e.evaluator.Context())
+}
+
+func (e *Engine) processDataSourceInContext(
+	ctx context.Context, node *graph.Node, ds *ast.Resource, evalCtx *eval.Context,
+) error {
 	// Resolve the data source type to a Pulumi function token
 	funcSchema, err := packages.ResolveFunction(ctx, e.pkgLoader, e.knownProviders(), ds.Type)
 	if err != nil {
 		return fmt.Errorf("resolving data source type %s: %w", ds.Type, err)
 	}
+
+	hclCtx := evalCtx.HCLContext()
 
 	var allDeps []resource.URN
 
@@ -1627,23 +1641,27 @@ func (e *Engine) processDataSource(ctx context.Context, node *graph.Node) error 
 			var val cty.Value
 			var diags hcl.Diagnostics
 			if len(extraVars) > 0 {
-				childCtx := e.evaluator.Context().HCLContext().NewChild()
+				childCtx := hclCtx.NewChild()
 				childCtx.Variables = extraVars
 				val, diags = expr.Value(childCtx)
 			} else {
-				val, diags = e.evaluator.EvaluateExpression(expr)
+				val, diags = expr.Value(hclCtx)
 			}
 			if diags.HasErrors() {
 				return val, diags
 			}
 
 			for _, dep := range eval.ExtractDependencies(expr) {
-				if resOutputs, ok := e.resourceOutputs.Get(dep); ok {
+				fullDep := dep
+				if node.ModuleInfo != nil {
+					fullDep = node.ModuleInfo.Prefix + dep
+				}
+				if resOutputs, ok := e.resourceOutputs.Get(fullDep); ok {
 					if urnVal := resOutputs.GetAttr("urn"); urnVal.Type() == cty.String {
 						allDeps = append(allDeps, resource.URN(urnVal.AsString()))
 					}
 				}
-				if dsKey, ok := strings.CutPrefix(dep, "data."); ok {
+				if dsKey, ok := strings.CutPrefix(fullDep, "data."); ok {
 					if dsDeps, exists := e.dataSourceDependencies.Get(dsKey); exists {
 						allDeps = append(allDeps, dsDeps...)
 					}
@@ -1677,14 +1695,14 @@ func (e *Engine) processDataSource(ctx context.Context, node *graph.Node) error 
 	}
 
 	if ds.Version != nil {
-		val, valDiags := ds.Version.Value(e.evaluator.Context().HCLContext())
+		val, valDiags := ds.Version.Value(hclCtx)
 		if !valDiags.HasErrors() && val.Type() == cty.String {
 			invokeReq.Version = val.AsString()
 		}
 	}
 
 	if ds.PluginDownloadURL != nil {
-		val, valDiags := ds.PluginDownloadURL.Value(e.evaluator.Context().HCLContext())
+		val, valDiags := ds.PluginDownloadURL.Value(hclCtx)
 		if !valDiags.HasErrors() && val.Type() == cty.String {
 			invokeReq.PluginDownloadURL = val.AsString()
 		}
@@ -1695,7 +1713,11 @@ func (e *Engine) processDataSource(ctx context.Context, node *graph.Node) error 
 		if depKey == "" {
 			continue
 		}
-		if outputs, ok := e.resourceOutputs.Get(depKey); ok {
+		fullDepKey := depKey
+		if node.ModuleInfo != nil {
+			fullDepKey = node.ModuleInfo.Prefix + depKey
+		}
+		if outputs, ok := e.resourceOutputs.Get(fullDepKey); ok {
 			urnVal := outputs.GetAttr("urn")
 			if urnVal.Type() == cty.String {
 				allDeps = append(allDeps, resource.URN(urnVal.AsString()))
@@ -1713,11 +1735,16 @@ func (e *Engine) processDataSource(ctx context.Context, node *graph.Node) error 
 		return fmt.Errorf("converting function outputs to HCL types: %w", err)
 	}
 
-	// Store outputs for future references
-	dsKey := node.Key[5:] // Remove "data." prefix
-	e.evaluator.Context().SetDataSource(dsKey, ctyOutputs)
+	// Store outputs for future references.
+	// The node key is "<prefix>data.<type>.<name>"; strip the prefix and "data." to get "<type>.<name>".
+	dsKey := node.Key
+	if node.ModuleInfo != nil {
+		dsKey = strings.TrimPrefix(dsKey, node.ModuleInfo.Prefix)
+	}
+	dsKey = strings.TrimPrefix(dsKey, "data.")
+	evalCtx.SetDataSource(dsKey, ctyOutputs)
 
-	// Store dependencies for this data source
+	// Store dependencies for this data source.
 	e.dataSourceDependencies.Set(dsKey, allDeps)
 
 	return nil

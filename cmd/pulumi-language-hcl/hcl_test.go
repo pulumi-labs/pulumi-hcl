@@ -15,6 +15,7 @@
 package main
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
@@ -510,7 +511,7 @@ func TestNotImplemented(t *testing.T) {
 
 func testConvertedPCL(t *testing.T, pclSource string, schemas ...schema.PackageSpec) *testutil.MockResourceMonitor {
 	t.Helper()
-	return testConvertedPCLWithComponent(t, pclSource, nil, schemas...)
+	return testConvertedPCLWithComponent(t, pclSource, nil, nil, schemas...)
 }
 
 func TestLocalExecProvisioner(t *testing.T) {
@@ -622,8 +623,6 @@ output "instance_ami" {
 func TestModuleVariableResolution(t *testing.T) {
 	t.Parallel()
 
-	t.Skip("known failure")
-
 	testSchema := schema.PackageSpec{
 		Name:    "test",
 		Version: "1.0.0",
@@ -669,13 +668,80 @@ output "result" {
   value = mod.result
 }
 `
+	monitor := &testutil.MockResourceMonitor{
+		InvokeHandler: func(_ context.Context, req hclrun.InvokeRequest) (*hclrun.InvokeResponse, error) {
+			if req.Token == "test:index:getLen" {
+				items, ok := req.Args.GetOk("items")
+				if ok && items.IsArray() {
+					return &hclrun.InvokeResponse{
+						Return: property.NewMap(map[string]property.Value{
+							"result": property.New(float64(items.AsArray().Len())),
+						}),
+					}, nil
+				}
+			}
+			return &hclrun.InvokeResponse{
+				Return: property.NewMap(map[string]property.Value{}),
+			}, nil
+		},
+	}
 	mock := testConvertedPCLWithComponent(t, parentPCL, map[string]string{
 		"./mod": componentPCL,
-	}, testSchema)
+	}, monitor, testSchema)
 
 	result, ok := mock.StackOutputs.GetOk("result")
 	require.True(t, ok, "expected 'result' stack output")
 	assert.Equal(t, property.New(float64(3)), result)
+}
+
+// TestModuleResourceVariableResolution verifies that a resource inside a module
+// can reference module variables (var.X) in its inputs.
+func TestModuleResourceVariableResolution(t *testing.T) {
+	t.Parallel()
+
+	testSchema := schema.PackageSpec{
+		Name:    "test",
+		Version: "1.0.0",
+		Resources: map[string]schema.ResourceSpec{
+			"test:index:Bucket": {
+				InputProperties: map[string]schema.PropertySpec{
+					"name": {TypeSpec: schema.TypeSpec{Type: "string"}},
+				},
+				ObjectTypeSpec: schema.ObjectTypeSpec{
+					Properties: map[string]schema.PropertySpec{
+						"name": {TypeSpec: schema.TypeSpec{Type: "string"}},
+					},
+				},
+			},
+		},
+	}
+
+	componentPCL := `config "bucketName" "string" {
+}
+
+resource "bucket" "test:index:Bucket" {
+  name = bucketName
+}
+
+output "name" {
+  value = bucket.name
+}
+`
+	parentPCL := `component "mod" "./mod" {
+  bucketName = "my-bucket"
+}
+
+output "name" {
+  value = mod.name
+}
+`
+	mock := testConvertedPCLWithComponent(t, parentPCL, map[string]string{
+		"./mod": componentPCL,
+	}, nil, testSchema)
+
+	result, ok := mock.StackOutputs.GetOk("name")
+	require.True(t, ok, "expected 'name' stack output")
+	assert.Equal(t, property.New("my-bucket"), result)
 }
 
 // testConvertedPCLWithComponent is like testConvertedPCL but supports PCL
@@ -684,6 +750,7 @@ output "result" {
 func testConvertedPCLWithComponent(
 	t *testing.T, parentPCL string,
 	componentSources map[string]string,
+	mock *testutil.MockResourceMonitor,
 	schemas ...schema.PackageSpec,
 ) *testutil.MockResourceMonitor {
 	t.Helper()
@@ -764,7 +831,9 @@ func testConvertedPCLWithComponent(
 	require.False(t, hclDiags.HasErrors(), hclDiags.Error())
 
 	// Run through engine.
-	mock := &testutil.MockResourceMonitor{}
+	if mock == nil {
+		mock = &testutil.MockResourceMonitor{}
+	}
 	engine := hclrun.NewEngine(config, &hclrun.EngineOptions{
 		ProjectName:     "test-project",
 		StackName:       "dev",
