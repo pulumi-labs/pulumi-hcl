@@ -744,6 +744,151 @@ output "name" {
 	assert.Equal(t, property.New("my-bucket"), result)
 }
 
+// TestModuleScopeIsolation verifies that resources and data sources inside a
+// module cannot access variables from the parent scope.
+func TestModuleScopeIsolation(t *testing.T) {
+	t.Parallel()
+
+	testSchema := schema.PackageSpec{
+		Name:    "test",
+		Version: "1.0.0",
+		Resources: map[string]schema.ResourceSpec{
+			"test:index:Bucket": {
+				InputProperties: map[string]schema.PropertySpec{
+					"name": {TypeSpec: schema.TypeSpec{Type: "string"}},
+				},
+				ObjectTypeSpec: schema.ObjectTypeSpec{
+					Properties: map[string]schema.PropertySpec{
+						"name": {TypeSpec: schema.TypeSpec{Type: "string"}},
+					},
+				},
+			},
+		},
+		Functions: map[string]schema.FunctionSpec{
+			"test:index:getLen": {
+				Inputs: &schema.ObjectTypeSpec{
+					Properties: map[string]schema.PropertySpec{
+						"items": {TypeSpec: schema.TypeSpec{
+							Type:  "array",
+							Items: &schema.TypeSpec{Type: "string"},
+						}},
+					},
+				},
+				Outputs: &schema.ObjectTypeSpec{
+					Properties: map[string]schema.PropertySpec{
+						"result": {TypeSpec: schema.TypeSpec{Type: "number"}},
+					},
+				},
+			},
+		},
+	}
+	loader := testutil.NewMockReferenceLoader(t, testSchema)
+
+	// The parent defines a local that the module tries to reference.
+	parentHCL := `
+terraform {
+  required_providers {
+    test = {
+      source  = "pulumi/test"
+      version = "1.0.0"
+    }
+  }
+}
+
+locals {
+  parentName = "from-parent"
+}
+
+module "mod" {
+  source = "./mod"
+}
+`
+
+	t.Run("resource", func(t *testing.T) {
+		t.Parallel()
+
+		// The module's resource references local.parentName, which only
+		// exists in the parent scope and should not be visible here.
+		modHCL := `
+terraform {
+  required_providers {
+    test = {
+      source  = "pulumi/test"
+      version = "1.0.0"
+    }
+  }
+}
+
+resource "test_bucket" "bucket" {
+  name = local.parentName
+}
+`
+		dir := t.TempDir()
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "main.hcl"), []byte(parentHCL), 0o644))
+		require.NoError(t, os.MkdirAll(filepath.Join(dir, "mod"), 0o755))
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "mod", "main.hcl"), []byte(modHCL), 0o644))
+
+		hclParser := parser.NewParser()
+		config, diags := hclParser.ParseDirectory(dir)
+		require.False(t, diags.HasErrors(), diags.Error())
+
+		mock := &testutil.MockResourceMonitor{}
+		engine := hclrun.NewEngine(config, &hclrun.EngineOptions{
+			ProjectName:     "test-project",
+			StackName:       "dev",
+			ResourceMonitor: mock,
+			WorkDir:         dir,
+			RootDir:         dir,
+			SchemaLoader:    loader,
+		})
+
+		err := engine.Run(t.Context())
+		assert.EqualError(t, err, `unknown node "module.mod.local.parentName"`)
+	})
+
+	t.Run("data_source", func(t *testing.T) {
+		t.Parallel()
+
+		// The module's data source references local.parentName, which only
+		// exists in the parent scope and should not be visible here.
+		modHCL := `
+terraform {
+  required_providers {
+    test = {
+      source  = "pulumi/test"
+      version = "1.0.0"
+    }
+  }
+}
+
+data "test_getlen" "invoke_0" {
+  items = [local.parentName]
+}
+`
+		dir := t.TempDir()
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "main.hcl"), []byte(parentHCL), 0o644))
+		require.NoError(t, os.MkdirAll(filepath.Join(dir, "mod"), 0o755))
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "mod", "main.hcl"), []byte(modHCL), 0o644))
+
+		hclParser := parser.NewParser()
+		config, diags := hclParser.ParseDirectory(dir)
+		require.False(t, diags.HasErrors(), diags.Error())
+
+		mock := &testutil.MockResourceMonitor{}
+		engine := hclrun.NewEngine(config, &hclrun.EngineOptions{
+			ProjectName:     "test-project",
+			StackName:       "dev",
+			ResourceMonitor: mock,
+			WorkDir:         dir,
+			RootDir:         dir,
+			SchemaLoader:    loader,
+		})
+
+		err := engine.Run(t.Context())
+		assert.EqualError(t, err, `unknown node "module.mod.local.parentName"`)
+	})
+}
+
 // testConvertedPCLWithComponent is like testConvertedPCL but supports PCL
 // programs that contain component blocks. componentSources maps component
 // directory names (e.g. "mod") to their PCL source.
