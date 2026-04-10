@@ -744,6 +744,73 @@ output "name" {
 	assert.Equal(t, property.New("my-bucket"), result)
 }
 
+// TestNestedModuleVariableResolution verifies that a nested module (a module
+// called from within another module) can receive inputs from its parent module's
+// scope. This reproduces https://github.com/pulumi-labs/pulumi-hcl/issues/78.
+func TestNestedModuleVariableResolution(t *testing.T) {
+	t.Parallel()
+
+	testSchema := schema.PackageSpec{
+		Name:    "test",
+		Version: "1.0.0",
+		Resources: map[string]schema.ResourceSpec{
+			"test:index:Bucket": {
+				InputProperties: map[string]schema.PropertySpec{
+					"name": {TypeSpec: schema.TypeSpec{Type: "string"}},
+				},
+				ObjectTypeSpec: schema.ObjectTypeSpec{
+					Properties: map[string]schema.PropertySpec{
+						"name": {TypeSpec: schema.TypeSpec{Type: "string"}},
+					},
+				},
+			},
+		},
+	}
+
+	// The inner module creates a resource using a variable passed from the
+	// outer module.
+	innerPCL := `config "name" "string" {
+}
+
+resource "bucket" "test:index:Bucket" {
+  name = "inner(${name})"
+}
+
+output "bucketName" {
+  value = bucket.name
+}
+`
+	// The outer module receives a variable from the root and forwards it to
+	// the inner module.
+	outerPCL := `config "name" "string" {
+}
+
+component "inner" "./inner" {
+  name = "outer(${name})"
+}
+
+output "bucketName" {
+  value = inner.bucketName
+}
+`
+	parentPCL := `component "outer" "./outer" {
+  name = "my-bucket"
+}
+
+output "bucketName" {
+  value = outer.bucketName
+}
+`
+	mock := testConvertedPCLWithComponent(t, parentPCL, map[string]string{
+		"./outer": outerPCL,
+		"./inner": innerPCL,
+	}, nil, testSchema)
+
+	result, ok := mock.StackOutputs.GetOk("bucketName")
+	require.True(t, ok, "expected 'bucketName' stack output")
+	assert.Equal(t, property.New("inner(outer(my-bucket))"), result)
+}
+
 // TestModuleDataSourceDependencies verifies that data sources inside modules
 // correctly track dependencies on resources and other data sources, using the
 // module-prefixed keys.
@@ -1043,8 +1110,10 @@ func testConvertedPCLWithComponent(
 	loader := testutil.NewMockReferenceLoader(t, schemas...)
 
 	// Build an in-memory ComponentProgramBinder so we don't need files on disk
-	// for the PCL binding step.
-	componentBinder := func(args pcl.ComponentProgramBinderArgs) (*pcl.Program, hcl.Diagnostics, error) {
+	// for the PCL binding step. The binder is defined as a variable so the
+	// closure can reference itself, enabling nested component resolution.
+	var componentBinder pcl.ComponentProgramBinder
+	componentBinder = func(args pcl.ComponentProgramBinderArgs) (*pcl.Program, hcl.Diagnostics, error) {
 		src, ok := componentSources[args.ComponentSource]
 		if !ok {
 			return nil, hcl.Diagnostics{{
@@ -1060,7 +1129,11 @@ func testConvertedPCLWithComponent(
 		if p.Diagnostics.HasErrors() {
 			return nil, p.Diagnostics, nil
 		}
-		opts := []pcl.BindOption{pcl.Loader(args.BinderLoader)}
+		opts := []pcl.BindOption{
+			pcl.Loader(args.BinderLoader),
+			pcl.DirPath(args.ComponentSource),
+			pcl.ComponentBinder(componentBinder),
+		}
 		if args.SkipResourceTypecheck {
 			opts = append(opts, pcl.SkipResourceTypechecking)
 		}

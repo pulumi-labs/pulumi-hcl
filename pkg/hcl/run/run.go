@@ -2007,28 +2007,23 @@ func (e *Engine) processModuleVariable(node *graph.Node) error {
 	moduleInputAttrs, _ := modInfo.Module.Config.JustAttributes()
 	inputAttr, hasInput := moduleInputAttrs[varName]
 
+	// Determine the parent evaluation context. For root-level modules this is
+	// the root evaluator context; for nested modules it is the enclosing module
+	// instance's context so that expressions like var.name resolve correctly.
+	parentEvalCtx := e.evaluator.Context()
+	if modInfo.ParentPrefix != "" {
+		parentInstances, ok := e.moduleInstances.Get(modInfo.ParentPrefix)
+		if ok && len(parentInstances) > 0 {
+			parentEvalCtx = parentInstances[0].EvalCtx
+		}
+	}
+
 	return e.forEachModuleInstance(node, func(inst *moduleInstance) error {
 		var val cty.Value
 
 		if hasInput {
-			// Evaluate the input expression in the parent context.
-			// The parent context is the eval context that contains count/each for this instance.
-			parentCtx := e.evaluator.Context()
-			if modInfo.ParentPrefix != "" {
-				parentCtx = inst.EvalCtx
-			}
-
-			// Need the parent eval context, not the module instance's context.
-			// For root-level modules, the parent is e.evaluator.Context() with count/each set.
 			var diags hcl.Diagnostics
-			parentHCL := parentCtx.HCLContext()
-			if inst.Index != nil {
-				parentHCL = e.evaluator.Context().Clone().HCLContext()
-				// We need a parent context with the right count/each set
-			}
-			// Use the root evaluator's context for parent expressions
-			val, diags = inputAttr.Expr.Value(e.evaluator.Context().HCLContext())
-			_ = parentHCL // TODO: for nested modules, use parent instance context
+			val, diags = inputAttr.Expr.Value(parentEvalCtx.HCLContext())
 			if diags.HasErrors() {
 				return fmt.Errorf("evaluating module input %s: %s", varName, diags.Error())
 			}
@@ -2235,8 +2230,15 @@ func (e *Engine) processModuleOutput(_ context.Context, node *graph.Node) error 
 	}
 
 	// Eagerly publish outputs to the parent context so other module variables
-	// can reference them before the completion node runs.
+	// can reference them before the completion node runs. For nested modules,
+	// the parent context is the enclosing module instance's eval context.
 	parentCtx := e.evaluator.Context()
+	if modInfo.ParentPrefix != "" {
+		parentInstances, ok := e.moduleInstances.Get(modInfo.ParentPrefix)
+		if ok && len(parentInstances) > 0 {
+			parentCtx = parentInstances[0].EvalCtx
+		}
+	}
 	instances, ok := e.moduleInstances.Get(modInfo.Prefix)
 	if !ok {
 		return nil
@@ -2328,8 +2330,15 @@ func (e *Engine) processModuleComplete(ctx context.Context, node *graph.Node) er
 		}
 	}
 
-	// Assemble module value in parent eval context.
+	// Assemble module value in parent eval context. For nested modules, the
+	// parent context is the enclosing module instance's eval context.
 	parentCtx := e.evaluator.Context()
+	if modInfo.ParentPrefix != "" {
+		parentInstances, ok := e.moduleInstances.Get(modInfo.ParentPrefix)
+		if ok && len(parentInstances) > 0 {
+			parentCtx = parentInstances[0].EvalCtx
+		}
+	}
 
 	if !isCounted && !isForEach {
 		// Single instance: module.X is an object of outputs.
