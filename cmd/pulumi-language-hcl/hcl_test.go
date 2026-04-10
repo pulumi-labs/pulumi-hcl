@@ -110,6 +110,125 @@ func TestConvertedPCL(t *testing.T) {
 		}), mock.InvokedFunctions[0].Args)
 	})
 
+	t.Run("function_nested_blocks", func(t *testing.T) {
+		t.Parallel()
+
+		pclSource := `output result {
+    value = invoke("test:index:blockInvoke", {
+        outer = [{
+            inner = [{
+                prop = true
+            }, {
+                prop = false
+            }]
+        }, {
+            inner = [{
+                prop = false
+            }, {
+                prop = true
+            }]
+        }]
+    }).id
+}
+
+output emptyOuter {
+    value = invoke("test:index:blockInvoke", {
+        outer = []
+    }).id
+}
+
+output emptyInner {
+    value = invoke("test:index:blockInvoke", {
+        outer = [{
+            inner = []
+        }]
+    }).id
+}
+`
+
+		testSchema := schema.PackageSpec{
+			Name:    "test",
+			Version: "1.0.0",
+			Functions: map[string]schema.FunctionSpec{
+				"test:index:blockInvoke": {
+					Inputs: &schema.ObjectTypeSpec{
+						Properties: map[string]schema.PropertySpec{
+							"outer": {
+								TypeSpec: schema.TypeSpec{
+									Type:  "array",
+									Items: &schema.TypeSpec{Ref: "#/types/test:index:Outer"},
+								},
+							},
+						},
+					},
+					Outputs: &schema.ObjectTypeSpec{
+						Properties: map[string]schema.PropertySpec{
+							"id": {TypeSpec: schema.TypeSpec{Type: "string"}},
+						},
+					},
+				},
+			},
+			Types: map[string]schema.ComplexTypeSpec{
+				"test:index:Outer": {
+					ObjectTypeSpec: schema.ObjectTypeSpec{
+						Type: "object",
+						Properties: map[string]schema.PropertySpec{
+							"inner": {
+								TypeSpec: schema.TypeSpec{
+									Type:  "array",
+									Items: &schema.TypeSpec{Ref: "#/types/test:index:Inner"},
+								},
+							},
+						},
+					},
+				},
+				"test:index:Inner": {
+					ObjectTypeSpec: schema.ObjectTypeSpec{
+						Type: "object",
+						Properties: map[string]schema.PropertySpec{
+							"prop": {TypeSpec: schema.TypeSpec{Type: "boolean"}},
+						},
+					},
+				},
+			},
+		}
+
+		mock := testConvertedPCL(t, pclSource, testSchema)
+
+		require.Len(t, mock.InvokedFunctions, 3)
+
+		// invoke_1: outer = [] produces no blocks, so args are empty.
+		assert.Equal(t, "test:index:blockInvoke", mock.InvokedFunctions[0].Token)
+		assert.Equal(t, property.NewMap(nil), mock.InvokedFunctions[0].Args)
+
+		// invoke_2: outer = [{ inner = [] }] produces one empty outer block.
+		assert.Equal(t, "test:index:blockInvoke", mock.InvokedFunctions[1].Token)
+		assert.Equal(t, property.NewMap(map[string]property.Value{
+			"outer": property.New([]property.Value{
+				property.New(map[string]property.Value{}),
+			}),
+		}), mock.InvokedFunctions[1].Args)
+
+		// invoke_0: fully populated nested blocks.
+		assert.Equal(t, "test:index:blockInvoke", mock.InvokedFunctions[2].Token)
+		assert.Equal(t, property.NewMap(map[string]property.Value{
+			"outer": property.New([]property.Value{
+				property.New(map[string]property.Value{
+					"inner": property.New([]property.Value{
+						property.New(map[string]property.Value{"prop": property.New(true)}),
+						property.New(map[string]property.Value{"prop": property.New(false)}),
+					}),
+				}),
+				property.New(map[string]property.Value{
+					"inner": property.New([]property.Value{
+						property.New(map[string]property.Value{"prop": property.New(false)}),
+						property.New(map[string]property.Value{"prop": property.New(true)}),
+					}),
+				}),
+			}),
+		}), mock.InvokedFunctions[2].Args)
+	})
+
 	t.Run("blocks", func(t *testing.T) {
 		t.Parallel()
 
