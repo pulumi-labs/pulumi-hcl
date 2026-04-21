@@ -15,10 +15,9 @@ data "test_echo" "invoke_0" {
   input = each.value
 }
 
-resource "test_item" "inbound" {
-  for_each = {
+output "results" {
+  value = {for k, v in {
     "a" = "alpha"
     "b" = "bravo"
-  }
-  value = data.test_echo.invoke_0[each.key].result
+  } : k => data.test_echo.invoke_0[k].result}
 }

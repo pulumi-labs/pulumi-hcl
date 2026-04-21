@@ -190,6 +190,25 @@ type fileTransformer struct {
 	resourceSchemas map[string]*schema.Resource // cache: HCL type label → resolved schema resource
 	functionSchemas map[string]*schema.Function // cache: HCL type label → resolved schema function
 	nameRewrites    map[string]string           // logical name → sanitized PCL identifier (only for invalid names)
+	// comprehensionStack tracks the iteration variables of enclosing PCL
+	// for-expressions while we are emitting their body. When non-empty and we
+	// are inside an inlined invoke body, each.key / each.value references
+	// (which originated in a ranged data block) rewrite to the innermost
+	// comprehension's key / value variable names rather than range.*.
+	comprehensionStack []comprehensionCtx
+	// inlineDepth is incremented while invokeExprTokens is expanding a data
+	// block body at a reference site, so transformTraversal can distinguish
+	// "each.* in an inlined invoke" from "each.* at the top level of a
+	// ranged block's own body".
+	inlineDepth int
+}
+
+// comprehensionCtx records the variable names of a PCL for-expression so
+// references to its iteration variables survive inlining.
+type comprehensionCtx struct {
+	// KeyVar is empty when the PCL for-expression has no explicit key variable.
+	KeyVar string
+	ValVar string
 }
 
 // newFileTransformer creates a fileTransformer by pre-scanning body for resource and data definitions.
@@ -807,12 +826,88 @@ func (ft *fileTransformer) transformExpr(expr hclsyntax.Expression) hclwrite.Tok
 		return ft.transformForExpr(e)
 	case *hclsyntax.SplatExpr:
 		return ft.transformSplatExpr(e)
+	case *hclsyntax.IndexExpr:
+		return ft.transformIndexExpr(e)
+	case *hclsyntax.RelativeTraversalExpr:
+		return ft.transformRelativeTraversal(e)
 	default:
 		r := expr.Range()
 		return hclwrite.Tokens{
 			&hclwrite.Token{Type: hclsyntax.TokenIdent, Bytes: ft.src[r.Start.Byte:r.End.Byte]},
 		}
 	}
+}
+
+// transformIndexExpr converts an HCL index expression (collection[key]) to PCL tokens.
+// When the collection is a reference to a ranged data block (one with for_each/count)
+// and the key is the per-iteration index, we drop the index and inline the invoke —
+// the inlined invoke's arguments already close over the enclosing resource's range.
+func (ft *fileTransformer) transformIndexExpr(e *hclsyntax.IndexExpr) hclwrite.Tokens {
+	if coll, ok := e.Collection.(*hclsyntax.ScopeTraversalExpr); ok &&
+		coll.Traversal.RootName() == "data" && len(coll.Traversal) >= 3 {
+		typeAttr, ok1 := coll.Traversal[1].(hcl.TraverseAttr)
+		nameAttr, ok2 := coll.Traversal[2].(hcl.TraverseAttr)
+		if ok1 && ok2 {
+			if body, ok := ft.dataBlocks[dataReference{typeAttr.Name, nameAttr.Name}]; ok {
+				_, hasForEach := body.Attributes["for_each"]
+				_, hasCount := body.Attributes["count"]
+				if hasForEach || hasCount {
+					return ft.invokeExprTokens(typeAttr.Name, nameAttr.Name)
+				}
+			}
+		}
+	}
+
+	tokens := ft.transformExpr(e.Collection)
+	tokens = append(tokens, &hclwrite.Token{Type: hclsyntax.TokenOBrack, Bytes: []byte("[")})
+	tokens = append(tokens, ft.transformExpr(e.Key)...)
+	tokens = append(tokens, &hclwrite.Token{Type: hclsyntax.TokenCBrack, Bytes: []byte("]")})
+	return tokens
+}
+
+// transformRelativeTraversal converts an HCL relative traversal expression
+// (source.attr...) to PCL tokens. The source is transformed recursively, then
+// the trailing traversal steps are appended with schema-aware name mapping.
+func (ft *fileTransformer) transformRelativeTraversal(e *hclsyntax.RelativeTraversalExpr) hclwrite.Tokens {
+	tokens := ft.transformExpr(e.Source)
+	props := ft.relativeTraversalSourceProps(e.Source)
+	dummy := make(hcl.Traversal, len(e.Traversal)+1)
+	dummy[0] = hcl.TraverseRoot{Name: "_"}
+	copy(dummy[1:], e.Traversal)
+	converted := schemaAwareTraversalAttrs(dummy, props)
+	for _, step := range converted[1:] {
+		switch s := step.(type) {
+		case hcl.TraverseAttr:
+			tokens = append(tokens,
+				&hclwrite.Token{Type: hclsyntax.TokenDot, Bytes: []byte(".")},
+				&hclwrite.Token{Type: hclsyntax.TokenIdent, Bytes: []byte(s.Name)},
+			)
+		case hcl.TraverseIndex:
+			tokens = append(tokens, hclwrite.TokensForTraversal(hcl.Traversal{s})...)
+		}
+	}
+	return tokens
+}
+
+// relativeTraversalSourceProps returns the schema properties of the value
+// produced by `source`, used to map subsequent traversal attribute names.
+func (ft *fileTransformer) relativeTraversalSourceProps(source hclsyntax.Expression) []*schema.Property {
+	if idx, ok := source.(*hclsyntax.IndexExpr); ok {
+		source = idx.Collection
+	}
+	coll, ok := source.(*hclsyntax.ScopeTraversalExpr)
+	if !ok || coll.Traversal.RootName() != "data" || len(coll.Traversal) < 3 {
+		return nil
+	}
+	typeAttr, ok := coll.Traversal[1].(hcl.TraverseAttr)
+	if !ok {
+		return nil
+	}
+	fn := ft.functionSchemas[typeAttr.Name]
+	if fn == nil || fn.ReturnType == nil {
+		return nil
+	}
+	return propertiesOf(fn.ReturnType)
 }
 
 // transformSplatExpr converts a splat expression (source[*].attr) to PCL tokens.
@@ -1079,6 +1174,30 @@ func (ft *fileTransformer) transformTraversal(e *hclsyntax.ScopeTraversalExpr) h
 		}
 		return hclwrite.TokensForTraversal(trav)
 	case "each":
+		// When inlining a ranged data block inside a PCL for-comprehension,
+		// rewrite each.key / each.value to the comprehension's own variable
+		// names — the range.* scope belongs to the data block we are erasing
+		// and is not in scope at the inlined reference site.
+		if ft.inlineDepth > 0 && len(ft.comprehensionStack) > 0 {
+			top := ft.comprehensionStack[len(ft.comprehensionStack)-1]
+			if len(e.Traversal) >= 2 {
+				if attr, ok := e.Traversal[1].(hcl.TraverseAttr); ok {
+					var name string
+					switch attr.Name {
+					case "value":
+						name = top.ValVar
+					case "key":
+						name = top.KeyVar
+					}
+					if name != "" {
+						trav := make(hcl.Traversal, len(e.Traversal)-1)
+						trav[0] = hcl.TraverseRoot{Name: name}
+						copy(trav[1:], e.Traversal[2:])
+						return hclwrite.TokensForTraversal(trav)
+					}
+				}
+			}
+		}
 		// each.key → range.key, each.value → range.value
 		trav := make(hcl.Traversal, len(e.Traversal))
 		trav[0] = hcl.TraverseRoot{Name: "range"}
@@ -1249,6 +1368,9 @@ func (ft *fileTransformer) callExprTokens(resourceName, snakeMethod string) hclw
 // invoke("token", {args...}, {opts...}) when invoke options are present.
 // It looks up the matching data block to extract the argument and option objects.
 func (ft *fileTransformer) invokeExprTokens(hclType, dsName string) hclwrite.Tokens {
+	ft.inlineDepth++
+	defer func() { ft.inlineDepth-- }()
+
 	tokenTokens := hclwrite.TokensForValue(cty.StringVal(ft.dataTokens[hclType]))
 
 	var inputProps []*schema.Property
@@ -1259,6 +1381,9 @@ func (ft *fileTransformer) invokeExprTokens(hclType, dsName string) hclwrite.Tok
 	var argAttrs, optAttrs []hclwrite.ObjectAttrTokens
 	if body, ok := ft.dataBlocks[dataReference{hclType, dsName}]; ok {
 		for _, attr := range sortedAttributes(body.Attributes) {
+			if attr.Name == "for_each" || attr.Name == "count" {
+				continue
+			}
 			if pclName, isOpt := invokeOptionHCLToPCL[attr.Name]; isOpt {
 				optAttrs = append(optAttrs, hclwrite.ObjectAttrTokens{
 					Name:  hclwrite.TokensForIdentifier(pclName),
@@ -1484,6 +1609,17 @@ func (ft *fileTransformer) transformDynamicIteratorTraversal(trav hcl.Traversal,
 // sub-expressions (e.g., var.names → names).
 func (ft *fileTransformer) transformForExpr(e *hclsyntax.ForExpr) hclwrite.Tokens {
 	collTokens := ft.transformExpr(e.CollExpr)
+
+	// Push this for-expression's iteration variables so nested traversals of
+	// each.* inside any inlined invoke resolve to them instead of range.*.
+	ft.comprehensionStack = append(ft.comprehensionStack, comprehensionCtx{
+		KeyVar: e.KeyVar,
+		ValVar: e.ValVar,
+	})
+	defer func() {
+		ft.comprehensionStack = ft.comprehensionStack[:len(ft.comprehensionStack)-1]
+	}()
+
 	valTokens := ft.transformExpr(e.ValExpr)
 
 	isMap := e.KeyExpr != nil

@@ -20,6 +20,7 @@ import (
 	"github.com/hashicorp/hcl/v2"
 	"github.com/hashicorp/hcl/v2/hclsyntax"
 	"github.com/hashicorp/hcl/v2/hclwrite"
+	"github.com/pulumi-labs/pulumi-hcl/tests/testutil"
 	"github.com/pulumi/pulumi/pkg/v3/codegen/schema"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -259,6 +260,165 @@ func TestTransformFunctionCall(t *testing.T) {
 			assert.Equal(t, tt.expected, string(tokens.Bytes()))
 		})
 	}
+}
+
+// TestEjectDataBlockWithForEach verifies that an HCL program containing a data
+// block with `for_each` (the shape produced by the PCL → HCL codegen for invokes
+// that close over range.*) round-trips back to valid PCL. The inlined invoke
+// picks up the resource's range iterator via `range.value`, and the per-instance
+// indexing (`[each.key]`) collapses into the single inlined invoke expression.
+func TestEjectDataBlockWithForEach(t *testing.T) {
+	t.Parallel()
+
+	testSchema := schema.PackageSpec{
+		Name:    "test",
+		Version: "1.0.0",
+		Resources: map[string]schema.ResourceSpec{
+			"test:index:Item": {
+				InputProperties: map[string]schema.PropertySpec{
+					"value": {TypeSpec: schema.TypeSpec{Type: "string"}},
+				},
+				ObjectTypeSpec: schema.ObjectTypeSpec{
+					Properties: map[string]schema.PropertySpec{
+						"value": {TypeSpec: schema.TypeSpec{Type: "string"}},
+					},
+				},
+			},
+		},
+		Functions: map[string]schema.FunctionSpec{
+			"test:index:echo": {
+				Inputs: &schema.ObjectTypeSpec{
+					Properties: map[string]schema.PropertySpec{
+						"input": {TypeSpec: schema.TypeSpec{Type: "string"}},
+					},
+				},
+				Outputs: &schema.ObjectTypeSpec{
+					Properties: map[string]schema.PropertySpec{
+						"result": {TypeSpec: schema.TypeSpec{Type: "string"}},
+					},
+				},
+			},
+		},
+	}
+	loader := testutil.NewMockReferenceLoader(t, testSchema)
+
+	src := []byte(`terraform {
+  required_providers {
+    test = {
+      source  = "pulumi/test"
+      version = "1.0.0"
+    }
+  }
+}
+
+data "test_echo" "invoke_0" {
+  for_each = {
+    "a" = "alpha"
+    "b" = "bravo"
+  }
+  input = each.value
+}
+
+resource "test_item" "inbound" {
+  for_each = {
+    "a" = "alpha"
+    "b" = "bravo"
+  }
+  value = data.test_echo.invoke_0[each.key].result
+}
+`)
+
+	out := hclwrite.NewEmptyFile()
+	diags, err := transformHCLFileToPCL(t.Context(), src, "main.hcl", out.Body(), loader, nil)
+	require.NoError(t, err)
+	require.False(t, diags.HasErrors(), diags.Error())
+
+	expected := `resource "inbound" "test:index:Item" {
+  value = invoke("test:index:echo", {
+    input = range.value
+  }).result
+  options {
+    range = {
+      "a" = "alpha"
+      "b" = "bravo"
+    }
+  }
+}
+
+`
+	assert.Equal(t, expected, string(out.Bytes()))
+}
+
+// TestEjectInvokeInListComprehension feeds in the HCL shape produced by the
+// codegen when a PCL invoke inside a list comprehension is hoisted: a data
+// block with for_each over the comprehension's collection, plus a
+// comprehension that indexes the data source by its key variable. The eject
+// should inline the invoke back inside the comprehension, with references to
+// each.value / each.key rewritten to the comprehension's iteration
+// variables — NOT to range.* (which would be unbound inside a comprehension).
+func TestEjectInvokeInListComprehension(t *testing.T) {
+	t.Parallel()
+
+	testSchema := schema.PackageSpec{
+		Name:    "test",
+		Version: "1.0.0",
+		Functions: map[string]schema.FunctionSpec{
+			"test:index:echo": {
+				Inputs: &schema.ObjectTypeSpec{
+					Properties: map[string]schema.PropertySpec{
+						"input": {TypeSpec: schema.TypeSpec{Type: "string"}},
+					},
+				},
+				Outputs: &schema.ObjectTypeSpec{
+					Properties: map[string]schema.PropertySpec{
+						"result": {TypeSpec: schema.TypeSpec{Type: "string"}},
+					},
+				},
+			},
+		},
+	}
+	loader := testutil.NewMockReferenceLoader(t, testSchema)
+	src := []byte(`terraform {
+  required_providers {
+    test = {
+      source  = "pulumi/test"
+      version = "1.0.0"
+    }
+  }
+}
+
+data "test_echo" "invoke_0" {
+  for_each = {
+    "a" = "alpha"
+    "b" = "bravo"
+  }
+  input = each.value
+}
+
+output "results" {
+  value = [for k, v in {
+    "a" = "alpha"
+    "b" = "bravo"
+  } : data.test_echo.invoke_0[k].result]
+}
+`)
+
+	out := hclwrite.NewEmptyFile()
+	diags, err := transformHCLFileToPCL(t.Context(), src, "main.hcl", out.Body(), loader, nil)
+	require.NoError(t, err)
+	require.False(t, diags.HasErrors(), diags.Error())
+
+	expected := `output "results" {
+  value = [for k, v in {
+    "a" = "alpha"
+    "b" = "bravo"
+    } : invoke("test:index:echo", {
+      input = v
+  }).result]
+}
+
+`
+	assert.Equal(t, expected, string(out.Bytes()))
 }
 
 func TestTransformSplatExpr(t *testing.T) {

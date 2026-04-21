@@ -11,12 +11,6 @@ terraform {
   }
 }
 
-data "std_lookup" "invoke_0" {
-  map     = each.value
-  key     = "thing"
-  default = "none"
-}
-
 resource "test_item" "inbound" {
   for_each = {
     "a" = {
@@ -26,5 +20,5 @@ resource "test_item" "inbound" {
       "thing" = "bravo"
     }
   }
-  value = data.std_lookup.invoke_0.result
+  value = lookup(each.value, "thing", "none")
 }

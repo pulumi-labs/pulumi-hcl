@@ -56,7 +56,7 @@ func GenerateProgram(program *pcl.Program) (map[string][]byte, hcl.Diagnostics, 
 
 	// Generate data source blocks for invokes
 	for _, ds := range gen.invokeDataSources {
-		d := gen.genInvokeDataSource(body, ds.expr, ds.name)
+		d := gen.genInvokeDataSource(body, ds)
 		diags = append(diags, d...)
 	}
 
@@ -142,11 +142,187 @@ type generator struct {
 	callBlocks        []spilledCall
 	currentRangeKind  rangeKind
 	dynamicBlock      *dynamicBlockContext
+	// forDataBlock, when non-nil, indicates we are generating the body of a
+	// data block hoisted from an invoke inside a for-comprehension. References
+	// to its KeyVariable / ValueVariable are rewritten to each.key / each.value.
+	forDataBlock *model.ForExpression
 }
 
 type spilledDataSource struct {
 	expr *model.FunctionCallExpression
 	name string
+	// parentResource is non-nil when the invoke closes over range.* from this
+	// resource's for_each/count. The data block is emitted with a matching
+	// for_each, and the resource's reference is indexed with [each.key].
+	parentResource *pcl.Resource
+	// enclosingForExpr is non-nil when the invoke closes over iteration
+	// variables of a PCL for-comprehension. The data block is emitted with a
+	// matching for_each over that comprehension's collection, and the
+	// reference is indexed by the comprehension's key variable.
+	enclosingForExpr *model.ForExpression
+}
+
+// stdTFFunc describes how to inline a pulumi-std invoke as a TF builtin function
+// call. Used to reverse the forward mapping that pulumi-converter-terraform applies
+// when turning TF builtins into std:index:* invokes.
+type stdTFFunc struct {
+	name   string
+	inputs []string
+}
+
+// stdInvokeToTFFunction maps a pulumi-std invoke token back to its TF builtin
+// function. Mirrors the forward mapping in pulumi-converter-terraform's
+// tfFunctionStd. Only non-variadic (paramArgs=false) entries appear here —
+// variadic functions receive their trailing args packed into a single list by
+// the forward direction, which cannot be reliably unpacked without knowing the
+// list length statically, so those remain hoisted as data blocks.
+var stdInvokeToTFFunction = map[string]stdTFFunc{
+	"std:index:abs":              {name: "abs", inputs: []string{"input"}},
+	"std:index:abspath":          {name: "abspath", inputs: []string{"input"}},
+	"std:index:alltrue":          {name: "alltrue", inputs: []string{"input"}},
+	"std:index:anytrue":          {name: "anytrue", inputs: []string{"input"}},
+	"std:index:base64decode":     {name: "base64decode", inputs: []string{"input"}},
+	"std:index:base64encode":     {name: "base64encode", inputs: []string{"input"}},
+	"std:index:base64gzip":       {name: "base64gzip", inputs: []string{"input"}},
+	"std:index:base64sha256":     {name: "base64sha256", inputs: []string{"input"}},
+	"std:index:base64sha512":     {name: "base64sha512", inputs: []string{"input"}},
+	"std:index:basename":         {name: "basename", inputs: []string{"input"}},
+	"std:index:bcrypt":           {name: "bcrypt", inputs: []string{"input", "cost"}},
+	"std:index:ceil":             {name: "ceil", inputs: []string{"input"}},
+	"std:index:chomp":            {name: "chomp", inputs: []string{"input"}},
+	"std:index:chunklist":        {name: "chunklist", inputs: []string{"input", "size"}},
+	"std:index:compact":          {name: "compact", inputs: []string{"input"}},
+	"std:index:contains":         {name: "contains", inputs: []string{"input", "element"}},
+	"std:index:cidrhost":         {name: "cidrhost", inputs: []string{"input", "host"}},
+	"std:index:cidrnetmask":      {name: "cidrnetmask", inputs: []string{"input"}},
+	"std:index:cidrsubnet":       {name: "cidrsubnet", inputs: []string{"input", "newbits", "netnum"}},
+	"std:index:csvdecode":        {name: "csvdecode", inputs: []string{"input"}},
+	"std:index:dirname":          {name: "dirname", inputs: []string{"input"}},
+	"std:index:distinct":         {name: "distinct", inputs: []string{"input"}},
+	"std:index:endswith":         {name: "endswith", inputs: []string{"input", "suffix"}},
+	"std:index:file":             {name: "file", inputs: []string{"input"}},
+	"std:index:filebase64":       {name: "filebase64", inputs: []string{"input"}},
+	"std:index:filebase64sha256": {name: "filebase64sha256", inputs: []string{"input"}},
+	"std:index:filebase64sha512": {name: "filebase64sha512", inputs: []string{"input"}},
+	"std:index:fileexists":       {name: "fileexists", inputs: []string{"input"}},
+	"std:index:filemd5":          {name: "filemd5", inputs: []string{"input"}},
+	"std:index:filesha1":         {name: "filesha1", inputs: []string{"input"}},
+	"std:index:filesha256":       {name: "filesha256", inputs: []string{"input"}},
+	"std:index:filesha512":       {name: "filesha512", inputs: []string{"input"}},
+	"std:index:flatten":          {name: "flatten", inputs: []string{"input"}},
+	"std:index:floor":            {name: "floor", inputs: []string{"input"}},
+	"std:index:indent":           {name: "indent", inputs: []string{"spaces", "input"}},
+	"std:index:join":             {name: "join", inputs: []string{"separator", "input"}},
+	"std:index:jsondecode":       {name: "jsondecode", inputs: []string{"input"}},
+	"std:index:keys":             {name: "keys", inputs: []string{"input"}},
+	"std:index:log":              {name: "log", inputs: []string{"base", "input"}},
+	"std:index:lookup":           {name: "lookup", inputs: []string{"map", "key", "default"}},
+	"std:index:lower":            {name: "lower", inputs: []string{"input"}},
+	"std:index:md5":              {name: "md5", inputs: []string{"input"}},
+	"std:index:parseint":         {name: "parseint", inputs: []string{"input", "base"}},
+	"std:index:pathexpand":       {name: "pathexpand", inputs: []string{"input"}},
+	"std:index:pow":              {name: "pow", inputs: []string{"base", "exponent"}},
+	"std:index:range":            {name: "range", inputs: []string{"limit", "start", "step"}},
+	"std:index:regex":            {name: "regex", inputs: []string{"pattern", "string"}},
+	"std:index:regexall":         {name: "regexall", inputs: []string{"pattern", "string"}},
+	"std:index:replace":          {name: "replace", inputs: []string{"text", "search", "replace"}},
+	"std:index:rsadecrypt":       {name: "rsadecrypt", inputs: []string{"cipherText", "key"}},
+	"std:index:sha1":             {name: "sha1", inputs: []string{"input"}},
+	"std:index:sha256":           {name: "sha256", inputs: []string{"input"}},
+	"std:index:sha512":           {name: "sha512", inputs: []string{"input"}},
+	"std:index:signum":           {name: "signum", inputs: []string{"input"}},
+	"std:index:slice":            {name: "slice", inputs: []string{"list", "from", "to"}},
+	"std:index:sort":             {name: "sort", inputs: []string{"input"}},
+	"std:index:split":            {name: "split", inputs: []string{"separator", "text"}},
+	"std:index:startswith":       {name: "startswith", inputs: []string{"input", "prefix"}},
+	"std:index:strrev":           {name: "strrev", inputs: []string{"input"}},
+	"std:index:substr":           {name: "substr", inputs: []string{"input", "offset", "length"}},
+	"std:index:sum":              {name: "sum", inputs: []string{"input"}},
+	"std:index:timeadd":          {name: "timeadd", inputs: []string{"duration", "timestamp"}},
+	"std:index:timecmp":          {name: "timecmp", inputs: []string{"timestampa", "timestampb"}},
+	"std:index:timestamp":        {name: "timestamp", inputs: []string{}},
+	"std:index:title":            {name: "title", inputs: []string{"input"}},
+	"std:index:tobool":           {name: "tobool", inputs: []string{"input"}},
+	"std:index:toset":            {name: "toset", inputs: []string{"input"}},
+	"std:index:transpose":        {name: "transpose", inputs: []string{"input"}},
+	"std:index:trim":             {name: "trim", inputs: []string{"input", "cutset"}},
+	"std:index:trimprefix":       {name: "trimprefix", inputs: []string{"input", "prefix"}},
+	"std:index:trimspace":        {name: "trimspace", inputs: []string{"input"}},
+	"std:index:trimsuffix":       {name: "trimsuffix", inputs: []string{"input", "suffix"}},
+	"std:index:upper":            {name: "upper", inputs: []string{"input"}},
+	"std:index:urlencode":        {name: "urlencode", inputs: []string{"input"}},
+	"std:index:uuid":             {name: "uuid", inputs: []string{}},
+}
+
+// lookupStdTFFunc finds a TF-builtin mapping for a pulumi-std invoke token.
+// It accepts both the fully-qualified "std:index:name" form and the canonical
+// "std::name" form that pcl's binder produces after token canonicalization.
+func lookupStdTFFunc(token string) (stdTFFunc, bool) {
+	if fn, ok := stdInvokeToTFFunction[token]; ok {
+		return fn, true
+	}
+	pkg, _, member, diags := pcl.DecomposeToken(token, hcl.Range{})
+	if diags.HasErrors() || pkg != "std" {
+		return stdTFFunc{}, false
+	}
+	fn, ok := stdInvokeToTFFunction["std:index:"+member]
+	return fn, ok
+}
+
+// inlinableStdFunc reports whether the given invoke call can be inlined as a TF
+// builtin function. It checks both the token and the argument shape (the args
+// object must be an ObjectConsExpression).
+func inlinableStdFunc(call *model.FunctionCallExpression) (stdTFFunc, bool) {
+	if call.Name != pcl.Invoke || len(call.Args) < 2 {
+		return stdTFFunc{}, false
+	}
+	token, ok := extractStringLiteral(call.Args[0])
+	if !ok {
+		return stdTFFunc{}, false
+	}
+	fn, ok := lookupStdTFFunc(token)
+	if !ok {
+		return stdTFFunc{}, false
+	}
+	if _, ok := call.Args[1].(*model.ObjectConsExpression); !ok {
+		return stdTFFunc{}, false
+	}
+	return fn, true
+}
+
+// invokeReferencesRange reports whether any scope traversal inside the invoke
+// is rooted at `range`, meaning the invoke closes over an enclosing resource's
+// for_each / count iterator.
+func invokeReferencesRange(call *model.FunctionCallExpression) bool {
+	var found bool
+	_, _ = model.VisitExpression(call, nil, func(e model.Expression) (model.Expression, hcl.Diagnostics) {
+		if st, ok := e.(*model.ScopeTraversalExpression); ok {
+			if st.Traversal.RootName() == "range" {
+				found = true
+			}
+		}
+		return e, nil
+	})
+	return found
+}
+
+// invokeReferencesForVars reports whether any scope traversal inside the
+// invoke references the given for-expression's iteration variables.
+func invokeReferencesForVars(call *model.FunctionCallExpression, fe *model.ForExpression) bool {
+	var found bool
+	_, _ = model.VisitExpression(call, nil, func(e model.Expression) (model.Expression, hcl.Diagnostics) {
+		st, ok := e.(*model.ScopeTraversalExpression)
+		if !ok || len(st.Parts) == 0 {
+			return e, nil
+		}
+		if v, ok := st.Parts[0].(*model.Variable); ok {
+			if v == fe.ValueVariable || (fe.KeyVariable != nil && v == fe.KeyVariable) {
+				found = true
+			}
+		}
+		return e, nil
+	})
+	return found
 }
 
 type spilledCall struct {
@@ -191,32 +367,66 @@ func genRequiredProviders(body *hclwrite.Body, program *pcl.Program) {
 }
 
 // collectInvokes walks the node and collects all invoke function calls.
+// Resource inputs pass the enclosing resource so invokes that close over its
+// range iterator can be identified.
 func (g *generator) collectInvokes(node pcl.Node) {
 	switch n := node.(type) {
 	case *pcl.Resource:
 		for _, attr := range n.Inputs {
-			g.collectInvokesInExpr(attr.Value)
+			g.collectInvokesInExpr(attr.Value, n)
 		}
 	case *pcl.OutputVariable:
-		g.collectInvokesInExpr(n.Value)
+		g.collectInvokesInExpr(n.Value, nil)
 	case *pcl.LocalVariable:
-		g.collectInvokesInExpr(n.Definition.Value)
+		g.collectInvokesInExpr(n.Definition.Value, nil)
 	}
 }
 
 // collectInvokesInExpr walks an expression tree and collects invoke calls.
-func (g *generator) collectInvokesInExpr(expr model.Expression) {
-	_, diags := model.VisitExpression(expr, nil, func(expr model.Expression) (model.Expression, hcl.Diagnostics) {
-		if call, ok := expr.(*model.FunctionCallExpression); ok {
-			if call.Name == pcl.Invoke {
-				g.invokeDataSources = append(g.invokeDataSources, spilledDataSource{
-					expr: call,
-					name: fmt.Sprintf("invoke_%d", len(g.invokeDataSources)),
-				})
-			}
+// Invokes that map to TF builtins (std:index:*) are skipped — they will be
+// inlined at their reference site. Invokes that close over range.* from the
+// enclosing resource are tagged so the hoisted data block can carry a matching
+// for_each.
+func (g *generator) collectInvokesInExpr(expr model.Expression, parent *pcl.Resource) {
+	var forStack []*model.ForExpression
+	pre := func(e model.Expression) (model.Expression, hcl.Diagnostics) {
+		if fe, ok := e.(*model.ForExpression); ok {
+			forStack = append(forStack, fe)
 		}
-		return expr, nil
-	})
+		return e, nil
+	}
+	post := func(e model.Expression) (model.Expression, hcl.Diagnostics) {
+		if fe, ok := e.(*model.ForExpression); ok {
+			contract.Assertf(len(forStack) > 0 && forStack[len(forStack)-1] == fe,
+				"for-expression stack out of sync")
+			forStack = forStack[:len(forStack)-1]
+		}
+		if call, ok := e.(*model.FunctionCallExpression); ok && call.Name == pcl.Invoke {
+			if _, inlinable := inlinableStdFunc(call); inlinable {
+				return e, nil
+			}
+			ds := spilledDataSource{
+				expr: call,
+				name: fmt.Sprintf("invoke_%d", len(g.invokeDataSources)),
+			}
+			if parent != nil && parent.Options != nil && parent.Options.Range != nil &&
+				invokeReferencesRange(call) {
+				ds.parentResource = parent
+			} else {
+				// Walk from innermost for outward to find the one whose
+				// iteration variables this invoke closes over.
+				for i := len(forStack) - 1; i >= 0; i-- {
+					if invokeReferencesForVars(call, forStack[i]) {
+						ds.enclosingForExpr = forStack[i]
+						break
+					}
+				}
+			}
+			g.invokeDataSources = append(g.invokeDataSources, ds)
+		}
+		return e, nil
+	}
+	_, diags := model.VisitExpression(expr, pre, post)
 	contract.Assertf(len(diags) == 0, "we never return diags")
 }
 
@@ -333,7 +543,11 @@ func (g *generator) genCallBlock(body *hclwrite.Body, cb spilledCall) hcl.Diagno
 }
 
 // genInvokeDataSource generates a data source block for an invoke call.
-func (g *generator) genInvokeDataSource(body *hclwrite.Body, invoke *model.FunctionCallExpression, dsName string) hcl.Diagnostics {
+// If ds.parentResource is set, the block is emitted with a for_each matching
+// the resource's range so range.* references rewrite correctly.
+func (g *generator) genInvokeDataSource(body *hclwrite.Body, ds spilledDataSource) hcl.Diagnostics {
+	invoke := ds.expr
+	dsName := ds.name
 	if len(invoke.Args) < 2 {
 		return hcl.Diagnostics{{
 			Severity: hcl.DiagError,
@@ -382,6 +596,36 @@ func (g *generator) genInvokeDataSource(body *hclwrite.Body, invoke *model.Funct
 	}
 
 	block := body.AppendNewBlock("data", []string{dsType, dsName})
+
+	// If this invoke closed over range.* from a for_each/count resource,
+	// give the data block its own matching range so the rewrite in
+	// scopeTraversalTokens (range.* → each.* / count.index) is well-bound.
+	if ds.parentResource != nil && ds.parentResource.Options != nil && ds.parentResource.Options.Range != nil {
+		d := g.genRange(block.Body(), ds.parentResource.Options.Range)
+		diags = append(diags, d...)
+		defer func() { g.currentRangeKind = rangeKindNone }()
+	}
+
+	// If this invoke closed over a for-comprehension's iteration variables,
+	// emit a matching for_each over the comprehension's collection. References
+	// to the for-expression's variables inside the body will be rewritten to
+	// each.key / each.value via scopeTraversalTokens.
+	if ds.enclosingForExpr != nil {
+		collTokens, d := g.exprTokens(ds.enclosingForExpr.Collection, schema.AnyType)
+		diags = append(diags, d...)
+		if d.HasErrors() {
+			return diags
+		}
+		// HCL for_each requires a map or set. When the PCL comprehension has no
+		// KeyVariable the collection is a list/tuple, so wrap it with toset() to
+		// coerce into a set keyed by its own elements (each.key == each.value).
+		if ds.enclosingForExpr.KeyVariable == nil {
+			collTokens = hclwrite.TokensForFunctionCall("toset", collTokens)
+		}
+		block.Body().SetAttributeRaw("for_each", collTokens)
+		g.forDataBlock = ds.enclosingForExpr
+		defer func() { g.forDataBlock = nil }()
+	}
 
 	// Second arg is the args object
 	if len(invoke.Args) >= 2 {
@@ -1129,16 +1373,30 @@ func (g *generator) exprTokens(expr model.Expression, typ schema.Type) (hclwrite
 	case *model.TemplateExpression:
 		return g.templateTokens(e)
 	case *model.FunctionCallExpression:
+		// Check if this is an invoke that maps to a TF builtin — inline it.
+		// Standalone use (not wrapped in .result) wraps the call in a single-
+		// field object so downstream .result access resolves correctly; the
+		// common .result wrapping is intercepted in relativeTraversalTokens
+		// to avoid the wrapper.
+		if e.Name == pcl.Invoke {
+			if fn, inlinable := inlinableStdFunc(e); inlinable {
+				callTokens, diags := g.inlineStdInvoke(e, fn)
+				if diags.HasErrors() {
+					return nil, diags
+				}
+				return wrapInResultObject(callTokens), nil
+			}
+		}
 		// Check if this is an invoke call that we've replaced with a data source
 		if e.Name == pcl.Invoke {
-			var dsName string
-			for _, v := range g.invokeDataSources {
-				if v.expr == e {
-					dsName = v.name
+			var matchedDS *spilledDataSource
+			for i := range g.invokeDataSources {
+				if g.invokeDataSources[i].expr == e {
+					matchedDS = &g.invokeDataSources[i]
 					break
 				}
 			}
-			if dsName != "" {
+			if matchedDS != nil {
 				// Generate reference to data source: data.type.name
 				token, ok := extractStringLiteral(e.Args[0])
 				if !ok {
@@ -1152,11 +1410,37 @@ func (g *generator) exprTokens(expr model.Expression, typ schema.Type) (hclwrite
 				if diags.HasErrors() {
 					return nil, diags
 				}
-				return hclwrite.TokensForTraversal(hcl.Traversal{
+				tokens := hclwrite.TokensForTraversal(hcl.Traversal{
 					hcl.TraverseRoot{Name: "data"},
 					hcl.TraverseAttr{Name: dsType},
-					hcl.TraverseAttr{Name: dsName},
-				}), nil
+					hcl.TraverseAttr{Name: matchedDS.name},
+				})
+				// If the data block carries a for_each matching the enclosing
+				// resource's range, index into it so the reference is per-iteration.
+				if matchedDS.parentResource != nil {
+					tokens = append(tokens, perIterationIndexTokens(g.currentRangeKind)...)
+				}
+				// If the data block carries a for_each matching an enclosing
+				// for-comprehension, index into it with a variable that remains
+				// in scope at the reference site. Prefer the comprehension's key
+				// variable; for no-key comprehensions the collection was wrapped
+				// with toset(), so the element value is its own key.
+				if fe := matchedDS.enclosingForExpr; fe != nil {
+					indexName := ""
+					if fe.KeyVariable != nil {
+						indexName = fe.KeyVariable.Name
+					} else if fe.ValueVariable != nil {
+						indexName = fe.ValueVariable.Name
+					}
+					if indexName != "" {
+						tokens = append(tokens,
+							&hclwrite.Token{Type: hclsyntax.TokenOBrack, Bytes: []byte("[")},
+							&hclwrite.Token{Type: hclsyntax.TokenIdent, Bytes: []byte(indexName)},
+							&hclwrite.Token{Type: hclsyntax.TokenCBrack, Bytes: []byte("]")},
+						)
+					}
+				}
+				return tokens, nil
 			}
 		}
 		// Check if this is a call expression that we've replaced with a call block
@@ -1689,6 +1973,24 @@ func (g *generator) scopeTraversalTokens(expr *model.ScopeTraversalExpression) (
 				)), nil
 			}
 		}
+		if fe := g.forDataBlock; fe != nil && len(expr.Parts) > 0 {
+			if v, ok := expr.Parts[0].(*model.Variable); ok {
+				var attr string
+				switch v {
+				case fe.ValueVariable:
+					attr = "value"
+				case fe.KeyVariable:
+					attr = "key"
+				}
+				if attr != "" {
+					rewritten := hcl.Traversal{
+						hcl.TraverseRoot{Name: "each"},
+						hcl.TraverseAttr{Name: attr},
+					}
+					return hclwrite.TokensForTraversal(append(rewritten, traversal[1:]...)), nil
+				}
+			}
+		}
 		if db := g.dynamicBlock; db != nil {
 			// Rewrite references to the for-expression's iterator variables:
 			//   valueVar.field → blockName.value.field
@@ -1755,12 +2057,114 @@ func (g *generator) indexExprTokens(expr *model.IndexExpression) (hclwrite.Token
 }
 
 // relativeTraversalTokens generates tokens for a relative traversal expression: source.attr.
+// When the source is an inlinable std invoke followed by .result, the .result
+// step is stripped so we emit the TF builtin call directly (e.g. lookup(...) instead
+// of {result = lookup(...)}.result).
 func (g *generator) relativeTraversalTokens(expr *model.RelativeTraversalExpression) (hclwrite.Tokens, hcl.Diagnostics) {
+	if call, ok := expr.Source.(*model.FunctionCallExpression); ok {
+		if fn, inlinable := inlinableStdFunc(call); inlinable && traversalStartsWithResult(expr.Traversal) {
+			tokens, diags := g.inlineStdInvoke(call, fn)
+			if diags.HasErrors() {
+				return nil, diags
+			}
+			return append(tokens, traversalStepsToTokens(naiveRewriteTraversal(expr.Traversal[1:]))...), nil
+		}
+	}
 	sourceTokens, diags := g.exprTokens(expr.Source, schema.AnyType)
 	if diags.HasErrors() {
 		return nil, diags
 	}
 	return append(sourceTokens, traversalStepsToTokens(naiveRewriteTraversal(expr.Traversal))...), diags
+}
+
+// traversalStartsWithResult reports whether the first step of a relative traversal
+// is the attribute `.result`.
+func traversalStartsWithResult(traversal hcl.Traversal) bool {
+	if len(traversal) == 0 {
+		return false
+	}
+	attr, ok := traversal[0].(hcl.TraverseAttr)
+	return ok && attr.Name == "result"
+}
+
+// inlineStdInvoke emits a TF builtin function call for a std:index:* invoke.
+// The call's named args are looked up by the positional names in fn.inputs;
+// trailing missing args (e.g. an omitted `default` on lookup) are omitted from
+// the emitted call. Missing required args return unchanged args in positional
+// order, which is the responsibility of the PCL binder to validate.
+func (g *generator) inlineStdInvoke(call *model.FunctionCallExpression, fn stdTFFunc) (hclwrite.Tokens, hcl.Diagnostics) {
+	argsObj, ok := call.Args[1].(*model.ObjectConsExpression)
+	if !ok {
+		return nil, hcl.Diagnostics{{
+			Severity: hcl.DiagError,
+			Summary:  "invalid std invoke",
+			Detail:   "expected args object",
+		}}
+	}
+	byName := make(map[string]model.Expression, len(argsObj.Items))
+	for _, item := range argsObj.Items {
+		name, ok := extractStringLiteral(item.Key)
+		if !ok {
+			continue
+		}
+		byName[name] = item.Value
+	}
+	// Collect args in the declared order, dropping trailing nil entries so that
+	// optional trailing params (e.g. lookup's `default`) don't show up as empty
+	// slots. Non-trailing missing params are left unresolved — the binder should
+	// have rejected that already.
+	var positional []model.Expression
+	for _, name := range fn.inputs {
+		positional = append(positional, byName[name])
+	}
+	for len(positional) > 0 && positional[len(positional)-1] == nil {
+		positional = positional[:len(positional)-1]
+	}
+	return g.passthroughFuncCallTokens(fn.name, positional)
+}
+
+// wrapInResultObject wraps a token stream in `{ result = <tokens> }` so that
+// later `.result` access on the wrapped expression resolves to the original
+// tokens. Used when an inlinable std invoke is referenced without an immediate
+// .result traversal (e.g. assigned to a local).
+func wrapInResultObject(inner hclwrite.Tokens) hclwrite.Tokens {
+	tokens := hclwrite.Tokens{
+		{Type: hclsyntax.TokenOBrace, Bytes: []byte("{")},
+		{Type: hclsyntax.TokenIdent, Bytes: []byte(" result ")},
+		{Type: hclsyntax.TokenEqual, Bytes: []byte("=")},
+	}
+	if len(inner) > 0 {
+		inner[0].SpacesBefore = 1
+	}
+	tokens = append(tokens, inner...)
+	tokens = append(tokens, &hclwrite.Token{Type: hclsyntax.TokenCBrace, Bytes: []byte(" }")})
+	return tokens
+}
+
+// perIterationIndexTokens returns the index expression that selects the current
+// iteration's entry from a data block hoisted with a matching for_each / count.
+// For for_each this is `[each.key]`; for count this is `[count.index]`.
+func perIterationIndexTokens(kind rangeKind) hclwrite.Tokens {
+	open := &hclwrite.Token{Type: hclsyntax.TokenOBrack, Bytes: []byte("[")}
+	close := &hclwrite.Token{Type: hclsyntax.TokenCBrack, Bytes: []byte("]")}
+	switch kind {
+	case rangeKindCount:
+		return hclwrite.Tokens{
+			open,
+			{Type: hclsyntax.TokenIdent, Bytes: []byte("count")},
+			{Type: hclsyntax.TokenDot, Bytes: []byte(".")},
+			{Type: hclsyntax.TokenIdent, Bytes: []byte("index")},
+			close,
+		}
+	default:
+		return hclwrite.Tokens{
+			open,
+			{Type: hclsyntax.TokenIdent, Bytes: []byte("each")},
+			{Type: hclsyntax.TokenDot, Bytes: []byte(".")},
+			{Type: hclsyntax.TokenIdent, Bytes: []byte("key")},
+			close,
+		}
+	}
 }
 
 // splatTokens generates HCL tokens for a PCL SplatExpression.

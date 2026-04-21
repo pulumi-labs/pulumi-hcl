@@ -8,17 +8,11 @@ terraform {
 }
 
 data "test_echo" "invoke_0" {
-  for_each = {
-    "a" = "alpha"
-    "b" = "bravo"
-  }
-  input = each.value
+  count = 2
+  input ="item-${count.index}"
 }
 
 resource "test_item" "inbound" {
-  for_each = {
-    "a" = "alpha"
-    "b" = "bravo"
-  }
-  value = data.test_echo.invoke_0[each.key].result
+  count = 2
+  value = data.test_echo.invoke_0[count.index].result
 }

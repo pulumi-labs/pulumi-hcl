@@ -1626,12 +1626,123 @@ func (e *Engine) processDataSource(ctx context.Context, node *graph.Node) error 
 func (e *Engine) processDataSourceInContext(
 	ctx context.Context, node *graph.Node, ds *ast.Resource, evalCtx *eval.Context,
 ) error {
-	// Resolve the data source type to a Pulumi function token
 	funcSchema, err := packages.ResolveFunction(ctx, e.pkgLoader, e.knownProviders(), ds.Type)
 	if err != nil {
 		return fmt.Errorf("resolving data source type %s: %w", ds.Type, err)
 	}
 
+	dsKey := node.Key
+	if node.ModuleInfo != nil {
+		dsKey = strings.TrimPrefix(dsKey, node.ModuleInfo.Prefix)
+	}
+	dsKey = strings.TrimPrefix(dsKey, "data.")
+
+	if ds.Count != nil || ds.ForEach != nil {
+		return e.processRangedDataSource(ctx, node, ds, funcSchema, evalCtx, dsKey)
+	}
+
+	ctyOutputs, allDeps, err := e.invokeDataSourceOnce(ctx, node, ds, funcSchema, evalCtx)
+	if err != nil {
+		return err
+	}
+	evalCtx.SetDataSource(dsKey, ctyOutputs)
+	e.dataSourceDependencies.Set(dsKey, allDeps)
+	return nil
+}
+
+// processRangedDataSource handles a data source with count or for_each.
+// It expands into N instances, invokes each, and stores the aggregated
+// outputs as a tuple (count) or object keyed by each.key (for_each) so that
+// `data.<type>.<name>[<index>|<key>].<attr>` resolves as expected.
+func (e *Engine) processRangedDataSource(
+	ctx context.Context, node *graph.Node, ds *ast.Resource, funcSchema *schema.Function,
+	evalCtx *eval.Context, dsKey string,
+) error {
+	tempEvaluator := eval.NewEvaluator(evalCtx)
+	expander := graph.NewResourceExpander()
+
+	if ds.Count != nil {
+		count, isBool, diags := tempEvaluator.EvaluateCount(ds.Count)
+		if diags.HasErrors() {
+			return fmt.Errorf("evaluating count: %s", diags.Error())
+		}
+		if isBool {
+			expander.SetBoolCount(node.Key, count)
+		} else {
+			expander.SetCount(node.Key, count)
+		}
+	}
+
+	if ds.ForEach != nil {
+		forEach, diags := tempEvaluator.EvaluateForEach(ds.ForEach)
+		if diags.HasErrors() {
+			return fmt.Errorf("evaluating for_each: %s", diags.Error())
+		}
+		expander.SetForEach(node.Key, forEach)
+	}
+
+	result := expander.Expand(node)
+
+	var allDeps []resource.URN
+	var tupleOutputs []cty.Value
+	eachOutputs := make(map[string]cty.Value)
+	isForEach := ds.ForEach != nil
+
+	for _, instance := range result.Instances {
+		if instance.Index != nil {
+			evalCtx.SetCount(*instance.Index)
+		}
+		if instance.EachKey != nil && instance.EachValue != nil {
+			evalCtx.SetEach(*instance.EachKey, *instance.EachValue)
+		}
+
+		ctyOut, deps, invokeErr := e.invokeDataSourceOnce(ctx, node, ds, funcSchema, evalCtx)
+
+		if instance.Index != nil {
+			evalCtx.ClearCount()
+		}
+		if instance.EachKey != nil {
+			evalCtx.ClearEach()
+		}
+
+		if invokeErr != nil {
+			return invokeErr
+		}
+		allDeps = append(allDeps, deps...)
+		if isForEach {
+			eachOutputs[instance.EachKey.AsString()] = ctyOut
+		} else {
+			tupleOutputs = append(tupleOutputs, ctyOut)
+		}
+	}
+
+	var aggregated cty.Value
+	if isForEach {
+		if len(eachOutputs) == 0 {
+			aggregated = cty.EmptyObjectVal
+		} else {
+			aggregated = cty.ObjectVal(eachOutputs)
+		}
+	} else {
+		if len(tupleOutputs) == 0 {
+			aggregated = cty.EmptyTupleVal
+		} else {
+			aggregated = cty.TupleVal(tupleOutputs)
+		}
+	}
+
+	evalCtx.SetDataSource(dsKey, aggregated)
+	e.dataSourceDependencies.Set(dsKey, allDeps)
+	return nil
+}
+
+// invokeDataSourceOnce performs a single data-source invocation using the
+// current state of evalCtx (which may have each/count set by the caller).
+// It returns the converted outputs and the URNs this invocation depended on.
+func (e *Engine) invokeDataSourceOnce(
+	ctx context.Context, node *graph.Node, ds *ast.Resource, funcSchema *schema.Function,
+	evalCtx *eval.Context,
+) (cty.Value, []resource.URN, error) {
 	hclCtx := evalCtx.HCLContext()
 
 	var allDeps []resource.URN
@@ -1671,7 +1782,7 @@ func (e *Engine) processDataSourceInContext(
 			return val, diags
 		})
 	if diags.HasErrors() {
-		return diags
+		return cty.NilVal, nil, diags
 	}
 
 	invokeReq := InvokeRequest{
@@ -1727,27 +1838,15 @@ func (e *Engine) processDataSourceInContext(
 
 	outputs, err := e.invokeFunction(ctx, invokeReq)
 	if err != nil {
-		return fmt.Errorf("invoking data source: %w", err)
+		return cty.NilVal, nil, fmt.Errorf("invoking data source: %w", err)
 	}
 
 	ctyOutputs, err := transform.FunctionOutputToCty(outputs, funcSchema, e.dryRun)
 	if err != nil {
-		return fmt.Errorf("converting function outputs to HCL types: %w", err)
+		return cty.NilVal, nil, fmt.Errorf("converting function outputs to HCL types: %w", err)
 	}
 
-	// Store outputs for future references.
-	// The node key is "<prefix>data.<type>.<name>"; strip the prefix and "data." to get "<type>.<name>".
-	dsKey := node.Key
-	if node.ModuleInfo != nil {
-		dsKey = strings.TrimPrefix(dsKey, node.ModuleInfo.Prefix)
-	}
-	dsKey = strings.TrimPrefix(dsKey, "data.")
-	evalCtx.SetDataSource(dsKey, ctyOutputs)
-
-	// Store dependencies for this data source.
-	e.dataSourceDependencies.Set(dsKey, allDeps)
-
-	return nil
+	return ctyOutputs, allDeps, nil
 }
 
 // processCall processes a call block (method invocation on a resource).
