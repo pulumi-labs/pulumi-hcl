@@ -63,7 +63,7 @@ func newTestLoader(t *testing.T, specs ...schema.PackageSpec) schema.ReferenceLo
 		pkg, diag, err := schema.BindSpec(spec, loader, schema.ValidationOptions{})
 		require.NoError(t, err)
 		require.Empty(t, diag)
-		d, err := pkg.Descriptor(context.Background())
+		d, err := pkg.Descriptor(t.Context())
 		require.NoError(t, err)
 
 		params := func() *schema.ParameterizationDescriptor {
@@ -155,7 +155,7 @@ func TestResolveResource(t *testing.T) {
 		},
 	)
 
-	ctx := context.Background()
+	ctx := t.Context()
 
 	tests := []struct {
 		name           string
@@ -292,7 +292,7 @@ func TestResolveFunction(t *testing.T) {
 		},
 	)
 
-	ctx := context.Background()
+	ctx := t.Context()
 
 	tests := []struct {
 		name           string

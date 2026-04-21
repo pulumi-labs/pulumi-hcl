@@ -3,3 +3,9 @@ version: "2"
 linters:
   enable:
     - modernize
+    - usetesting
+  settings:
+    usetesting:
+      os-temp-dir: true
+      context-background: true
+      context-todo: true

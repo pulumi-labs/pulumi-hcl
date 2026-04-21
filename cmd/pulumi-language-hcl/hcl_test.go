@@ -451,6 +451,643 @@ resource target "test:index:Item" {
 
 }
 
+// TestStdLookupInlinedInForEachResource checks that a `std:index:*` function (which has a
+// TF-builtin equivalent) is hoisted into a top-level `data "std_*"` block instead of
+// being inlined as a TF builtin call. When the invoke closes over `range.value` from an
+// enclosing for_each resource, the hoisted block has no for_each and the rewritten
+// `each.value` reference is unbound at plan time.
+//
+// The fix is to reverse the `std:index:lookup` → `lookup(...)` mapping,
+// emitting an inline TF function call:
+//
+//	resource "test_item" "inbound" {
+//	  for_each = { a = { thing = "alpha" }, b = { thing = "bravo" } }
+//	  value    = lookup(each.value, "thing", "none")
+//	}
+func TestStdLookupInlinedInForEachResource(t *testing.T) {
+	t.Parallel()
+
+	testSchema := schema.PackageSpec{
+		Name:    "test",
+		Version: "1.0.0",
+		Resources: map[string]schema.ResourceSpec{
+			"test:index:Item": {
+				InputProperties: map[string]schema.PropertySpec{
+					"value": {TypeSpec: schema.TypeSpec{Type: "string"}},
+				},
+				ObjectTypeSpec: schema.ObjectTypeSpec{
+					Properties: map[string]schema.PropertySpec{
+						"value": {TypeSpec: schema.TypeSpec{Type: "string"}},
+					},
+				},
+			},
+		},
+	}
+	stdSchema := schema.PackageSpec{
+		Name:    "std",
+		Version: "1.0.0",
+		Functions: map[string]schema.FunctionSpec{
+			"std:index:lookup": {
+				Inputs: &schema.ObjectTypeSpec{
+					Properties: map[string]schema.PropertySpec{
+						"map":     {TypeSpec: schema.TypeSpec{Ref: "pulumi.json#/Any"}},
+						"key":     {TypeSpec: schema.TypeSpec{Type: "string"}},
+						"default": {TypeSpec: schema.TypeSpec{Ref: "pulumi.json#/Any"}},
+					},
+				},
+				Outputs: &schema.ObjectTypeSpec{
+					Properties: map[string]schema.PropertySpec{
+						"result": {TypeSpec: schema.TypeSpec{Ref: "pulumi.json#/Any"}},
+					},
+				},
+			},
+		},
+	}
+
+	pclSource := `resource inbound "test:index:Item" {
+    options {
+        range = {
+            a = { thing = "alpha" }
+            b = { thing = "bravo" }
+        }
+    }
+    value = invoke("std:index:lookup", {
+        map     = range.value
+        key     = "thing"
+        default = "none"
+    }).result
+}
+`
+
+	// No InvokeHandler: std:index:lookup must be inlined as the TF builtin
+	// `lookup(...)`, which the engine evaluates natively. If the generator
+	// still emits a `data "std_lookup"` block, the engine will either fail
+	// to bind `each.value` or fail to resolve the std provider.
+	mock := testConvertedPCLWithComponent(t, pclSource, nil, nil, testSchema, stdSchema)
+
+	require.Len(t, mock.RegisteredResources, 3, "expected stack + 2 items")
+	assert.Equal(t, "pulumi:pulumi:Stack", mock.RegisteredResources[0].Type)
+	assert.Empty(t, mock.InvokedFunctions,
+		"std:index:lookup should be inlined, not sent as an Invoke")
+
+	values := []property.Value{
+		mock.RegisteredResources[1].Inputs.Get("value"),
+		mock.RegisteredResources[2].Inputs.Get("value"),
+	}
+	assert.ElementsMatch(t, []property.Value{
+		property.New("alpha"),
+		property.New("bravo"),
+	}, values)
+}
+
+// TestCustomInvokeHoistedWithForEach checks a custom provider invoke that has no
+// TF-builtin equivalent must still be emitted as a `data` block, but when it closes over
+// `range.value` the data block needs its own `for_each` and the resource must reference
+// it per-iteration:
+//
+//	data "test_echo" "invoke_0" {
+//	  for_each = { a = "alpha", b = "bravo" }
+//	  input    = each.value
+//	}
+//	resource "test_item" "inbound" {
+//	  for_each = data.test_echo.invoke_0
+//	  value    = each.value.result
+//	}
+func TestCustomInvokeHoistedWithForEach(t *testing.T) {
+	t.Parallel()
+
+	testSchema := schema.PackageSpec{
+		Name:    "test",
+		Version: "1.0.0",
+		Resources: map[string]schema.ResourceSpec{
+			"test:index:Item": {
+				InputProperties: map[string]schema.PropertySpec{
+					"value": {TypeSpec: schema.TypeSpec{Type: "string"}},
+				},
+				ObjectTypeSpec: schema.ObjectTypeSpec{
+					Properties: map[string]schema.PropertySpec{
+						"value": {TypeSpec: schema.TypeSpec{Type: "string"}},
+					},
+				},
+			},
+		},
+		Functions: map[string]schema.FunctionSpec{
+			"test:index:echo": {
+				Inputs: &schema.ObjectTypeSpec{
+					Properties: map[string]schema.PropertySpec{
+						"input": {TypeSpec: schema.TypeSpec{Type: "string"}},
+					},
+				},
+				Outputs: &schema.ObjectTypeSpec{
+					Properties: map[string]schema.PropertySpec{
+						"result": {TypeSpec: schema.TypeSpec{Type: "string"}},
+					},
+				},
+			},
+		},
+	}
+
+	pclSource := `resource inbound "test:index:Item" {
+    options {
+        range = {
+            a = "alpha"
+            b = "bravo"
+        }
+    }
+    value = invoke("test:index:echo", {
+        input = range.value
+    }).result
+}
+`
+
+	monitor := &testutil.MockResourceMonitor{
+		InvokeHandler: func(_ context.Context, req hclrun.InvokeRequest) (*hclrun.InvokeResponse, error) {
+			input, _ := req.Args.GetOk("input")
+			return &hclrun.InvokeResponse{
+				Return: property.NewMap(map[string]property.Value{
+					"result": property.New(input.AsString() + "+"),
+				}),
+			}, nil
+		},
+	}
+
+	mock := testConvertedPCLWithComponent(t, pclSource, nil, monitor, testSchema)
+
+	// The invoke must fire once per range entry with the corresponding
+	// range.value, not once with an unbound placeholder.
+	invokeInputs := make([]property.Value, 0, len(mock.InvokedFunctions))
+	for _, inv := range mock.InvokedFunctions {
+		assert.Equal(t, "test:index:echo", inv.Token)
+		input, ok := inv.Args.GetOk("input")
+		require.True(t, ok, "invoke missing `input` arg: %v", inv.Args)
+		invokeInputs = append(invokeInputs, input)
+	}
+	assert.ElementsMatch(t, []property.Value{
+		property.New("alpha"),
+		property.New("bravo"),
+	}, invokeInputs)
+
+	// Each registered resource should receive the per-iteration invoke
+	// result.
+	require.Len(t, mock.RegisteredResources, 3, "expected stack + 2 items")
+	assert.Equal(t, "pulumi:pulumi:Stack", mock.RegisteredResources[0].Type)
+	values := []property.Value{
+		mock.RegisteredResources[1].Inputs.Get("value"),
+		mock.RegisteredResources[2].Inputs.Get("value"),
+	}
+	assert.ElementsMatch(t, []property.Value{
+		property.New("alpha+"),
+		property.New("bravo+"),
+	}, values)
+}
+
+// TestCustomInvokeHoistedWithCount mirrors TestCustomInvokeHoistedWithForEach
+// but uses a numeric range, which maps to `count` instead of `for_each`. The
+// hoisted data block should carry a matching `count` and the resource should
+// reference it with `[count.index]`.
+func TestCustomInvokeHoistedWithCount(t *testing.T) {
+	t.Parallel()
+
+	testSchema := schema.PackageSpec{
+		Name:    "test",
+		Version: "1.0.0",
+		Resources: map[string]schema.ResourceSpec{
+			"test:index:Item": {
+				InputProperties: map[string]schema.PropertySpec{
+					"value": {TypeSpec: schema.TypeSpec{Type: "string"}},
+				},
+				ObjectTypeSpec: schema.ObjectTypeSpec{
+					Properties: map[string]schema.PropertySpec{
+						"value": {TypeSpec: schema.TypeSpec{Type: "string"}},
+					},
+				},
+			},
+		},
+		Functions: map[string]schema.FunctionSpec{
+			"test:index:echo": {
+				Inputs: &schema.ObjectTypeSpec{
+					Properties: map[string]schema.PropertySpec{
+						"input": {TypeSpec: schema.TypeSpec{Type: "string"}},
+					},
+				},
+				Outputs: &schema.ObjectTypeSpec{
+					Properties: map[string]schema.PropertySpec{
+						"result": {TypeSpec: schema.TypeSpec{Type: "string"}},
+					},
+				},
+			},
+		},
+	}
+
+	pclSource := `resource inbound "test:index:Item" {
+    options {
+        range = 2
+    }
+    value = invoke("test:index:echo", {
+        input = "item-${range.value}"
+    }).result
+}
+`
+
+	monitor := &testutil.MockResourceMonitor{
+		InvokeHandler: func(_ context.Context, req hclrun.InvokeRequest) (*hclrun.InvokeResponse, error) {
+			input, _ := req.Args.GetOk("input")
+			return &hclrun.InvokeResponse{
+				Return: property.NewMap(map[string]property.Value{
+					"result": property.New(input.AsString() + "+"),
+				}),
+			}, nil
+		},
+	}
+
+	mock := testConvertedPCLWithComponent(t, pclSource, nil, monitor, testSchema)
+
+	invokeInputs := make([]property.Value, 0, len(mock.InvokedFunctions))
+	for _, inv := range mock.InvokedFunctions {
+		assert.Equal(t, "test:index:echo", inv.Token)
+		input, ok := inv.Args.GetOk("input")
+		require.True(t, ok, "invoke missing `input` arg: %v", inv.Args)
+		invokeInputs = append(invokeInputs, input)
+	}
+	assert.ElementsMatch(t, []property.Value{
+		property.New("item-0"),
+		property.New("item-1"),
+	}, invokeInputs)
+
+	require.Len(t, mock.RegisteredResources, 3, "expected stack + 2 items")
+	assert.Equal(t, "pulumi:pulumi:Stack", mock.RegisteredResources[0].Type)
+	values := []property.Value{
+		mock.RegisteredResources[1].Inputs.Get("value"),
+		mock.RegisteredResources[2].Inputs.Get("value"),
+	}
+	assert.ElementsMatch(t, []property.Value{
+		property.New("item-0+"),
+		property.New("item-1+"),
+	}, values)
+}
+
+// TestCustomInvokeHoistedInListComprehension checks that a custom provider
+// invoke that appears inside a PCL list comprehension is hoisted into a data
+// block whose `for_each` matches the comprehension's collection, and that the
+// reference is spliced back into the list comprehension indexed by the
+// comprehension's key variable.
+func TestCustomInvokeHoistedInListComprehension(t *testing.T) {
+	t.Parallel()
+
+	testSchema := schema.PackageSpec{
+		Name:    "test",
+		Version: "1.0.0",
+		Functions: map[string]schema.FunctionSpec{
+			"test:index:echo": {
+				Inputs: &schema.ObjectTypeSpec{
+					Properties: map[string]schema.PropertySpec{
+						"input": {TypeSpec: schema.TypeSpec{Type: "string"}},
+					},
+				},
+				Outputs: &schema.ObjectTypeSpec{
+					Properties: map[string]schema.PropertySpec{
+						"result": {TypeSpec: schema.TypeSpec{Type: "string"}},
+					},
+				},
+			},
+		},
+	}
+
+	pclSource := `output results {
+    value = [for k, v in {
+        a = "alpha"
+        b = "bravo"
+    } : invoke("test:index:echo", {
+        input = v
+    }).result]
+}
+`
+
+	monitor := &testutil.MockResourceMonitor{
+		InvokeHandler: func(_ context.Context, req hclrun.InvokeRequest) (*hclrun.InvokeResponse, error) {
+			input, _ := req.Args.GetOk("input")
+			return &hclrun.InvokeResponse{
+				Return: property.NewMap(map[string]property.Value{
+					"result": property.New(input.AsString() + "+"),
+				}),
+			}, nil
+		},
+	}
+
+	mock := testConvertedPCLWithComponent(t, pclSource, nil, monitor, testSchema)
+
+	invokeInputs := make([]property.Value, 0, len(mock.InvokedFunctions))
+	for _, inv := range mock.InvokedFunctions {
+		assert.Equal(t, "test:index:echo", inv.Token)
+		input, ok := inv.Args.GetOk("input")
+		require.True(t, ok, "invoke missing `input` arg: %v", inv.Args)
+		invokeInputs = append(invokeInputs, input)
+	}
+	assert.ElementsMatch(t, []property.Value{
+		property.New("alpha"),
+		property.New("bravo"),
+	}, invokeInputs)
+
+	require.Len(t, mock.RegisteredResources, 1, "expected just the stack")
+	assert.Equal(t, "pulumi:pulumi:Stack", mock.RegisteredResources[0].Type)
+	results, ok := mock.StackOutputs.GetOk("results")
+	require.True(t, ok, "missing `results` stack output")
+	assert.ElementsMatch(t, []property.Value{
+		property.New("alpha+"),
+		property.New("bravo+"),
+	}, results.AsArray().AsSlice())
+}
+
+// TestCustomInvokeHoistedInListComprehensionKeyVar verifies the branch of the
+// for-variable rewrite that maps a reference to the comprehension's
+// KeyVariable onto `each.key` in the hoisted data block.
+func TestCustomInvokeHoistedInListComprehensionKeyVar(t *testing.T) {
+	t.Parallel()
+
+	testSchema := schema.PackageSpec{
+		Name:    "test",
+		Version: "1.0.0",
+		Functions: map[string]schema.FunctionSpec{
+			"test:index:echo": {
+				Inputs: &schema.ObjectTypeSpec{
+					Properties: map[string]schema.PropertySpec{
+						"input": {TypeSpec: schema.TypeSpec{Type: "string"}},
+					},
+				},
+				Outputs: &schema.ObjectTypeSpec{
+					Properties: map[string]schema.PropertySpec{
+						"result": {TypeSpec: schema.TypeSpec{Type: "string"}},
+					},
+				},
+			},
+		},
+	}
+
+	pclSource := `output results {
+    value = [for k, v in {
+        a = "alpha"
+        b = "bravo"
+    } : invoke("test:index:echo", {
+        input = k
+    }).result]
+}
+`
+
+	monitor := &testutil.MockResourceMonitor{
+		InvokeHandler: func(_ context.Context, req hclrun.InvokeRequest) (*hclrun.InvokeResponse, error) {
+			input, _ := req.Args.GetOk("input")
+			return &hclrun.InvokeResponse{
+				Return: property.NewMap(map[string]property.Value{
+					"result": property.New(input.AsString() + "!"),
+				}),
+			}, nil
+		},
+	}
+
+	mock := testConvertedPCLWithComponent(t, pclSource, nil, monitor, testSchema)
+
+	invokeInputs := make([]property.Value, 0, len(mock.InvokedFunctions))
+	for _, inv := range mock.InvokedFunctions {
+		input, ok := inv.Args.GetOk("input")
+		require.True(t, ok)
+		invokeInputs = append(invokeInputs, input)
+	}
+	assert.ElementsMatch(t, []property.Value{
+		property.New("a"),
+		property.New("b"),
+	}, invokeInputs)
+
+	results, ok := mock.StackOutputs.GetOk("results")
+	require.True(t, ok)
+	assert.ElementsMatch(t, []property.Value{
+		property.New("a!"),
+		property.New("b!"),
+	}, results.AsArray().AsSlice())
+}
+
+// TestStdInvokeInListComprehensionInlined checks that a std:index:* invoke
+// with a TF-builtin equivalent is inlined at the reference site (no data
+// block is spilled) even when the invoke appears inside a list comprehension
+// and closes over the comprehension's value variable.
+func TestStdInvokeInListComprehensionInlined(t *testing.T) {
+	t.Parallel()
+
+	stdSchema := schema.PackageSpec{
+		Name:    "std",
+		Version: "1.0.0",
+		Functions: map[string]schema.FunctionSpec{
+			"std:index:lower": {
+				Inputs: &schema.ObjectTypeSpec{
+					Properties: map[string]schema.PropertySpec{
+						"input": {TypeSpec: schema.TypeSpec{Type: "string"}},
+					},
+				},
+				Outputs: &schema.ObjectTypeSpec{
+					Properties: map[string]schema.PropertySpec{
+						"result": {TypeSpec: schema.TypeSpec{Type: "string"}},
+					},
+				},
+			},
+		},
+	}
+
+	pclSource := `output results {
+    value = [for _, v in {
+        a = "ALPHA"
+        b = "BRAVO"
+    } : invoke("std:index:lower", {
+        input = v
+    }).result]
+}
+`
+
+	mock := testConvertedPCLWithComponent(t, pclSource, nil, nil, stdSchema)
+
+	assert.Empty(t, mock.InvokedFunctions,
+		"std:index:lower should be inlined as the TF builtin, not sent as an Invoke")
+
+	results, ok := mock.StackOutputs.GetOk("results")
+	require.True(t, ok)
+	assert.ElementsMatch(t, []property.Value{
+		property.New("alpha"),
+		property.New("bravo"),
+	}, results.AsArray().AsSlice())
+}
+
+// TestCustomInvokeHoistedInMapComprehension verifies hoisting works for the
+// map-result form of a for-comprehension: {for k, v in xs : k => invoke(...)}.
+func TestCustomInvokeHoistedInMapComprehension(t *testing.T) {
+	t.Parallel()
+
+	testSchema := schema.PackageSpec{
+		Name:    "test",
+		Version: "1.0.0",
+		Functions: map[string]schema.FunctionSpec{
+			"test:index:echo": {
+				Inputs: &schema.ObjectTypeSpec{
+					Properties: map[string]schema.PropertySpec{
+						"input": {TypeSpec: schema.TypeSpec{Type: "string"}},
+					},
+				},
+				Outputs: &schema.ObjectTypeSpec{
+					Properties: map[string]schema.PropertySpec{
+						"result": {TypeSpec: schema.TypeSpec{Type: "string"}},
+					},
+				},
+			},
+		},
+	}
+
+	pclSource := `output results {
+    value = {for k, v in {
+        a = "alpha"
+        b = "bravo"
+    } : k => invoke("test:index:echo", {
+        input = v
+    }).result}
+}
+`
+
+	monitor := &testutil.MockResourceMonitor{
+		InvokeHandler: func(_ context.Context, req hclrun.InvokeRequest) (*hclrun.InvokeResponse, error) {
+			input, _ := req.Args.GetOk("input")
+			return &hclrun.InvokeResponse{
+				Return: property.NewMap(map[string]property.Value{
+					"result": property.New(input.AsString() + "+"),
+				}),
+			}, nil
+		},
+	}
+
+	mock := testConvertedPCLWithComponent(t, pclSource, nil, monitor, testSchema)
+
+	results, ok := mock.StackOutputs.GetOk("results")
+	require.True(t, ok)
+	assert.Equal(t, property.NewMap(map[string]property.Value{
+		"a": property.New("alpha+"),
+		"b": property.New("bravo+"),
+	}), results.AsMap())
+}
+
+// TestCustomInvokeHoistedInNestedComprehension verifies that when an invoke
+// inside nested comprehensions references an OUTER comprehension's iteration
+// variable, the walk-from-innermost-out loop in collectInvokesInExpr picks
+// the outer for-expression as the one whose collection drives the data
+// block's for_each.
+func TestCustomInvokeHoistedInNestedComprehension(t *testing.T) {
+	t.Parallel()
+
+	testSchema := schema.PackageSpec{
+		Name:    "test",
+		Version: "1.0.0",
+		Functions: map[string]schema.FunctionSpec{
+			"test:index:echo": {
+				Inputs: &schema.ObjectTypeSpec{
+					Properties: map[string]schema.PropertySpec{
+						"input": {TypeSpec: schema.TypeSpec{Type: "string"}},
+					},
+				},
+				Outputs: &schema.ObjectTypeSpec{
+					Properties: map[string]schema.PropertySpec{
+						"result": {TypeSpec: schema.TypeSpec{Type: "string"}},
+					},
+				},
+			},
+		},
+	}
+
+	pclSource := `output results {
+    value = [for ko, vo in {
+        a = "alpha"
+    } : [for ki, vi in {
+        x = "xylo"
+    } : invoke("test:index:echo", {
+        input = vo
+    }).result]]
+}
+`
+
+	monitor := &testutil.MockResourceMonitor{
+		InvokeHandler: func(_ context.Context, req hclrun.InvokeRequest) (*hclrun.InvokeResponse, error) {
+			input, _ := req.Args.GetOk("input")
+			return &hclrun.InvokeResponse{
+				Return: property.NewMap(map[string]property.Value{
+					"result": property.New(input.AsString() + "+"),
+				}),
+			}, nil
+		},
+	}
+
+	mock := testConvertedPCLWithComponent(t, pclSource, nil, monitor, testSchema)
+
+	assert.Len(t, mock.InvokedFunctions, 1,
+		"invoke should fire once per outer iteration (not inner × outer)")
+
+	results, ok := mock.StackOutputs.GetOk("results")
+	require.True(t, ok)
+	outer := results.AsArray().AsSlice()
+	require.Len(t, outer, 1)
+	inner := outer[0].AsArray().AsSlice()
+	require.Len(t, inner, 1)
+	assert.Equal(t, property.New("alpha+"), inner[0])
+}
+
+// TestCustomInvokeHoistedInListComprehensionNoKey exercises the branch where a
+// for-comprehension has no KeyVariable. The current codegen tags the invoke
+// with the for-expression anyway and emits `for_each = <list>` on the data
+// block, but the reference rewrite cannot index the data block (no key in
+// scope) — so the per-iteration semantics break. This test documents the
+// current behavior; it is expected to fail until the no-key case is fixed.
+func TestCustomInvokeHoistedInListComprehensionNoKey(t *testing.T) {
+	t.Parallel()
+
+	testSchema := schema.PackageSpec{
+		Name:    "test",
+		Version: "1.0.0",
+		Functions: map[string]schema.FunctionSpec{
+			"test:index:echo": {
+				Inputs: &schema.ObjectTypeSpec{
+					Properties: map[string]schema.PropertySpec{
+						"input": {TypeSpec: schema.TypeSpec{Type: "string"}},
+					},
+				},
+				Outputs: &schema.ObjectTypeSpec{
+					Properties: map[string]schema.PropertySpec{
+						"result": {TypeSpec: schema.TypeSpec{Type: "string"}},
+					},
+				},
+			},
+		},
+	}
+
+	pclSource := `output results {
+    value = [for v in ["alpha", "bravo"] : invoke("test:index:echo", {
+        input = v
+    }).result]
+}
+`
+
+	monitor := &testutil.MockResourceMonitor{
+		InvokeHandler: func(_ context.Context, req hclrun.InvokeRequest) (*hclrun.InvokeResponse, error) {
+			input, _ := req.Args.GetOk("input")
+			return &hclrun.InvokeResponse{
+				Return: property.NewMap(map[string]property.Value{
+					"result": property.New(input.AsString() + "+"),
+				}),
+			}, nil
+		},
+	}
+
+	mock := testConvertedPCLWithComponent(t, pclSource, nil, monitor, testSchema)
+
+	results, ok := mock.StackOutputs.GetOk("results")
+	require.True(t, ok)
+	assert.ElementsMatch(t, []property.Value{
+		property.New("alpha+"),
+		property.New("bravo+"),
+	}, results.AsArray().AsSlice())
+}
+
 func TestNotImplemented(t *testing.T) {
 	t.Parallel()
 
