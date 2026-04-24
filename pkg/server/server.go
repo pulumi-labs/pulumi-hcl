@@ -37,6 +37,7 @@ import (
 	"github.com/pulumi/pulumi/pkg/v3/codegen/pcl"
 	"github.com/pulumi/pulumi/pkg/v3/codegen/schema"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/apitype"
+	pulumiencoding "github.com/pulumi/pulumi/sdk/v3/go/common/encoding"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/resource"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/resource/plugin"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/util/contract"
@@ -49,7 +50,6 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/protobuf/types/known/emptypb"
-	"gopkg.in/yaml.v3"
 )
 
 // LanguageHost implements the LanguageRuntimeServer gRPC interface.
@@ -58,6 +58,9 @@ type LanguageHost struct {
 	engine  pulumirpc.EngineClient
 	closers []io.Closer
 }
+
+// Ensure LanguageHost implements the interface.
+var _ pulumirpc.LanguageRuntimeServer = (*LanguageHost)(nil)
 
 // NewLanguageHost creates a new HCL language host.
 //
@@ -560,23 +563,38 @@ func (host *LanguageHost) GenerateProject(
 		binderOpts = append(binderOpts, pcl.NonStrictBindOptions()...)
 	}
 
-	// When the project specifies a "main" subdirectory, the PCL source files
-	// may live under that subdirectory (e.g. during round-trip testing where
-	// ConvertProgram preserves the directory structure). Check whether the
-	// subdirectory exists under SourceDirectory and, if so, bind from there.
-	sourceDir := req.SourceDirectory
-	var project map[string]any
+	var project workspace.Project
 	if err := json.Unmarshal([]byte(req.Project), &project); err != nil {
-		return nil, fmt.Errorf("parsing project JSON: %w", err)
-	}
-	if main, ok := project["main"].(string); ok && main != "" {
-		mainDir := filepath.Join(sourceDir, main)
-		if info, err := os.Stat(mainDir); err == nil && info.IsDir() {
-			sourceDir = mainDir
-		}
+		return nil, err
 	}
 
-	program, bindDiags, err := pcl.BindDirectory(sourceDir, nil, binderOpts...)
+	project.Runtime = workspace.NewProjectRuntimeInfo("hcl", nil)
+
+	projectBytes, err := pulumiencoding.YAML.Marshal(project)
+	if err != nil {
+		return nil, err
+	}
+
+	if err := os.MkdirAll(req.TargetDirectory, 0o755); err != nil {
+		return nil, fmt.Errorf("create target directory: %w", err)
+	}
+
+	if err := os.WriteFile(filepath.Join(req.TargetDirectory, "Pulumi.yaml"), projectBytes, 0o600); err != nil {
+		return nil, fmt.Errorf("write Pulumi.yaml: %w", err)
+	}
+
+	// Determine where to write program files. When the project specifies a
+	// "main" subdirectory, generated code goes into that subdirectory.
+	programDir := req.TargetDirectory
+	if project.Main != "" {
+		programDir = filepath.Join(req.TargetDirectory, project.Main)
+		if err := os.MkdirAll(programDir, 0755); err != nil {
+			return nil, fmt.Errorf("creating main directory: %w", err)
+		}
+
+	}
+
+	program, bindDiags, err := pcl.BindDirectory(req.SourceDirectory, nil, binderOpts...)
 	if err != nil {
 		return nil, fmt.Errorf("binding directory: %w", err)
 	}
@@ -591,16 +609,6 @@ func (host *LanguageHost) GenerateProject(
 		return nil, fmt.Errorf("generating program: %w", err)
 	}
 
-	// Determine where to write program files. When the project specifies a
-	// "main" subdirectory, generated code goes into that subdirectory.
-	programDir := req.TargetDirectory
-	if main, ok := project["main"].(string); ok && main != "" {
-		programDir = filepath.Join(req.TargetDirectory, main)
-		if err := os.MkdirAll(programDir, 0755); err != nil {
-			return nil, fmt.Errorf("creating main directory: %w", err)
-		}
-	}
-
 	for name, content := range files {
 		path := filepath.Join(programDir, name)
 		if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
@@ -609,10 +617,6 @@ func (host *LanguageHost) GenerateProject(
 		if err := os.WriteFile(path, content, 0644); err != nil {
 			return nil, fmt.Errorf("writing %s: %w", name, err)
 		}
-	}
-
-	if err := writePulumiYaml(req.TargetDirectory, req.Project); err != nil {
-		return nil, fmt.Errorf("writing Pulumi.yaml: %w", err)
 	}
 
 	// For each parameterized local dependency, store the hcl.sdk.json so that
@@ -747,8 +751,8 @@ func (host *LanguageHost) Link(
 	return &pulumirpc.LinkResponse{}, nil
 }
 
-// Ensure LanguageHost implements the interface.
-var _ pulumirpc.LanguageRuntimeServer = (*LanguageHost)(nil)
+// Ensure resourceMonitorAdapter implements the interface.
+var _ run.ResourceMonitor = (*resourceMonitorAdapter)(nil)
 
 // resourceMonitorAdapter adapts the Pulumi gRPC resource monitor to our interface.
 type resourceMonitorAdapter struct {
@@ -1019,31 +1023,6 @@ func (*resourceMonitorAdapter) pluginOptions() plugin.MarshalOptions {
 		KeepSecrets:   true,
 		KeepResources: true,
 	}
-}
-
-// Ensure resourceMonitorAdapter implements the interface.
-var _ run.ResourceMonitor = (*resourceMonitorAdapter)(nil)
-
-// writePulumiYaml writes the Pulumi.yaml file with runtime set to hcl.
-func writePulumiYaml(dir string, projectJSON string) error {
-	var project map[string]any
-	if err := json.Unmarshal([]byte(projectJSON), &project); err != nil {
-		return fmt.Errorf("parsing project JSON: %w", err)
-	}
-
-	project["runtime"] = "hcl"
-
-	yamlContent, err := yaml.Marshal(project)
-	if err != nil {
-		return fmt.Errorf("marshaling project to YAML: %w", err)
-	}
-
-	path := filepath.Join(dir, "Pulumi.yaml")
-	if err := os.WriteFile(path, yamlContent, 0644); err != nil {
-		return fmt.Errorf("writing Pulumi.yaml: %w", err)
-	}
-
-	return nil
 }
 
 // formatTimeoutSeconds converts a timeout in seconds to a duration string.

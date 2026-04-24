@@ -715,12 +715,7 @@ func (g *generator) genResource(body *hclwrite.Body, r *pcl.Resource) hcl.Diagno
 	}
 
 	for _, attr := range r.Inputs {
-		var inputType schema.Type
-		for _, prop := range inputs {
-			if attr.Name == prop.Name {
-				inputType = prop.Type
-			}
-		}
+		inputType := findPropertyType(inputs, attr.Name)
 		hclName := transform.SnakeCaseFromPulumiCase(attr.Name)
 		if objType, ok := transform.AsHCLBlockType(inputType); ok {
 			d := g.genBlocks(block.Body(), hclName, attr.Value, objType)
