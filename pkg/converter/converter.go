@@ -104,9 +104,12 @@ func (*hclConverter) ConvertProgram(
 		return nil, fmt.Errorf("writing Pulumi.yaml: %w", err)
 	}
 
-	// Walk source dir tree for .hcl files, transform each to a .pp PCL file.
-	var allDiags hcl.Diagnostics
-
+	// Collect every .hcl file in the source tree.
+	type hclSource struct {
+		relPath string
+		content []byte
+	}
+	var sources []hclSource
 	err = filepath.WalkDir(req.SourceDirectory, func(path string, d os.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return walkErr
@@ -120,47 +123,79 @@ func (*hclConverter) ConvertProgram(
 		if !strings.HasSuffix(d.Name(), ".hcl") {
 			return nil
 		}
-
 		relPath, err := filepath.Rel(req.SourceDirectory, path)
 		if err != nil {
 			return fmt.Errorf("computing relative path for %s: %w", path, err)
 		}
-
 		content, err := os.ReadFile(path)
 		if err != nil {
 			return fmt.Errorf("reading %s: %w", relPath, err)
 		}
-
-		out := hclwrite.NewEmptyFile()
-		// Only emit package blocks for root-level files.
-		var pi map[string]workspace.PackageDescriptor
-		if filepath.Dir(relPath) == "." {
-			pi = paramInfos
-		}
-		diags, err := transformHCLFileToPCL(ctx, content, d.Name(), out.Body(), loader, pi)
-		if err != nil {
-			return err
-		}
-		allDiags = append(allDiags, diags...)
-
-		dstRelPath := strings.TrimSuffix(relPath, ".hcl") + ".pp"
-		dstPath := filepath.Join(req.TargetDirectory, dstRelPath)
-		if err := os.MkdirAll(filepath.Dir(dstPath), 0o755); err != nil {
-			return fmt.Errorf("creating directory for %s: %w", dstRelPath, err)
-		}
-
-		f, err := os.Create(dstPath)
-		if err != nil {
-			return fmt.Errorf("opening %s: %w", dstRelPath, err)
-		}
-		defer contract.IgnoreClose(f)
-		if _, err := out.WriteTo(f); err != nil {
-			return fmt.Errorf("writing to %s: %w", dstRelPath, err)
-		}
+		sources = append(sources, hclSource{relPath: relPath, content: content})
 		return nil
 	})
 	if err != nil {
 		return nil, fmt.Errorf("walking source directory: %w", err)
+	}
+
+	// Sort for deterministic phase ordering across files.
+	sort.Slice(sources, func(i, j int) bool { return sources[i].relPath < sources[j].relPath })
+
+	// Parse every file up front so the project transformer sees the full symbol table.
+	type parsedHCL struct {
+		relPath string
+		content []byte
+		body    *hclsyntax.Body
+	}
+	var allDiags hcl.Diagnostics
+	parsed := make([]parsedHCL, 0, len(sources))
+	bodies := make([]*hclsyntax.Body, 0, len(sources))
+	for _, s := range sources {
+		f, parseDiags := hclsyntax.ParseConfig(s.content, filepath.Base(s.relPath), hcl.Pos{Line: 1, Column: 1})
+		if parseDiags.HasErrors() {
+			return &plugin.ConvertProgramResponse{Diagnostics: parseDiags}, nil
+		}
+		body, ok := f.Body.(*hclsyntax.Body)
+		if !ok {
+			continue
+		}
+		parsed = append(parsed, parsedHCL{relPath: s.relPath, content: s.content, body: body})
+		bodies = append(bodies, body)
+	}
+
+	ft, scanDiags := newProjectTransformer(ctx, loader, bodies)
+	allDiags = append(allDiags, scanDiags...)
+	if scanDiags.HasErrors() {
+		return &plugin.ConvertProgramResponse{Diagnostics: allDiags}, nil
+	}
+
+	for _, p := range parsed {
+		out := hclwrite.NewEmptyFile()
+		// Only emit package blocks for root-level files.
+		var pi map[string]workspace.PackageDescriptor
+		if filepath.Dir(p.relPath) == "." {
+			pi = paramInfos
+		}
+		diags, emitErr := ft.emitFile(ctx, p.content, filepath.Base(p.relPath), p.body, out.Body(), pi)
+		if emitErr != nil {
+			return nil, emitErr
+		}
+		allDiags = append(allDiags, diags...)
+
+		dstRelPath := strings.TrimSuffix(p.relPath, ".hcl") + ".pp"
+		dstPath := filepath.Join(req.TargetDirectory, dstRelPath)
+		if err := os.MkdirAll(filepath.Dir(dstPath), 0o755); err != nil {
+			return nil, fmt.Errorf("creating directory for %s: %w", dstRelPath, err)
+		}
+		dstFile, err := os.Create(dstPath)
+		if err != nil {
+			return nil, fmt.Errorf("opening %s: %w", dstRelPath, err)
+		}
+		if _, err := out.WriteTo(dstFile); err != nil {
+			contract.IgnoreClose(dstFile)
+			return nil, fmt.Errorf("writing to %s: %w", dstRelPath, err)
+		}
+		contract.IgnoreClose(dstFile)
 	}
 
 	return &plugin.ConvertProgramResponse{Diagnostics: allDiags}, nil
@@ -180,7 +215,10 @@ type dataReference struct {
 
 // fileTransformer holds context for converting a single HCL file to PCL.
 type fileTransformer struct {
-	src             []byte
+	// sources maps each contributing source filename to its raw bytes so that
+	// expression byte slicing (e.g. for notImplemented() fall-throughs) works
+	// correctly when expressions from one file are inlined into another.
+	sources         map[string][]byte
 	knownHCLTypes   map[string]bool // set of HCL type labels used in resource blocks
 	stackRefNames   map[string]bool // set of logical names of pulumi_stackreference resources
 	knownProviders  []string        // provider names from terraform.required_providers
@@ -213,6 +251,17 @@ func (ft *fileTransformer) emitLeadingComments(body *hclwrite.Body, startByte in
 	ft.comments.Emit(body, startByte)
 }
 
+// srcBytes returns the raw bytes of the source file r came from. Using r's
+// own filename (rather than the active file's bytes) is essential when
+// expressions from one file are inlined into another.
+func (ft *fileTransformer) srcBytes(r hcl.Range) []byte {
+	src := ft.sources[r.Filename]
+	if src == nil {
+		return nil
+	}
+	return src[r.Start.Byte:r.End.Byte]
+}
+
 // withTrailing returns valueTokens with the same-line trailing comment for the
 // attribute at startByte (if any) appended, ready to be passed to
 // hclwrite.Body.SetAttributeRaw so the comment stays on the same line.
@@ -228,10 +277,14 @@ type comprehensionCtx struct {
 	ValVar string
 }
 
-// newFileTransformer creates a fileTransformer by pre-scanning body for resource and data definitions.
-func newFileTransformer(ctx context.Context, src []byte, body *hclsyntax.Body, loader schema.ReferenceLoader) (*fileTransformer, hcl.Diagnostics) {
+// newProjectTransformer creates a fileTransformer whose symbol tables are
+// populated from every body in the project. After construction, callers must
+// set ft.src and ft.comments per-file before calling emitFile.
+func newProjectTransformer(
+	ctx context.Context, loader schema.ReferenceLoader, bodies []*hclsyntax.Body,
+) (*fileTransformer, hcl.Diagnostics) {
 	ft := &fileTransformer{
-		src:             src,
+		sources:         make(map[string][]byte),
 		knownHCLTypes:   make(map[string]bool),
 		stackRefNames:   make(map[string]bool),
 		callBlocks:      make(map[callReference]*hclsyntax.Body),
@@ -242,17 +295,48 @@ func newFileTransformer(ctx context.Context, src []byte, body *hclsyntax.Body, l
 		nameRewrites:    make(map[string]string),
 		functionSchemas: make(map[string]*schema.Function),
 	}
+	// Phase 1: collect terraform required_providers across every body so that
+	// later resolution sees the full set regardless of which file declared it.
+	for _, body := range bodies {
+		ft.scanProviders(body)
+	}
+	// Phase 2: scan symbols (resources, data, call) using the merged provider set.
 	var diags hcl.Diagnostics
+	for _, body := range bodies {
+		diags = append(diags, ft.scanSymbols(ctx, body)...)
+	}
+	// Phase 3: compute name rewrites against the union of declarations.
+	ft.computeNameRewrites(bodies)
+	return ft, diags
+}
+
+func (ft *fileTransformer) scanProviders(body *hclsyntax.Body) {
+	seen := make(map[string]bool, len(ft.knownProviders))
+	for _, name := range ft.knownProviders {
+		seen[name] = true
+	}
 	for _, block := range body.Blocks {
-		if block.Type == "terraform" {
-			for _, sub := range block.Body.Blocks {
-				if sub.Type == "required_providers" {
-					for name := range sub.Body.Attributes {
-						ft.knownProviders = append(ft.knownProviders, name)
-					}
+		if block.Type != "terraform" {
+			continue
+		}
+		for _, sub := range block.Body.Blocks {
+			if sub.Type != "required_providers" {
+				continue
+			}
+			for name := range sub.Body.Attributes {
+				if seen[name] {
+					continue
 				}
+				seen[name] = true
+				ft.knownProviders = append(ft.knownProviders, name)
 			}
 		}
+	}
+}
+
+func (ft *fileTransformer) scanSymbols(ctx context.Context, body *hclsyntax.Body) hcl.Diagnostics {
+	var diags hcl.Diagnostics
+	for _, block := range body.Blocks {
 		if block.Type == "resource" && len(block.Labels) >= 1 {
 			ft.knownHCLTypes[block.Labels[0]] = true
 			if block.Labels[0] == "pulumi_stackreference" && len(block.Labels) >= 2 {
@@ -267,7 +351,7 @@ func newFileTransformer(ctx context.Context, src []byte, body *hclsyntax.Body, l
 			name := block.Labels[1]
 			ft.dataBlocks[dataReference{hclType, name}] = block.Body
 			if _, seen := ft.dataTokens[hclType]; !seen {
-				fn, err := packages.ResolveFunction(ctx, loader, ft.knownProviders, hclType)
+				fn, err := packages.ResolveFunction(ctx, ft.loader, ft.knownProviders, hclType)
 				if err != nil {
 					diags = append(diags, &hcl.Diagnostic{
 						Severity: hcl.DiagError,
@@ -283,68 +367,75 @@ func newFileTransformer(ctx context.Context, src []byte, body *hclsyntax.Body, l
 			}
 		}
 	}
+	return diags
+}
 
-	// Pre-scan to build name rewrites for logical names that aren't valid PCL identifiers.
+func (ft *fileTransformer) computeNameRewrites(bodies []*hclsyntax.Body) {
 	usedNames := make(map[string]bool)
 	// First pass: collect all names that are already valid identifiers.
-	for _, block := range body.Blocks {
-		var name string
-		switch block.Type {
-		case "resource":
-			if len(block.Labels) >= 2 {
-				name = block.Labels[1]
+	for _, body := range bodies {
+		for _, block := range body.Blocks {
+			var name string
+			switch block.Type {
+			case "resource":
+				if len(block.Labels) >= 2 {
+					name = block.Labels[1]
+				}
+			case "variable":
+				if len(block.Labels) >= 1 {
+					name = block.Labels[0]
+				}
+			case "output":
+				if len(block.Labels) >= 1 {
+					name = block.Labels[0]
+				}
+			case "module":
+				if len(block.Labels) >= 1 {
+					name = block.Labels[0]
+				}
 			}
-		case "variable":
-			if len(block.Labels) >= 1 {
-				name = block.Labels[0]
+			if name != "" && hclsyntax.ValidIdentifier(name) {
+				usedNames[name] = true
 			}
-		case "output":
-			if len(block.Labels) >= 1 {
-				name = block.Labels[0]
-			}
-		case "module":
-			if len(block.Labels) >= 1 {
-				name = block.Labels[0]
-			}
-		}
-		if name != "" && hclsyntax.ValidIdentifier(name) {
-			usedNames[name] = true
 		}
 	}
 	// Second pass: generate sanitized names for invalid identifiers.
-	for _, block := range body.Blocks {
-		var name string
-		switch block.Type {
-		case "resource":
-			if len(block.Labels) >= 2 {
-				name = block.Labels[1]
+	for _, body := range bodies {
+		for _, block := range body.Blocks {
+			var name string
+			switch block.Type {
+			case "resource":
+				if len(block.Labels) >= 2 {
+					name = block.Labels[1]
+				}
+			case "variable":
+				if len(block.Labels) >= 1 {
+					name = block.Labels[0]
+				}
+			case "output":
+				// Outputs are never referenced in expressions, so they don't need rewriting.
+				continue
+			case "module":
+				if len(block.Labels) >= 1 {
+					name = block.Labels[0]
+				}
+			default:
+				continue
 			}
-		case "variable":
-			if len(block.Labels) >= 1 {
-				name = block.Labels[0]
+			if name == "" || hclsyntax.ValidIdentifier(name) {
+				continue
 			}
-		case "output":
-			// Outputs are never referenced in expressions, so they don't need rewriting.
-			continue
-		case "module":
-			if len(block.Labels) >= 1 {
-				name = block.Labels[0]
+			if _, seen := ft.nameRewrites[name]; seen {
+				continue
 			}
-		default:
-			continue
+			sanitized := sanitizeIdentifier(name)
+			for usedNames[sanitized] {
+				sanitized = sanitized + "_"
+			}
+			usedNames[sanitized] = true
+			ft.nameRewrites[name] = sanitized
 		}
-		if name == "" || hclsyntax.ValidIdentifier(name) {
-			continue
-		}
-		sanitized := sanitizeIdentifier(name)
-		for usedNames[sanitized] {
-			sanitized = sanitized + "_"
-		}
-		usedNames[sanitized] = true
-		ft.nameRewrites[name] = sanitized
 	}
-
-	return ft, diags
 }
 
 // sanitizeIdentifier converts a string into a valid HCL identifier by replacing
@@ -423,25 +514,18 @@ var resourceOptionHCLToPCL = map[string]string{
 	"version":                   "version",
 }
 
-// transformHCLFileToPCL converts HCL source bytes to PCL source bytes.
-// It returns any non-fatal diagnostics (e.g., unsupported block types).
-func transformHCLFileToPCL(
+// emitFile writes the PCL form of body to out using ft as a (possibly
+// project-wide) symbol table. The caller owns construction of ft and only
+// per-file context (src, filename, body, paramInfos) flows through here.
+func (ft *fileTransformer) emitFile(
 	ctx context.Context,
-	src []byte, filename string, out *hclwrite.Body,
-	loader schema.ReferenceLoader,
+	src []byte, filename string, body *hclsyntax.Body, out *hclwrite.Body,
 	paramInfos map[string]workspace.PackageDescriptor,
 ) (hcl.Diagnostics, error) {
-	file, diags := hclsyntax.ParseConfig(src, filename, hcl.Pos{Line: 1, Column: 1})
-	if diags.HasErrors() {
-		return diags, nil
-	}
-
-	body := file.Body.(*hclsyntax.Body)
-	ft, resultDiags := newFileTransformer(ctx, src, body, loader)
-	if resultDiags.HasErrors() {
-		return resultDiags, nil
-	}
+	ft.sources[filename] = src
 	ft.comments = comments.Build(src, filename, body, "terraform", "data", "call")
+
+	var resultDiags hcl.Diagnostics
 
 	for _, alias := range sortedKeys(paramInfos) {
 		emitPackageBlock(out, alias, paramInfos[alias])
@@ -783,7 +867,7 @@ func (ft *fileTransformer) transformExpr(expr hclsyntax.Expression) hclwrite.Tok
 		pclName := transformFunctionName(e.Name)
 		if !pclSupportedFunctions[pclName] {
 			r := e.Range()
-			originalExpr := string(ft.src[r.Start.Byte:r.End.Byte])
+			originalExpr := string(ft.srcBytes(r))
 			return hclwrite.TokensForFunctionCall("notImplemented",
 				hclwrite.TokensForValue(cty.StringVal(originalExpr)))
 		}
@@ -866,7 +950,7 @@ func (ft *fileTransformer) transformExpr(expr hclsyntax.Expression) hclwrite.Tok
 	default:
 		r := expr.Range()
 		return hclwrite.Tokens{
-			&hclwrite.Token{Type: hclsyntax.TokenIdent, Bytes: ft.src[r.Start.Byte:r.End.Byte]},
+			&hclwrite.Token{Type: hclsyntax.TokenIdent, Bytes: ft.srcBytes(r)},
 		}
 	}
 }
@@ -1045,7 +1129,7 @@ func (ft *fileTransformer) transformSplatEach(expr hclsyntax.Expression, element
 	default:
 		r := expr.Range()
 		return hclwrite.Tokens{
-			&hclwrite.Token{Type: hclsyntax.TokenIdent, Bytes: ft.src[r.Start.Byte:r.End.Byte]},
+			&hclwrite.Token{Type: hclsyntax.TokenIdent, Bytes: ft.srcBytes(r)},
 		}
 	}
 }
@@ -1059,7 +1143,7 @@ func (ft *fileTransformer) transformTemplate(e *hclsyntax.TemplateExpr) hclwrite
 			r := lit.SrcRange
 			tokens = append(tokens, &hclwrite.Token{
 				Type:  hclsyntax.TokenQuotedLit,
-				Bytes: ft.src[r.Start.Byte:r.End.Byte],
+				Bytes: ft.srcBytes(r),
 			})
 		} else {
 			tokens = append(tokens,
