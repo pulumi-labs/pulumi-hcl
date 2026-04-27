@@ -12,12 +12,14 @@ resource "prov" "pulumi:providers:goodbye" {
   text = "World"
 }
 
+// The resource name is based on the parameter value
 resource "res" "goodbye:index:Goodbye" {
   options {
     provider = prov
   }
 }
 
+// The resource name is based on the parameter value and the provider config
 output "parameterValue" {
   value = res.parameterValue
 }

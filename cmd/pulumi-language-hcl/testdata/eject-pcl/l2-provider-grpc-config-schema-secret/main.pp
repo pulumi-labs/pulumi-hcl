@@ -1,3 +1,4 @@
+# This provider covers scenarios where configuration properties are marked as secret in the schema.
 resource "config_grpc_provider" "pulumi:providers:config-grpc" {
   secretString1     = "SECRET"
   secretInt1        = 16

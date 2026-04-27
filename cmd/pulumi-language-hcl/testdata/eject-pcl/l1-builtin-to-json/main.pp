@@ -33,6 +33,7 @@ output "objectOutput" {
   })
 }
 
+# Nested object using config values
 nestedObject = {
   "anObject" = {
     "name"  = aString

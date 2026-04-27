@@ -19,6 +19,8 @@ data "simple-invoke_secretinvoke" "invoke_0" {
 resource "simple_resource" "first" {
   value = false
 }
+// assert that resource second depends on resource first
+// because it uses .secret from the invoke which depends on first
 resource "simple_resource" "second" {
   value = data.simple-invoke_secretinvoke.invoke_0.secret
 }

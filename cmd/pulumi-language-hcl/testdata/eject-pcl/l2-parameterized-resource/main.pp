@@ -8,6 +8,7 @@ package "subpackage" {
   }
 }
 
+// The resource name is based on the parameter value
 resource "example" "subpackage:index:HelloWorld" {
 }
 

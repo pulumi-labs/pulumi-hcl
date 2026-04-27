@@ -16,6 +16,8 @@ output "outputTrySuccess" {
 output "outputTryFailure" {
   value = try(local.aSecretMap["b"], "fallback")
 }
+# A dynamically typed value, whose field accesses will not be type errors (since the type is not known to the type
+# checker), but may fail dynamically, and can thus be used as test inputs to try.
 variable "anObject" {
 }
 output "dynamicTrySuccess" {
@@ -33,6 +35,9 @@ output "outputDynamicTrySuccess" {
 output "outputDynamicTryFailure" {
   value = try(local.aSecretObject.b, "fallback")
 }
+# Check that explicit null values can be returned.
+# It's not safe to return a null value directly (see l1-output-null 
+# and https://github.com/pulumi/pulumi/issues/19015) so wrap these in a list.
 output "plainTryNull" {
   value = [try(var.anObject.opt, "fallback")]
 }

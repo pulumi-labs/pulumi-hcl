@@ -7,6 +7,8 @@ terraform {
   }
 }
 
+// Stage 0: Initial resource creation
+// Resource with deleteBeforeReplace option
 resource "simple_resource" "withOption" {
   replace_on_changes = ["value"]
   lifecycle {
@@ -14,6 +16,7 @@ resource "simple_resource" "withOption" {
   }
   value = true
 }
+// Resource without deleteBeforeReplace (default create-before-delete behavior)
 resource "simple_resource" "withoutOption" {
   replace_on_changes = ["value"]
   value              = true

@@ -7,6 +7,7 @@ terraform {
   }
 }
 
+// The resource name is based on the parameter value
 resource "subpackage_helloworld" "example" {
 }
 resource "subpackage_helloworldcomponent" "exampleComponent" {

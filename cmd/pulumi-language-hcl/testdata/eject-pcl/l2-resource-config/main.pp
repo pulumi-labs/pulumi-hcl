@@ -5,6 +5,7 @@ resource "prov" "pulumi:providers:config" {
   }
 }
 
+// Note this isn't _using_ the explicit provider, it's just grabbing a value from it.
 resource "res" "config:index:Resource" {
   text = prov.version
 }

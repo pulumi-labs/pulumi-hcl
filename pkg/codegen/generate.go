@@ -23,6 +23,7 @@ import (
 	"github.com/hashicorp/hcl/v2"
 	"github.com/hashicorp/hcl/v2/hclsyntax"
 	"github.com/hashicorp/hcl/v2/hclwrite"
+	"github.com/pulumi-labs/pulumi-hcl/pkg/hcl/comments"
 	"github.com/pulumi-labs/pulumi-hcl/pkg/hcl/eval"
 	"github.com/pulumi-labs/pulumi-hcl/pkg/hcl/packages"
 	"github.com/pulumi-labs/pulumi-hcl/pkg/hcl/transform"
@@ -43,7 +44,8 @@ func GenerateProgram(program *pcl.Program) (map[string][]byte, hcl.Diagnostics, 
 
 	// Create a generator context to track invoke data sources and call blocks
 	gen := &generator{
-		program: program,
+		program:  program,
+		comments: buildProgramComments(program),
 	}
 
 	genRequiredProviders(body, program)
@@ -76,6 +78,7 @@ func GenerateProgram(program *pcl.Program) (map[string][]byte, hcl.Diagnostics, 
 
 	// Second pass: generate resources, outputs, etc.
 	for _, node := range program.Nodes {
+		gen.emitLeadingComments(body, node.SyntaxNode())
 		switch n := node.(type) {
 		case *pcl.Resource:
 			d := gen.genResource(body, n)
@@ -146,6 +149,47 @@ type generator struct {
 	// data block hoisted from an invoke inside a for-comprehension. References
 	// to its KeyVariable / ValueVariable are rewritten to each.key / each.value.
 	forDataBlock *model.ForExpression
+	// comments maps source filenames to leading-comment maps built from the
+	// PCL source files of this program.
+	comments map[string]*comments.Map
+}
+
+// buildProgramComments parses the source of every PCL file in the program and
+// returns a per-filename map of leading comments. `package` blocks are
+// excluded as anchors so any comments preceding them flow to the next emitted
+// node.
+func buildProgramComments(program *pcl.Program) map[string]*comments.Map {
+	out := map[string]*comments.Map{}
+	for name, content := range program.Source() {
+		src := []byte(content)
+		file, fdiags := hclsyntax.ParseConfig(src, name, hcl.Pos{Byte: 0, Line: 1, Column: 1})
+		if fdiags.HasErrors() || file == nil {
+			continue
+		}
+		body, ok := file.Body.(*hclsyntax.Body)
+		if !ok {
+			continue
+		}
+		out[name] = comments.Build(src, name, body, "package")
+	}
+	return out
+}
+
+// emitLeadingComments writes any source comments that precede node into body.
+// node must be the SyntaxNode() of a bound PCL element; the binder guarantees
+// it has a real syntax pointer.
+func (g *generator) emitLeadingComments(body *hclwrite.Body, node hclsyntax.Node) {
+	rng := node.Range()
+	g.comments[rng.Filename].Emit(body, rng.Start.Byte)
+}
+
+// withTrailing returns valueTokens with the same-line trailing comment for
+// the attribute identified by node (if any) appended. The combined tokens are
+// suitable for hclwrite.Body.SetAttributeRaw, which keeps the comment on the
+// same line as the value.
+func (g *generator) withTrailing(valueTokens hclwrite.Tokens, node hclsyntax.Node) hclwrite.Tokens {
+	rng := node.Range()
+	return g.comments[rng.Filename].AppendTrailing(valueTokens, rng.Start.Byte)
 }
 
 type spilledDataSource struct {
@@ -717,11 +761,12 @@ func (g *generator) genResource(body *hclwrite.Body, r *pcl.Resource) hcl.Diagno
 	for _, attr := range r.Inputs {
 		inputType := findPropertyType(inputs, attr.Name)
 		hclName := transform.SnakeCaseFromPulumiCase(attr.Name)
+		g.emitLeadingComments(block.Body(), attr.SyntaxNode())
 		if objType, ok := transform.AsHCLBlockType(inputType); ok {
 			d := g.genBlocks(block.Body(), hclName, attr.Value, objType)
 			diags = append(diags, d...)
 		} else {
-			d := g.genExpression(block.Body(), hclName, attr.Value, inputType)
+			d := g.genAttributeWithTrailing(block.Body(), hclName, attr.Value, inputType, attr.SyntaxNode())
 			diags = append(diags, d...)
 		}
 	}
@@ -1261,7 +1306,8 @@ func (g *generator) genModule(body *hclwrite.Body, c *pcl.Component) hcl.Diagnos
 	}
 
 	for _, attr := range c.Inputs {
-		d := g.genExpression(block.Body(), attr.Name, attr.Value, schema.AnyType)
+		g.emitLeadingComments(block.Body(), attr.SyntaxNode())
+		d := g.genAttributeWithTrailing(block.Body(), attr.Name, attr.Value, schema.AnyType, attr.SyntaxNode())
 		diags = append(diags, d...)
 	}
 	return diags
@@ -1356,6 +1402,20 @@ func (g *generator) genExpression(body *hclwrite.Body, name string, expr model.E
 		return diags
 	}
 	body.SetAttributeRaw(name, tokens)
+	return diags
+}
+
+// genAttributeWithTrailing is genExpression that also appends any same-line
+// trailing comment on the source attribute identified by node, so the comment
+// stays on the same line as the value in the output.
+func (g *generator) genAttributeWithTrailing(
+	body *hclwrite.Body, name string, expr model.Expression, typ schema.Type, node hclsyntax.Node,
+) hcl.Diagnostics {
+	tokens, diags := g.exprTokens(expr, typ)
+	if diags.HasErrors() {
+		return diags
+	}
+	body.SetAttributeRaw(name, g.withTrailing(tokens, node))
 	return diags
 }
 

@@ -19,6 +19,8 @@ output "outputTryFailure" {
   value = can(aSecretMap["b"])
 }
 
+# A dynamically typed value, whose field accesses will not be type errors (since the type is not known to the type
+# checker), but may fail dynamically, and can thus be used as test inputs to can.
 config "anObject" {
 }
 
@@ -40,6 +42,7 @@ output "outputDynamicTryFailure" {
   value = can(aSecretObject.b)
 }
 
+# Check that explicit null values can be returned
 output "plainTryNull" {
   value = can(anObject.opt)
 }

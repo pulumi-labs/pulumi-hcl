@@ -8,6 +8,7 @@ package "subpackage" {
   }
 }
 
+// The invoke name is based on the parameter value
 output "parameterValue" {
   value = invoke("subpackage:index:doHelloWorld", {
     input = "goodbye"

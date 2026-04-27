@@ -1,3 +1,4 @@
+# We use `secret` to lift plain values to output space, then check we can index into them
 variable "anObject" {
   type = object({property=string})
 }

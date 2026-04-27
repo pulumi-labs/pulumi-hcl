@@ -1,3 +1,4 @@
+# Keywords in various languages should be renamed and work.
 class = "class_output_string"
 
 export = "export_output_string"

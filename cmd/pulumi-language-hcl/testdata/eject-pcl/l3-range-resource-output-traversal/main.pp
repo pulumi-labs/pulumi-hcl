@@ -9,6 +9,7 @@ resource "mapContainer" "nestedobject:index:MapContainer" {
   }
 }
 
+# A resource that ranges over a computed list
 resource "listOutput" "nestedobject:index:Target" {
   name = range.value.value
   options {
@@ -16,6 +17,7 @@ resource "listOutput" "nestedobject:index:Target" {
   }
 }
 
+# A resource that ranges over a computed map
 resource "mapOutput" "nestedobject:index:Target" {
   name = "${range.key}=>${range.value}"
   options {
