@@ -18,6 +18,8 @@ import (
 	"fmt"
 	"path/filepath"
 	"regexp"
+	"slices"
+	"sort"
 	"strings"
 
 	"github.com/hashicorp/hcl/v2"
@@ -37,77 +39,123 @@ import (
 )
 
 // GenerateProgram generates HCL source code from a bound PCL program.
+//
+// The output preserves the program's source-file structure: each PCL file
+// produces a corresponding ".hcl" file containing the nodes that were declared
+// in it. Required-providers entries are placed in the first source file that
+// declared each package via a `package` block; references with no declaring
+// file are placed in main.hcl (or, if no main.pp exists, the first file in
+// alphabetical order).
 func GenerateProgram(program *pcl.Program) (map[string][]byte, hcl.Diagnostics, error) {
 	var diags hcl.Diagnostics
-	f := hclwrite.NewEmptyFile()
-	body := f.Body()
 
-	// Create a generator context to track invoke data sources and call blocks
 	gen := &generator{
 		program:  program,
 		comments: buildProgramComments(program),
 	}
 
-	genRequiredProviders(body, program)
-
-	// First pass: collect all invoke calls and call expressions
 	for _, node := range program.Nodes {
 		gen.collectInvokes(node)
 		gen.collectCalls(node)
 	}
 
-	// Generate data source blocks for invokes
-	for _, ds := range gen.invokeDataSources {
-		d := gen.genInvokeDataSource(body, ds)
-		diags = append(diags, d...)
+	source := program.Source()
+	fileOrder := orderedSourceFiles(source)
+	if len(fileOrder) == 0 {
+		fileOrder = []string{"main.pp"}
 	}
-
-	if len(gen.invokeDataSources) > 0 {
-		body.AppendNewline()
-	}
-
-	// Generate call blocks
-	for _, cb := range gen.callBlocks {
-		d := gen.genCallBlock(body, cb)
-		diags = append(diags, d...)
-	}
-
-	if len(gen.callBlocks) > 0 {
-		body.AppendNewline()
-	}
-
-	// Second pass: generate resources, outputs, etc.
-	for _, node := range program.Nodes {
-		gen.emitLeadingComments(body, node.SyntaxNode())
-		switch n := node.(type) {
-		case *pcl.Resource:
-			d := gen.genResource(body, n)
-			diags = append(diags, d...)
-		case *pcl.OutputVariable:
-			d := gen.genOutput(body, n)
-			diags = append(diags, d...)
-		case *pcl.ConfigVariable:
-			d := gen.genConfigVariable(body, n)
-			diags = append(diags, d...)
-		case *pcl.LocalVariable:
-			d := gen.genLocalVariable(body, n)
-			diags = append(diags, d...)
-		case *pcl.PulumiBlock:
-			d := gen.genPulumiBlock(body, n)
-			diags = append(diags, d...)
-		case *pcl.Component:
-			d := gen.genModule(body, n)
-			diags = append(diags, d...)
-		default:
-			diags = append(diags, &hcl.Diagnostic{
-				Severity: hcl.DiagError,
-				Summary:  "unsupported PCL node type",
-				Detail:   fmt.Sprintf("node type %T is not yet supported", node),
-			})
+	primaryFile := fileOrder[0]
+	knownFile := func(name string) string {
+		if slices.Contains(fileOrder, name) {
+			return name
 		}
+		return primaryFile
 	}
 
-	files := map[string][]byte{"main.hcl": f.Bytes()}
+	pkgsByFile := packageDeclarationsByFile(source)
+	providersByFile := assignProvidersToFiles(program.PackageReferences(), fileOrder, pkgsByFile)
+
+	invokesByFile := map[string][]spilledDataSource{}
+	for _, ds := range gen.invokeDataSources {
+		invokesByFile[knownFile(ds.sourceFile)] = append(invokesByFile[knownFile(ds.sourceFile)], ds)
+	}
+	callsByFile := map[string][]spilledCall{}
+	for _, cb := range gen.callBlocks {
+		callsByFile[knownFile(cb.sourceFile)] = append(callsByFile[knownFile(cb.sourceFile)], cb)
+	}
+	nodesByFile := map[string][]pcl.Node{}
+	for _, node := range program.Nodes {
+		f := knownFile(nodeSourceFile(node))
+		nodesByFile[f] = append(nodesByFile[f], node)
+	}
+
+	files := map[string][]byte{}
+	for _, srcName := range fileOrder {
+		f := hclwrite.NewEmptyFile()
+		body := f.Body()
+
+		genRequiredProviders(body, providersByFile[srcName])
+
+		for _, ds := range invokesByFile[srcName] {
+			d := gen.genInvokeDataSource(body, ds)
+			diags = append(diags, d...)
+		}
+		if len(invokesByFile[srcName]) > 0 {
+			body.AppendNewline()
+		}
+
+		for _, cb := range callsByFile[srcName] {
+			d := gen.genCallBlock(body, cb)
+			diags = append(diags, d...)
+		}
+		if len(callsByFile[srcName]) > 0 {
+			body.AppendNewline()
+		}
+
+		hasNodes := len(nodesByFile[srcName]) > 0
+		for _, node := range nodesByFile[srcName] {
+			gen.emitLeadingComments(body, node.SyntaxNode())
+			switch n := node.(type) {
+			case *pcl.Resource:
+				d := gen.genResource(body, n)
+				diags = append(diags, d...)
+			case *pcl.OutputVariable:
+				d := gen.genOutput(body, n)
+				diags = append(diags, d...)
+			case *pcl.ConfigVariable:
+				d := gen.genConfigVariable(body, n)
+				diags = append(diags, d...)
+			case *pcl.LocalVariable:
+				d := gen.genLocalVariable(body, n)
+				diags = append(diags, d...)
+			case *pcl.PulumiBlock:
+				d := gen.genPulumiBlock(body, n)
+				diags = append(diags, d...)
+			case *pcl.Component:
+				d := gen.genModule(body, n)
+				diags = append(diags, d...)
+			default:
+				diags = append(diags, &hcl.Diagnostic{
+					Severity: hcl.DiagError,
+					Summary:  "unsupported PCL node type",
+					Detail:   fmt.Sprintf("node type %T is not yet supported", node),
+				})
+			}
+		}
+
+		if !hasNodes && len(invokesByFile[srcName]) == 0 && len(callsByFile[srcName]) == 0 &&
+			len(providersByFile[srcName]) == 0 {
+			continue
+		}
+		files[outputFileName(srcName)] = f.Bytes()
+	}
+
+	if len(files) == 0 {
+		// A program with no source content still needs at least one file so the
+		// runtime can locate a module. Emit an empty main.hcl.
+		files["main.hcl"] = nil
+	}
+
 	for componentDir, component := range program.CollectComponents() {
 		subFiles, d, err := GenerateProgram(component.Program)
 		diags = append(diags, d...)
@@ -120,6 +168,97 @@ func GenerateProgram(program *pcl.Program) (map[string][]byte, hcl.Diagnostics, 
 		}
 	}
 	return files, diags, nil
+}
+
+// orderedSourceFiles returns source filenames in a deterministic order:
+// "main.pp" first if present, then alphabetical.
+func orderedSourceFiles(source map[string]string) []string {
+	names := make([]string, 0, len(source))
+	for name := range source {
+		names = append(names, name)
+	}
+	sort.Slice(names, func(i, j int) bool {
+		if names[i] == "main.pp" {
+			return true
+		}
+		if names[j] == "main.pp" {
+			return false
+		}
+		return names[i] < names[j]
+	})
+	return names
+}
+
+// packageDeclarationsByFile parses each source file and returns a map from
+// source filename to the set of package alias names declared by `package
+// "<alias>" { ... }` blocks in that file.
+func packageDeclarationsByFile(source map[string]string) map[string]map[string]bool {
+	out := map[string]map[string]bool{}
+	for name, content := range source {
+		file, fdiags := hclsyntax.ParseConfig([]byte(content), name, hcl.Pos{Byte: 0, Line: 1, Column: 1})
+		if fdiags.HasErrors() || file == nil {
+			continue
+		}
+		body, ok := file.Body.(*hclsyntax.Body)
+		if !ok {
+			continue
+		}
+		for _, blk := range body.Blocks {
+			if blk.Type != "package" || len(blk.Labels) == 0 {
+				continue
+			}
+			if out[name] == nil {
+				out[name] = map[string]bool{}
+			}
+			out[name][blk.Labels[0]] = true
+		}
+	}
+	return out
+}
+
+// assignProvidersToFiles maps each PackageReference to the source file that
+// should contain its required_providers entry. Each provider is assigned to
+// the first file (in fileOrder) that declared it via a `package` block;
+// providers with no declaring file are assigned to the primary file (main.pp
+// if present, otherwise the first file in fileOrder).
+func assignProvidersToFiles(
+	refs []schema.PackageReference,
+	fileOrder []string,
+	pkgsByFile map[string]map[string]bool,
+) map[string][]schema.PackageReference {
+	out := map[string][]schema.PackageReference{}
+	primary := ""
+	if len(fileOrder) > 0 {
+		primary = fileOrder[0]
+	}
+	for _, ref := range refs {
+		assigned := primary
+		for _, fname := range fileOrder {
+			if pkgsByFile[fname][ref.Name()] {
+				assigned = fname
+				break
+			}
+		}
+		out[assigned] = append(out[assigned], ref)
+	}
+	return out
+}
+
+// nodeSourceFile returns the base filename of the source file that declared
+// node. Falls back to "main.pp" when the node has no source location.
+func nodeSourceFile(node pcl.Node) string {
+	if syn := node.SyntaxNode(); syn != nil {
+		if rng := syn.Range(); rng.Filename != "" {
+			return rng.Filename
+		}
+	}
+	return "main.pp"
+}
+
+// outputFileName converts a PCL source filename to its HCL output counterpart
+// by replacing the ".pp" extension with ".hcl".
+func outputFileName(srcName string) string {
+	return strings.TrimSuffix(srcName, ".pp") + ".hcl"
 }
 
 type rangeKind int
@@ -204,6 +343,10 @@ type spilledDataSource struct {
 	// matching for_each over that comprehension's collection, and the
 	// reference is indexed by the comprehension's key variable.
 	enclosingForExpr *model.ForExpression
+	// sourceFile is the source PCL filename of the node that produced this
+	// invoke; the spilled data block is emitted in the corresponding output
+	// HCL file so file structure is preserved.
+	sourceFile string
 }
 
 // stdTFFunc describes how to inline a pulumi-std invoke as a TF builtin function
@@ -373,10 +516,10 @@ type spilledCall struct {
 	expr         *model.FunctionCallExpression
 	resourceName string
 	methodName   string
+	sourceFile   string
 }
 
-func genRequiredProviders(body *hclwrite.Body, program *pcl.Program) {
-	pkgRefs := program.PackageReferences()
+func genRequiredProviders(body *hclwrite.Body, pkgRefs []schema.PackageReference) {
 	if len(pkgRefs) == 0 {
 		return
 	}
@@ -414,15 +557,16 @@ func genRequiredProviders(body *hclwrite.Body, program *pcl.Program) {
 // Resource inputs pass the enclosing resource so invokes that close over its
 // range iterator can be identified.
 func (g *generator) collectInvokes(node pcl.Node) {
+	srcFile := nodeSourceFile(node)
 	switch n := node.(type) {
 	case *pcl.Resource:
 		for _, attr := range n.Inputs {
-			g.collectInvokesInExpr(attr.Value, n)
+			g.collectInvokesInExpr(attr.Value, n, srcFile)
 		}
 	case *pcl.OutputVariable:
-		g.collectInvokesInExpr(n.Value, nil)
+		g.collectInvokesInExpr(n.Value, nil, srcFile)
 	case *pcl.LocalVariable:
-		g.collectInvokesInExpr(n.Definition.Value, nil)
+		g.collectInvokesInExpr(n.Definition.Value, nil, srcFile)
 	}
 }
 
@@ -431,7 +575,7 @@ func (g *generator) collectInvokes(node pcl.Node) {
 // inlined at their reference site. Invokes that close over range.* from the
 // enclosing resource are tagged so the hoisted data block can carry a matching
 // for_each.
-func (g *generator) collectInvokesInExpr(expr model.Expression, parent *pcl.Resource) {
+func (g *generator) collectInvokesInExpr(expr model.Expression, parent *pcl.Resource, sourceFile string) {
 	var forStack []*model.ForExpression
 	pre := func(e model.Expression) (model.Expression, hcl.Diagnostics) {
 		if fe, ok := e.(*model.ForExpression); ok {
@@ -450,8 +594,9 @@ func (g *generator) collectInvokesInExpr(expr model.Expression, parent *pcl.Reso
 				return e, nil
 			}
 			ds := spilledDataSource{
-				expr: call,
-				name: fmt.Sprintf("invoke_%d", len(g.invokeDataSources)),
+				expr:       call,
+				name:       fmt.Sprintf("invoke_%d", len(g.invokeDataSources)),
+				sourceFile: sourceFile,
 			}
 			if parent != nil && parent.Options != nil && parent.Options.Range != nil &&
 				invokeReferencesRange(call) {
@@ -476,20 +621,21 @@ func (g *generator) collectInvokesInExpr(expr model.Expression, parent *pcl.Reso
 
 // collectCalls walks the node and collects all call function expressions.
 func (g *generator) collectCalls(node pcl.Node) {
+	srcFile := nodeSourceFile(node)
 	switch n := node.(type) {
 	case *pcl.Resource:
 		for _, attr := range n.Inputs {
-			g.collectCallsInExpr(attr.Value)
+			g.collectCallsInExpr(attr.Value, srcFile)
 		}
 	case *pcl.OutputVariable:
-		g.collectCallsInExpr(n.Value)
+		g.collectCallsInExpr(n.Value, srcFile)
 	case *pcl.LocalVariable:
-		g.collectCallsInExpr(n.Definition.Value)
+		g.collectCallsInExpr(n.Definition.Value, srcFile)
 	}
 }
 
 // collectCallsInExpr walks an expression tree and collects call expressions.
-func (g *generator) collectCallsInExpr(expr model.Expression) {
+func (g *generator) collectCallsInExpr(expr model.Expression, sourceFile string) {
 	_, diags := model.VisitExpression(expr, nil, func(expr model.Expression) (model.Expression, hcl.Diagnostics) {
 		if call, ok := expr.(*model.FunctionCallExpression); ok {
 			if call.Name == pcl.Call && len(call.Args) >= 2 {
@@ -509,6 +655,7 @@ func (g *generator) collectCallsInExpr(expr model.Expression) {
 							expr:         call,
 							resourceName: resourceName,
 							methodName:   snakeMethod,
+							sourceFile:   sourceFile,
 						})
 					}
 				}

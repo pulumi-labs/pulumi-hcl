@@ -15,17 +15,49 @@
 package converter
 
 import (
+	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/hashicorp/hcl/v2"
 	"github.com/hashicorp/hcl/v2/hclsyntax"
 	"github.com/hashicorp/hcl/v2/hclwrite"
+	"github.com/pulumi-labs/pulumi-hcl/pkg/codegen"
 	"github.com/pulumi-labs/pulumi-hcl/tests/testutil"
+	pclsyntax "github.com/pulumi/pulumi/pkg/v3/codegen/hcl2/syntax"
+	"github.com/pulumi/pulumi/pkg/v3/codegen/pcl"
 	"github.com/pulumi/pulumi/pkg/v3/codegen/schema"
+	"github.com/pulumi/pulumi/sdk/v3/go/common/resource/plugin"
+	"github.com/pulumi/pulumi/sdk/v3/go/common/util/contract"
+	"github.com/pulumi/pulumi/sdk/v3/go/common/util/rpcutil"
+	"github.com/pulumi/pulumi/sdk/v3/go/common/workspace"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/zclconf/go-cty/cty"
+	"google.golang.org/grpc"
 )
+
+// transformSingleFile is a test helper that runs the project transformer over
+// a single HCL file. It mirrors the per-file pipeline used by ConvertProgram
+// so tests can exercise emitFile without standing up a directory on disk.
+func transformSingleFile(
+	t *testing.T,
+	src []byte, filename string, out *hclwrite.Body,
+	loader schema.ReferenceLoader,
+	paramInfos map[string]workspace.PackageDescriptor,
+) hcl.Diagnostics {
+	t.Helper()
+	f, parseDiags := hclsyntax.ParseConfig(src, filename, hcl.Pos{Line: 1, Column: 1})
+	require.False(t, parseDiags.HasErrors(), parseDiags.Error())
+	body := f.Body.(*hclsyntax.Body)
+	ft, scanDiags := newProjectTransformer(t.Context(), loader, []*hclsyntax.Body{body})
+	require.False(t, scanDiags.HasErrors(), scanDiags.Error())
+	emitDiags, err := ft.emitFile(t.Context(), src, filename, body, out, paramInfos)
+	require.NoError(t, err)
+	return emitDiags
+}
 
 func TestPropertiesOf(t *testing.T) {
 	t.Parallel()
@@ -206,7 +238,7 @@ func TestBlocksToObjectAttrs(t *testing.T) {
 			file, diags := hclsyntax.ParseConfig(src, "test.hcl", hcl.Pos{})
 			require.False(t, diags.HasErrors(), diags.Error())
 
-			ft := &fileTransformer{src: src}
+			ft := &fileTransformer{sources: map[string][]byte{"test.hcl": src}}
 			result := ft.blocksToObjectAttrs(file.Body.(*hclsyntax.Body).Blocks, tt.props)
 			assert.Equal(t, tt.expected, string(hclwrite.TokensForObject(result).Bytes()))
 		})
@@ -251,7 +283,7 @@ func TestTransformFunctionCall(t *testing.T) {
 			file, diags := hclsyntax.ParseConfig(src, "test.hcl", hcl.Pos{})
 			require.False(t, diags.HasErrors(), diags.Error())
 
-			ft := &fileTransformer{src: src}
+			ft := &fileTransformer{sources: map[string][]byte{"test.hcl": src}}
 			body := file.Body.(*hclsyntax.Body)
 			require.Len(t, body.Blocks, 1)
 			require.Contains(t, body.Blocks[0].Body.Attributes, "value")
@@ -329,8 +361,7 @@ resource "test_item" "inbound" {
 `)
 
 	out := hclwrite.NewEmptyFile()
-	diags, err := transformHCLFileToPCL(t.Context(), src, "main.hcl", out.Body(), loader, nil)
-	require.NoError(t, err)
+	diags := transformSingleFile(t, src, "main.hcl", out.Body(), loader, nil)
 	require.False(t, diags.HasErrors(), diags.Error())
 
 	expected := `resource "inbound" "test:index:Item" {
@@ -404,8 +435,7 @@ output "results" {
 `)
 
 	out := hclwrite.NewEmptyFile()
-	diags, err := transformHCLFileToPCL(t.Context(), src, "main.hcl", out.Body(), loader, nil)
-	require.NoError(t, err)
+	diags := transformSingleFile(t, src, "main.hcl", out.Body(), loader, nil)
 	require.False(t, diags.HasErrors(), diags.Error())
 
 	expected := `output "results" {
@@ -482,7 +512,7 @@ func TestTransformSplatExpr(t *testing.T) {
 			require.False(t, diags.HasErrors(), diags.Error())
 
 			ft := &fileTransformer{
-				src:             src,
+				sources:         map[string][]byte{"test.hcl": src},
 				knownHCLTypes:   map[string]bool{"my_res": true},
 				resourceSchemas: tt.schemas,
 			}
@@ -495,4 +525,322 @@ func TestTransformSplatExpr(t *testing.T) {
 			assert.Equal(t, tt.expected, string(tokens.Bytes()))
 		})
 	}
+}
+
+// multiFileTestSchema is a minimal schema with one resource type used by the
+// multi-file conversion tests.
+var multiFileTestSchema = schema.PackageSpec{
+	Name:    "test",
+	Version: "1.0.0",
+	Resources: map[string]schema.ResourceSpec{
+		"test:index:Item": {
+			InputProperties: map[string]schema.PropertySpec{
+				"value": {TypeSpec: schema.TypeSpec{Type: "string"}},
+			},
+			ObjectTypeSpec: schema.ObjectTypeSpec{
+				Properties: map[string]schema.PropertySpec{
+					"value": {TypeSpec: schema.TypeSpec{Type: "string"}},
+				},
+			},
+		},
+	},
+}
+
+func parseAndBindMultiFile(
+	t *testing.T,
+	loader schema.ReferenceLoader,
+	files map[string]string,
+) *pcl.Program {
+	t.Helper()
+	parser := pclsyntax.NewParser()
+	for name, content := range files {
+		require.NoError(t, parser.ParseFile(strings.NewReader(content), name))
+	}
+	require.False(t, parser.Diagnostics.HasErrors(), parser.Diagnostics.Error())
+
+	program, diags, err := pcl.BindProgram(parser.Files, pcl.Loader(loader))
+	require.NoError(t, err)
+	require.False(t, diags.HasErrors(), diags.Error())
+	require.NotNil(t, program)
+	return program
+}
+
+// serveLoader hosts loader on a local gRPC port and returns the host:port
+// address. The server is torn down via t.Cleanup.
+func serveLoader(t *testing.T, loader schema.ReferenceLoader) string {
+	t.Helper()
+	cancel := make(chan bool)
+	handle, err := rpcutil.ServeWithOptions(rpcutil.ServeOptions{
+		Init: func(srv *grpc.Server) error {
+			schema.LoaderRegistration(schema.NewLoaderServer(loader))(srv)
+			return nil
+		},
+		Cancel: cancel,
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() {
+		close(cancel)
+		contract.IgnoreError(<-handle.Done)
+	})
+	return fmt.Sprintf("127.0.0.1:%d", handle.Port)
+}
+
+// TestGenerateProgramMultiFile verifies that converting a multi-file PCL
+// program to HCL preserves the per-file structure: each <name>.pp produces a
+// <name>.hcl, with required_providers placed in the file that declared the
+// `package` block and resources/outputs placed in the file that declared each
+// node.
+func TestGenerateProgramMultiFile(t *testing.T) {
+	t.Parallel()
+
+	loader := testutil.NewMockReferenceLoader(t, multiFileTestSchema)
+
+	program := parseAndBindMultiFile(t, loader, map[string]string{
+		"main.pp": `resource "thing" "test:index:Item" {
+    value = "hello"
+}
+`,
+		"outputs.pp": `output "value" {
+    value = thing.value
+}
+`,
+		"providers.pp": `package "test" {
+    baseProviderName = "test"
+    baseProviderVersion = "1.0.0"
+}
+`,
+	})
+
+	filesB, diags, err := codegen.GenerateProgram(program)
+	require.NoError(t, err)
+	require.False(t, diags.HasErrors(), diags.Error())
+
+	files := make(map[string]string, len(filesB))
+	for k, v := range filesB {
+		files[k] = string(v)
+	}
+
+	assert.Equal(t, map[string]string{
+		"main.hcl": `resource "test_item" "thing" {
+  value = "hello"
+}
+`,
+		"outputs.hcl": `output "value" {
+  value = test_item.thing.value
+}
+`,
+		"providers.hcl": `terraform {
+  required_providers {
+    test = {
+      source  = "pulumi/test"
+      version = "1.0.0"
+    }
+  }
+}
+
+`,
+	}, files)
+}
+
+// TestConvertProgramCrossFileReferences locks in the multi-file fix by
+// converting a project where every kind of cross-file reference appears, and
+// asserting on the full output of every emitted PCL file:
+//
+//   - A `terraform.required_providers` entry declared in providers.hcl must be
+//     visible to data-source resolution in sibling files (otherwise the
+//     test_echo data block in data.hcl would fail to resolve).
+//   - A resource in main.hcl is referenced from outputs.hcl. The reference
+//     `test_item.thing.value` must rewrite to the PCL form `thing.value`.
+//   - A data block in data.hcl is referenced from outputs.hcl. The reference
+//     `data.test_echo.lookup.result` must be inlined as an `invoke(...)`
+//     expression, with the data block's argument literals slurped from
+//     data.hcl's source bytes — not the active file's bytes.
+func TestConvertProgramCrossFileReferences(t *testing.T) {
+	t.Parallel()
+
+	testSchema := schema.PackageSpec{
+		Name:    "test",
+		Version: "1.0.0",
+		Resources: map[string]schema.ResourceSpec{
+			"test:index:Item": {
+				InputProperties: map[string]schema.PropertySpec{
+					"value": {TypeSpec: schema.TypeSpec{Type: "string"}},
+				},
+				ObjectTypeSpec: schema.ObjectTypeSpec{
+					Properties: map[string]schema.PropertySpec{
+						"value": {TypeSpec: schema.TypeSpec{Type: "string"}},
+					},
+				},
+			},
+		},
+		Functions: map[string]schema.FunctionSpec{
+			"test:index:echo": {
+				Inputs: &schema.ObjectTypeSpec{
+					Properties: map[string]schema.PropertySpec{
+						"input": {TypeSpec: schema.TypeSpec{Type: "string"}},
+					},
+				},
+				Outputs: &schema.ObjectTypeSpec{
+					Properties: map[string]schema.PropertySpec{
+						"result": {TypeSpec: schema.TypeSpec{Type: "string"}},
+					},
+				},
+			},
+		},
+	}
+	loader := testutil.NewMockReferenceLoader(t, testSchema)
+	loaderTarget := serveLoader(t, loader)
+
+	sourceDir := t.TempDir()
+	targetDir := t.TempDir()
+
+	require.NoError(t, os.WriteFile(filepath.Join(sourceDir, "Pulumi.yaml"),
+		[]byte("name: cross-file\nruntime: hcl\n"), 0o644))
+
+	hclFiles := map[string]string{
+		"providers.hcl": `terraform {
+  required_providers {
+    test = {
+      source  = "pulumi/test"
+      version = "1.0.0"
+    }
+  }
+}
+`,
+		"main.hcl": `resource "test_item" "thing" {
+  value = "hello"
+}
+`,
+		"data.hcl": `data "test_echo" "lookup" {
+  input = "the-input-from-data-hcl"
+}
+`,
+		"outputs.hcl": `output "value" {
+  value = test_item.thing.value
+}
+
+output "echoed" {
+  value = data.test_echo.lookup.result
+}
+`,
+	}
+	for name, content := range hclFiles {
+		require.NoError(t, os.WriteFile(filepath.Join(sourceDir, name), []byte(content), 0o644))
+	}
+
+	resp, err := New().ConvertProgram(t.Context(), &plugin.ConvertProgramRequest{
+		SourceDirectory: sourceDir,
+		TargetDirectory: targetDir,
+		LoaderTarget:    loaderTarget,
+	})
+	require.NoError(t, err)
+	require.False(t, resp.Diagnostics.HasErrors(), resp.Diagnostics.Error())
+
+	pclFiles := map[string]string{}
+	entries, err := os.ReadDir(targetDir)
+	require.NoError(t, err)
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".pp") {
+			continue
+		}
+		bytes, err := os.ReadFile(filepath.Join(targetDir, e.Name()))
+		require.NoError(t, err)
+		pclFiles[e.Name()] = string(bytes)
+	}
+
+	assert.Equal(t, map[string]string{
+		"providers.pp": "",
+		"main.pp": `resource "thing" "test:index:Item" {
+  value = "hello"
+}
+
+`,
+		"data.pp": "",
+		"outputs.pp": `output "value" {
+  value = thing.value
+}
+
+output "echoed" {
+  value = invoke("test:index:echo", {
+    input = "the-input-from-data-hcl"
+  }).result
+}
+
+`,
+	}, pclFiles)
+}
+
+// TestEjectMultiFileHCL verifies the inverse direction: a multi-file HCL
+// project converted via hclConverter.ConvertProgram produces the same
+// per-file structure in PCL, with cross-file references rewritten correctly
+// because the project transformer pre-scans every body before emitting any
+// file.
+func TestEjectMultiFileHCL(t *testing.T) {
+	t.Parallel()
+
+	loader := testutil.NewMockReferenceLoader(t, multiFileTestSchema)
+	loaderTarget := serveLoader(t, loader)
+
+	sourceDir := t.TempDir()
+	targetDir := t.TempDir()
+
+	require.NoError(t, os.WriteFile(filepath.Join(sourceDir, "Pulumi.yaml"),
+		[]byte("name: multifile-eject\nruntime: hcl\n"), 0o644))
+
+	hclFiles := map[string]string{
+		"main.hcl": `resource "test_item" "thing" {
+  value = "hello"
+}
+`,
+		"outputs.hcl": `output "value" {
+  value = test_item.thing.value
+}
+`,
+		"providers.hcl": `terraform {
+  required_providers {
+    test = {
+      source  = "pulumi/test"
+      version = "1.0.0"
+    }
+  }
+}
+`,
+	}
+	for name, content := range hclFiles {
+		require.NoError(t, os.WriteFile(filepath.Join(sourceDir, name), []byte(content), 0o644))
+	}
+
+	resp, err := New().ConvertProgram(t.Context(), &plugin.ConvertProgramRequest{
+		SourceDirectory: sourceDir,
+		TargetDirectory: targetDir,
+		LoaderTarget:    loaderTarget,
+	})
+	require.NoError(t, err)
+	require.False(t, resp.Diagnostics.HasErrors(), resp.Diagnostics.Error())
+
+	pclFiles := map[string]string{}
+	entries, err := os.ReadDir(targetDir)
+	require.NoError(t, err)
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".pp") {
+			continue
+		}
+		bytes, err := os.ReadFile(filepath.Join(targetDir, e.Name()))
+		require.NoError(t, err)
+		pclFiles[e.Name()] = string(bytes)
+	}
+
+	assert.Equal(t, map[string]string{
+		"main.pp": `resource "thing" "test:index:Item" {
+  value = "hello"
+}
+
+`,
+		"outputs.pp": `output "value" {
+  value = thing.value
+}
+
+`,
+		"providers.pp": "",
+	}, pclFiles)
 }
