@@ -3,6 +3,7 @@ resource "res" "simple:index:Resource" {
 }
 
 config "input" "bool" {
+  description = "A simple input"
 }
 
 output "output" {

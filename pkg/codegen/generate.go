@@ -1250,6 +1250,10 @@ func (g *generator) genConfigVariable(body *hclwrite.Body, cv *pcl.ConfigVariabl
 		block.Body().SetAttributeRaw("default", tokens)
 	}
 
+	if cv.Description != "" {
+		block.Body().SetAttributeValue("description", cty.StringVal(cv.Description))
+	}
+
 	return nil
 }
 

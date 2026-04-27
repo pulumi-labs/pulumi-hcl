@@ -11,7 +11,8 @@ resource "simple_resource" "res" {
   value = var.input
 }
 variable "input" {
-  type = bool
+  type        = bool
+  description = "A simple input"
 }
 output "output" {
   value = simple_resource.res.value
