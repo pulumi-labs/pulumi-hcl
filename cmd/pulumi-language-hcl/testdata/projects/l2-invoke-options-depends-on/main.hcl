@@ -7,7 +7,7 @@ terraform {
   }
 }
 
-data "simple-invoke_myinvoke" "invoke_0" {
+data "simple-invoke_myinvoke" "data" {
   value      = "hello"
   depends_on = [simple-invoke_stringresource.first]
 }
@@ -18,8 +18,8 @@ resource "simple-invoke_stringresource" "first" {
   text = "first hello"
 }
 resource "simple-invoke_stringresource" "second" {
-  text = data.simple-invoke_myinvoke.invoke_0.result
+  text = data.simple-invoke_myinvoke.data.result
 }
 output "hello" {
-  value = data.simple-invoke_myinvoke.invoke_0.result
+  value = data.simple-invoke_myinvoke.data.result
 }

@@ -726,6 +726,62 @@ func TestCustomInvokeHoistedWithCount(t *testing.T) {
 	}, values)
 }
 
+// TestCustomInvokeAssignedToLocalKeepsName verifies when an invoke is the direct value of
+// a top-level local variable (`name = invoke(...)`), the hoisted data block should reuse
+// the local's name (`data "<token>" "name"`) rather than the auto-generated
+// `invoke_N`. References to the local then rewrite to `data.<token>.<name>.<output>`.
+func TestCustomInvokeAssignedToLocalKeepsName(t *testing.T) {
+	t.Parallel()
+
+	testSchema := schema.PackageSpec{
+		Name:    "test",
+		Version: "1.0.0",
+		Functions: map[string]schema.FunctionSpec{
+			"test:index:echo": {
+				Inputs: &schema.ObjectTypeSpec{
+					Properties: map[string]schema.PropertySpec{
+						"input": {TypeSpec: schema.TypeSpec{Type: "string"}},
+					},
+				},
+				Outputs: &schema.ObjectTypeSpec{
+					Properties: map[string]schema.PropertySpec{
+						"result": {TypeSpec: schema.TypeSpec{Type: "string"}},
+					},
+				},
+			},
+		},
+	}
+
+	pclSource := `myConfig = invoke("test:index:echo", {
+    input = "hello"
+})
+
+output result {
+    value = myConfig.result
+}
+`
+
+	monitor := &testutil.MockResourceMonitor{
+		InvokeHandler: func(_ context.Context, req hclrun.InvokeRequest) (*hclrun.InvokeResponse, error) {
+			input, _ := req.Args.GetOk("input")
+			return &hclrun.InvokeResponse{
+				Return: property.NewMap(map[string]property.Value{
+					"result": property.New(input.AsString() + "+"),
+				}),
+			}, nil
+		},
+	}
+
+	mock := testConvertedPCLWithComponent(t, pclSource, nil, monitor, testSchema)
+
+	require.Len(t, mock.InvokedFunctions, 1)
+	assert.Equal(t, "test:index:echo", mock.InvokedFunctions[0].Token)
+
+	result, ok := mock.StackOutputs.GetOk("result")
+	require.True(t, ok, "expected 'result' stack output")
+	assert.Equal(t, property.New("hello+"), result)
+}
+
 // TestCustomInvokeHoistedInListComprehension checks that a custom provider
 // invoke that appears inside a PCL list comprehension is hoisted into a data
 // block whose `for_each` matches the comprehension's collection, and that the
