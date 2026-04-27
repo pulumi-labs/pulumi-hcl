@@ -31,6 +31,7 @@ import (
 	"github.com/hashicorp/hcl/v2"
 	"github.com/hashicorp/hcl/v2/hclsyntax"
 	"github.com/hashicorp/hcl/v2/hclwrite"
+	"github.com/pulumi-labs/pulumi-hcl/pkg/hcl/comments"
 	"github.com/pulumi-labs/pulumi-hcl/pkg/hcl/packages"
 	"github.com/pulumi-labs/pulumi-hcl/pkg/hcl/transform"
 	"github.com/pulumi/pulumi/pkg/v3/codegen"
@@ -201,6 +202,22 @@ type fileTransformer struct {
 	// "each.* in an inlined invoke" from "each.* at the top level of a
 	// ranged block's own body".
 	inlineDepth int
+	// comments holds leading comments lexed from the source file, keyed by
+	// the source start byte of the syntactic element that should carry them.
+	comments *comments.Map
+}
+
+// emitLeadingComments writes any source comments that immediately precede the
+// element at the given source start byte to body.
+func (ft *fileTransformer) emitLeadingComments(body *hclwrite.Body, startByte int) {
+	ft.comments.Emit(body, startByte)
+}
+
+// withTrailing returns valueTokens with the same-line trailing comment for the
+// attribute at startByte (if any) appended, ready to be passed to
+// hclwrite.Body.SetAttributeRaw so the comment stays on the same line.
+func (ft *fileTransformer) withTrailing(valueTokens hclwrite.Tokens, startByte int) hclwrite.Tokens {
+	return ft.comments.AppendTrailing(valueTokens, startByte)
 }
 
 // comprehensionCtx records the variable names of a PCL for-expression so
@@ -424,12 +441,14 @@ func transformHCLFileToPCL(
 	if resultDiags.HasErrors() {
 		return resultDiags, nil
 	}
+	ft.comments = comments.Build(src, filename, body, "terraform", "data", "call")
 
 	for _, alias := range sortedKeys(paramInfos) {
 		emitPackageBlock(out, alias, paramInfos[alias])
 	}
 
 	for _, block := range body.Blocks {
+		ft.emitLeadingComments(out, block.Range().Start.Byte)
 		switch block.Type {
 
 		case "terraform":
@@ -463,13 +482,17 @@ func transformHCLFileToPCL(
 				if attr.Name == "type" {
 					continue
 				}
-				blk.Body().SetAttributeRaw(attr.Name, ft.transformExpr(attr.Expr))
+				start := attr.Range().Start.Byte
+				ft.emitLeadingComments(blk.Body(), start)
+				blk.Body().SetAttributeRaw(attr.Name, ft.withTrailing(ft.transformExpr(attr.Expr), start))
 			}
 			out.AppendNewline()
 
 		case "locals":
 			for _, attr := range sortedAttributes(block.Body.Attributes) {
-				out.SetAttributeRaw(attr.Name, ft.transformExpr(attr.Expr))
+				start := attr.Range().Start.Byte
+				ft.emitLeadingComments(out, start)
+				out.SetAttributeRaw(attr.Name, ft.withTrailing(ft.transformExpr(attr.Expr), start))
 				out.AppendNewline()
 			}
 
@@ -483,7 +506,9 @@ func transformHCLFileToPCL(
 				blk.Body().SetAttributeRaw("__logicalName", hclwrite.TokensForValue(cty.StringVal(name)))
 			}
 			for _, attr := range sortedAttributes(block.Body.Attributes) {
-				blk.Body().SetAttributeRaw(attr.Name, ft.transformExpr(attr.Expr))
+				start := attr.Range().Start.Byte
+				ft.emitLeadingComments(blk.Body(), start)
+				blk.Body().SetAttributeRaw(attr.Name, ft.withTrailing(ft.transformExpr(attr.Expr), start))
 			}
 			out.AppendNewline()
 
@@ -535,7 +560,9 @@ func transformHCLFileToPCL(
 				case "depends_on", "providers", "version":
 					continue
 				}
-				blk.Body().SetAttributeRaw(attr.Name, ft.transformExpr(attr.Expr))
+				start := attr.Range().Start.Byte
+				ft.emitLeadingComments(blk.Body(), start)
+				blk.Body().SetAttributeRaw(attr.Name, ft.withTrailing(ft.transformExpr(attr.Expr), start))
 			}
 			if rangeExpr != nil {
 				optBlk := blk.Body().AppendNewBlock("options", nil)
@@ -582,7 +609,9 @@ func transformHCLFileToPCL(
 					continue
 				}
 				name, _ := transform.PulumiCaseFromSnakeCase(attr.Name, res.InputProperties)
-				blk.Body().SetAttributeRaw(name, ft.transformExpr(attr.Expr))
+				start := attr.Range().Start.Byte
+				ft.emitLeadingComments(blk.Body(), start)
+				blk.Body().SetAttributeRaw(name, ft.withTrailing(ft.transformExpr(attr.Expr), start))
 			}
 
 			// Collect resource options from attributes and sub-blocks.
@@ -666,7 +695,9 @@ func transformHCLFileToPCL(
 			blk := out.AppendNewBlock("pulumi", nil)
 			for _, attr := range sortedAttributes(block.Body.Attributes) {
 				name, _ := transform.PulumiCaseFromSnakeCase(attr.Name, nil)
-				blk.Body().SetAttributeRaw(name, ft.transformExpr(attr.Expr))
+				start := attr.Range().Start.Byte
+				ft.emitLeadingComments(blk.Body(), start)
+				blk.Body().SetAttributeRaw(name, ft.withTrailing(ft.transformExpr(attr.Expr), start))
 			}
 			out.AppendNewline()
 
@@ -682,7 +713,9 @@ func transformHCLFileToPCL(
 
 	// Top-level attributes (uncommon in HCL input, but pass through with transforms).
 	for _, attr := range sortedAttributes(body.Attributes) {
-		out.SetAttributeRaw(attr.Name, ft.transformExpr(attr.Expr))
+		start := attr.Range().Start.Byte
+		ft.emitLeadingComments(out, start)
+		out.SetAttributeRaw(attr.Name, ft.withTrailing(ft.transformExpr(attr.Expr), start))
 		out.AppendNewline()
 	}
 
