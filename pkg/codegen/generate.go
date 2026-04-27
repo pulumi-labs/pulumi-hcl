@@ -566,6 +566,23 @@ func (g *generator) collectInvokes(node pcl.Node) {
 	case *pcl.OutputVariable:
 		g.collectInvokesInExpr(n.Value, nil, srcFile)
 	case *pcl.LocalVariable:
+		// When a local variable's value is directly an invoke that gets
+		// promoted to a data source, name the data source after the local
+		// variable (e.g. `local x = invoke(...)` becomes
+		// `data "<token>" "x"`) instead of the auto-generated `invoke_N`.
+		if call, ok := n.Definition.Value.(*model.FunctionCallExpression); ok && call.Name == pcl.Invoke {
+			if _, inlinable := inlinableStdFunc(call); !inlinable {
+				for _, arg := range call.Args {
+					g.collectInvokesInExpr(arg, nil, srcFile)
+				}
+				g.invokeDataSources = append(g.invokeDataSources, spilledDataSource{
+					expr:       call,
+					name:       n.LogicalName(),
+					sourceFile: srcFile,
+				})
+				return
+			}
+		}
 		g.collectInvokesInExpr(n.Definition.Value, nil, srcFile)
 	}
 }

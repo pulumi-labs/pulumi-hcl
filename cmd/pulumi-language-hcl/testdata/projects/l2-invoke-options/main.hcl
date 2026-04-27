@@ -7,7 +7,7 @@ terraform {
   }
 }
 
-data "simple-invoke_myinvoke" "invoke_0" {
+data "simple-invoke_myinvoke" "data" {
   value               = "hello"
   provider            = pulumi_providers_simple-invoke.explicitProvider
   parent              = pulumi_providers_simple-invoke.explicitProvider
@@ -18,5 +18,5 @@ data "simple-invoke_myinvoke" "invoke_0" {
 resource "pulumi_providers_simple-invoke" "explicitProvider" {
 }
 output "hello" {
-  value = data.simple-invoke_myinvoke.invoke_0.result
+  value = data.simple-invoke_myinvoke.data.result
 }
