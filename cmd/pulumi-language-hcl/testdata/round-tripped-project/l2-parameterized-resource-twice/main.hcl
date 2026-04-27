@@ -11,10 +11,12 @@ terraform {
   }
 }
 
+// The resource name is based on the parameter value
 resource "hipackage_helloworld" "example1" {
 }
 resource "hipackage_helloworldcomponent" "exampleComponent1" {
 }
+// The resource name is based on the parameter value
 resource "byepackage_goodbyeworld" "example2" {
 }
 resource "byepackage_goodbyeworldcomponent" "exampleComponent2" {

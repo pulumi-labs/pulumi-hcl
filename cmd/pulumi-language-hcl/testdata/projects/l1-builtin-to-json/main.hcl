@@ -28,6 +28,7 @@ output "objectOutput" {
     "count" = 1
   })
 }
+# Nested object using config values
 locals {
   nestedObject = {
     "anObject" = {

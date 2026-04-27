@@ -11,6 +11,7 @@ terraform {
   }
 }
 
+// Make a simple resource to use as a parent
 resource "simple_resource" "parent" {
   value = true
 }

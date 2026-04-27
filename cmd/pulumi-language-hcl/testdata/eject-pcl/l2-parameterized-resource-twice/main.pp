@@ -18,12 +18,14 @@ package "hipackage" {
   }
 }
 
+// The resource name is based on the parameter value
 resource "example1" "hipackage:index:HelloWorld" {
 }
 
 resource "exampleComponent1" "hipackage:index:HelloWorldComponent" {
 }
 
+// The resource name is based on the parameter value
 resource "example2" "byepackage:index:GoodbyeWorld" {
 }
 

@@ -13,6 +13,7 @@ output "numbers" {
     "2" = 2
   }
 }
+// Test that keys don't get renamed
 output "keys" {
   value = {
     "my.key" = 1

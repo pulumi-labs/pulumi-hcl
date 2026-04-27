@@ -8,6 +8,7 @@ resource "parent1" "simple:index:Resource" {
   }
 }
 
+// This should inherit the explicit provider from parent1
 resource "child1" "simple:index:Resource" {
   value = true
   options {
@@ -24,6 +25,7 @@ resource "parent2" "primitive:index:Resource" {
   booleanMap  = {}
 }
 
+// This _should not_ inherit the provider from parent2 as it is a default provider.
 resource "child2" "simple:index:Resource" {
   value = true
   options {
@@ -31,6 +33,7 @@ resource "child2" "simple:index:Resource" {
   }
 }
 
+// This _should not_ inherit the provider from parent1 as its from the wrong package.
 resource "child3" "primitive:index:Resource" {
   boolean     = false
   float       = 0

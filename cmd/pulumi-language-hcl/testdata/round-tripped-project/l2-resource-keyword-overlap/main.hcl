@@ -19,6 +19,10 @@ resource "simple_resource" "mod" {
 resource "simple_resource" "import" {
   value = true
 }
+# TODO(pulumi/pulumi#18246): Pcl should support scoping based on resource type just like HCL does in TF so we can uncomment this.
+# output "import" {
+#   value = Resource["import"]
+# }
 resource "simple_resource" "object" {
   value = true
 }

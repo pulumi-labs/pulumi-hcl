@@ -20,12 +20,15 @@ resource "union_example" "mapMapUnionExample" {
     }
   }
 }
+// List<Union<String, Enum>> pattern
 resource "union_example" "stringEnumUnionListExample" {
   string_enum_union_list_property = ["Listen", "Send", "NotAnEnumValue"]
 }
+// Safe enum: literal string matching an enum value
 resource "union_example" "safeEnumExample" {
   typed_enum_property = "Block"
 }
+// Output enum: output from another resource used as enum input
 resource "union_enumoutput" "enumOutputExample" {
   name = "example"
 }

@@ -1,3 +1,4 @@
+# Keywords in various languages should be renamed and work.
 locals {
   class = "class_output_string"
 }

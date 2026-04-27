@@ -11,6 +11,8 @@ terraform {
   }
 }
 
+// This test checks that when a provider doesn't return properties for fields it considers unknown the runtime
+// can still access that field as an output.
 resource "pulumi_providers_output" "prov" {
   elide_unknowns = true
 }
@@ -22,6 +24,7 @@ resource "output_complexresource" "complex" {
   provider = pulumi_providers_output.prov
   value    = 1
 }
+// Try and use the unknown output as an input to another resource to check that it doesn't cause any issues.
 resource "simple_resource" "res" {
   value = output_resource.unknown.output == "hello"
 }
@@ -34,6 +37,7 @@ resource "simple_resource" "resMap" {
 resource "simple_resource" "resObject" {
   value = output_complexresource.complex.output_object.output == "hello"
 }
+// And try to use it has an output
 output "out" {
   value = output_resource.unknown.output
 }

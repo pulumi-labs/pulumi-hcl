@@ -51,24 +51,33 @@ call "res7" "call" {
   input = "xxx"
 }
 
+// This tests that PCL allows both fully specified type tokens, and tokens that only specify the module and
+// member name.
+// First use the fully specified token to invoke and create a resource.
 resource "module-format_mod_resource" "res1" {
   text = data.module-format_mod_concatworld.invoke_0.result
 }
+// Next use just the module name as defined by the module format
 resource "module-format_mod_resource" "res2" {
   text = data.module-format_mod_concatworld.invoke_1.result
 }
+// First use the fully specified token to invoke and create a resource.
 resource "module-format_mod_nested_resource" "res3" {
   text = data.module-format_mod_nested_concatworld.invoke_2.result
 }
+// Next use just the module name as defined by the module format
 resource "module-format_mod_nested_resource" "res4" {
   text = data.module-format_mod_nested_concatworld.invoke_3.result
 }
+// First use the fully specified token to invoke and create a resource in the index module.
 resource "module-format_resource" "res5" {
   text = data.module-format_concatworld.invoke_4.result
 }
+// Next use just the module name as defined by the module format
 resource "module-format_resource" "res6" {
   text = data.module-format_concatworld.invoke_5.result
 }
+// Next use the short, 2 component, form because this is the index module
 resource "module-format_resource" "res7" {
   text = data.module-format_concatworld.invoke_6.result
 }

@@ -17,6 +17,7 @@ resource "simple_resource" "parent1" {
   provider = pulumi_providers_simple.provider
   value    = true
 }
+// This should inherit the explicit provider from parent1
 resource "simple_resource" "child1" {
   parent = simple_resource.parent1
   value  = true
@@ -29,10 +30,12 @@ resource "primitive_resource" "parent2" {
   number_array = []
   boolean_map  = {}
 }
+// This _should not_ inherit the provider from parent2 as it is a default provider.
 resource "simple_resource" "child2" {
   parent = primitive_resource.parent2
   value  = true
 }
+// This _should not_ inherit the provider from parent1 as its from the wrong package.
 resource "primitive_resource" "child3" {
   parent       = simple_resource.parent1
   boolean      = false

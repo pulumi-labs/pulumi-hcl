@@ -11,9 +11,11 @@ terraform {
   }
 }
 
+// Make a simple resource to use as a parent
 resource "simple_resource" "parent" {
   value = true
 }
+// parent "res" to a new parent and alias it so it doesn't recreate.
 resource "conformance-component_simple" "res" {
   parent = simple_resource.parent
   aliases = [{
@@ -21,6 +23,7 @@ resource "conformance-component_simple" "res" {
   }]
   value = true
 }
+// Make a simple resource so that plugin detection works.
 resource "simple_resource" "simpleResource" {
   value = false
 }

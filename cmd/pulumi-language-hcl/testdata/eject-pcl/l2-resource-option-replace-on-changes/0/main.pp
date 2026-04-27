@@ -1,3 +1,5 @@
+// Stage 0: Initial resource creation
+// Scenario 1: Schema-based replaceOnChanges on replaceProp
 resource "schemaReplace" "replaceonchanges:index:ResourceA" {
   value       = true
   replaceProp = true
@@ -6,6 +8,7 @@ resource "schemaReplace" "replaceonchanges:index:ResourceA" {
   }
 }
 
+// Scenario 2: Option-based replaceOnChanges on value
 resource "optionReplace" "replaceonchanges:index:ResourceB" {
   value = true
   options {
@@ -13,6 +16,7 @@ resource "optionReplace" "replaceonchanges:index:ResourceB" {
   }
 }
 
+// Scenario 3: Both schema and option - will change value
 resource "bothReplaceValue" "replaceonchanges:index:ResourceA" {
   value       = true
   replaceProp = true
@@ -21,6 +25,7 @@ resource "bothReplaceValue" "replaceonchanges:index:ResourceA" {
   }
 }
 
+// Scenario 4: Both schema and option - will change replaceProp
 resource "bothReplaceProp" "replaceonchanges:index:ResourceA" {
   value       = true
   replaceProp = true
@@ -29,10 +34,12 @@ resource "bothReplaceProp" "replaceonchanges:index:ResourceA" {
   }
 }
 
+// Scenario 5: No replaceOnChanges - baseline update
 resource "regularUpdate" "replaceonchanges:index:ResourceB" {
   value = true
 }
 
+// Scenario 6: replaceOnChanges set but no change
 resource "noChange" "replaceonchanges:index:ResourceB" {
   value = true
   options {
@@ -40,6 +47,7 @@ resource "noChange" "replaceonchanges:index:ResourceB" {
   }
 }
 
+// Scenario 7: replaceOnChanges on value, but only replaceProp changes
 resource "wrongPropChange" "replaceonchanges:index:ResourceA" {
   value       = true
   replaceProp = true
@@ -48,6 +56,7 @@ resource "wrongPropChange" "replaceonchanges:index:ResourceA" {
   }
 }
 
+// Scenario 8: Multiple properties in replaceOnChanges array
 resource "multiplePropReplace" "replaceonchanges:index:ResourceA" {
   value       = true
   replaceProp = true

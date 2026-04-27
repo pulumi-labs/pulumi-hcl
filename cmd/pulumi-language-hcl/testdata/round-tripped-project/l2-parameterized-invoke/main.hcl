@@ -11,6 +11,7 @@ data "subpackage_dohelloworld" "invoke_0" {
   input = "goodbye"
 }
 
+// The invoke name is based on the parameter value
 output "parameterValue" {
   value = data.subpackage_dohelloworld.invoke_0.output
 }

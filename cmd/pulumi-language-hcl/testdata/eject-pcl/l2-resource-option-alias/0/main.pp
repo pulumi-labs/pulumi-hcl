@@ -1,3 +1,4 @@
+// Make a simple resource to use as a parent
 resource "parent" "simple:index:Resource" {
   value = true
 }

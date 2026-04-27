@@ -22,6 +22,7 @@ output "lengthOutput" {
 output "splitOutput" {
   value = split("-", var.aString)
 }
+# Wrap in list to avoid unsafe-null-output (see l1-builtin-try/main.pp).
 output "singleOrNoneOutput" {
   value = [one(var.singleOrNoneList)]
 }

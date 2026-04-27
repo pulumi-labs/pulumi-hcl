@@ -20,6 +20,7 @@ resource "conformance-component_simple" "withIgnoreChanges" {
 resource "conformance-component_simple" "withoutIgnoreChanges" {
   value = true
 }
+// Make a simple resource so that plugin detection works.
 resource "simple_resource" "simpleResource" {
   value = false
 }

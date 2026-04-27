@@ -13,6 +13,8 @@ resource "simple_resource" "res2" {
 resource "simple_resource" "res1" {
   value = true
 }
+// This test asserts that PCL declaration order does not need to match usage order. That is a resource can be declared
+// lower in the file than it is first referenced.
 output "out" {
   value = simple_resource.res2.value
 }
