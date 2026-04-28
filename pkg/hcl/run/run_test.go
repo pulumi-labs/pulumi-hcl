@@ -823,51 +823,64 @@ output "region_value" {
 func TestEngine_VariableRequired(t *testing.T) {
 	t.Parallel()
 
-	src := []byte(`
+	// A variable declared without a default is required, regardless of its
+	// `nullable` setting. (The `nullable` attribute only governs whether a
+	// provided value may be the null literal.)
+	tests := []struct {
+		name string
+		src  string
+	}{
+		{
+			name: "no_nullable_attribute",
+			src: `
+variable "required_var" {
+  type = string
+}
+`,
+		},
+		{
+			name: "nullable_true",
+			src: `
+variable "required_var" {
+  type     = string
+  nullable = true
+}
+`,
+		},
+		{
+			name: "nullable_false",
+			src: `
 variable "required_var" {
   type     = string
   nullable = false
 }
-`)
-
-	p := parser.NewParser()
-	config, diags := p.ParseSource("test.hcl", src)
-	if diags.HasErrors() {
-		t.Fatalf("parse error: %s", diags.Error())
+`,
+		},
 	}
 
-	mock := &mockResourceMonitor{}
-	engine := NewEngine(config, &EngineOptions{
-		ProjectName:     "test-project",
-		StackName:       "dev",
-		ResourceMonitor: mock,
-		WorkDir:         t.TempDir(),
-		RootDir:         t.TempDir(),
-		SchemaLoader: newMockReferenceLoader(t, schema.PackageSpec{
-			Name: "aws",
-			Resources: map[string]schema.ResourceSpec{
-				"aws:index:Instance": {
-					InputProperties: map[string]schema.PropertySpec{
-						"ami": {TypeSpec: schema.TypeSpec{Type: "string"}},
-					},
-					ObjectTypeSpec: schema.ObjectTypeSpec{
-						Properties: map[string]schema.PropertySpec{
-							"ami": {TypeSpec: schema.TypeSpec{Type: "string"}},
-						},
-					},
-				},
-			},
-		}),
-	})
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 
-	err := engine.Run(t.Context())
+			p := parser.NewParser()
+			config, diags := p.ParseSource("test.hcl", []byte(tc.src))
+			require.False(t, diags.HasErrors(), "parse error: %s", diags.Error())
 
-	// Should error because required_var has no value
-	if err == nil {
-		t.Fatal("expected error for missing required variable")
-	}
-	if !strings.Contains(err.Error(), "required_var") {
-		t.Errorf("expected error to mention required_var, got: %v", err)
+			mock := &mockResourceMonitor{}
+			engine := NewEngine(config, &EngineOptions{
+				ProjectName:     "test-project",
+				StackName:       "dev",
+				ResourceMonitor: mock,
+				WorkDir:         t.TempDir(),
+				RootDir:         t.TempDir(),
+				SchemaLoader:    newMockReferenceLoader(t, schema.PackageSpec{Name: "empty"}),
+			})
+
+			err := engine.Run(t.Context())
+			assert.EqualError(t, err, `variable "required_var" is required but no value was provided. `+
+				`Set it with TF_VAR_required_var environment variable or Pulumi config: `+
+				`pulumi config set required_var <value>`+"\ncontext canceled")
+		})
 	}
 }
 

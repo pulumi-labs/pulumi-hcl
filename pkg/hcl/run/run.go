@@ -505,7 +505,9 @@ func (e *Engine) processVariable(_ context.Context, node *graph.Node) error {
 		}
 	}
 
-	// If no value from env or config, use default
+	// If no value from env or config, use default. A variable without a default
+	// is required, regardless of its `nullable` setting (which only governs
+	// whether a *provided* value may be the null literal).
 	if valueSource == "" {
 		if v.Default != nil {
 			var diags hcl.Diagnostics
@@ -514,12 +516,7 @@ func (e *Engine) processVariable(_ context.Context, node *graph.Node) error {
 				return fmt.Errorf("evaluating variable default: %s", diags.Error())
 			}
 			valueSource = "default"
-		} else if v.Nullable {
-			// Variable is nullable and has no value - use null
-			val = cty.NullVal(cty.DynamicPseudoType)
-			valueSource = "null"
 		} else {
-			// Variable is required but no value provided
 			return fmt.Errorf("variable %q is required but no value was provided. Set it with TF_VAR_%s environment variable or Pulumi config: pulumi config set %s <value>",
 				varName, varName, varName)
 		}
@@ -2137,8 +2134,6 @@ func (e *Engine) processModuleVariable(node *graph.Node) error {
 				if diags.HasErrors() {
 					return fmt.Errorf("evaluating variable default for %s: %s", varName, diags.Error())
 				}
-			} else if v.Nullable {
-				val = cty.NullVal(cty.DynamicPseudoType)
 			} else {
 				return fmt.Errorf("variable %q is required but no value was provided", varName)
 			}
