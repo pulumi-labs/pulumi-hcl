@@ -662,24 +662,28 @@ func (g *Graph) inlineModule(
 
 	// Locals
 	for localName, local := range loaded.Config.Locals {
+		deps := g.exprDeps(local.Value, prefix)
+		deps = append(deps, initIdx)
 		if err := g.AddNode(&Node{
 			Key:        prefix + "local." + localName,
 			Type:       NodeTypeLocal,
 			Local:      local,
 			ModuleInfo: modInfo,
-		}, g.exprDeps(local.Value, prefix)); err != nil {
+		}, deps); err != nil {
 			return err
 		}
 	}
 
 	// Providers
 	for key, provider := range loaded.Config.Providers {
+		deps := g.providerDeps(provider, prefix)
+		deps = append(deps, initIdx)
 		if err := g.AddNode(&Node{
 			Key:        prefix + key,
 			Type:       NodeTypeProvider,
 			Provider:   provider,
 			ModuleInfo: modInfo,
-		}, g.providerDeps(provider, prefix)); err != nil {
+		}, deps); err != nil {
 			return err
 		}
 	}
@@ -714,12 +718,14 @@ func (g *Graph) inlineModule(
 
 	// Outputs
 	for outputName, output := range loaded.Config.Outputs {
+		deps := g.exprDeps(output.Value, prefix)
+		deps = append(deps, initIdx)
 		if err := g.AddNode(&Node{
 			Key:        prefix + "output." + outputName,
 			Type:       NodeTypeOutput,
 			Output:     output,
 			ModuleInfo: modInfo,
-		}, g.exprDeps(output.Value, prefix)); err != nil {
+		}, deps); err != nil {
 			return err
 		}
 	}

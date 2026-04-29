@@ -120,6 +120,28 @@ func (e *Evaluator) EvaluateBody(body hcl.Body) (map[string]cty.Value, hcl.Diagn
 	return result, diags
 }
 
+// SensitiveMark is the cty value mark applied to sensitive values.
+const SensitiveMark = "sensitive"
+
+// SensitiveArgumentDiagnostic returns the diagnostic Terraform emits when
+// a sensitive value is supplied as a meta-argument such as `count` or
+// `for_each`. argName is the meta-argument's name (e.g. "count" or
+// "for_each"). The shape of the diagnostic intentionally mirrors
+// Terraform's so users coming from Terraform see a familiar message.
+func SensitiveArgumentDiagnostic(argName string, expr hcl.Expression) *hcl.Diagnostic {
+	return &hcl.Diagnostic{
+		Severity: hcl.DiagError,
+		Summary:  fmt.Sprintf("Invalid %s argument", argName),
+		Detail: fmt.Sprintf(
+			"Sensitive values, or values derived from sensitive values, "+
+				"cannot be used as %s arguments. If used, the sensitive value "+
+				"could be exposed as a resource instance key. If you want to use "+
+				"the value anyway, wrap it in nonsensitive(...).",
+			argName),
+		Subject: expr.Range().Ptr(),
+	}
+}
+
 // EvaluateCount evaluates a count expression and returns (count, isBool, diags).
 // isBool is true when the expression evaluated to a boolean (true→1, false→0),
 // which suppresses the numeric index suffix on resource names.
@@ -132,6 +154,10 @@ func (e *Evaluator) EvaluateCount(expr hcl.Expression) (int, bool, hcl.Diagnosti
 	val, diags := e.Evaluate(expr)
 	if diags.HasErrors() {
 		return 0, false, diags
+	}
+
+	if val.HasMark(SensitiveMark) {
+		return 0, false, hcl.Diagnostics{SensitiveArgumentDiagnostic("count", expr)}
 	}
 
 	if val.Type() == cty.Bool {
@@ -176,6 +202,10 @@ func (e *Evaluator) EvaluateForEach(expr hcl.Expression) (map[string]cty.Value, 
 	val, diags := e.Evaluate(expr)
 	if diags.HasErrors() {
 		return nil, diags
+	}
+
+	if val.HasMark(SensitiveMark) {
+		return nil, hcl.Diagnostics{SensitiveArgumentDiagnostic("for_each", expr)}
 	}
 
 	if val.IsNull() {

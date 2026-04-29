@@ -2262,6 +2262,9 @@ func (e *Engine) processModuleInit(ctx context.Context, node *graph.Node) error 
 		if diags.HasErrors() {
 			return fmt.Errorf("evaluating module count: %s", diags.Error())
 		}
+		if countVal.HasMark(eval.SensitiveMark) {
+			return hcl.Diagnostics{eval.SensitiveArgumentDiagnostic("count", mod.Count)}
+		}
 		if !countVal.Type().Equals(cty.Number) {
 			return fmt.Errorf("module count must be a number")
 		}
@@ -2296,6 +2299,9 @@ func (e *Engine) processModuleInit(ctx context.Context, node *graph.Node) error 
 	forEachVal, diags := mod.ForEach.Value(parentEvalCtx.HCLContext())
 	if diags.HasErrors() {
 		return fmt.Errorf("evaluating module for_each: %s", diags.Error())
+	}
+	if forEachVal.HasMark(eval.SensitiveMark) {
+		return hcl.Diagnostics{eval.SensitiveArgumentDiagnostic("for_each", mod.ForEach)}
 	}
 	if !forEachVal.CanIterateElements() {
 		return fmt.Errorf("module for_each must be a set or map")
