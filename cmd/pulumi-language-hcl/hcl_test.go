@@ -1207,6 +1207,109 @@ func testConvertedPCL(t *testing.T, pclSource string, schemas ...schema.PackageS
 	return testConvertedPCLWithComponent(t, pclSource, nil, nil, schemas...)
 }
 
+func TestInvokeModuleFormat(t *testing.T) {
+	t.Parallel()
+
+	pclSource := `ubuntu = invoke("test:mod/getThing:getThing", {
+    objectBlocks = [{
+        value = true
+    }, {
+        value = false
+    }]
+})
+
+output result {
+    value = ubuntu.id
+}
+`
+
+	testSchema := schema.PackageSpec{
+		Name:    "test",
+		Version: "1.0.0",
+		Meta:    &schema.MetadataSpec{ModuleFormat: "(.*)(?:/[^/]*)"},
+		Functions: map[string]schema.FunctionSpec{
+			"test:mod/getThing:getThing": {
+				Inputs: &schema.ObjectTypeSpec{
+					Properties: map[string]schema.PropertySpec{
+						"objectBlocks": {TypeSpec: schema.TypeSpec{
+							Type:  "array",
+							Items: &schema.TypeSpec{Ref: "#/types/test:mod/getThingBlock:getThingBlock"},
+						}},
+					},
+				},
+				Outputs: &schema.ObjectTypeSpec{
+					Properties: map[string]schema.PropertySpec{
+						"id": {TypeSpec: schema.TypeSpec{Type: "string"}},
+					},
+				},
+			},
+		},
+		Types: map[string]schema.ComplexTypeSpec{
+			"test:mod/getThingBlock:getThingBlock": {
+				ObjectTypeSpec: schema.ObjectTypeSpec{
+					Type: "object",
+					Properties: map[string]schema.PropertySpec{
+						"value": {TypeSpec: schema.TypeSpec{Type: "boolean"}},
+					},
+					Required: []string{"value"},
+				},
+			},
+		},
+	}
+
+	testConvertedPCL(t, pclSource, testSchema)
+}
+
+func TestResourceModuleFormat(t *testing.T) {
+	t.Parallel()
+
+	pclSource := `resource ubuntu "test:mod/Thing:Thing" {
+    objectBlocks = [{
+        value = true
+    }, {
+        value = false
+    }]
+}
+`
+
+	testSchema := schema.PackageSpec{
+		Name:    "test",
+		Version: "1.0.0",
+		Meta:    &schema.MetadataSpec{ModuleFormat: "(.*)(?:/[^/]*)"},
+		Resources: map[string]schema.ResourceSpec{
+			"test:mod/Thing:Thing": {
+				InputProperties: map[string]schema.PropertySpec{
+					"objectBlocks": {TypeSpec: schema.TypeSpec{
+						Type:  "array",
+						Items: &schema.TypeSpec{Ref: "#/types/test:mod/ThingBlock:ThingBlock"},
+					}},
+				},
+				ObjectTypeSpec: schema.ObjectTypeSpec{
+					Properties: map[string]schema.PropertySpec{
+						"objectBlocks": {TypeSpec: schema.TypeSpec{
+							Type:  "array",
+							Items: &schema.TypeSpec{Ref: "#/types/test:mod/ThingBlock:ThingBlock"},
+						}},
+					},
+				},
+			},
+		},
+		Types: map[string]schema.ComplexTypeSpec{
+			"test:mod/ThingBlock:ThingBlock": {
+				ObjectTypeSpec: schema.ObjectTypeSpec{
+					Type: "object",
+					Properties: map[string]schema.PropertySpec{
+						"value": {TypeSpec: schema.TypeSpec{Type: "boolean"}},
+					},
+					Required: []string{"value"},
+				},
+			},
+		},
+	}
+
+	testConvertedPCL(t, pclSource, testSchema)
+}
+
 func TestLocalExecProvisioner(t *testing.T) {
 	t.Parallel()
 
