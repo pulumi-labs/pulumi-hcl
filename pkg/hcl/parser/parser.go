@@ -916,10 +916,6 @@ func (p *Parser) parseTimeoutsBlock(block *hcl.Block) (*ast.Timeouts, hcl.Diagno
 		timeouts.Create = attr.Expr
 	}
 
-	if attr, ok := content.Attributes["read"]; ok {
-		timeouts.Read = attr.Expr
-	}
-
 	if attr, ok := content.Attributes["update"]; ok {
 		timeouts.Update = attr.Expr
 	}
