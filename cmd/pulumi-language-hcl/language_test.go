@@ -137,7 +137,6 @@ var expectedFailures = map[string]string{
 	"l3-component-primitive-conversions": "primitive type coercion (e.g. string→bool) not yet supported by HCL runtime",
 	"l2-id-type":                         "ID-as-string coercion across primitive types not yet supported by HCL runtime",
 	"l2-resource-option-hooks":           "PCL pcl.Hook nodes not yet supported by HCL codegen",
-	"l3-component-nested":                "nested component URN naming convention does not match conformance expectation",
 }
 
 // expectedEjectFailures lists tests whose eject (HCL→PCL conversion) step is

@@ -40,8 +40,6 @@ import (
 	"github.com/zclconf/go-cty/cty/convert"
 )
 
-const SensativeMark = "sensitive"
-
 var resourceRefCapsuleType = cty.Capsule("resource_reference", reflect.TypeFor[property.ResourceReference]())
 
 // EvalFunc evaluates an HCL expression.
@@ -467,7 +465,7 @@ func ctyToResourceProperty(path string, val cty.Value, prop schema.Type, already
 	if val.IsMarked() {
 		var marks cty.ValueMarks
 		val, marks = val.Unmark()
-		if _, isSensitive := marks[SensativeMark]; isSensitive && !alreadyInSecret {
+		if _, isSensitive := marks[eval.SensitiveMark]; isSensitive && !alreadyInSecret {
 			v, err := ctyToResourceProperty(path, val, prop, true)
 			return v.WithSecret(true), err
 		}
@@ -644,7 +642,7 @@ func ctyToPropertyValue(val cty.Value) (property.Value, error) {
 	// Handle sensitive-marked values by unwrapping, converting, and wrapping as secret.
 	if val.IsMarked() {
 		unmarked, marks := val.Unmark()
-		_, isSensitive := marks[SensativeMark]
+		_, isSensitive := marks[eval.SensitiveMark]
 		pv, err := ctyToPropertyValue(unmarked)
 		return pv.WithSecret(isSensitive), err
 	}
@@ -879,7 +877,7 @@ func propertyValueToCty(path string, v property.Value, typ schema.Type, dryRun b
 	typ = codegen.UnwrapType(typ)
 	if v.Secret() {
 		computedV, err := propertyValueToCty(path, v.WithSecret(false), typ, dryRun)
-		return computedV.Mark(SensativeMark), err
+		return computedV.Mark(eval.SensitiveMark), err
 	}
 
 	switch {
@@ -1006,7 +1004,7 @@ func PropertyValueToCty(pv property.Value) cty.Value {
 
 	if pv.Secret() {
 		return PropertyValueToCty(pv.WithSecret(false)).
-			WithMarks(cty.NewValueMarks(SensativeMark))
+			WithMarks(cty.NewValueMarks(eval.SensitiveMark))
 	}
 
 	if pv.IsNull() {

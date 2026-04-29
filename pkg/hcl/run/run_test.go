@@ -1491,6 +1491,197 @@ output "vpc_id" {
 	}
 }
 
+// TestEngine_ModuleNameWithDot verifies that module names containing a "."
+// are preserved verbatim when computing the component's logical resource name,
+// rather than being split apart by dot-based key parsing.
+func TestEngine_ModuleNameWithDot(t *testing.T) {
+	t.Parallel()
+
+	tmpDir := t.TempDir()
+
+	moduleDir := tmpDir + "/modules/vpc"
+	require.NoError(t, os.MkdirAll(moduleDir, 0755))
+
+	moduleMain := `
+resource "aws_vpc" "main" {
+  cidr_block = "10.0.0.0/16"
+}
+`
+	require.NoError(t, os.WriteFile(moduleDir+"/main.hcl", []byte(moduleMain), 0644))
+
+	rootMain := `
+module "vpc.primary" {
+  source = "./modules/vpc"
+}
+`
+	require.NoError(t, os.WriteFile(tmpDir+"/main.hcl", []byte(rootMain), 0644))
+
+	p := parser.NewParser()
+	config, diags := p.ParseDirectory(tmpDir)
+	require.False(t, diags.HasErrors(), "parse error: %s", diags.Error())
+
+	mock := &mockResourceMonitor{}
+	engine := NewEngine(config, &EngineOptions{
+		ProjectName:     "test-project",
+		StackName:       "dev",
+		ResourceMonitor: mock,
+		WorkDir:         tmpDir,
+		RootDir:         tmpDir,
+		SchemaLoader: newMockReferenceLoader(t, schema.PackageSpec{
+			Name: "aws",
+			Resources: map[string]schema.ResourceSpec{
+				"aws:index:Vpc": {
+					InputProperties: map[string]schema.PropertySpec{
+						"cidrBlock": {TypeSpec: schema.TypeSpec{Type: "string"}},
+					},
+					ObjectTypeSpec: schema.ObjectTypeSpec{
+						Properties: map[string]schema.PropertySpec{
+							"cidrBlock": {TypeSpec: schema.TypeSpec{Type: "string"}},
+						},
+					},
+				},
+			},
+		}),
+	})
+
+	require.NoError(t, engine.Run(t.Context()))
+
+	var moduleComponent *RegisterResourceRequest
+	for i := range mock.registeredResources {
+		if strings.HasPrefix(mock.registeredResources[i].Type, "components:index:") {
+			moduleComponent = &mock.registeredResources[i]
+			break
+		}
+	}
+	require.NotNil(t, moduleComponent, "expected module component to be registered")
+
+	assert.Equal(t, "vpc.primary", moduleComponent.Name)
+
+	var vpcResource *RegisterResourceRequest
+	for i := range mock.registeredResources {
+		if mock.registeredResources[i].Type == "aws:index:Vpc" {
+			vpcResource = &mock.registeredResources[i]
+			break
+		}
+	}
+	require.NotNil(t, vpcResource, "expected aws:index:Vpc resource to be registered")
+	assert.Equal(t, "vpc.primary-main", vpcResource.Name)
+}
+
+// runSensitiveMetaArgTest is a shared driver for the four "sensitive value
+// rejected by count/for_each" tests. It writes the given root.hcl into a
+// temp dir, runs the engine, and returns the resulting error.
+func runSensitiveMetaArgTest(t *testing.T, rootMain string) error {
+	t.Helper()
+	tmpDir := t.TempDir()
+
+	moduleDir := tmpDir + "/modules/m"
+	require.NoError(t, os.MkdirAll(moduleDir, 0755))
+	require.NoError(t, os.WriteFile(moduleDir+"/main.hcl", []byte(`
+output "name" { value = "leaf" }
+`), 0644))
+	require.NoError(t, os.WriteFile(tmpDir+"/main.hcl", []byte(rootMain), 0644))
+
+	p := parser.NewParser()
+	config, diags := p.ParseDirectory(tmpDir)
+	require.False(t, diags.HasErrors(), "parse error: %s", diags.Error())
+
+	mock := &mockResourceMonitor{}
+	engine := NewEngine(config, &EngineOptions{
+		ProjectName:     "test-project",
+		StackName:       "dev",
+		ResourceMonitor: mock,
+		WorkDir:         tmpDir,
+		RootDir:         tmpDir,
+		SchemaLoader: newMockReferenceLoader(t, schema.PackageSpec{
+			Name: "aws",
+			Resources: map[string]schema.ResourceSpec{
+				"aws:index:Vpc": {
+					InputProperties: map[string]schema.PropertySpec{
+						"cidrBlock": {TypeSpec: schema.TypeSpec{Type: "string"}},
+					},
+					ObjectTypeSpec: schema.ObjectTypeSpec{
+						Properties: map[string]schema.PropertySpec{
+							"cidrBlock": {TypeSpec: schema.TypeSpec{Type: "string"}},
+						},
+					},
+				},
+			},
+		}),
+	})
+
+	return engine.Run(t.Context())
+}
+
+// assertSensitiveArgumentError asserts that err is the specific diagnostic
+// emitted when a sensitive value is supplied to a meta-argument.
+func assertSensitiveArgumentError(t *testing.T, argName string, err error) {
+	t.Helper()
+	require.Error(t, err)
+	msg := err.Error()
+	assert.Contains(t, msg, "Invalid "+argName+" argument")
+	assert.Contains(t, msg,
+		"Sensitive values, or values derived from sensitive values, "+
+			"cannot be used as "+argName+" arguments.")
+}
+
+// TestEngine_ModuleForEachSensitive verifies that supplying a sensitive
+// value to a module's `for_each` produces a clean Terraform-style error
+// rather than expanding the module with a leaked secret in the URN.
+func TestEngine_ModuleForEachSensitive(t *testing.T) {
+	t.Parallel()
+
+	err := runSensitiveMetaArgTest(t, `
+module "m" {
+  source   = "./modules/m"
+  for_each = sensitive(toset(["a", "b"]))
+}
+`)
+	assertSensitiveArgumentError(t, "for_each", err)
+}
+
+// TestEngine_ModuleCountSensitive verifies the same behavior for module
+// `count`.
+func TestEngine_ModuleCountSensitive(t *testing.T) {
+	t.Parallel()
+
+	err := runSensitiveMetaArgTest(t, `
+module "m" {
+  source = "./modules/m"
+  count  = sensitive(2)
+}
+`)
+	assertSensitiveArgumentError(t, "count", err)
+}
+
+// TestEngine_ResourceForEachSensitive verifies the same behavior for a
+// resource's `for_each` (handled via [eval.EvaluateForEach]).
+func TestEngine_ResourceForEachSensitive(t *testing.T) {
+	t.Parallel()
+
+	err := runSensitiveMetaArgTest(t, `
+resource "aws_vpc" "v" {
+  for_each   = sensitive(toset(["a"]))
+  cidr_block = "10.0.0.0/16"
+}
+`)
+	assertSensitiveArgumentError(t, "for_each", err)
+}
+
+// TestEngine_ResourceCountSensitive verifies the same behavior for a
+// resource's `count`.
+func TestEngine_ResourceCountSensitive(t *testing.T) {
+	t.Parallel()
+
+	err := runSensitiveMetaArgTest(t, `
+resource "aws_vpc" "v" {
+  count      = sensitive(1)
+  cidr_block = "10.0.0.0/16"
+}
+`)
+	assertSensitiveArgumentError(t, "count", err)
+}
+
 // TestEngine_ModuleOutputRace verifies that concurrent processing of multiple
 // module outputs does not trigger a data race on moduleInstance.Outputs.
 // This is a regression test for https://github.com/pulumi-labs/pulumi-hcl/issues/60.
