@@ -1468,8 +1468,18 @@ func ExtractSemverFromConstraint(constraint string) string {
 func extractResourceName(key string) string {
 	baseKey, index, eachKey := graph.ParseInstanceKey(key)
 
-	// Strip the "type." prefix from the base key to get the logical name.
-	if _, after, ok := strings.Cut(baseKey, "."); ok {
+	// For module calls (possibly nested) the key looks like
+	// "module.outer.module.inner" — join the module names with hyphens to
+	// produce "outer-inner". For ordinary resources ("type.name") just strip
+	// the leading "type." prefix.
+	if strings.HasPrefix(baseKey, "module.") {
+		parts := strings.Split(baseKey, ".")
+		names := make([]string, 0, len(parts)/2)
+		for i := 0; i+1 < len(parts) && parts[i] == "module"; i += 2 {
+			names = append(names, parts[i+1])
+		}
+		baseKey = strings.Join(names, "-")
+	} else if _, after, ok := strings.Cut(baseKey, "."); ok {
 		baseKey = after
 	}
 
