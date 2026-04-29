@@ -776,26 +776,49 @@ func (g *generator) genInvokeDataSource(body *hclwrite.Body, ds spilledDataSourc
 
 	var invokeSchema *schema.Function
 	for _, p := range g.program.PackageReferences() {
-		if p.Name() == tokens.Type(token).Package().String() {
-			pkg, mod, name, _ := pcl.DecomposeToken(token, hcl.Range{})
-			// PCL normalizes "pkg:index:name" to "pkg::name", but schema
-			// stores the original token. Reconstruct the canonical form
-			// using DecomposeToken (which fills in "index" for an empty module)
-			// and retry.
-			token = pkg + ":" + mod + ":" + name
-			f, ok, err := p.Functions().Get(token)
-			if err != nil {
-				return hcl.Diagnostics{{
-					Severity: hcl.DiagError,
-					Summary:  "failed to get invoke " + token,
-					Detail:   err.Error(),
-				}}
-			}
-			if ok {
-				invokeSchema = f
-			}
-			break
+		if p.Name() != tokens.Type(token).Package().String() {
+			continue
 		}
+		pkg, mod, name, _ := pcl.DecomposeToken(token, hcl.Range{})
+		// PCL normalizes "pkg:index:name" to "pkg::name", so DecomposeToken
+		// re-fills "index" for an empty module.
+		token = pkg + ":" + mod + ":" + name
+		f, ok, err := p.Functions().Get(token)
+		if err != nil {
+			return hcl.Diagnostics{{
+				Severity: hcl.DiagError,
+				Summary:  "failed to get invoke " + token,
+				Detail:   err.Error(),
+			}}
+		}
+		if !ok {
+			// When PCL binds functions, it applies meta.moduleFormat to the
+			// token. When we do a schema lookup, we need to use the original
+			// token.
+			//
+			// Find the source-form token by matching each function's
+			// TokenToModule against our module.
+			for it := p.Functions().Range(); it.Next(); {
+				t := it.Token()
+				ftPkg, _, ftName, _ := pcl.DecomposeToken(t, hcl.Range{})
+				if ftPkg == pkg && ftName == name && p.TokenToModule(t) == mod {
+					ff, fErr := it.Function()
+					if fErr != nil {
+						return hcl.Diagnostics{{
+							Severity: hcl.DiagError,
+							Summary:  "failed to load invoke " + t,
+							Detail:   fErr.Error(),
+						}}
+					}
+					f, ok = ff, true
+					break
+				}
+			}
+		}
+		if ok {
+			invokeSchema = f
+		}
+		break
 	}
 
 	dsType, diags := packages.PulumiTokenToHCL(token)
