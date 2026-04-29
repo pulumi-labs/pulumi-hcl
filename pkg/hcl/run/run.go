@@ -30,6 +30,7 @@ import (
 	"github.com/pulumi-labs/pulumi-hcl/pkg/hcl/ast"
 	"github.com/pulumi-labs/pulumi-hcl/pkg/hcl/eval"
 	"github.com/pulumi-labs/pulumi-hcl/pkg/hcl/graph"
+	"github.com/pulumi-labs/pulumi-hcl/pkg/hcl/modulepath"
 	"github.com/pulumi-labs/pulumi-hcl/pkg/hcl/modules"
 	"github.com/pulumi-labs/pulumi-hcl/pkg/hcl/packages"
 	"github.com/pulumi-labs/pulumi-hcl/pkg/hcl/parser"
@@ -168,7 +169,10 @@ type CallResponse struct {
 
 // moduleInstance represents a single runtime instance of an inlined module.
 type moduleInstance struct {
-	Key     string               // e.g., "module.first" or "module.first[0]"
+	// Path identifies this instance within the module nesting tree. The
+	// leaf [modulepath.Step] carries the count index or for_each key, if
+	// any. Path.LogicalName() is the canonical Pulumi component name.
+	Path    modulepath.Path
 	EvalCtx *eval.Context        // per-instance evaluation context
 	URN     string               // component URN
 	Index   *int                 // count index (nil if not using count)
@@ -176,6 +180,24 @@ type moduleInstance struct {
 	EachVal *cty.Value           // for_each value (nil if not using for_each)
 	mu      sync.Mutex           // protects Outputs
 	Outputs map[string]cty.Value // collected output values
+}
+
+// instancePath builds the path for one instance of a module call, replacing
+// the leaf step with one that carries the runtime disambiguator (count
+// index or for_each key, if any).
+func instancePath(modInfo *graph.ModuleInfo, index *int, eachKey *cty.Value) modulepath.Path {
+	parent, leaf, ok := modInfo.Path.Parent()
+	if !ok {
+		return modInfo.Path
+	}
+	switch {
+	case index != nil:
+		return parent.Append(modulepath.NewIndexedStep(leaf.Name(), *index))
+	case eachKey != nil:
+		return parent.Append(modulepath.NewKeyedStep(leaf.Name(), eachKey.AsString()))
+	default:
+		return modInfo.Path
+	}
 }
 
 // inheritableOpts holds the resource options that child resources can inherit from their parent.
@@ -637,7 +659,7 @@ func (e *Engine) processLocal(ctx context.Context, node *graph.Node) error {
 
 	if node.ModuleInfo != nil {
 		return e.forEachModuleInstance(node, func(inst *moduleInstance) error {
-			localName := strings.TrimPrefix(node.Key, node.ModuleInfo.Prefix+"local.")
+			localName := strings.TrimPrefix(node.Key, node.ModuleInfo.Prefix()+"local.")
 			val, diags := local.Value.Value(inst.EvalCtx.HCLContext())
 			if diags.HasErrors() {
 				return fmt.Errorf("evaluating local value %s: %s", localName, diags.Error())
@@ -707,7 +729,7 @@ func (e *Engine) registerProviderInContext(
 		logicalName = provider.Name
 	}
 	if modInst != nil {
-		modInstanceName := extractResourceName(modInst.Key)
+		modInstanceName := modInst.Path.LogicalName()
 		logicalName = modInstanceName + "-" + logicalName
 	}
 
@@ -737,7 +759,7 @@ func (e *Engine) registerProviderInContext(
 
 	if node.ModuleInfo != nil {
 		// Strip prefix for module-internal references
-		bareKey := strings.TrimPrefix(node.Key, node.ModuleInfo.Prefix)
+		bareKey := strings.TrimPrefix(node.Key, node.ModuleInfo.Prefix())
 		evalCtx.SetResource(bareKey, cty.ObjectVal(outputObj))
 	} else {
 		evalCtx.SetResource(node.Key, cty.ObjectVal(outputObj))
@@ -870,7 +892,7 @@ func (e *Engine) registerResourceInstanceInContext(
 			for _, dep := range eval.ExtractDependencies(expr) {
 				fullDep := dep
 				if node.ModuleInfo != nil {
-					fullDep = node.ModuleInfo.Prefix + dep
+					fullDep = node.ModuleInfo.Prefix() + dep
 				}
 				if resOutputs, ok := e.resourceOutputs.Get(fullDep); ok {
 					if urnVal := resOutputs.GetAttr("urn"); urnVal.Type() == cty.String {
@@ -970,17 +992,17 @@ func (e *Engine) registerResourceInstanceInContext(
 	if instance.Index != nil {
 		baseKey := instance.OriginalKey
 		if node.ModuleInfo != nil {
-			baseKey = strings.TrimPrefix(baseKey, node.ModuleInfo.Prefix)
+			baseKey = strings.TrimPrefix(baseKey, node.ModuleInfo.Prefix())
 		}
 		evalCtx.SetCountResource(baseKey, *instance.Index, cty.ObjectVal(outputObj))
 	} else if instance.EachKey != nil {
 		baseKey := instance.OriginalKey
 		if node.ModuleInfo != nil {
-			baseKey = strings.TrimPrefix(baseKey, node.ModuleInfo.Prefix)
+			baseKey = strings.TrimPrefix(baseKey, node.ModuleInfo.Prefix())
 		}
 		evalCtx.SetEachResource(baseKey, instance.EachKey.AsString(), cty.ObjectVal(outputObj))
 	} else if node.ModuleInfo != nil {
-		bareKey := strings.TrimPrefix(instance.Key, node.ModuleInfo.Prefix)
+		bareKey := strings.TrimPrefix(instance.Key, node.ModuleInfo.Prefix())
 		evalCtx.SetResource(bareKey, cty.ObjectVal(outputObj))
 	} else {
 		evalCtx.SetResource(instance.Key, cty.ObjectVal(outputObj))
@@ -1014,7 +1036,7 @@ func (e *Engine) buildResourceOptionsInContext(
 
 	resPrefix := ""
 	if modInfo != nil {
-		resPrefix = modInfo.Prefix
+		resPrefix = modInfo.Prefix()
 	}
 
 	for _, dep := range res.DependsOn {
@@ -1468,18 +1490,8 @@ func ExtractSemverFromConstraint(constraint string) string {
 func extractResourceName(key string) string {
 	baseKey, index, eachKey := graph.ParseInstanceKey(key)
 
-	// For module calls (possibly nested) the key looks like
-	// "module.outer.module.inner" — join the module names with hyphens to
-	// produce "outer-inner". For ordinary resources ("type.name") just strip
-	// the leading "type." prefix.
-	if strings.HasPrefix(baseKey, "module.") {
-		parts := strings.Split(baseKey, ".")
-		names := make([]string, 0, len(parts)/2)
-		for i := 0; i+1 < len(parts) && parts[i] == "module"; i += 2 {
-			names = append(names, parts[i+1])
-		}
-		baseKey = strings.Join(names, "-")
-	} else if _, after, ok := strings.Cut(baseKey, "."); ok {
+	// Strip the "type." prefix from the base key to get the logical name.
+	if _, after, ok := strings.Cut(baseKey, "."); ok {
 		baseKey = after
 	}
 
@@ -1504,11 +1516,11 @@ func (*Engine) extractModuleResourceName(
 	}
 
 	// Strip the module prefix to get the bare resource key (e.g., "simple_resource.name").
-	bareKey := strings.TrimPrefix(instanceKey, modInfo.Prefix)
+	bareKey := strings.TrimPrefix(instanceKey, modInfo.Prefix())
 	bareResourceName := extractResourceName(bareKey)
 
 	// Extract the module instance name (e.g., "many" or "many[0]").
-	modInstanceName := extractResourceName(modInst.Key)
+	modInstanceName := modInst.Path.LogicalName()
 
 	return modInstanceName + "-" + bareResourceName
 }
@@ -1648,7 +1660,7 @@ func (e *Engine) processDataSourceInContext(
 
 	dsKey := node.Key
 	if node.ModuleInfo != nil {
-		dsKey = strings.TrimPrefix(dsKey, node.ModuleInfo.Prefix)
+		dsKey = strings.TrimPrefix(dsKey, node.ModuleInfo.Prefix())
 	}
 	dsKey = strings.TrimPrefix(dsKey, "data.")
 
@@ -1780,7 +1792,7 @@ func (e *Engine) invokeDataSourceOnce(
 			for _, dep := range eval.ExtractDependencies(expr) {
 				fullDep := dep
 				if node.ModuleInfo != nil {
-					fullDep = node.ModuleInfo.Prefix + dep
+					fullDep = node.ModuleInfo.Prefix() + dep
 				}
 				if resOutputs, ok := e.resourceOutputs.Get(fullDep); ok {
 					if urnVal := resOutputs.GetAttr("urn"); urnVal.Type() == cty.String {
@@ -1841,7 +1853,7 @@ func (e *Engine) invokeDataSourceOnce(
 		}
 		fullDepKey := depKey
 		if node.ModuleInfo != nil {
-			fullDepKey = node.ModuleInfo.Prefix + depKey
+			fullDepKey = node.ModuleInfo.Prefix() + depKey
 		}
 		if outputs, ok := e.resourceOutputs.Get(fullDepKey); ok {
 			urnVal := outputs.GetAttr("urn")
@@ -2097,11 +2109,11 @@ func (a *moduleLoaderAdapter) LoadModule(source, workDir string) (*graph.LoadedM
 	}, nil
 }
 
-// forEachModuleInstance iterates over all instances of the module identified by node.ModuleInfo.Prefix.
+// forEachModuleInstance iterates over all instances of the module identified by node.ModuleInfo.Prefix().
 func (e *Engine) forEachModuleInstance(node *graph.Node, fn func(inst *moduleInstance) error) error {
-	instances, ok := e.moduleInstances.Get(node.ModuleInfo.Prefix)
+	instances, ok := e.moduleInstances.Get(node.ModuleInfo.Prefix())
 	if !ok {
-		return fmt.Errorf("no module instances for prefix %q", node.ModuleInfo.Prefix)
+		return fmt.Errorf("no module instances for prefix %q", node.ModuleInfo.Prefix())
 	}
 	for _, inst := range instances {
 		if err := fn(inst); err != nil {
@@ -2116,7 +2128,7 @@ func (e *Engine) forEachModuleInstance(node *graph.Node, fn func(inst *moduleIns
 func (e *Engine) processModuleVariable(node *graph.Node) error {
 	v := node.Variable
 	modInfo := node.ModuleInfo
-	varName := strings.TrimPrefix(node.Key, modInfo.Prefix+"var.")
+	varName := strings.TrimPrefix(node.Key, modInfo.Prefix()+"var.")
 
 	moduleInputAttrs, _ := modInfo.Module.Config.JustAttributes()
 	inputAttr, hasInput := moduleInputAttrs[varName]
@@ -2125,8 +2137,8 @@ func (e *Engine) processModuleVariable(node *graph.Node) error {
 	// the root evaluator context; for nested modules it is the enclosing module
 	// instance's context so that expressions like var.name resolve correctly.
 	parentEvalCtx := e.evaluator.Context()
-	if modInfo.ParentPrefix != "" {
-		parentInstances, ok := e.moduleInstances.Get(modInfo.ParentPrefix)
+	if modInfo.ParentPrefix() != "" {
+		parentInstances, ok := e.moduleInstances.Get(modInfo.ParentPrefix())
 		if ok && len(parentInstances) > 0 {
 			parentEvalCtx = parentInstances[0].EvalCtx
 		}
@@ -2187,15 +2199,13 @@ func (e *Engine) processModuleInit(ctx context.Context, node *graph.Node) error 
 	parentEvalCtx := e.evaluator.Context()
 
 	// If this is a nested module, look up the parent instance URN.
-	if modInfo.ParentPrefix != "" {
-		parentInstances, ok := e.moduleInstances.Get(modInfo.ParentPrefix)
+	if modInfo.ParentPrefix() != "" {
+		parentInstances, ok := e.moduleInstances.Get(modInfo.ParentPrefix())
 		if ok && len(parentInstances) > 0 {
 			parentURN = parentInstances[0].URN
 			parentEvalCtx = parentInstances[0].EvalCtx
 		}
 	}
-
-	baseKey := modInfo.ParentPrefix + "module." + modInfo.ModuleName
 
 	// Load the child module to get variable type constraints for input coercion.
 	childMod, err := e.moduleLoader.LoadModule(mod.Source, e.workDir)
@@ -2225,8 +2235,9 @@ func (e *Engine) processModuleInit(ctx context.Context, node *graph.Node) error 
 
 	// No count/for_each: single instance.
 	if mod.Count == nil && mod.ForEach == nil {
+		instPath := instancePath(modInfo, nil, nil)
 		componentOpts := &ResourceOptions{Parent: parentURN}
-		componentURN, _, _, err := e.registerComponentResource(ctx, componentType, extractResourceName(baseKey), property.NewMap(inputs), componentOpts)
+		componentURN, _, _, err := e.registerComponentResource(ctx, componentType, instPath.LogicalName(), property.NewMap(inputs), componentOpts)
 		if err != nil {
 			return fmt.Errorf("registering module component: %w", err)
 		}
@@ -2236,8 +2247,8 @@ func (e *Engine) processModuleInit(ctx context.Context, node *graph.Node) error 
 			e.stackName, e.projectName, e.organization,
 		)
 
-		e.moduleInstances.Set(modInfo.Prefix, []*moduleInstance{{
-			Key:     baseKey,
+		e.moduleInstances.Set(modInfo.Prefix(), []*moduleInstance{{
+			Path:    instPath,
 			EvalCtx: instCtx,
 			URN:     componentURN,
 			Outputs: make(map[string]cty.Value),
@@ -2258,11 +2269,11 @@ func (e *Engine) processModuleInit(ctx context.Context, node *graph.Node) error 
 		var instances []*moduleInstance
 		for i := range count {
 			idx := int(i)
-			instKey := fmt.Sprintf("%s[%d]", baseKey, i)
+			instPath := instancePath(modInfo, &idx, nil)
 			componentOpts := &ResourceOptions{Parent: parentURN}
-			componentURN, _, _, err := e.registerComponentResource(ctx, componentType, extractResourceName(instKey), property.NewMap(inputs), componentOpts)
+			componentURN, _, _, err := e.registerComponentResource(ctx, componentType, instPath.LogicalName(), property.NewMap(inputs), componentOpts)
 			if err != nil {
-				return fmt.Errorf("registering module component %s: %w", instKey, err)
+				return fmt.Errorf("registering module component %s: %w", instPath.String(), err)
 			}
 			instCtx := eval.NewContext(
 				modInfo.SourcePath, e.workDir,
@@ -2270,14 +2281,14 @@ func (e *Engine) processModuleInit(ctx context.Context, node *graph.Node) error 
 			)
 			instCtx.SetCount(idx)
 			instances = append(instances, &moduleInstance{
-				Key:     instKey,
+				Path:    instPath,
 				EvalCtx: instCtx,
 				URN:     componentURN,
 				Index:   &idx,
 				Outputs: make(map[string]cty.Value),
 			})
 		}
-		e.moduleInstances.Set(modInfo.Prefix, instances)
+		e.moduleInstances.Set(modInfo.Prefix(), instances)
 		return nil
 	}
 
@@ -2293,12 +2304,11 @@ func (e *Engine) processModuleInit(ctx context.Context, node *graph.Node) error 
 	it := forEachVal.ElementIterator()
 	for it.Next() {
 		k, v := it.Element()
-		keyStr := k.AsString()
-		instKey := fmt.Sprintf("%s[\"%s\"]", baseKey, keyStr)
+		instPath := instancePath(modInfo, nil, &k)
 		componentOpts := &ResourceOptions{Parent: parentURN}
-		componentURN, _, _, err := e.registerComponentResource(ctx, componentType, extractResourceName(instKey), property.NewMap(inputs), componentOpts)
+		componentURN, _, _, err := e.registerComponentResource(ctx, componentType, instPath.LogicalName(), property.NewMap(inputs), componentOpts)
 		if err != nil {
-			return fmt.Errorf("registering module component %s: %w", instKey, err)
+			return fmt.Errorf("registering module component %s: %w", instPath.String(), err)
 		}
 		instCtx := eval.NewContext(
 			modInfo.SourcePath, e.workDir,
@@ -2306,7 +2316,7 @@ func (e *Engine) processModuleInit(ctx context.Context, node *graph.Node) error 
 		)
 		instCtx.SetEach(k, v)
 		instances = append(instances, &moduleInstance{
-			Key:     instKey,
+			Path:    instPath,
 			EvalCtx: instCtx,
 			URN:     componentURN,
 			EachKey: &k,
@@ -2314,7 +2324,7 @@ func (e *Engine) processModuleInit(ctx context.Context, node *graph.Node) error 
 			Outputs: make(map[string]cty.Value),
 		})
 	}
-	e.moduleInstances.Set(modInfo.Prefix, instances)
+	e.moduleInstances.Set(modInfo.Prefix(), instances)
 	return nil
 }
 
@@ -2322,7 +2332,7 @@ func (e *Engine) processModuleInit(ctx context.Context, node *graph.Node) error 
 func (e *Engine) processModuleOutput(_ context.Context, node *graph.Node) error {
 	output := node.Output
 	modInfo := node.ModuleInfo
-	outputName := strings.TrimPrefix(node.Key, modInfo.Prefix+"output.")
+	outputName := strings.TrimPrefix(node.Key, modInfo.Prefix()+"output.")
 	mod := modInfo.Module
 	isCounted := mod.Count != nil
 	isForEach := mod.ForEach != nil
@@ -2345,13 +2355,13 @@ func (e *Engine) processModuleOutput(_ context.Context, node *graph.Node) error 
 	// can reference them before the completion node runs. For nested modules,
 	// the parent context is the enclosing module instance's eval context.
 	parentCtx := e.evaluator.Context()
-	if modInfo.ParentPrefix != "" {
-		parentInstances, ok := e.moduleInstances.Get(modInfo.ParentPrefix)
+	if modInfo.ParentPrefix() != "" {
+		parentInstances, ok := e.moduleInstances.Get(modInfo.ParentPrefix())
 		if ok && len(parentInstances) > 0 {
 			parentCtx = parentInstances[0].EvalCtx
 		}
 	}
-	instances, ok := e.moduleInstances.Get(modInfo.Prefix)
+	instances, ok := e.moduleInstances.Get(modInfo.Prefix())
 	if !ok {
 		return nil
 	}
@@ -2363,7 +2373,7 @@ func (e *Engine) processModuleOutput(_ context.Context, node *graph.Node) error 
 			v, has := inst.Outputs[outputName]
 			inst.mu.Unlock()
 			if has {
-				parentCtx.SetModuleOutput(modInfo.ModuleName, outputName, v)
+				parentCtx.SetModuleOutput(modInfo.ModuleName(), outputName, v)
 			}
 		}
 	} else if isCounted {
@@ -2379,9 +2389,9 @@ func (e *Engine) processModuleOutput(_ context.Context, node *graph.Node) error 
 			inst.mu.Unlock()
 		}
 		if len(tupleVals) > 0 {
-			parentCtx.SetModule(modInfo.ModuleName, cty.TupleVal(tupleVals))
+			parentCtx.SetModule(modInfo.ModuleName(), cty.TupleVal(tupleVals))
 		} else {
-			parentCtx.SetModule(modInfo.ModuleName, cty.EmptyTupleVal)
+			parentCtx.SetModule(modInfo.ModuleName(), cty.EmptyTupleVal)
 		}
 	} else {
 		// ForEach: rebuild the map.
@@ -2400,9 +2410,9 @@ func (e *Engine) processModuleOutput(_ context.Context, node *graph.Node) error 
 			inst.mu.Unlock()
 		}
 		if len(mapVals) > 0 {
-			parentCtx.SetModule(modInfo.ModuleName, cty.ObjectVal(mapVals))
+			parentCtx.SetModule(modInfo.ModuleName(), cty.ObjectVal(mapVals))
 		} else {
-			parentCtx.SetModule(modInfo.ModuleName, cty.EmptyObjectVal)
+			parentCtx.SetModule(modInfo.ModuleName(), cty.EmptyObjectVal)
 		}
 	}
 
@@ -2417,9 +2427,9 @@ func (e *Engine) processModuleComplete(ctx context.Context, node *graph.Node) er
 		return fmt.Errorf("module completion node missing ModuleInfo")
 	}
 
-	instances, ok := e.moduleInstances.Get(modInfo.Prefix)
+	instances, ok := e.moduleInstances.Get(modInfo.Prefix())
 	if !ok {
-		return fmt.Errorf("no module instances for prefix %q", modInfo.Prefix)
+		return fmt.Errorf("no module instances for prefix %q", modInfo.Prefix())
 	}
 
 	mod := modInfo.Module
@@ -2445,8 +2455,8 @@ func (e *Engine) processModuleComplete(ctx context.Context, node *graph.Node) er
 	// Assemble module value in parent eval context. For nested modules, the
 	// parent context is the enclosing module instance's eval context.
 	parentCtx := e.evaluator.Context()
-	if modInfo.ParentPrefix != "" {
-		parentInstances, ok := e.moduleInstances.Get(modInfo.ParentPrefix)
+	if modInfo.ParentPrefix() != "" {
+		parentInstances, ok := e.moduleInstances.Get(modInfo.ParentPrefix())
 		if ok && len(parentInstances) > 0 {
 			parentCtx = parentInstances[0].EvalCtx
 		}
@@ -2456,7 +2466,7 @@ func (e *Engine) processModuleComplete(ctx context.Context, node *graph.Node) er
 		// Single instance: module.X is an object of outputs.
 		if len(instances) == 1 {
 			for k, v := range instances[0].Outputs {
-				parentCtx.SetModuleOutput(modInfo.ModuleName, k, v)
+				parentCtx.SetModuleOutput(modInfo.ModuleName(), k, v)
 			}
 		}
 	} else if isCounted {
@@ -2470,9 +2480,9 @@ func (e *Engine) processModuleComplete(ctx context.Context, node *graph.Node) er
 			}
 		}
 		if len(tupleVals) > 0 {
-			parentCtx.SetModule(modInfo.ModuleName, cty.TupleVal(tupleVals))
+			parentCtx.SetModule(modInfo.ModuleName(), cty.TupleVal(tupleVals))
 		} else {
-			parentCtx.SetModule(modInfo.ModuleName, cty.EmptyTupleVal)
+			parentCtx.SetModule(modInfo.ModuleName(), cty.EmptyTupleVal)
 		}
 	} else {
 		// ForEach: module.X is a map of key → output object.
@@ -2489,9 +2499,9 @@ func (e *Engine) processModuleComplete(ctx context.Context, node *graph.Node) er
 			}
 		}
 		if len(mapVals) > 0 {
-			parentCtx.SetModule(modInfo.ModuleName, cty.ObjectVal(mapVals))
+			parentCtx.SetModule(modInfo.ModuleName(), cty.ObjectVal(mapVals))
 		} else {
-			parentCtx.SetModule(modInfo.ModuleName, cty.EmptyObjectVal)
+			parentCtx.SetModule(modInfo.ModuleName(), cty.EmptyObjectVal)
 		}
 	}
 

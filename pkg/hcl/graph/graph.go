@@ -28,17 +28,43 @@ import (
 	"github.com/hashicorp/hcl/v2/hclsyntax"
 	"github.com/pulumi-labs/pulumi-hcl/pkg/hcl/ast"
 	"github.com/pulumi-labs/pulumi-hcl/pkg/hcl/eval"
+	"github.com/pulumi-labs/pulumi-hcl/pkg/hcl/modulepath"
 	"github.com/pulumi/pulumi/pkg/v3/util/pdag"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/util/contract"
 )
 
 // ModuleInfo holds metadata for nodes that are part of an inlined module.
 type ModuleInfo struct {
-	Prefix       string      // e.g., "module.first." — prefixed to all internal keys
-	ModuleName   string      // e.g., "first"
-	Module       *ast.Module // the module block from the parent config
-	SourcePath   string      // resolved source path (for component type name)
-	ParentPrefix string      // "" for root-level modules, "module.outer." for nested
+	// Path identifies this module call within the nesting tree.
+	// Its leaf step is bare (no count/for_each disambiguator) — runtime
+	// instances of count/for_each-expanded calls live separately.
+	Path modulepath.Path
+
+	Module     *ast.Module // the module block from the parent config
+	SourcePath string      // resolved source path (for component type name)
+}
+
+// ModuleName returns the block label of this module call (e.g. "first").
+func (m *ModuleInfo) ModuleName() string {
+	_, last, ok := m.Path.Parent()
+	if !ok {
+		return ""
+	}
+	return last.Name()
+}
+
+// Prefix returns the string prefix used to disambiguate node keys
+// belonging to this module from the rest of the graph.
+func (m *ModuleInfo) Prefix() string { return m.Path.PrefixString() }
+
+// ParentPrefix returns the string prefix of the enclosing module, or "" if
+// this module is at the root of the configuration.
+func (m *ModuleInfo) ParentPrefix() string {
+	parent, _, ok := m.Path.Parent()
+	if !ok {
+		return ""
+	}
+	return parent.PrefixString()
 }
 
 // LoadedModule represents a loaded and parsed module (used by ModuleLoader).
@@ -297,7 +323,7 @@ func BuildFromConfig(config *ast.Config, moduleLoader ModuleLoader, workDir stri
 
 	// Inline module contents into the graph for fine-grained dependency tracking.
 	for name, module := range config.Modules {
-		if err := g.inlineModule(name, module, "", moduleLoader, workDir); err != nil {
+		if err := g.inlineModule(name, module, modulepath.Root(), moduleLoader, workDir); err != nil {
 			return nil, fmt.Errorf("inlining module %s: %w", name, err)
 		}
 	}
@@ -575,9 +601,10 @@ func (g *Graph) Validate() []error {
 	return errors
 }
 
-// inlineModule loads a module and inlines its contents into the graph with a prefix.
+// inlineModule loads a module and inlines its contents into the graph
+// rooted at parentPath.
 func (g *Graph) inlineModule(
-	name string, mod *ast.Module, parentPrefix string,
+	name string, mod *ast.Module, parentPath modulepath.Path,
 	moduleLoader ModuleLoader, workDir string,
 ) error {
 	loaded, err := moduleLoader.LoadModule(mod.Source, workDir)
@@ -585,13 +612,13 @@ func (g *Graph) inlineModule(
 		return fmt.Errorf("loading module %s: %w", name, err)
 	}
 
-	prefix := parentPrefix + "module." + name + "."
+	path := parentPath.Append(modulepath.NewStep(name))
+	prefix := path.PrefixString()
+	parentPrefix := parentPath.PrefixString()
 	modInfo := &ModuleInfo{
-		Prefix:       prefix,
-		ModuleName:   name,
-		Module:       mod,
-		SourcePath:   loaded.SourcePath,
-		ParentPrefix: parentPrefix,
+		Path:       path,
+		Module:     mod,
+		SourcePath: loaded.SourcePath,
 	}
 
 	// Init node: depends on count/for_each/depends_on from parent scope.
@@ -697,7 +724,9 @@ func (g *Graph) inlineModule(
 		}
 	}
 
-	// Completion node: depends on all outputs + init.
+	// Completion node: depends on all outputs + init. The completion key
+	// is the module call's identifier (without the trailing "."), so that
+	// expressions like `module.<name>` in the parent scope resolve to it.
 	completionKey := parentPrefix + "module." + name
 	completionDeps := []pdag.Node{initIdx}
 	for outputName := range loaded.Config.Outputs {
@@ -719,7 +748,7 @@ func (g *Graph) inlineModule(
 
 	// Nested modules
 	for nestedName, nestedMod := range loaded.Config.Modules {
-		if err := g.inlineModule(nestedName, nestedMod, prefix, moduleLoader, loaded.SourcePath); err != nil {
+		if err := g.inlineModule(nestedName, nestedMod, path, moduleLoader, loaded.SourcePath); err != nil {
 			return fmt.Errorf("inlining nested module %s: %w", nestedName, err)
 		}
 	}

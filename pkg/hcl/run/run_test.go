@@ -1491,6 +1491,83 @@ output "vpc_id" {
 	}
 }
 
+// TestEngine_ModuleNameWithDot verifies that module names containing a "."
+// are preserved verbatim when computing the component's logical resource name,
+// rather than being split apart by dot-based key parsing.
+func TestEngine_ModuleNameWithDot(t *testing.T) {
+	t.Parallel()
+
+	tmpDir := t.TempDir()
+
+	moduleDir := tmpDir + "/modules/vpc"
+	require.NoError(t, os.MkdirAll(moduleDir, 0755))
+
+	moduleMain := `
+resource "aws_vpc" "main" {
+  cidr_block = "10.0.0.0/16"
+}
+`
+	require.NoError(t, os.WriteFile(moduleDir+"/main.hcl", []byte(moduleMain), 0644))
+
+	rootMain := `
+module "vpc.primary" {
+  source = "./modules/vpc"
+}
+`
+	require.NoError(t, os.WriteFile(tmpDir+"/main.hcl", []byte(rootMain), 0644))
+
+	p := parser.NewParser()
+	config, diags := p.ParseDirectory(tmpDir)
+	require.False(t, diags.HasErrors(), "parse error: %s", diags.Error())
+
+	mock := &mockResourceMonitor{}
+	engine := NewEngine(config, &EngineOptions{
+		ProjectName:     "test-project",
+		StackName:       "dev",
+		ResourceMonitor: mock,
+		WorkDir:         tmpDir,
+		RootDir:         tmpDir,
+		SchemaLoader: newMockReferenceLoader(t, schema.PackageSpec{
+			Name: "aws",
+			Resources: map[string]schema.ResourceSpec{
+				"aws:index:Vpc": {
+					InputProperties: map[string]schema.PropertySpec{
+						"cidrBlock": {TypeSpec: schema.TypeSpec{Type: "string"}},
+					},
+					ObjectTypeSpec: schema.ObjectTypeSpec{
+						Properties: map[string]schema.PropertySpec{
+							"cidrBlock": {TypeSpec: schema.TypeSpec{Type: "string"}},
+						},
+					},
+				},
+			},
+		}),
+	})
+
+	require.NoError(t, engine.Run(t.Context()))
+
+	var moduleComponent *RegisterResourceRequest
+	for i := range mock.registeredResources {
+		if strings.HasPrefix(mock.registeredResources[i].Type, "components:index:") {
+			moduleComponent = &mock.registeredResources[i]
+			break
+		}
+	}
+	require.NotNil(t, moduleComponent, "expected module component to be registered")
+
+	assert.Equal(t, "vpc.primary", moduleComponent.Name)
+
+	var vpcResource *RegisterResourceRequest
+	for i := range mock.registeredResources {
+		if mock.registeredResources[i].Type == "aws:index:Vpc" {
+			vpcResource = &mock.registeredResources[i]
+			break
+		}
+	}
+	require.NotNil(t, vpcResource, "expected aws:index:Vpc resource to be registered")
+	assert.Equal(t, "vpc.primary-main", vpcResource.Name)
+}
+
 // TestEngine_ModuleOutputRace verifies that concurrent processing of multiple
 // module outputs does not trigger a data race on moduleInstance.Outputs.
 // This is a regression test for https://github.com/pulumi-labs/pulumi-hcl/issues/60.
