@@ -930,7 +930,8 @@ func (g *generator) genInvokeDataSource(body *hclwrite.Body, ds spilledDataSourc
 func (g *generator) genResource(body *hclwrite.Body, r *pcl.Resource) hcl.Diagnostics {
 	defer func() { g.currentRangeKind = rangeKindNone }()
 
-	hclType, d := packages.PulumiTokenToHCL(r.Token)
+	token, _ := r.GetToken()
+	hclType, d := packages.PulumiTokenToHCL(token)
 	if d.HasErrors() {
 		return d
 	}
@@ -1966,7 +1967,8 @@ func (g *generator) getOutputTokens(expr *model.FunctionCallExpression) (hclwrit
 	}
 
 	// Get the HCL resource type
-	hclType, diags := packages.PulumiTokenToHCL(res.Token)
+	token, _ := res.GetToken()
+	hclType, diags := packages.PulumiTokenToHCL(token)
 	if diags.HasErrors() {
 		return nil, diags
 	}
@@ -2191,7 +2193,8 @@ func (g *generator) scopeTraversalTokens(expr *model.ScopeTraversalExpression) (
 		// TODO: Resource traversal needs to be type (and schema) aware. It needs to invoke
 		// [transform.SnakeCaseFromPulumiCase] on property values, and the invoke the standard ["<key>"]
 		// & [<idx>] operators otherwise.
-		hclType, diags := packages.PulumiTokenToHCL(part.Token)
+		token, _ := part.GetToken()
+		hclType, diags := packages.PulumiTokenToHCL(token)
 		if diags.HasErrors() {
 			return nil, diags
 		}

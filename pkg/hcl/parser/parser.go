@@ -913,35 +913,19 @@ func (p *Parser) parseTimeoutsBlock(block *hcl.Block) (*ast.Timeouts, hcl.Diagno
 	}
 
 	if attr, ok := content.Attributes["create"]; ok {
-		val, valDiags := attr.Expr.Value(nil)
-		diags = append(diags, valDiags...)
-		if val.Type() == cty.String {
-			timeouts.Create = val.AsString()
-		}
+		timeouts.Create = attr.Expr
 	}
 
 	if attr, ok := content.Attributes["read"]; ok {
-		val, valDiags := attr.Expr.Value(nil)
-		diags = append(diags, valDiags...)
-		if val.Type() == cty.String {
-			timeouts.Read = val.AsString()
-		}
+		timeouts.Read = attr.Expr
 	}
 
 	if attr, ok := content.Attributes["update"]; ok {
-		val, valDiags := attr.Expr.Value(nil)
-		diags = append(diags, valDiags...)
-		if val.Type() == cty.String {
-			timeouts.Update = val.AsString()
-		}
+		timeouts.Update = attr.Expr
 	}
 
 	if attr, ok := content.Attributes["delete"]; ok {
-		val, valDiags := attr.Expr.Value(nil)
-		diags = append(diags, valDiags...)
-		if val.Type() == cty.String {
-			timeouts.Delete = val.AsString()
-		}
+		timeouts.Delete = attr.Expr
 	}
 
 	return timeouts, diags

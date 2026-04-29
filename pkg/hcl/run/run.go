@@ -1120,23 +1120,31 @@ func (e *Engine) buildResourceOptionsInContext(
 	if res.Timeouts != nil {
 		ct := &CustomTimeouts{}
 		hasTimeouts := false
-		if res.Timeouts.Create != "" {
-			if d, err := time.ParseDuration(res.Timeouts.Create); err == nil {
-				ct.Create = d.Seconds()
-				hasTimeouts = true
+		evalTimeout := func(expr hcl.Expression) (float64, bool) {
+			if expr == nil {
+				return 0, false
 			}
+			val, diags := e.evaluator.EvaluateExpression(expr)
+			if diags.HasErrors() || val.Type() != cty.String {
+				return 0, false
+			}
+			d, err := time.ParseDuration(val.AsString())
+			if err != nil {
+				return 0, false
+			}
+			return d.Seconds(), true
 		}
-		if res.Timeouts.Update != "" {
-			if d, err := time.ParseDuration(res.Timeouts.Update); err == nil {
-				ct.Update = d.Seconds()
-				hasTimeouts = true
-			}
+		if v, ok := evalTimeout(res.Timeouts.Create); ok {
+			ct.Create = v
+			hasTimeouts = true
 		}
-		if res.Timeouts.Delete != "" {
-			if d, err := time.ParseDuration(res.Timeouts.Delete); err == nil {
-				ct.Delete = d.Seconds()
-				hasTimeouts = true
-			}
+		if v, ok := evalTimeout(res.Timeouts.Update); ok {
+			ct.Update = v
+			hasTimeouts = true
+		}
+		if v, ok := evalTimeout(res.Timeouts.Delete); ok {
+			ct.Delete = v
+			hasTimeouts = true
 		}
 		if hasTimeouts {
 			opts.CustomTimeouts = ct
