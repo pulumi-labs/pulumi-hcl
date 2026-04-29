@@ -30,13 +30,13 @@ import (
 //	}
 type Timeouts struct {
 	// Create is the timeout for create operations.
-	Create string
+	Create hcl.Expression
 	// Read is the timeout for read operations.
-	Read string
+	Read hcl.Expression
 	// Update is the timeout for update operations.
-	Update string
+	Update hcl.Expression
 	// Delete is the timeout for delete operations.
-	Delete string
+	Delete hcl.Expression
 	// DeclRange is the source range of the timeouts block.
 	DeclRange hcl.Range
 }

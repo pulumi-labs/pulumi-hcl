@@ -36,3 +36,12 @@ resource "simple_resource" "allTimeouts" {
   }
   value = true
 }
+resource "simple_resource" "configTimeout" {
+  timeouts {
+    create = var.createTimeout
+  }
+  value = true
+}
+variable "createTimeout" {
+  type = string
+}

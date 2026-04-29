@@ -40,3 +40,15 @@ resource "allTimeouts" "simple:index:Resource" {
   }
 }
 
+resource "configTimeout" "simple:index:Resource" {
+  value = true
+  options {
+    customTimeouts = {
+      create = createTimeout
+    }
+  }
+}
+
+config "createTimeout" "string" {
+}
+
