@@ -977,7 +977,11 @@ func (e *Engine) registerResourceInstanceInContext(
 	if err != nil {
 		return fmt.Errorf("converting resource outputs to HCL types: %w", err)
 	}
-	outputObj["id"] = cty.StringVal(id)
+	if e.dryRun && id == "" {
+		outputObj["id"] = cty.UnknownVal(cty.String)
+	} else {
+		outputObj["id"] = cty.StringVal(id)
+	}
 	outputObj["urn"] = cty.StringVal(urn)
 
 	e.resourceOutputs.Set(instance.Key, cty.ObjectVal(outputObj))
@@ -1952,8 +1956,10 @@ func (e *Engine) processCall(ctx context.Context, node *graph.Node) error {
 		selfID = property.New(property.Null)
 	} else {
 		idVal := outputs.GetAttr("id")
-		if idVal.Type() == cty.String {
+		if idVal.Type() == cty.String && idVal.IsKnown() {
 			selfID = property.New(idVal.AsString())
+		} else if idVal.Type() == cty.String {
+			selfID = property.New(property.Computed)
 		} else {
 			selfID = property.New(property.Null)
 		}
