@@ -135,7 +135,6 @@ var expectedFailures = map[string]string{
 		" - not compatible with block syntax",
 	"l2-resource-primitive-conversions":  "primitive type coercion (e.g. string→bool) not yet supported by HCL runtime",
 	"l3-component-primitive-conversions": "primitive type coercion (e.g. string→bool) not yet supported by HCL runtime",
-	"l2-id-type":                         "ID-as-string coercion across primitive types not yet supported by HCL runtime",
 	"l2-resource-option-hooks":           "PCL pcl.Hook nodes not yet supported by HCL codegen",
 }
 
