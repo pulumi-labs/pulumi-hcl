@@ -133,7 +133,6 @@ var expectedFailures = map[string]string{
 	"l2-plain": "unsupported in HCL:" +
 		" requires that HCL can distinguish between an empty and null List<Object>" +
 		" - not compatible with block syntax",
-	"l2-resource-primitive-conversions":  "primitive type coercion (e.g. string→bool) not yet supported by HCL runtime",
 	"l3-component-primitive-conversions": "primitive type coercion (e.g. string→bool) not yet supported by HCL runtime",
 	"l2-resource-option-hooks":           "PCL pcl.Hook nodes not yet supported by HCL codegen",
 }

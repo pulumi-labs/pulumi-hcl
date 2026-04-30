@@ -315,13 +315,23 @@ func conformCtyToType(val cty.Value, typ cty.Type) cty.Value {
 	}
 
 	if val.Type().IsObjectType() && typ.IsMapType() {
+		elemType := typ.ElementType()
 		m := make(map[string]cty.Value, val.LengthInt())
 		for attrs := val.ElementIterator(); attrs.Next(); {
 			k, v := attrs.Element()
-			m[k.AsString()] = conformCtyToType(v, typ.ElementType())
+			v = conformCtyToType(v, elemType)
+			// Coerce primitive elements to the target type so a literal like
+			// {fromBool = true, fromString = "true"} becomes a uniform map<bool>.
+			// Without this, cty.MapVal panics on mixed-type values.
+			if elemType.IsPrimitiveType() && !v.Type().Equals(elemType) {
+				if converted, err := convert.Convert(v, elemType); err == nil {
+					v = converted
+				}
+			}
+			m[k.AsString()] = v
 		}
 		if len(m) == 0 {
-			return cty.MapValEmpty(typ.ElementType())
+			return cty.MapValEmpty(elemType)
 		}
 		return cty.MapVal(m)
 	}

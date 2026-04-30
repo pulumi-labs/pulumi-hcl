@@ -2175,7 +2175,7 @@ func (g *generator) scopeTraversalTokens(expr *model.ScopeTraversalExpression) (
 								hcl.TraverseAttr{Name: dsType},
 								hcl.TraverseAttr{Name: ds.name},
 							}
-							return hclwrite.TokensForTraversal(append(rewritten, traversal[1:]...)), nil
+							return hclwrite.TokensForTraversal(append(rewritten, naiveRewriteTraversal(traversal[1:])...)), nil
 						}
 					}
 					break
