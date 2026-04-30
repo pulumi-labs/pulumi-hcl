@@ -5,8 +5,9 @@ permissions:
 
 on:
   push:
-    branches: [master]
+    branches: [iwahbe/release]
     paths: [CHANGELOG.md]
+  workflow_dispatch:
 
 jobs:
   release:
