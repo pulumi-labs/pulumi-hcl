@@ -1,0 +1,51 @@
+name: Release
+
+on:
+  push:
+    branches:
+      - master
+      - iwahbe/release
+    paths:
+      - CHANGELOG.md
+
+jobs:
+  ci:
+    uses: ./.github/workflows/ci.yml
+    secrets: inherit
+
+  release:
+    needs: ci
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: jdx/mise-action@v2
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Add env vars
+        run: |
+          echo "GORELEASER_CURRENT_TAG=$(changie latest)" >> "$GITHUB_ENV"
+      - name: Check if release tag already exists
+        id: check-release
+        run: |
+          git fetch --tags --quiet
+          if [ -z "$(git tag -l "${GORELEASER_CURRENT_TAG}")" ]; then
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Create and push tag
+        if: steps.check-release.outputs.exists == 'false'
+        run: |
+          git tag "${GORELEASER_CURRENT_TAG}"
+          git push origin "${GORELEASER_CURRENT_TAG}"
+      - name: Run GoReleaser
+        if: steps.check-release.outputs.exists == 'false'
+        uses: goreleaser/goreleaser-action@v7
+        with:
+          version: latest
+          args: release --clean --release-notes=${{ env.RELEASE_NOTES_PATH }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
