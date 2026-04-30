@@ -4,7 +4,9 @@ on:
   push:
     branches:
       - master
+      - iwahbe/release
   pull_request:
+  workflow_dispatch:
 
 jobs:
   lint:
@@ -32,3 +34,70 @@ jobs:
         with:
           files: coverage.out
           token: ${{ secrets.CODECOV_TOKEN }}
+
+  check-changelog:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Verify a changelog fragment was added
+        if: ${{ !contains(github.event.pull_request.labels.*.name, 'impact/no-changelog-required') }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR: ${{ github.event.pull_request.number }}
+          REPO: ${{ github.repository }}
+        run: |
+          ADDED="$(gh api "repos/$REPO/pulls/$PR/files" --paginate \
+            --jq '.[] | select(.status == "added") | .filename' \
+            | grep '^\.changes/' | grep -v '/\.gitkeep$' || true)"
+          if [ -z "$ADDED" ]; then
+            echo "::error::No changelog fragment added under .changes/."
+            echo "Run \`changie new\` and commit the resulting file, or add the"
+            echo "\`impact/no-changelog-required\` label to skip this check."
+            exit 1
+          fi
+          echo "Found changelog change(s):"
+          echo "$ADDED"
+
+  release:
+    needs: [lint, test]
+    if: |
+      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'push' &&
+       (github.ref == 'refs/heads/master' || github.ref == 'refs/heads/iwahbe/release') &&
+       contains(github.event.head_commit.modified, 'CHANGELOG.md'))
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: jdx/mise-action@v2
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Add env vars
+        run: |
+          LATEST="$(changie latest)"
+          echo "GORELEASER_CURRENT_TAG=$LATEST" >> "$GITHUB_ENV"
+          echo "RELEASE_NOTES_PATH=.changes/$LATEST.md" >> "$GITHUB_ENV"
+      - name: Check if release tag already exists
+        id: check-release
+        run: |
+          git fetch --tags --quiet
+          if [ -z "$(git tag -l "${GORELEASER_CURRENT_TAG}")" ]; then
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Create and push tag
+        if: steps.check-release.outputs.exists == 'false'
+        run: |
+          git tag "${GORELEASER_CURRENT_TAG}"
+          git push origin "${GORELEASER_CURRENT_TAG}"
+      - name: Run GoReleaser
+        if: steps.check-release.outputs.exists == 'false'
+        uses: goreleaser/goreleaser-action@v7
+        with:
+          version: latest
+          args: release --clean --release-notes=${{ env.RELEASE_NOTES_PATH }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
