@@ -1202,6 +1202,139 @@ func TestNotImplemented(t *testing.T) {
 	})
 }
 
+// TestInvokeOutput locks in that traversals into an invoke's outputs are rewritten using
+// the function's schema.
+func TestInvokeOutput(t *testing.T) {
+	t.Parallel()
+
+	testSchema := schema.PackageSpec{
+		Name:    "test",
+		Version: "1.0.0",
+		Resources: map[string]schema.ResourceSpec{
+			"test:index:Sink": {
+				InputProperties: map[string]schema.PropertySpec{
+					"value": {TypeSpec: schema.TypeSpec{Type: "string"}},
+				},
+			},
+		},
+		Functions: map[string]schema.FunctionSpec{
+			"test:index:getInfo": {
+				Outputs: &schema.ObjectTypeSpec{
+					Properties: map[string]schema.PropertySpec{
+						"snake_case_field": {TypeSpec: schema.TypeSpec{Type: "string"}},
+						"tagsMap": {
+							TypeSpec: schema.TypeSpec{
+								Type:                 "object",
+								AdditionalProperties: &schema.TypeSpec{Type: "string"},
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	pclSource := `info = invoke("test:index:getInfo", {})
+
+resource "snakeSink" "test:index:Sink" {
+    value = info.snake_case_field
+}
+
+resource "tagSink" "test:index:Sink" {
+    value = info.tagsMap.UserKey
+}
+`
+
+	monitor := &testutil.MockResourceMonitor{
+		InvokeHandler: func(_ context.Context, _ hclrun.InvokeRequest) (*hclrun.InvokeResponse, error) {
+			return &hclrun.InvokeResponse{
+				Return: property.NewMap(map[string]property.Value{
+					"snake_case_field": property.New("value"),
+					"tagsMap": property.New(property.NewMap(map[string]property.Value{
+						"UserKey": property.New("v"),
+					})),
+				}),
+			}, nil
+		},
+	}
+
+	testConvertedPCLWithComponent(t, pclSource, nil, monitor, testSchema)
+}
+
+// TestInvokeReturnType covers the case where a function declares its outputs via
+// FunctionSpec.ReturnType.
+func TestInvokeReturnType(t *testing.T) {
+	t.Parallel()
+
+	testSchema := schema.PackageSpec{
+		Name:    "test",
+		Version: "1.0.0",
+		Resources: map[string]schema.ResourceSpec{
+			"test:index:Sink": {
+				InputProperties: map[string]schema.PropertySpec{
+					"value": {TypeSpec: schema.TypeSpec{Type: "string"}},
+				},
+			},
+		},
+		Types: map[string]schema.ComplexTypeSpec{
+			"test:index:Info": {
+				ObjectTypeSpec: schema.ObjectTypeSpec{
+					Type: "object",
+					Properties: map[string]schema.PropertySpec{
+						"snake_case_field": {TypeSpec: schema.TypeSpec{Type: "string"}},
+						"tagsMap": {
+							TypeSpec: schema.TypeSpec{
+								Type:                 "object",
+								AdditionalProperties: &schema.TypeSpec{Type: "string"},
+							},
+						},
+					},
+				},
+			},
+		},
+		Functions: map[string]schema.FunctionSpec{
+			"test:index:getInfo": {
+				ReturnType: &schema.ReturnTypeSpec{
+					TypeSpec: &schema.TypeSpec{
+						Type:  "array",
+						Items: &schema.TypeSpec{Ref: "#/types/test:index:Info"},
+					},
+				},
+			},
+		},
+	}
+
+	pclSource := `info = invoke("test:index:getInfo", {})
+
+resource "snakeSink" "test:index:Sink" {
+    value = info[0].snake_case_field
+}
+
+resource "tagSink" "test:index:Sink" {
+    value = info[0].tagsMap.UserKey
+}
+`
+
+	monitor := &testutil.MockResourceMonitor{
+		InvokeHandler: func(_ context.Context, _ hclrun.InvokeRequest) (*hclrun.InvokeResponse, error) {
+			return &hclrun.InvokeResponse{
+				Return: property.NewMap(map[string]property.Value{
+					"items": property.New([]property.Value{
+						property.New(property.NewMap(map[string]property.Value{
+							"snake_case_field": property.New("value"),
+							"tagsMap": property.New(property.NewMap(map[string]property.Value{
+								"UserKey": property.New("v"),
+							})),
+						})),
+					}),
+				}),
+			}, nil
+		},
+	}
+
+	testConvertedPCLWithComponent(t, pclSource, nil, monitor, testSchema)
+}
+
 func testConvertedPCL(t *testing.T, pclSource string, schemas ...schema.PackageSpec) *testutil.MockResourceMonitor {
 	t.Helper()
 	return testConvertedPCLWithComponent(t, pclSource, nil, nil, schemas...)

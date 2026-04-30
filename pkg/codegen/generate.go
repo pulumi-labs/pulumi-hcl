@@ -750,6 +750,59 @@ func (g *generator) genCallBlock(body *hclwrite.Body, cb spilledCall) hcl.Diagno
 	return diags
 }
 
+// lookupInvokeSchema resolves an invoke token against the program's loaded
+// package references and returns the function schema. It returns the
+// canonical token (with the module re-filled when PCL has stripped "index")
+// alongside the schema. A nil schema with a nil diagnostic means the package
+// is loaded but the function is not defined; callers should treat this as
+// "schema unavailable" rather than an error.
+func (g *generator) lookupInvokeSchema(token string) (*schema.Function, string, *hcl.Diagnostic) {
+	for _, p := range g.program.PackageReferences() {
+		if p.Name() != tokens.Type(token).Package().String() {
+			continue
+		}
+		pkg, mod, name, _ := pcl.DecomposeToken(token, hcl.Range{})
+		// PCL normalizes "pkg:index:name" to "pkg::name", so DecomposeToken
+		// re-fills "index" for an empty module.
+		canonical := pkg + ":" + mod + ":" + name
+		f, ok, err := p.Functions().Get(canonical)
+		if err != nil {
+			return nil, canonical, &hcl.Diagnostic{
+				Severity: hcl.DiagError,
+				Summary:  "failed to get invoke " + canonical,
+				Detail:   err.Error(),
+			}
+		}
+		if !ok {
+			// When PCL binds functions, it applies meta.moduleFormat to the
+			// token. When we do a schema lookup, we need to use the original
+			// token. Find the source-form token by matching each function's
+			// TokenToModule against our module.
+			for it := p.Functions().Range(); it.Next(); {
+				t := it.Token()
+				ftPkg, _, ftName, _ := pcl.DecomposeToken(t, hcl.Range{})
+				if ftPkg == pkg && ftName == name && p.TokenToModule(t) == mod {
+					ff, fErr := it.Function()
+					if fErr != nil {
+						return nil, canonical, &hcl.Diagnostic{
+							Severity: hcl.DiagError,
+							Summary:  "failed to load invoke " + t,
+							Detail:   fErr.Error(),
+						}
+					}
+					f, ok = ff, true
+					break
+				}
+			}
+		}
+		if ok {
+			return f, canonical, nil
+		}
+		return nil, canonical, nil
+	}
+	return nil, token, nil
+}
+
 // genInvokeDataSource generates a data source block for an invoke call.
 // If ds.parentResource is set, the block is emitted with a for_each matching
 // the resource's range so range.* references rewrite correctly.
@@ -774,52 +827,11 @@ func (g *generator) genInvokeDataSource(body *hclwrite.Body, ds spilledDataSourc
 		}}
 	}
 
-	var invokeSchema *schema.Function
-	for _, p := range g.program.PackageReferences() {
-		if p.Name() != tokens.Type(token).Package().String() {
-			continue
-		}
-		pkg, mod, name, _ := pcl.DecomposeToken(token, hcl.Range{})
-		// PCL normalizes "pkg:index:name" to "pkg::name", so DecomposeToken
-		// re-fills "index" for an empty module.
-		token = pkg + ":" + mod + ":" + name
-		f, ok, err := p.Functions().Get(token)
-		if err != nil {
-			return hcl.Diagnostics{{
-				Severity: hcl.DiagError,
-				Summary:  "failed to get invoke " + token,
-				Detail:   err.Error(),
-			}}
-		}
-		if !ok {
-			// When PCL binds functions, it applies meta.moduleFormat to the
-			// token. When we do a schema lookup, we need to use the original
-			// token.
-			//
-			// Find the source-form token by matching each function's
-			// TokenToModule against our module.
-			for it := p.Functions().Range(); it.Next(); {
-				t := it.Token()
-				ftPkg, _, ftName, _ := pcl.DecomposeToken(t, hcl.Range{})
-				if ftPkg == pkg && ftName == name && p.TokenToModule(t) == mod {
-					ff, fErr := it.Function()
-					if fErr != nil {
-						return hcl.Diagnostics{{
-							Severity: hcl.DiagError,
-							Summary:  "failed to load invoke " + t,
-							Detail:   fErr.Error(),
-						}}
-					}
-					f, ok = ff, true
-					break
-				}
-			}
-		}
-		if ok {
-			invokeSchema = f
-		}
-		break
+	invokeSchema, schemaToken, diag := g.lookupInvokeSchema(token)
+	if diag != nil {
+		return hcl.Diagnostics{diag}
 	}
+	token = schemaToken
 
 	dsType, diags := packages.PulumiTokenToHCL(token)
 	if diags.HasErrors() {
@@ -2056,6 +2068,19 @@ func traversalStepsToTokens(traversal hcl.Traversal) hclwrite.Tokens {
 	return tokens
 }
 
+// rewriteInvokeOutputTraversal rewrites a traversal of an invoke's outputs so
+// that attribute names match the data source's emitted schema. When the
+// function's output schema is available it is walked so non-object return
+// types (e.g. array(object)) are handled correctly and so that traversal into
+// untyped territory (e.g. map<string> values) stops being rewritten. When no
+// schema is available we fall back to a naive camelCase→snake_case rewrite.
+func rewriteInvokeOutputTraversal(fn *schema.Function, traversal hcl.Traversal) hcl.Traversal {
+	if fn != nil && fn.ReturnType != nil {
+		return schemaAwareRewriteTyped(fn.ReturnType, traversal)
+	}
+	return naiveRewriteTraversal(traversal)
+}
+
 // naiveRewriteTraversal rewrites all TraverseAttr names in a traversal from camelCase to
 // snake_case without schema information. Used as a fallback when schema is unavailable.
 func naiveRewriteTraversal(traversal hcl.Traversal) hcl.Traversal {
@@ -2168,14 +2193,15 @@ func (g *generator) scopeTraversalTokens(expr *model.ScopeTraversalExpression) (
 				if ds.expr == call {
 					token, ok := extractStringLiteral(call.Args[0])
 					if ok {
-						dsType, d := packages.PulumiTokenToHCL(token)
+						invokeSchema, schemaToken, _ := g.lookupInvokeSchema(token)
+						dsType, d := packages.PulumiTokenToHCL(schemaToken)
 						if !d.HasErrors() {
 							rewritten := hcl.Traversal{
 								hcl.TraverseRoot{Name: "data"},
 								hcl.TraverseAttr{Name: dsType},
 								hcl.TraverseAttr{Name: ds.name},
 							}
-							return hclwrite.TokensForTraversal(append(rewritten, naiveRewriteTraversal(traversal[1:])...)), nil
+							return hclwrite.TokensForTraversal(append(rewritten, rewriteInvokeOutputTraversal(invokeSchema, traversal[1:])...)), nil
 						}
 					}
 					break
