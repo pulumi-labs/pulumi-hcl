@@ -26,7 +26,9 @@ jobs:
           go-version-file: go.mod
       - name: Add env vars
         run: |
-          echo "GORELEASER_CURRENT_TAG=$(changie latest)" >> "$GITHUB_ENV"
+          LATEST="$(changie latest)"
+          echo "GORELEASER_CURRENT_TAG=$LATEST" >> "$GITHUB_ENV"
+          echo "RELEASE_NOTES_PATH=.changes/$LATEST.md" >> "$GITHUB_ENV"
       - name: Check if release tag already exists
         id: check-release
         run: |
@@ -36,16 +38,11 @@ jobs:
           else
             echo "exists=true" >> "$GITHUB_OUTPUT"
           fi
-      - name: Create and push tag
-        if: steps.check-release.outputs.exists == 'false'
-        run: |
-          git tag "${GORELEASER_CURRENT_TAG}"
-          git push origin "${GORELEASER_CURRENT_TAG}"
       - name: Run GoReleaser
         if: steps.check-release.outputs.exists == 'false'
         uses: goreleaser/goreleaser-action@v7
         with:
           version: latest
-          args: release --clean --release-notes=${{ env.RELEASE_NOTES_PATH }}
+          args: release --clean --release-notes=${{ env.RELEASE_NOTES_PATH }} --skip=validate
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
