@@ -290,9 +290,8 @@ func (host *LanguageHost) GetPluginInfo(
 	ctx context.Context,
 	req *emptypb.Empty,
 ) (*pulumirpc.PluginInfo, error) {
-	v := version.GetVersion()
 	return &pulumirpc.PluginInfo{
-		Version: v.String(),
+		Version: version.Version().String(),
 	}, nil
 }
 
@@ -323,7 +322,7 @@ func (host *LanguageHost) About(
 ) (*pulumirpc.AboutResponse, error) {
 	return &pulumirpc.AboutResponse{
 		Executable: "pulumi-language-hcl",
-		Version:    version.GetVersion().String(),
+		Version:    version.Version().String(),
 	}, nil
 }
 

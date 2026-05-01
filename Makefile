@@ -1,8 +1,8 @@
 .PHONY: all build install clean test lint fmt
 
 # Version information
-VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo "0.0.1-dev")
-LDFLAGS := -ldflags "-X github.com/pulumi-labs/pulumi-hcl/pkg/version.Version=$(VERSION)"
+VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo "0.0.0-dev")
+LDFLAGS := -ldflags "-X github.com/pulumi-labs/pulumi-hcl/pkg/version.version=$(VERSION)"
 
 # Build output directory
 BIN_DIR := bin
