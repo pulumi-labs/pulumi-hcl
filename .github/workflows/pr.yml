@@ -5,31 +5,8 @@ on:
 
 permissions:
   contents: read
-  pull-requests: read
 
 jobs:
   ci:
     uses: ./.github/workflows/ci.yml
     secrets: inherit
-
-  check-changelog:
-    runs-on: ubuntu-latest
-    steps:
-      - name: Verify a changelog fragment was added
-        if: ${{ !contains(github.event.pull_request.labels.*.name, 'impact/no-changelog-required') }}
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          PR: ${{ github.event.pull_request.number }}
-          REPO: ${{ github.repository }}
-        run: |
-          ADDED="$(gh api "repos/$REPO/pulls/$PR/files" --paginate \
-            --jq '.[] | select(.status == "added") | .filename' \
-            | grep '^\.changes/' | grep -v '/\.gitkeep$' || true)"
-          if [ -z "$ADDED" ]; then
-            echo "::error::No changelog fragment added under .changes/."
-            echo "Run \`changie new\` and commit the resulting file, or add the"
-            echo "\`impact/no-changelog-required\` label to skip this check."
-            exit 1
-          fi
-          echo "Found changelog change(s):"
-          echo "$ADDED"
