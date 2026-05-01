@@ -4,7 +4,6 @@ on:
   push:
     branches:
       - master
-      - iwahbe/release
     paths:
       - CHANGELOG.md
 
