@@ -18,7 +18,7 @@ builds:
     flags:
       - -trimpath
     ldflags:
-      - -w -s -X github.com/pulumi-labs/pulumi-hcl/pkg/version.Version={{.Tag}}
+      - -w -s -X github.com/pulumi-labs/pulumi-hcl/pkg/version.version={{.Tag}}
 
   - id: pulumi-converter-hcl
     binary: pulumi-converter-hcl
@@ -37,7 +37,7 @@ builds:
     flags:
       - -trimpath
     ldflags:
-      - -w -s -X github.com/pulumi-labs/pulumi-hcl/pkg/version.Version={{.Tag}}
+      - -w -s -X github.com/pulumi-labs/pulumi-hcl/pkg/version.version={{.Tag}}
 
 archives:
   - id: pulumi-language-hcl
@@ -57,6 +57,3 @@ checksum:
 
 release:
   mode: keep-existing
-
-changelog:
-  disable: true

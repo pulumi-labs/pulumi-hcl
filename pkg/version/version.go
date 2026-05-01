@@ -19,26 +19,18 @@ import (
 	"github.com/blang/semver"
 )
 
-// Version is the current version of the HCL language plugin.
+// version is the current version of the HCL language plugin.
 // This is set at build time via ldflags.
-var Version string
+var version string
 
-// GetVersion returns the current version as a semver.Version.
+var devVersion = semver.Version{Pre: []semver.PRVersion{{VersionStr: "dev"}}}
+
+// Version returns the current version as a semver.Version.
 // If the version string is invalid or empty, it returns a development version.
-func GetVersion() semver.Version {
-	if Version == "" {
-		Version = "0.0.1-dev"
-	}
-
-	v, err := semver.ParseTolerant(Version)
+func Version() semver.Version {
+	v, err := semver.ParseTolerant(version)
 	if err != nil {
-		// Return a development version if parsing fails
-		return semver.Version{
-			Major: 0,
-			Minor: 0,
-			Patch: 1,
-			Pre:   []semver.PRVersion{{VersionStr: "dev"}},
-		}
+		return devVersion
 	}
 	return v
 }

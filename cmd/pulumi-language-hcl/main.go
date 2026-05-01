@@ -62,7 +62,7 @@ func main() {
 	// Check for --version before full parsing to avoid warning
 	for _, arg := range os.Args[1:] {
 		if arg == "--version" || arg == "-version" {
-			fmt.Println(version.GetVersion())
+			fmt.Println(version.Version())
 			os.Exit(0)
 		}
 	}
