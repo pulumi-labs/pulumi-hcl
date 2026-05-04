@@ -1,4 +1,4 @@
-terraform {
+pulumi {
   required_providers {
     index-mod = {
       source  = "pulumi/index-mod"

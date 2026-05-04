@@ -1,4 +1,4 @@
-terraform {
+pulumi {
   required_providers {
     primitive-ref = {
       source  = "pulumi/primitive-ref"

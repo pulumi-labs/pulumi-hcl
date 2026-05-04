@@ -1,4 +1,4 @@
-terraform {
+pulumi {
   required_providers {
     simple-invoke = {
       source  = "pulumi/simple-invoke"

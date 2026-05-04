@@ -1,4 +1,4 @@
-terraform {
+pulumi {
   required_providers {
     component-property-deps = {
       source  = "pulumi/component-property-deps"

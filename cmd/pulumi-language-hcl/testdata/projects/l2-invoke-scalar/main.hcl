@@ -1,4 +1,4 @@
-terraform {
+pulumi {
   required_providers {
     simple-invoke-with-scalar-return = {
       source  = "pulumi/simple-invoke-with-scalar-return"

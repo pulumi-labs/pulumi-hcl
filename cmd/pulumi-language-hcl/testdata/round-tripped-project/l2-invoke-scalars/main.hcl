@@ -1,4 +1,4 @@
-terraform {
+pulumi {
   required_providers {
     scalar-returns = {
       source  = "pulumi/scalar-returns"

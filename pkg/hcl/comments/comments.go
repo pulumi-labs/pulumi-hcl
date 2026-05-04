@@ -48,8 +48,8 @@ type Map struct {
 // Block types listed in skipBlockTypes are not treated as anchors: comments
 // preceding such a block (or appearing inside it) flow past it to the next
 // non-skipped sibling. This is useful when the caller does not emit those
-// blocks in its output (for example, the converter skips `terraform`,
-// `data`, and `call` blocks; codegen skips `package` blocks).
+// blocks in its output (for example, the converter skips `data` and `call`
+// blocks; codegen skips `package` blocks).
 type bodyScope struct {
 	body          *hclsyntax.Body
 	startByte     int         // inclusive byte where this scope begins

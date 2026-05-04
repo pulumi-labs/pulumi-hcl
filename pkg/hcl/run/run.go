@@ -939,8 +939,8 @@ func (e *Engine) registerResourceInstanceInContext(
 
 	if opts.Version == "" {
 		pkgName := packageNameFromResourceType(res.Type)
-		if e.config.Terraform != nil {
-			if req, ok := e.config.Terraform.RequiredProviders[pkgName]; ok && req.Version != "" {
+		if e.config.Pulumi != nil {
+			if req, ok := e.config.Pulumi.RequiredProviders[pkgName]; ok && req.Version != "" {
 				opts.Version = ExtractSemverFromConstraint(req.Version)
 			}
 		}
@@ -1419,11 +1419,11 @@ func (e *Engine) packageRefForType(hclToken string) PackageRef {
 }
 
 func (e *Engine) knownProviders() []string {
-	if e.config.Terraform == nil {
+	if e.config.Pulumi == nil {
 		return nil
 	}
-	providers := make([]string, 0, len(e.config.Terraform.RequiredProviders))
-	for name := range e.config.Terraform.RequiredProviders {
+	providers := make([]string, 0, len(e.config.Pulumi.RequiredProviders))
+	for name := range e.config.Pulumi.RequiredProviders {
 		providers = append(providers, name)
 	}
 	return providers

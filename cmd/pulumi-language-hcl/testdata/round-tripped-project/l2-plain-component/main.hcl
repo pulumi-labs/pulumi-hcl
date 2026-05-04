@@ -1,4 +1,4 @@
-terraform {
+pulumi {
   required_providers {
     plaincomponent = {
       source  = "pulumi/plaincomponent"

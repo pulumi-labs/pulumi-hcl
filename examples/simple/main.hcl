@@ -1,4 +1,4 @@
-terraform {
+pulumi {
   required_providers {
     random = {
       source  = "pulumi/random"

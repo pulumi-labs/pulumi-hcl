@@ -1,4 +1,4 @@
-terraform {
+pulumi {
   required_providers {
     large = {
       source  = "pulumi/large"

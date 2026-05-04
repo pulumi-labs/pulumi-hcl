@@ -89,12 +89,20 @@ func GenerateProgram(program *pcl.Program) (map[string][]byte, hcl.Diagnostics, 
 		nodesByFile[f] = append(nodesByFile[f], node)
 	}
 
+	pulumiBlocksByFile := map[string]*pcl.PulumiBlock{}
+	for _, node := range program.Nodes {
+		if pb, ok := node.(*pcl.PulumiBlock); ok {
+			pulumiBlocksByFile[knownFile(nodeSourceFile(node))] = pb
+		}
+	}
+
 	files := map[string][]byte{}
 	for _, srcName := range fileOrder {
 		f := hclwrite.NewEmptyFile()
 		body := f.Body()
 
-		genRequiredProviders(body, providersByFile[srcName])
+		d := gen.genPulumiHeader(body, providersByFile[srcName], pulumiBlocksByFile[srcName])
+		diags = append(diags, d...)
 
 		for _, ds := range invokesByFile[srcName] {
 			d := gen.genInvokeDataSource(body, ds)
@@ -129,8 +137,7 @@ func GenerateProgram(program *pcl.Program) (map[string][]byte, hcl.Diagnostics, 
 				d := gen.genLocalVariable(body, n)
 				diags = append(diags, d...)
 			case *pcl.PulumiBlock:
-				d := gen.genPulumiBlock(body, n)
-				diags = append(diags, d...)
+				// Emitted by genPulumiHeader above.
 			case *pcl.Component:
 				d := gen.genModule(body, n)
 				diags = append(diags, d...)
@@ -519,38 +526,54 @@ type spilledCall struct {
 	sourceFile   string
 }
 
-func genRequiredProviders(body *hclwrite.Body, pkgRefs []schema.PackageReference) {
-	if len(pkgRefs) == 0 {
-		return
-	}
-
-	var hasProviders bool
-	terraform := body.AppendNewBlock("terraform", nil)
-	reqProviders := terraform.Body().AppendNewBlock("required_providers", nil)
+// genPulumiHeader emits the per-file `pulumi { ... }` block, combining
+// required-provider entries (sourced from the program's PackageReferences)
+// with a PCL `pulumi { requiredVersionRange = ... }` node when present in
+// this file. Returns no diags except those produced by genPulumiBlockBody.
+//
+// When neither providers nor a PulumiBlock node are present, no block is
+// emitted (and no trailing newline is added).
+func (g *generator) genPulumiHeader(
+	body *hclwrite.Body, pkgRefs []schema.PackageReference, pb *pcl.PulumiBlock,
+) hcl.Diagnostics {
+	providers := make([]schema.PackageReference, 0, len(pkgRefs))
 	for _, ref := range pkgRefs {
 		// The "pulumi" package is built-in and should not be listed in required_providers.
 		if ref.Name() == "pulumi" {
 			continue
 		}
-		namespace := ref.Namespace()
-		if namespace == "" {
-			namespace = "pulumi"
-		}
-		attrs := map[string]cty.Value{
-			"source": cty.StringVal(namespace + "/" + ref.Name()),
-		}
-		if v := ref.Version(); v != nil {
-			attrs["version"] = cty.StringVal(v.String())
-		}
-		reqProviders.Body().SetAttributeValue(ref.Name(), cty.ObjectVal(attrs))
-		hasProviders = true
+		providers = append(providers, ref)
 	}
 
-	if !hasProviders {
-		body.RemoveBlock(terraform)
-		return
+	hasVersion := pb != nil && pb.RequiredVersion != nil
+	if len(providers) == 0 && !hasVersion {
+		return nil
+	}
+
+	block := body.AppendNewBlock("pulumi", nil)
+	var diags hcl.Diagnostics
+	if hasVersion {
+		d := g.genExpression(block.Body(), "required_version_range", pb.RequiredVersion, schema.StringType)
+		diags = append(diags, d...)
+	}
+	if len(providers) > 0 {
+		reqProviders := block.Body().AppendNewBlock("required_providers", nil)
+		for _, ref := range providers {
+			namespace := ref.Namespace()
+			if namespace == "" {
+				namespace = "pulumi"
+			}
+			attrs := map[string]cty.Value{
+				"source": cty.StringVal(namespace + "/" + ref.Name()),
+			}
+			if v := ref.Version(); v != nil {
+				attrs["version"] = cty.StringVal(v.String())
+			}
+			reqProviders.Body().SetAttributeValue(ref.Name(), cty.ObjectVal(attrs))
+		}
 	}
 	body.AppendNewline()
+	return diags
 }
 
 // collectInvokes walks the node and collects all invoke function calls.
@@ -1515,16 +1538,6 @@ func (g *generator) genModule(body *hclwrite.Body, c *pcl.Component) hcl.Diagnos
 		diags = append(diags, d...)
 	}
 	return diags
-}
-
-func (g *generator) genPulumiBlock(body *hclwrite.Body, pb *pcl.PulumiBlock) hcl.Diagnostics {
-	if pb.RequiredVersion == nil {
-		return nil
-	}
-
-	// Generate a top-level "pulumi" block with requiredVersionRange property
-	block := body.AppendNewBlock("pulumi", nil)
-	return g.genExpression(block.Body(), "required_version_range", pb.RequiredVersion, schema.StringType)
 }
 
 func (g *generator) genBlocks(body *hclwrite.Body, name string, expr model.Expression, objType *schema.ObjectType) hcl.Diagnostics {

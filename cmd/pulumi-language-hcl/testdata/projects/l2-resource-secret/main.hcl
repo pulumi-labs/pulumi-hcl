@@ -1,4 +1,4 @@
-terraform {
+pulumi {
   required_providers {
     secret = {
       source  = "pulumi/secret"

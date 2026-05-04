@@ -22,10 +22,8 @@ import (
 // Config represents the root of a parsed HCL configuration.
 // It aggregates all blocks from all files in the configuration directory.
 type Config struct {
-	// Terraform contains the terraform block configuration (provider requirements, etc.)
-	Terraform *Terraform
-
-	// Pulumi contains the pulumi block configuration (program-level options).
+	// Pulumi contains the pulumi block configuration (program-level options
+	// and provider requirements).
 	Pulumi *Pulumi
 
 	// Providers maps provider alias to provider configuration.

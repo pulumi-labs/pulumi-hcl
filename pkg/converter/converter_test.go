@@ -334,7 +334,7 @@ func TestEjectDataBlockWithForEach(t *testing.T) {
 	}
 	loader := testutil.NewMockReferenceLoader(t, testSchema)
 
-	src := []byte(`terraform {
+	src := []byte(`pulumi {
   required_providers {
     test = {
       source  = "pulumi/test"
@@ -409,7 +409,7 @@ func TestEjectInvokeInListComprehension(t *testing.T) {
 		},
 	}
 	loader := testutil.NewMockReferenceLoader(t, testSchema)
-	src := []byte(`terraform {
+	src := []byte(`pulumi {
   required_providers {
     test = {
       source  = "pulumi/test"
@@ -587,9 +587,9 @@ func serveLoader(t *testing.T, loader schema.ReferenceLoader) string {
 
 // TestGenerateProgramMultiFile verifies that converting a multi-file PCL
 // program to HCL preserves the per-file structure: each <name>.pp produces a
-// <name>.hcl, with required_providers placed in the file that declared the
-// `package` block and resources/outputs placed in the file that declared each
-// node.
+// <name>.hcl, with the `pulumi { required_providers { ... } }` block placed
+// in the file that declared the `package` block and resources/outputs placed
+// in the file that declared each node.
 func TestGenerateProgramMultiFile(t *testing.T) {
 	t.Parallel()
 
@@ -629,7 +629,7 @@ func TestGenerateProgramMultiFile(t *testing.T) {
   value = test_item.thing.value
 }
 `,
-		"providers.hcl": `terraform {
+		"providers.hcl": `pulumi {
   required_providers {
     test = {
       source  = "pulumi/test"
@@ -646,7 +646,7 @@ func TestGenerateProgramMultiFile(t *testing.T) {
 // converting a project where every kind of cross-file reference appears, and
 // asserting on the full output of every emitted PCL file:
 //
-//   - A `terraform.required_providers` entry declared in providers.hcl must be
+//   - A `pulumi.required_providers` entry declared in providers.hcl must be
 //     visible to data-source resolution in sibling files (otherwise the
 //     test_echo data block in data.hcl would fail to resolve).
 //   - A resource in main.hcl is referenced from outputs.hcl. The reference
@@ -698,7 +698,7 @@ func TestConvertProgramCrossFileReferences(t *testing.T) {
 		[]byte("name: cross-file\nruntime: hcl\n"), 0o644))
 
 	hclFiles := map[string]string{
-		"providers.hcl": `terraform {
+		"providers.hcl": `pulumi {
   required_providers {
     test = {
       source  = "pulumi/test"
@@ -796,7 +796,7 @@ func TestEjectMultiFileHCL(t *testing.T) {
   value = test_item.thing.value
 }
 `,
-		"providers.hcl": `terraform {
+		"providers.hcl": `pulumi {
   required_providers {
     test = {
       source  = "pulumi/test"

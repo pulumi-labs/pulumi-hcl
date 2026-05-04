@@ -238,7 +238,7 @@ import {
 ### Provider Configuration
 
 ```hcl
-terraform {
+pulumi {
   required_providers {
     aws = {
       source  = "pulumi/aws"
@@ -252,7 +252,7 @@ provider "aws" {
 }
 ```
 
-The `backend`, `cloud`, and `required_version` fields in `terraform` blocks are parsed but ignored (Pulumi manages state and versioning independently).
+The `terraform` block is not supported. Provider requirements live inside the `pulumi` block via `required_providers`. State is managed by Pulumi independently.
 
 ## Design Overview
 
@@ -377,7 +377,7 @@ This plugin supports the majority of Terraform's HCL syntax. For detailed compat
 
 ### Not Supported
 
-- `replace_triggered_by` lifecycle option (different semantics from Pulumi's `replaceOnChanges`)
+- `replace_triggered_by` lifecycle attribute — use the `replace_with` resource option instead
 - `dynamic` blocks (dynamic block generation is not implemented)
 - `List<Object>` empty vs null distinction: HCL block syntax cannot distinguish between an empty and null `List<Object>`, which is a known incompatibility with some Pulumi programs
 
@@ -385,23 +385,27 @@ This plugin supports the majority of Terraform's HCL syntax. For detailed compat
 
 ```hcl
 # Stack references
-data "pulumi_stack_reference" "network" {
+resource "pulumi_stackreference" "network" {
   name = "myorg/networking/prod"
 }
 
 output "vpc_id" {
-  value = data.pulumi_stack_reference.network.outputs["vpc_id"]
+  value = pulumi_stackreference.network.outputs["vpc_id"]
 }
 ```
 
 ```hcl
 # Method calls on resources
-call "aws_s3_bucket.my_bucket" "getObject" {
+resource "aws_s3_bucket" "my_bucket" {
+  bucket = "my-unique-bucket-name"
+}
+
+call "my_bucket" "getObject" {
   key = "config.json"
 }
 ```
 
-The `call` block invokes a method on an existing resource. The first label is `resourceType.resourceName` and the second is the method name. Results are referenced as `call.<resource>.<method>.<output>`.
+The `call` block invokes a method on an existing resource. The first label is the resource's logical name (matching a declared resource) and the second is the method name. Results are referenced as `call.<resource>.<method>.<output>`.
 
 Two built-in functions provide access to a resource's Pulumi identity at runtime:
 - `pulumiResourceName(resource)` — returns the logical name from the resource's URN

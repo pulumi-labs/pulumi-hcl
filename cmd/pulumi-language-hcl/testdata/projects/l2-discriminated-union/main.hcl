@@ -1,4 +1,4 @@
-terraform {
+pulumi {
   required_providers {
     discriminated-union = {
       source  = "pulumi/discriminated-union"

@@ -1,4 +1,4 @@
-terraform {
+pulumi {
   required_providers {
     snake_names = {
       source  = "pulumi/snake_names"

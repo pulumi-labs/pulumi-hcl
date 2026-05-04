@@ -18,9 +18,6 @@ pulumi {
     name    = "my-networking"
     version = "1.0.0"
   }
-}
-
-terraform {
   required_providers {
     aws = {
       source  = "pulumi/aws"

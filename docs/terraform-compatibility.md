@@ -4,12 +4,14 @@ Pulumi HCL supports the majority of [Terraform's HCL syntax](https://developer.h
 
 This document covers what's different and what's not supported.
 
-## The One Required Change
+## Required Changes
 
-Provider sources must use the `pulumi/` namespace instead of `hashicorp/`:
+The top-level `terraform` block is not supported. Move provider requirements
+into the `pulumi` block, and use `pulumi/`-namespaced provider sources
+instead of `hashicorp/`:
 
 ```hcl
-terraform {
+pulumi {
   required_providers {
     aws = {
       source  = "pulumi/aws"  # not "hashicorp/aws"
@@ -18,6 +20,11 @@ terraform {
   }
 }
 ```
+
+Terraform's `backend`, `cloud`, and `required_version` are not modeled at
+all — Pulumi manages state independently and uses
+`pulumi { required_version_range = "..." }` for its own version
+constraints.
 
 ## Behavioral Differences
 
@@ -86,21 +93,11 @@ Provisioner blocks map to the [Command provider](https://www.pulumi.com/registry
 
 All provisioner features work: `self` references, `when = "destroy"`, `on_failure = "continue"`, and connection blocks. WinRM connections are not supported—SSH only.
 
-## Ignored Blocks
-
-These blocks are parsed but have no effect:
-
-```hcl
-terraform {
-  backend "s3" { }        # Use pulumi login instead
-  cloud { }               # Use Pulumi Cloud instead
-  required_version = ""   # Pulumi has its own versioning
-}
-```
-
 ## Unsupported Features
 
-**`replace_triggered_by`** — Terraform's lifecycle option cascades replacement when *other* resources change. Pulumi's [`replaceOnChanges`](https://www.pulumi.com/docs/iac/concepts/resources/options/replaceonchanges/) triggers replacement when properties on *this* resource change. These have different semantics and don't map directly.
+**Top-level `terraform` block** — Provider requirements live in `pulumi { required_providers { ... } }`. There is no equivalent for `backend`, `cloud`, or `required_version`; Pulumi manages state independently.
+
+**`replace_triggered_by`** — Terraform's lifecycle option cascades replacement when *other* resources change. Use Pulumi HCL's `replace_with` resource option (a top-level attribute on the `resource` block) for the same effect; the Terraform-syntax `replace_triggered_by` attribute on a `lifecycle` block produces an error.
 
 **`dynamic` blocks** — Dynamic block generation (`dynamic "tag" { for_each = ... content { ... } }`) is not implemented.
 

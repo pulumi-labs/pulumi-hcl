@@ -1,4 +1,4 @@
-terraform {
+pulumi {
   required_providers {
     output-only-invoke = {
       source  = "pulumi/output-only-invoke"

@@ -1,4 +1,4 @@
-terraform {
+pulumi {
   required_providers {
     primitive-defaults = {
       source  = "pulumi/primitive-defaults"
