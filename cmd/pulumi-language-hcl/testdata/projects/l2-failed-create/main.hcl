@@ -1,4 +1,4 @@
-terraform {
+pulumi {
   required_providers {
     fail_on_create = {
       source  = "pulumi/fail_on_create"

@@ -20,7 +20,7 @@ import (
 
 func TestParseBasicConfig(t *testing.T) {
 	src := []byte(`
-terraform {
+pulumi {
   required_providers {
     aws = {
       source  = "pulumi/aws"
@@ -83,14 +83,14 @@ module "vpc" {
 		t.FailNow()
 	}
 
-	// Verify terraform block
-	if config.Terraform == nil {
-		t.Error("Expected terraform block")
+	// Verify pulumi block
+	if config.Pulumi == nil {
+		t.Error("Expected pulumi block")
 	} else {
-		if len(config.Terraform.RequiredProviders) != 1 {
-			t.Errorf("Expected 1 required provider, got %d", len(config.Terraform.RequiredProviders))
+		if len(config.Pulumi.RequiredProviders) != 1 {
+			t.Errorf("Expected 1 required provider, got %d", len(config.Pulumi.RequiredProviders))
 		}
-		if rp, ok := config.Terraform.RequiredProviders["aws"]; ok {
+		if rp, ok := config.Pulumi.RequiredProviders["aws"]; ok {
 			if rp.Source != "pulumi/aws" {
 				t.Errorf("Expected source 'pulumi/aws', got %q", rp.Source)
 			}

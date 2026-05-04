@@ -1,4 +1,4 @@
-terraform {
+pulumi {
   required_providers {
     std = {
       source  = "pulumi/std"

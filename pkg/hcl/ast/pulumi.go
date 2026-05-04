@@ -24,6 +24,14 @@ import (
 //
 //	pulumi {
 //	  requiredVersionRange = ">=3.0.0"
+//
+//	  required_providers {
+//	    aws = {
+//	      source  = "pulumi/aws"
+//	      version = "~> 6.0"
+//	    }
+//	  }
+//
 //	  component {
 //	    name   = "MyComponent"
 //	    module = "index"
@@ -36,6 +44,9 @@ import (
 type Pulumi struct {
 	// RequiredVersionRange is the version range expression for the Pulumi CLI.
 	RequiredVersionRange hcl.Expression
+
+	// RequiredProviders maps provider local name to its requirements.
+	RequiredProviders map[string]*RequiredProvider
 
 	// Component declares this module as a multi-language component.
 	Component *ComponentBlock
@@ -64,5 +75,20 @@ type PackageBlock struct {
 	// Version is the package version. Defaults to "0.0.0-dev".
 	Version string
 	// DeclRange is the source range of this block.
+	DeclRange hcl.Range
+}
+
+// RequiredProvider represents a provider requirement in the required_providers block.
+type RequiredProvider struct {
+	// Name is the local name for this provider (e.g., "aws").
+	Name string
+
+	// Source is the provider source address (e.g., "pulumi/aws").
+	Source string
+
+	// Version is the version constraint (e.g., "~> 5.0").
+	Version string
+
+	// DeclRange is the source range of this provider requirement.
 	DeclRange hcl.Range
 }

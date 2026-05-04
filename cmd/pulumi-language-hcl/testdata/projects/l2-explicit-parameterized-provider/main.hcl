@@ -1,4 +1,4 @@
-terraform {
+pulumi {
   required_providers {
     goodbye = {
       source  = "pulumi/goodbye"

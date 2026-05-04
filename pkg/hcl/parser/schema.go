@@ -22,7 +22,6 @@ import (
 // rootSchema defines the top-level blocks allowed in an HCL configuration file.
 var rootSchema = &hcl.BodySchema{
 	Blocks: []hcl.BlockHeaderSchema{
-		{Type: "terraform"},
 		{Type: "pulumi"},
 		{Type: "provider", LabelNames: []string{"name"}},
 		{Type: "variable", LabelNames: []string{"name"}},
@@ -37,24 +36,13 @@ var rootSchema = &hcl.BodySchema{
 	},
 }
 
-// terraformSchema defines the structure of a terraform block.
-var terraformSchema = &hcl.BodySchema{
-	Attributes: []hcl.AttributeSchema{
-		{Name: "required_version"},
-	},
-	Blocks: []hcl.BlockHeaderSchema{
-		{Type: "required_providers"},
-		{Type: "backend", LabelNames: []string{"type"}},
-		{Type: "cloud"},
-	},
-}
-
 // pulumiSchema defines the structure of a pulumi block.
 var pulumiSchema = &hcl.BodySchema{
 	Attributes: []hcl.AttributeSchema{
 		{Name: "required_version_range"},
 	},
 	Blocks: []hcl.BlockHeaderSchema{
+		{Type: "required_providers"},
 		{Type: "component"},
 		{Type: "package"},
 	},

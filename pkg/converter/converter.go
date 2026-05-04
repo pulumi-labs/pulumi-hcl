@@ -221,7 +221,7 @@ type fileTransformer struct {
 	sources         map[string][]byte
 	knownHCLTypes   map[string]bool // set of HCL type labels used in resource blocks
 	stackRefNames   map[string]bool // set of logical names of pulumi_stackreference resources
-	knownProviders  []string        // provider names from terraform.required_providers
+	knownProviders  []string        // provider names from pulumi.required_providers
 	callBlocks      map[callReference]*hclsyntax.Body
 	dataBlocks      map[dataReference]*hclsyntax.Body
 	dataTokens      map[string]string // key: hclType, value: resolved PCL token
@@ -295,7 +295,7 @@ func newProjectTransformer(
 		nameRewrites:    make(map[string]string),
 		functionSchemas: make(map[string]*schema.Function),
 	}
-	// Phase 1: collect terraform required_providers across every body so that
+	// Phase 1: collect pulumi.required_providers across every body so that
 	// later resolution sees the full set regardless of which file declared it.
 	for _, body := range bodies {
 		ft.scanProviders(body)
@@ -316,7 +316,7 @@ func (ft *fileTransformer) scanProviders(body *hclsyntax.Body) {
 		seen[name] = true
 	}
 	for _, block := range body.Blocks {
-		if block.Type != "terraform" {
+		if block.Type != "pulumi" {
 			continue
 		}
 		for _, sub := range block.Body.Blocks {
@@ -523,7 +523,7 @@ func (ft *fileTransformer) emitFile(
 	paramInfos map[string]workspace.PackageDescriptor,
 ) (hcl.Diagnostics, error) {
 	ft.sources[filename] = src
-	ft.comments = comments.Build(src, filename, body, "terraform", "data", "call")
+	ft.comments = comments.Build(src, filename, body, "data", "call")
 
 	var resultDiags hcl.Diagnostics
 
@@ -534,9 +534,6 @@ func (ft *fileTransformer) emitFile(
 	for _, block := range body.Blocks {
 		ft.emitLeadingComments(out, block.Range().Start.Byte)
 		switch block.Type {
-
-		case "terraform":
-			// Skip: no PCL equivalent.
 
 		case "call":
 			// Call blocks are inlined into expressions as call() function calls; skip block output.
@@ -776,6 +773,13 @@ func (ft *fileTransformer) emitFile(
 			out.AppendNewline()
 
 		case "pulumi":
+			// required_providers is parsed for symbol resolution but has no PCL
+			// equivalent at this position (PCL declares providers via top-level
+			// `package "<alias>" { ... }` blocks instead). Emit a PCL pulumi
+			// block only when there are non-provider attributes to carry over.
+			if len(block.Body.Attributes) == 0 {
+				continue
+			}
 			blk := out.AppendNewBlock("pulumi", nil)
 			for _, attr := range sortedAttributes(block.Body.Attributes) {
 				name, _ := transform.PulumiCaseFromSnakeCase(attr.Name, nil)

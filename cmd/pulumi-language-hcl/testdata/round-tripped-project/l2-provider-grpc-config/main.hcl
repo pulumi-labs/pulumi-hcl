@@ -1,4 +1,4 @@
-terraform {
+pulumi {
   required_providers {
     config-grpc = {
       source  = "pulumi/config-grpc"

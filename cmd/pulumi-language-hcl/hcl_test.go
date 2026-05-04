@@ -1446,7 +1446,7 @@ func TestResourceModuleFormat(t *testing.T) {
 func TestLocalExecProvisioner(t *testing.T) {
 	t.Parallel()
 
-	src := `terraform {
+	src := `pulumi {
   required_providers {
     aws = {
       source  = "pulumi/aws"
@@ -1788,7 +1788,7 @@ func TestModuleDataSourceDependencies(t *testing.T) {
 	// This exercises the module-prefix dependency tracking in
 	// processDataSourceInContext for both expression dependencies and depends_on.
 	parentHCL := `
-terraform {
+pulumi {
   required_providers {
     test = {
       source  = "pulumi/test"
@@ -1807,7 +1807,7 @@ output "result" {
 }
 `
 	modHCL := `
-terraform {
+pulumi {
   required_providers {
     test = {
       source  = "pulumi/test"
@@ -1922,7 +1922,7 @@ func TestModuleScopeIsolation(t *testing.T) {
 
 	// The parent defines a local that the module tries to reference.
 	parentHCL := `
-terraform {
+pulumi {
   required_providers {
     test = {
       source  = "pulumi/test"
@@ -1946,7 +1946,7 @@ module "mod" {
 		// The module's resource references local.parentName, which only
 		// exists in the parent scope and should not be visible here.
 		modHCL := `
-terraform {
+pulumi {
   required_providers {
     test = {
       source  = "pulumi/test"
@@ -1988,7 +1988,7 @@ resource "test_bucket" "bucket" {
 		// The module's data source references local.parentName, which only
 		// exists in the parent scope and should not be visible here.
 		modHCL := `
-terraform {
+pulumi {
   required_providers {
     test = {
       source  = "pulumi/test"

@@ -1,0 +1,6 @@
+component: runtime
+kind: Improvements
+body: Rename the top level `terraform` block to `pulumi`.
+time: 2026-05-04T12:48:08.191637+02:00
+custom:
+    PR: "109"

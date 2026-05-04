@@ -1,4 +1,4 @@
-terraform {
+pulumi {
   required_providers {
     any-type-function = {
       source  = "pulumi/any-type-function"

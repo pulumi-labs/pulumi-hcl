@@ -109,8 +109,8 @@ func (host *LanguageHost) GetRequiredPackages(
 	}
 
 	var pkgs []*pulumirpc.PackageDependency
-	if config.Terraform != nil {
-		for alias, provider := range config.Terraform.RequiredProviders {
+	if config.Pulumi != nil {
+		for alias, provider := range config.Pulumi.RequiredProviders {
 
 			version := func(v *semver.Version) string {
 				if v == nil {
@@ -344,9 +344,9 @@ func (host *LanguageHost) GetProgramDependencies(
 
 	var deps []*pulumirpc.DependencyInfo
 
-	// Extract dependencies from terraform block
-	if config.Terraform != nil {
-		for name, provider := range config.Terraform.RequiredProviders {
+	// Extract dependencies from pulumi.required_providers
+	if config.Pulumi != nil {
+		for name, provider := range config.Pulumi.RequiredProviders {
 			dep := &pulumirpc.DependencyInfo{
 				Name: name,
 			}

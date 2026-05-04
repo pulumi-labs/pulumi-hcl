@@ -1,4 +1,4 @@
-terraform {
+pulumi {
   required_providers {
     conformance-component = {
       source  = "pulumi/conformance-component"

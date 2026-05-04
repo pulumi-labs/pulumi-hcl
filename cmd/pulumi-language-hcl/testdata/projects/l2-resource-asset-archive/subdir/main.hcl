@@ -1,4 +1,4 @@
-terraform {
+pulumi {
   required_providers {
     asset-archive = {
       source  = "pulumi/asset-archive"

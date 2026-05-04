@@ -1,4 +1,4 @@
-terraform {
+pulumi {
   required_providers {
     module-format = {
       source  = "pulumi/module-format"

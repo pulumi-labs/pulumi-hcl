@@ -1,4 +1,4 @@
-terraform {
+pulumi {
   required_providers {
     call = {
       source  = "pulumi/call"

@@ -368,10 +368,10 @@ Providers supply the implementation for resources and data sources.
 
 ### Required Providers
 
-Declare provider requirements in the `terraform` block:
+Declare provider requirements inside the `pulumi` block:
 
 ```hcl
-terraform {
+pulumi {
   required_providers {
     aws = {
       source  = "pulumi/aws"
@@ -815,12 +815,14 @@ pulumi {
 
 Pulumi HCL is broadly compatible with Terraform's HCL syntax. This section covers the differences.
 
-### The One Required Change
+### Required Changes
 
-Provider sources must use the `pulumi/` namespace:
+Provider requirements move into the `pulumi` block (the top-level
+`terraform` block is not supported), and provider sources must use the
+`pulumi/` namespace:
 
 ```hcl
-terraform {
+pulumi {
   required_providers {
     aws = {
       source  = "pulumi/aws"  # not "hashicorp/aws"
@@ -851,21 +853,10 @@ terraform {
 | Modules                 | Component resources    | All source types supported          |
 | Provisioners            | Command provider       | `local-exec`, `remote-exec`, `file` |
 
-### Ignored Blocks
-
-These are parsed for compatibility but have no effect:
-
-```hcl
-terraform {
-  backend "s3" { }        # Use pulumi login instead
-  cloud { }               # Use Pulumi Cloud instead
-  required_version = ""   # Use pulumi { required_version_range } instead
-}
-```
-
 ### Unsupported Features
 
-- **`replace_triggered_by`** — Terraform cascades replacement when *other* resources change. Pulumi's `replaceOnChanges` triggers replacement when properties on *this* resource change. These have different semantics. Using `replace_triggered_by` produces an error.
+- **Top-level `terraform` block** — Provider requirements live in `pulumi { required_providers { ... } }`. State backends (`backend`, `cloud`) are not modeled; Pulumi manages state independently.
+- **`replace_triggered_by`** — Terraform cascades replacement when *other* resources change. Use Pulumi HCL's `replace_with` resource option for the same effect; the Terraform-syntax `replace_triggered_by` attribute on a `lifecycle` block produces an error.
 - **WinRM connections** — Only SSH is supported in `connection` blocks.
 
 ### CLI Equivalents

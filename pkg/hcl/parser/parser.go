@@ -93,8 +93,6 @@ func (p *Parser) parseFiles(files map[string]*hcl.File) (*ast.Config, hcl.Diagno
 // parseBlock parses a single top-level block.
 func (p *Parser) parseBlock(config *ast.Config, block *hcl.Block) hcl.Diagnostics {
 	switch block.Type {
-	case "terraform":
-		return p.parseTerraformBlock(config, block)
 	case "pulumi":
 		return p.parsePulumiBlock(config, block)
 	case "provider":
@@ -127,56 +125,6 @@ func (p *Parser) parseBlock(config *ast.Config, block *hcl.Block) hcl.Diagnostic
 	}
 }
 
-// parseTerraformBlock parses a terraform block.
-func (p *Parser) parseTerraformBlock(config *ast.Config, block *hcl.Block) hcl.Diagnostics {
-	var diags hcl.Diagnostics
-
-	if config.Terraform != nil {
-		diags = append(diags, &hcl.Diagnostic{
-			Severity: hcl.DiagError,
-			Summary:  "Duplicate terraform block",
-			Detail:   "Only one terraform block is allowed per configuration.",
-			Subject:  &block.DefRange,
-		})
-		return diags
-	}
-
-	content, contentDiags := block.Body.Content(terraformSchema)
-	diags = append(diags, contentDiags...)
-
-	terraform := &ast.Terraform{
-		RequiredProviders: make(map[string]*ast.RequiredProvider),
-		DeclRange:         block.DefRange,
-	}
-
-	if attr, ok := content.Attributes["required_version"]; ok {
-		val, valDiags := attr.Expr.Value(nil)
-		diags = append(diags, valDiags...)
-		if val.Type() == cty.String {
-			terraform.RequiredVersion = val.AsString()
-		}
-	}
-
-	for _, subBlock := range content.Blocks {
-		switch subBlock.Type {
-		case "required_providers":
-			providerDiags := p.parseRequiredProviders(terraform, subBlock)
-			diags = append(diags, providerDiags...)
-		case "backend":
-			terraform.Backend = &ast.Backend{
-				Type:      subBlock.Labels[0],
-				Config:    subBlock.Body,
-				DeclRange: subBlock.DefRange,
-			}
-		case "cloud":
-			// Cloud block is ignored for Pulumi
-		}
-	}
-
-	config.Terraform = terraform
-	return diags
-}
-
 // parsePulumiBlock parses a pulumi block.
 func (p *Parser) parsePulumiBlock(config *ast.Config, block *hcl.Block) hcl.Diagnostics {
 	var diags hcl.Diagnostics
@@ -205,7 +153,8 @@ func (p *Parser) parsePulumiBlock(config *ast.Config, block *hcl.Block) hcl.Diag
 	}
 
 	pulumi := &ast.Pulumi{
-		DeclRange: block.DefRange,
+		RequiredProviders: make(map[string]*ast.RequiredProvider),
+		DeclRange:         block.DefRange,
 	}
 
 	if attr, ok := content.Attributes["required_version_range"]; ok {
@@ -214,6 +163,9 @@ func (p *Parser) parsePulumiBlock(config *ast.Config, block *hcl.Block) hcl.Diag
 
 	for _, subBlock := range content.Blocks {
 		switch subBlock.Type {
+		case "required_providers":
+			providerDiags := p.parseRequiredProviders(pulumi, subBlock)
+			diags = append(diags, providerDiags...)
 		case "component":
 			if pulumi.Component != nil {
 				diags = append(diags, &hcl.Diagnostic{
@@ -336,7 +288,7 @@ func (p *Parser) parsePulumiPackageBlock(block *hcl.Block) (*ast.PackageBlock, h
 }
 
 // parseRequiredProviders parses the required_providers block.
-func (p *Parser) parseRequiredProviders(terraform *ast.Terraform, block *hcl.Block) hcl.Diagnostics {
+func (p *Parser) parseRequiredProviders(pulumi *ast.Pulumi, block *hcl.Block) hcl.Diagnostics {
 	var diags hcl.Diagnostics
 
 	attrs, attrDiags := block.Body.JustAttributes()
@@ -363,7 +315,7 @@ func (p *Parser) parseRequiredProviders(terraform *ast.Terraform, block *hcl.Blo
 			}
 		}
 
-		terraform.RequiredProviders[name] = provider
+		pulumi.RequiredProviders[name] = provider
 	}
 
 	return diags
