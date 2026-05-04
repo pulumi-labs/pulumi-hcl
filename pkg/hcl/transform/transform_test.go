@@ -17,6 +17,7 @@ package transform
 import (
 	"testing"
 
+	"github.com/pulumi-labs/pulumi-hcl/pkg/hcl/eval"
 	"github.com/pulumi/pulumi/pkg/v3/codegen/schema"
 	"github.com/pulumi/pulumi/sdk/v3/go/property"
 	"github.com/stretchr/testify/assert"
@@ -715,7 +716,7 @@ func TestPropertyValueToCty_Secret(t *testing.T) {
 	if unmarked.AsString() != "secret-value" {
 		t.Errorf("expected secret-value, got %v", unmarked.AsString())
 	}
-	if _, ok := marks["sensitive"]; !ok {
+	if _, ok := marks[eval.SensitiveMark]; !ok {
 		t.Error("expected sensitive mark")
 	}
 }

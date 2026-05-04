@@ -562,7 +562,7 @@ func (e *Engine) processVariable(_ context.Context, node *graph.Node) error {
 
 	// Handle sensitive marking
 	if v.Sensitive || isSecret {
-		val = val.Mark("sensitive")
+		val = val.Mark(eval.SensitiveMark)
 	}
 
 	// Store in eval context (needed for validation which may reference var.<name>)
