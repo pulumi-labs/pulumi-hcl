@@ -400,7 +400,7 @@ resource "aws_s3_bucket" "my_bucket" {
   bucket = "my-unique-bucket-name"
 }
 
-call "my_bucket" "getObject" {
+call "my_bucket" "get_object" {
   key = "config.json"
 }
 ```
