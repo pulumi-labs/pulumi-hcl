@@ -538,6 +538,11 @@ func TestTypeFunctions(t *testing.T) {
 		{"type number", `type(42)`, cty.StringVal("number")},
 		{"type bool", `type(true)`, cty.StringVal("bool")},
 		{"nonsensitive", `nonsensitive("hello")`, cty.StringVal("hello")},
+		{"nonsensitive of sensitive", `nonsensitive(sensitive("hello"))`, cty.StringVal("hello")},
+		{"issensitive plain", `issensitive("hello")`, cty.False},
+		{"issensitive marked", `issensitive(sensitive("hello"))`, cty.True},
+		{"issensitive after nonsensitive", `issensitive(nonsensitive(sensitive("hello")))`, cty.False},
+		{"issensitive propagates through split", `issensitive(split("-", sensitive("a-b"))[0])`, cty.True},
 	}
 
 	for _, tt := range tests {

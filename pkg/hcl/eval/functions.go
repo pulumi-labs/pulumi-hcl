@@ -188,6 +188,7 @@ func Functions(baseDir string) map[string]function.Function {
 
 		// Type conversion functions
 		"can":          canFunc,
+		"issensitive":  issensitiveFunc,
 		"nonsensitive": nonsensitiveFunc,
 		"sensitive":    sensitiveFunc,
 		"tobool":       toBoolFunc,
@@ -204,12 +205,12 @@ func Functions(baseDir string) map[string]function.Function {
 		"pulumiResourceType": pulumiResourceTypeFunc,
 
 		// Asset and archive functions
-		"fileAsset":    fileAssetFunc(baseDir),
-		"fileArchive":  fileArchiveFunc(baseDir),
-		"stringAsset":  stringAssetFunc(),
-		"assetArchive": assetArchiveFunc(),
-		"remoteAsset":    remoteAssetFunc(),
-		"remoteArchive":  remoteArchiveFunc(),
+		"fileAsset":     fileAssetFunc(baseDir),
+		"fileArchive":   fileArchiveFunc(baseDir),
+		"stringAsset":   stringAssetFunc(),
+		"assetArchive":  assetArchiveFunc(),
+		"remoteAsset":   remoteAssetFunc(),
+		"remoteArchive": remoteArchiveFunc(),
 	}
 
 	return funcs
@@ -227,8 +228,8 @@ var canFunc = function.New(&function.Spec{
 		closure := customdecode.ExpressionClosureFromVal(args[0])
 		v, diags := closure.Value()
 		var marks cty.ValueMarks
-		if v.HasMark("sensitive") {
-			marks = cty.NewValueMarks("sensitive")
+		if v.HasMark(SensitiveMark) {
+			marks = cty.NewValueMarks(SensitiveMark)
 		}
 
 		if diags.HasErrors() {
@@ -1557,6 +1558,16 @@ var sensitiveFunc = function.New(&function.Spec{
 	Impl: func(args []cty.Value, retType cty.Type) (cty.Value, error) {
 		// Mark as sensitive (cty supports this via marks)
 		return args[0].Mark("sensitive"), nil
+	},
+})
+
+var issensitiveFunc = function.New(&function.Spec{
+	Params: []function.Parameter{
+		{Name: "value", Type: cty.DynamicPseudoType, AllowMarked: true},
+	},
+	Type: function.StaticReturnType(cty.Bool),
+	Impl: func(args []cty.Value, retType cty.Type) (cty.Value, error) {
+		return cty.BoolVal(args[0].HasMark(SensitiveMark)), nil
 	},
 })
 
