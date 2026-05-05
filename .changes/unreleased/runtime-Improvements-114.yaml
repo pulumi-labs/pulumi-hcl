@@ -1,0 +1,6 @@
+component: runtime
+kind: Improvements
+body: Allow `provider` to be an arbitrary expression
+time: 2026-05-06T13:43:44.165321+02:00
+custom:
+    PR: "114"

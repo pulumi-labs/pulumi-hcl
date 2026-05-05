@@ -1111,17 +1111,15 @@ func (e *Engine) buildResourceOptionsInContext(
 	}
 
 	if res.Provider != nil {
-		providerKey := res.Provider.Name
-		if res.Provider.Alias != "" {
-			providerKey = res.Provider.Name + "." + res.Provider.Alias
+		val, valDiags := e.evaluator.EvaluateExpression(res.Provider)
+		if valDiags.HasErrors() {
+			return nil, fmt.Errorf("evaluating provider for %s.%s: %s", res.Type, res.Name, valDiags.Error())
 		}
-		if providerOutputs, ok := e.resourceOutputs.Get(resPrefix + providerKey); ok {
-			urnVal := providerOutputs.GetAttr("urn")
-			idVal := providerOutputs.GetAttr("id")
-			if urnVal.Type() == cty.String && idVal.Type() == cty.String {
-				opts.Provider = urnVal.AsString() + "::" + idVal.AsString()
-			}
+		ref, err := providerRefFromCty(val)
+		if err != nil {
+			return nil, fmt.Errorf("resolving provider for %s.%s: %w", res.Type, res.Name, err)
 		}
+		opts.Provider = ref
 	}
 
 	for _, traversal := range res.Providers {
@@ -1823,17 +1821,15 @@ func (e *Engine) invokeDataSourceOnce(
 	}
 
 	if ds.Provider != nil {
-		providerKey := ds.Provider.Name
-		if ds.Provider.Alias != "" {
-			providerKey = ds.Provider.Name + "." + ds.Provider.Alias
+		val, valDiags := e.evaluator.EvaluateExpression(ds.Provider)
+		if valDiags.HasErrors() {
+			return cty.NilVal, nil, fmt.Errorf("evaluating provider for data %s.%s: %s", ds.Type, ds.Name, valDiags.Error())
 		}
-		if providerOutputs, ok := e.resourceOutputs.Get(providerKey); ok {
-			urnVal := providerOutputs.GetAttr("urn")
-			idVal := providerOutputs.GetAttr("id")
-			if urnVal.Type() == cty.String && idVal.Type() == cty.String {
-				invokeReq.Provider = urnVal.AsString() + "::" + idVal.AsString()
-			}
+		ref, err := providerRefFromCty(val)
+		if err != nil {
+			return cty.NilVal, nil, fmt.Errorf("resolving provider for data %s.%s: %w", ds.Type, ds.Name, err)
 		}
+		invokeReq.Provider = ref
 	}
 
 	if ds.Version != nil {
@@ -2589,6 +2585,51 @@ func (e *Engine) processOutput(_ context.Context, name string, output *ast.Outpu
 	e.stackOutputs[name] = pv
 
 	return nil
+}
+
+// providerRefFromCty extracts a "<urn>::<id>" provider reference from an evaluated
+// `provider` attribute value.
+//
+// The value must be one of:
+//   - a resource-outputs object with direct `urn` and `id` string attributes
+//     (provider blocks like `aws.west` or pulumi_providers_* resources), or
+//   - an object carrying an `__ref` ResourceReference capsule (e.g., the result
+//     of a `call.<resource>.<method>` that returns a provider).
+func providerRefFromCty(val cty.Value) (string, error) {
+	if !val.IsKnown() {
+		return "", errors.New("provider value is not yet known")
+	}
+	if val.IsNull() {
+		return "", errors.New("provider value is null")
+	}
+	if !val.Type().IsObjectType() {
+		return "", fmt.Errorf("provider value must be an object, got %s", val.Type().FriendlyName())
+	}
+	if val.Type().HasAttribute("__ref") {
+		refVal := val.GetAttr("__ref")
+		if refVal.Type() != eval.ResourceReferenceCapsuleType {
+			return "", fmt.Errorf("provider value has __ref of unexpected type %s", refVal.Type().FriendlyName())
+		}
+		if refVal.IsNull() {
+			return "", errors.New("provider value has null __ref")
+		}
+		ref := refVal.EncapsulatedValue().(*property.ResourceReference)
+		id := ""
+		if ref.ID.IsString() {
+			id = ref.ID.AsString()
+		}
+		return string(ref.URN) + "::" + id, nil
+	}
+	if val.Type().HasAttribute("urn") && val.Type().HasAttribute("id") {
+		urnVal := val.GetAttr("urn")
+		idVal := val.GetAttr("id")
+		if urnVal.Type() != cty.String || idVal.Type() != cty.String {
+			return "", fmt.Errorf("provider value urn/id must be strings, got urn=%s id=%s",
+				urnVal.Type().FriendlyName(), idVal.Type().FriendlyName())
+		}
+		return urnVal.AsString() + "::" + idVal.AsString(), nil
+	}
+	return "", errors.New("provider value is not a resource reference")
 }
 
 // camelToSnake converts a camelCase string to snake_case.

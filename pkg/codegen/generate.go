@@ -667,6 +667,22 @@ func (g *generator) collectCalls(node pcl.Node) {
 		for _, attr := range n.Inputs {
 			g.collectCallsInExpr(attr.Value, srcFile)
 		}
+		if n.Options != nil {
+			for _, expr := range []model.Expression{
+				n.Options.Aliases, n.Options.Range, n.Options.Parent,
+				n.Options.Provider, n.Options.Providers, n.Options.DependsOn,
+				n.Options.Protect, n.Options.RetainOnDelete, n.Options.IgnoreChanges,
+				n.Options.HideDiffs, n.Options.ReplaceOnChanges, n.Options.DeleteBeforeReplace,
+				n.Options.AdditionalSecretOutputs, n.Options.Version, n.Options.CustomTimeouts,
+				n.Options.PluginDownloadURL, n.Options.DeletedWith, n.Options.ReplaceWith,
+				n.Options.ImportID, n.Options.ReplacementTrigger, n.Options.EnvVarMappings,
+				n.Options.Hooks,
+			} {
+				if expr != nil {
+					g.collectCallsInExpr(expr, srcFile)
+				}
+			}
+		}
 	case *pcl.OutputVariable:
 		g.collectCallsInExpr(n.Value, srcFile)
 	case *pcl.LocalVariable:

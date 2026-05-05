@@ -539,9 +539,7 @@ func (p *Parser) parseResourceBlock(config *ast.Config, block *hcl.Block, isData
 	}
 
 	if attr, ok := content.Attributes["provider"]; ok {
-		providerRef, refDiags := p.parseProviderRef(attr.Expr)
-		diags = append(diags, refDiags...)
-		resource.Provider = providerRef
+		resource.Provider = attr.Expr
 	}
 
 	if attr, ok := content.Attributes["providers"]; ok {
@@ -686,30 +684,6 @@ func (p *Parser) parseResourceBlock(config *ast.Config, block *hcl.Block, isData
 
 	targetMap[key] = resource
 	return diags
-}
-
-// parseProviderRef parses a provider reference expression.
-func (p *Parser) parseProviderRef(expr hcl.Expression) (*ast.ProviderRef, hcl.Diagnostics) {
-	traversal, diags := hcl.AbsTraversalForExpr(expr)
-	if diags.HasErrors() {
-		return nil, diags
-	}
-
-	ref := &ast.ProviderRef{
-		Range: expr.Range(),
-	}
-
-	if len(traversal) >= 1 {
-		ref.Name = traversal.RootName()
-	}
-
-	if len(traversal) >= 2 {
-		if step, ok := traversal[1].(hcl.TraverseAttr); ok {
-			ref.Alias = step.Name
-		}
-	}
-
-	return ref, diags
 }
 
 // lifecycleResult contains the parsed lifecycle block plus any preconditions/postconditions.
@@ -989,7 +963,7 @@ func (p *Parser) parseModuleBlock(config *ast.Config, block *hcl.Block) hcl.Diag
 	module := &ast.Module{
 		Name:      name,
 		Config:    remain,
-		Providers: make(map[string]*ast.ProviderRef),
+		Providers: make(map[string]hcl.Expression),
 		DeclRange: block.DefRange,
 	}
 
@@ -1041,11 +1015,7 @@ func (p *Parser) parseModuleBlock(config *ast.Config, block *hcl.Block) hcl.Diag
 			}
 			key := keyVal.AsString()
 
-			ref, refDiags := p.parseProviderRef(pair.Value)
-			diags = append(diags, refDiags...)
-			if ref != nil {
-				module.Providers[key] = ref
-			}
+			module.Providers[key] = pair.Value
 		}
 	}
 
@@ -1133,9 +1103,7 @@ func (p *Parser) parseImportBlock(config *ast.Config, block *hcl.Block) hcl.Diag
 	}
 
 	if attr, ok := content.Attributes["provider"]; ok {
-		ref, refDiags := p.parseProviderRef(attr.Expr)
-		diags = append(diags, refDiags...)
-		imp.Provider = ref
+		imp.Provider = attr.Expr
 	}
 
 	config.Imports = append(config.Imports, imp)

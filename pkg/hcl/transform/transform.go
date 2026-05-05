@@ -19,7 +19,6 @@ import (
 	"fmt"
 	"maps"
 	"os"
-	"reflect"
 	"slices"
 	"strconv"
 	"strings"
@@ -39,8 +38,6 @@ import (
 	"github.com/zclconf/go-cty/cty"
 	"github.com/zclconf/go-cty/cty/convert"
 )
-
-var resourceRefCapsuleType = cty.Capsule("resource_reference", reflect.TypeFor[property.ResourceReference]())
 
 // EvalFunc evaluates an HCL expression.
 //
@@ -854,7 +851,7 @@ func ctyTypeFromType(typ schema.Type) cty.Type {
 		if typ.Resource == nil {
 			return cty.DynamicPseudoType
 		}
-		attrs := map[string]cty.Type{"__ref": resourceRefCapsuleType}
+		attrs := map[string]cty.Type{"__ref": eval.ResourceReferenceCapsuleType}
 		optional := []string{"__ref"}
 		for _, p := range typ.Resource.Properties {
 			key := snakeCaseFromCamelCase(p.Name)
@@ -920,7 +917,7 @@ func propertyValueToCty(path string, v property.Value, typ schema.Type, dryRun b
 			}
 			if refVal, ok := v.AsMap().GetOk("__ref"); ok && refVal.IsResourceReference() {
 				ref := refVal.AsResourceReference()
-				result["__ref"] = cty.CapsuleVal(resourceRefCapsuleType, &ref)
+				result["__ref"] = cty.CapsuleVal(eval.ResourceReferenceCapsuleType, &ref)
 			}
 			return cty.ObjectVal(result), nil
 		case *schema.ObjectType:
@@ -995,7 +992,7 @@ func propertyValueToCty(path string, v property.Value, typ schema.Type, dryRun b
 		if err != nil {
 			return cty.Value{}, err
 		}
-		result["__ref"] = cty.CapsuleVal(resourceRefCapsuleType, &ref)
+		result["__ref"] = cty.CapsuleVal(eval.ResourceReferenceCapsuleType, &ref)
 		return cty.ObjectVal(result), nil
 
 	case v.IsAsset():

@@ -47,6 +47,7 @@ import (
 	"github.com/pulumi/pulumi/sdk/v3/go/common/resource/archive"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/resource/asset"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/resource/urn"
+	"github.com/pulumi/pulumi/sdk/v3/go/property"
 	"github.com/zclconf/go-cty/cty"
 	"github.com/zclconf/go-cty/cty/function"
 	"github.com/zclconf/go-cty/cty/function/stdlib"
@@ -54,11 +55,16 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-// AssetCapsuleType is the cty capsule type for Pulumi assets.
-var AssetCapsuleType = cty.Capsule("Asset", reflect.TypeFor[asset.Asset]())
+var (
+	// AssetCapsuleType is the cty capsule type for Pulumi assets.
+	AssetCapsuleType = cty.Capsule("Asset", reflect.TypeFor[asset.Asset]())
 
-// ArchiveCapsuleType is the cty capsule type for Pulumi archives.
-var ArchiveCapsuleType = cty.Capsule("Archive", reflect.TypeFor[archive.Archive]())
+	// ArchiveCapsuleType is the cty capsule type for Pulumi archives.
+	ArchiveCapsuleType = cty.Capsule("Archive", reflect.TypeFor[archive.Archive]())
+
+	// ResourceReferenceCapsuleType is the cty capsule type for Pulumi resource references.
+	ResourceReferenceCapsuleType = cty.Capsule("ResourceReference", reflect.TypeFor[property.ResourceReference]())
+)
 
 // Functions returns a map of all Terraform-compatible functions.
 func Functions(baseDir string) map[string]function.Function {

@@ -64,8 +64,9 @@ type Module struct {
 	// DependsOn contains explicit dependencies from the depends_on meta-argument.
 	DependsOn []hcl.Traversal
 
-	// Providers maps provider names to provider references for passing to the module.
-	Providers map[string]*ProviderRef
+	// Providers maps provider names to raw expressions for passing to the module.
+	// Each expression is evaluated at runtime to obtain the provider URN/ID.
+	Providers map[string]hcl.Expression
 
 	// DeclRange is the source range of the module block.
 	DeclRange hcl.Range
