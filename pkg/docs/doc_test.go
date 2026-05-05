@@ -15,8 +15,11 @@
 package docs
 
 import (
+	"context"
+	"errors"
 	"testing"
 
+	"github.com/blang/semver"
 	"github.com/pulumi/pulumi/pkg/v3/codegen"
 	"github.com/pulumi/pulumi/pkg/v3/codegen/schema"
 	"github.com/stretchr/testify/assert"
@@ -194,5 +197,89 @@ func TestGetFunctionName(t *testing.T) {
 
 	got := helper.GetFunctionName(&schema.Function{Token: "aws:s3:getBucket"})
 	assert.Equal(t, "aws_s3_getbucket", got)
+}
+
+// TestTokenNormalization_ViaPackage verifies that names are normalized through
+// the package's TokenToModule mapping. Schemas that use a moduleFormat regex
+// (such as pulumi-random's "(.*)(?:/[^/]*)") emit tokens like
+// "random:index/randomString:RandomString" but expect the HCL form to collapse
+// to "random_randomstring" — matching what GenerateProgram actually emits.
+func TestTokenNormalization_ViaPackage(t *testing.T) {
+	t.Parallel()
+
+	pkg := bindTestPackage(t, schema.PackageSpec{
+		Name: "random",
+		Meta: &schema.MetadataSpec{
+			ModuleFormat: "(.*)(?:/[^/]*)",
+		},
+		Resources: map[string]schema.ResourceSpec{
+			"random:index/randomString:RandomString": {},
+		},
+		Functions: map[string]schema.FunctionSpec{
+			"random:index/getRandom:getRandom": {},
+		},
+	})
+
+	require.Equal(t, "", pkg.TokenToModule("random:index/randomString:RandomString"),
+		"sanity check: moduleFormat collapses the submodule and the schema package "+
+			"normalizes 'index' to empty")
+
+	t.Run("resource", func(t *testing.T) {
+		t.Parallel()
+		r, ok, err := pkg.Resources().Get("random:index/randomString:RandomString")
+		require.NoError(t, err)
+		require.True(t, ok)
+		assert.Equal(t, "random_randomstring", helper.GetResourceName(r))
+		typ := &schema.ResourceType{Token: r.Token, Resource: r}
+		assert.Equal(t, "random_randomstring", helper.GetTypeName(pkg, typ, false, ""))
+	})
+
+	t.Run("function", func(t *testing.T) {
+		t.Parallel()
+		f, ok, err := pkg.Functions().Get("random:index/getRandom:getRandom")
+		require.NoError(t, err)
+		require.True(t, ok)
+		assert.Equal(t, "random_getrandom", helper.GetFunctionName(f))
+	})
+}
+
+// TestGetTypeName_ResourceWithoutPackage falls back to the raw PulumiTokenToHCL
+// when no package is provided to resolve the module via TokenToModule.
+func TestGetTypeName_ResourceWithoutPackage(t *testing.T) {
+	t.Parallel()
+
+	typ := &schema.ResourceType{Token: "random:index/randomString:RandomString"}
+	// Without a package to consult TokenToModule, the raw token's submodule is
+	// preserved.
+	assert.Equal(t, "random_index_randomstring_randomstring",
+		helper.GetTypeName(nil, typ, false, ""))
+}
+
+type nopLoader struct{}
+
+func (nopLoader) LoadPackage(string, *semver.Version) (*schema.Package, error) {
+	return nil, errNotFound
+}
+
+func (nopLoader) LoadPackageReference(string, *semver.Version) (schema.PackageReference, error) {
+	return nil, errNotFound
+}
+
+func (nopLoader) LoadPackageV2(context.Context, *schema.PackageDescriptor) (*schema.Package, error) {
+	return nil, errNotFound
+}
+
+func (nopLoader) LoadPackageReferenceV2(context.Context, *schema.PackageDescriptor) (schema.PackageReference, error) {
+	return nil, errNotFound
+}
+
+var errNotFound = errors.New("package not found")
+
+func bindTestPackage(t *testing.T, spec schema.PackageSpec) schema.PackageReference {
+	t.Helper()
+	pkg, diags, err := schema.BindSpec(spec, nopLoader{}, schema.ValidationOptions{})
+	require.NoError(t, err)
+	require.Empty(t, diags)
+	return pkg.Reference()
 }
 
