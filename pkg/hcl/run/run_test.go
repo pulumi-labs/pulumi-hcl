@@ -12,148 +12,22 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package run
+package run_test
 
 import (
-	"context"
 	"fmt"
 	"os"
 	"strings"
-	"sync"
 	"testing"
 
-	"github.com/blang/semver"
-	"github.com/pulumi-labs/pulumi-hcl/pkg/hcl/packages"
 	"github.com/pulumi-labs/pulumi-hcl/pkg/hcl/parser"
+	"github.com/pulumi-labs/pulumi-hcl/pkg/hcl/run"
+	"github.com/pulumi-labs/pulumi-hcl/tests/testutil"
+	"github.com/pulumi-labs/pulumi-hcl/tests/testutil/schemaloader"
 	"github.com/pulumi/pulumi/pkg/v3/codegen/schema"
-	"github.com/pulumi/pulumi/sdk/v3/go/common/workspace"
-	"github.com/pulumi/pulumi/sdk/v3/go/property"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
-
-// mockResourceMonitor is a mock implementation of ResourceMonitor for testing.
-type mockResourceMonitor struct {
-	mu                  sync.Mutex
-	registeredResources []RegisterResourceRequest
-	invokedFunctions    []InvokeRequest
-	stackOutputs        property.Map
-	stackURN            string
-}
-
-func (m *mockResourceMonitor) RegisterResource(ctx context.Context, req RegisterResourceRequest) (*RegisterResourceResponse, error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.registeredResources = append(m.registeredResources, req)
-	urn := "urn:pulumi:test::project::" + req.Type + "::" + req.Name
-	if req.Type == "pulumi:pulumi:Stack" {
-		m.stackURN = urn
-	}
-	return &RegisterResourceResponse{
-		URN:     urn,
-		ID:      req.Name + "-id",
-		Outputs: req.Inputs,
-	}, nil
-}
-
-func (m *mockResourceMonitor) Invoke(ctx context.Context, req InvokeRequest) (*InvokeResponse, error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.invokedFunctions = append(m.invokedFunctions, req)
-	return &InvokeResponse{
-		Return: property.NewMap(map[string]property.Value{
-			"id": property.New("mock-id"),
-		}),
-	}, nil
-}
-
-func (m *mockResourceMonitor) RegisterResourceOutputs(ctx context.Context, urn string, outputs property.Map) error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	if urn == m.stackURN {
-		m.stackOutputs = outputs
-	}
-	return nil
-}
-
-func (m *mockResourceMonitor) Call(ctx context.Context, req CallRequest) (*CallResponse, error) {
-	return &CallResponse{Return: property.NewMap(nil)}, nil
-}
-
-func (m *mockResourceMonitor) CheckPulumiVersion(ctx context.Context, versionRange string) error {
-	return nil
-}
-
-func (m *mockResourceMonitor) RegisterPackage(ctx context.Context, pkg workspace.PackageDescriptor) (PackageRef, error) {
-	return "", nil
-}
-
-var _ schema.ReferenceLoader = mockReferenceLoader{}
-
-type mockReferenceLoader map[string]schema.Package
-
-func (m mockReferenceLoader) LoadPackage(pkg string, version *semver.Version) (*schema.Package, error) {
-	return m.LoadPackageV2(context.Background(), &schema.PackageDescriptor{
-		Name:    pkg,
-		Version: version,
-	})
-}
-
-func (m mockReferenceLoader) LoadPackageV2(ctx context.Context, descriptor *schema.PackageDescriptor) (*schema.Package, error) {
-	p, ok := m[descriptor.String()]
-	if ok {
-		return &p, nil
-	}
-	return nil, packages.ErrNotFound
-}
-
-func (m mockReferenceLoader) LoadPackageReference(pkg string, version *semver.Version) (schema.PackageReference, error) {
-	return m.LoadPackageReferenceV2(context.Background(), &schema.PackageDescriptor{
-		Name:    pkg,
-		Version: version,
-	})
-}
-
-func (m mockReferenceLoader) LoadPackageReferenceV2(ctx context.Context, descriptor *schema.PackageDescriptor) (schema.PackageReference, error) {
-	p, ok := m[descriptor.String()]
-	if ok {
-		return p.Reference(), nil
-	}
-	fmt.Printf("Looking for %s\n", descriptor.String())
-	for k := range m {
-		fmt.Printf("Found: %s\n", k)
-	}
-	return nil, packages.ErrNotFound
-}
-
-func newMockReferenceLoader(t testing.TB, schemas ...schema.PackageSpec) schema.ReferenceLoader {
-	loader := mockReferenceLoader{}
-	for _, spec := range schemas {
-		pkg, diag, err := schema.BindSpec(spec, loader, schema.ValidationOptions{})
-		require.NoError(t, err)
-		require.Len(t, diag, 0)
-		d, err := pkg.Descriptor(t.Context())
-		require.NoError(t, err)
-
-		params := func() *schema.ParameterizationDescriptor {
-			if d.Parameterization == nil {
-				return nil
-			}
-			return &schema.ParameterizationDescriptor{
-				Name:    d.Parameterization.Name,
-				Version: d.Parameterization.Version,
-				Value:   d.Parameterization.Value,
-			}
-		}
-		loader[(&schema.PackageDescriptor{
-			Name:             d.Name,
-			Version:          d.Version,
-			DownloadURL:      d.PluginDownloadURL,
-			Parameterization: params(),
-		}).String()] = *pkg
-	}
-	return loader
-}
 
 func TestEngine_BasicResource(t *testing.T) {
 	t.Parallel()
@@ -176,14 +50,14 @@ resource "aws_instance" "web" {
 		t.Fatalf("parse error: %s", diags.Error())
 	}
 
-	mock := &mockResourceMonitor{}
-	engine := NewEngine(config, &EngineOptions{
+	mock := &testutil.MockResourceMonitor{}
+	engine := run.NewEngine(config, &run.EngineOptions{
 		ProjectName:     "test-project",
 		StackName:       "dev",
 		ResourceMonitor: mock,
 		WorkDir:         t.TempDir(),
 		RootDir:         t.TempDir(),
-		SchemaLoader: newMockReferenceLoader(t, schema.PackageSpec{
+		SchemaLoader: schemaloader.New(t, schema.PackageSpec{
 			Name: "aws",
 			Resources: map[string]schema.ResourceSpec{
 				"aws:index:Instance": {
@@ -208,16 +82,16 @@ resource "aws_instance" "web" {
 	}
 
 	// Should have registered the stack + one resource
-	if len(mock.registeredResources) != 2 {
-		t.Fatalf("expected 2 registered resources (stack + resource), got %d", len(mock.registeredResources))
+	if len(mock.RegisteredResources) != 2 {
+		t.Fatalf("expected 2 registered resources (stack + resource), got %d", len(mock.RegisteredResources))
 	}
 
 	// First resource should be the stack
-	if mock.registeredResources[0].Type != "pulumi:pulumi:Stack" {
-		t.Errorf("expected first resource to be stack, got %s", mock.registeredResources[0].Type)
+	if mock.RegisteredResources[0].Type != "pulumi:pulumi:Stack" {
+		t.Errorf("expected first resource to be stack, got %s", mock.RegisteredResources[0].Type)
 	}
 
-	req := mock.registeredResources[1]
+	req := mock.RegisteredResources[1]
 	if req.Name != "web" {
 		t.Errorf("expected resource name 'web', got %s", req.Name)
 	}
@@ -253,14 +127,14 @@ resource "aws_s3_bucket" "mybucket" {
 		t.Fatalf("parse error: %s", diags.Error())
 	}
 
-	mock := &mockResourceMonitor{}
-	engine := NewEngine(config, &EngineOptions{
+	mock := &testutil.MockResourceMonitor{}
+	engine := run.NewEngine(config, &run.EngineOptions{
 		ProjectName:     "test-project",
 		StackName:       "dev",
 		ResourceMonitor: mock,
 		WorkDir:         t.TempDir(),
 		RootDir:         t.TempDir(),
-		SchemaLoader: newMockReferenceLoader(t, schema.PackageSpec{
+		SchemaLoader: schemaloader.New(t, schema.PackageSpec{
 			Name: "aws",
 			Resources: map[string]schema.ResourceSpec{
 				"aws:s3:Bucket": {
@@ -282,11 +156,11 @@ resource "aws_s3_bucket" "mybucket" {
 		t.Fatalf("run error: %v", err)
 	}
 
-	if len(mock.registeredResources) != 2 {
-		t.Fatalf("expected 2 registered resources (stack + resource), got %d", len(mock.registeredResources))
+	if len(mock.RegisteredResources) != 2 {
+		t.Fatalf("expected 2 registered resources (stack + resource), got %d", len(mock.RegisteredResources))
 	}
 
-	req := mock.registeredResources[1]
+	req := mock.RegisteredResources[1]
 	bucketName := req.Inputs.Get("bucket").AsString()
 	if bucketName != "myapp-dev-bucket" {
 		t.Errorf("expected bucket 'myapp-dev-bucket', got %s", bucketName)
@@ -313,14 +187,14 @@ resource "aws_subnet" "main" {
 		t.Fatalf("parse error: %s", diags.Error())
 	}
 
-	mock := &mockResourceMonitor{}
-	engine := NewEngine(config, &EngineOptions{
+	mock := &testutil.MockResourceMonitor{}
+	engine := run.NewEngine(config, &run.EngineOptions{
 		ProjectName:     "test-project",
 		StackName:       "dev",
 		ResourceMonitor: mock,
 		WorkDir:         t.TempDir(),
 		RootDir:         t.TempDir(),
-		SchemaLoader: newMockReferenceLoader(t, schema.PackageSpec{
+		SchemaLoader: schemaloader.New(t, schema.PackageSpec{
 			Name: "aws",
 			Resources: map[string]schema.ResourceSpec{
 				"aws:index:Vpc": {
@@ -355,18 +229,18 @@ resource "aws_subnet" "main" {
 	}
 
 	// Should have stack + 2 resources registered in dependency order
-	if len(mock.registeredResources) != 3 {
-		t.Fatalf("expected 3 registered resources (stack + 2 resources), got %d", len(mock.registeredResources))
+	if len(mock.RegisteredResources) != 3 {
+		t.Fatalf("expected 3 registered resources (stack + 2 resources), got %d", len(mock.RegisteredResources))
 	}
 
 	// VPC should be registered first (after stack)
-	if mock.registeredResources[1].Name != "main" {
-		t.Errorf("expected main first, got %s", mock.registeredResources[1].Name)
+	if mock.RegisteredResources[1].Name != "main" {
+		t.Errorf("expected main first, got %s", mock.RegisteredResources[1].Name)
 	}
 
 	// Subnet should be registered second
-	if mock.registeredResources[2].Name != "main" {
-		t.Errorf("expected main second, got %s", mock.registeredResources[2].Name)
+	if mock.RegisteredResources[2].Name != "main" {
+		t.Errorf("expected main second, got %s", mock.RegisteredResources[2].Name)
 	}
 }
 
@@ -391,7 +265,7 @@ resource "aws_instance" "web" {
 			t.Fatalf("parse error: %s", diags.Error())
 		}
 
-		errs := Validate(config)
+		errs := run.Validate(config)
 		if len(errs) != 0 {
 			t.Errorf("expected no errors, got %v", errs)
 		}
@@ -409,7 +283,7 @@ resource "aws_instance" "web" {
 			t.Fatalf("parse error: %s", diags.Error())
 		}
 
-		errs := Validate(config)
+		errs := run.Validate(config)
 		// Should have a warning about missing dependency
 		if len(errs) == 0 {
 			t.Error("expected validation errors for missing dependency")
@@ -438,14 +312,14 @@ resource "aws_instance" "web" {
 		t.Fatalf("parse error: %s", diags.Error())
 	}
 
-	mock := &mockResourceMonitor{}
-	engine := NewEngine(config, &EngineOptions{
+	mock := &testutil.MockResourceMonitor{}
+	engine := run.NewEngine(config, &run.EngineOptions{
 		ProjectName:     "test-project",
 		StackName:       "dev",
 		ResourceMonitor: mock,
 		WorkDir:         t.TempDir(),
 		RootDir:         t.TempDir(),
-		SchemaLoader: newMockReferenceLoader(t, schema.PackageSpec{
+		SchemaLoader: schemaloader.New(t, schema.PackageSpec{
 			Name: "aws",
 			Resources: map[string]schema.ResourceSpec{
 				"aws:index:Instance": {
@@ -478,17 +352,17 @@ resource "aws_instance" "web" {
 	}
 
 	// Should have stack + 2 resources, bucket first due to depends_on
-	if len(mock.registeredResources) != 3 {
-		t.Fatalf("expected 3 registered resources (stack + 2 resources), got %d", len(mock.registeredResources))
+	if len(mock.RegisteredResources) != 3 {
+		t.Fatalf("expected 3 registered resources (stack + 2 resources), got %d", len(mock.RegisteredResources))
 	}
 
 	// Bucket should be first (after stack)
-	if mock.registeredResources[1].Name != "mybucket" {
-		t.Errorf("expected bucket first, got %s", mock.registeredResources[1].Name)
+	if mock.RegisteredResources[1].Name != "mybucket" {
+		t.Errorf("expected bucket first, got %s", mock.RegisteredResources[1].Name)
 	}
 
 	// Instance should have depends_on set
-	if len(mock.registeredResources[2].Dependencies) == 0 {
+	if len(mock.RegisteredResources[2].Dependencies) == 0 {
 		t.Error("expected instance to have dependencies from depends_on")
 	}
 }
@@ -513,14 +387,14 @@ resource "aws_instance" "web" {
 		t.Fatalf("parse error: %s", diags.Error())
 	}
 
-	mock := &mockResourceMonitor{}
-	engine := NewEngine(config, &EngineOptions{
+	mock := &testutil.MockResourceMonitor{}
+	engine := run.NewEngine(config, &run.EngineOptions{
 		ProjectName:     "test-project",
 		StackName:       "dev",
 		ResourceMonitor: mock,
 		WorkDir:         t.TempDir(),
 		RootDir:         t.TempDir(),
-		SchemaLoader: newMockReferenceLoader(t, schema.PackageSpec{
+		SchemaLoader: schemaloader.New(t, schema.PackageSpec{
 			Name: "aws",
 			Resources: map[string]schema.ResourceSpec{
 				"aws:index:Instance": {
@@ -542,11 +416,11 @@ resource "aws_instance" "web" {
 		t.Fatalf("run error: %v", err)
 	}
 
-	if len(mock.registeredResources) != 2 {
-		t.Fatalf("expected 2 registered resources (stack + resource), got %d", len(mock.registeredResources))
+	if len(mock.RegisteredResources) != 2 {
+		t.Fatalf("expected 2 registered resources (stack + resource), got %d", len(mock.RegisteredResources))
 	}
 
-	req := mock.registeredResources[1]
+	req := mock.RegisteredResources[1]
 
 	// prevent_destroy maps to Protect
 	if !req.Protect {
@@ -578,14 +452,14 @@ resource "aws_instance" "web" {
 		t.Fatalf("parse error: %s", diags.Error())
 	}
 
-	mock := &mockResourceMonitor{}
-	engine := NewEngine(config, &EngineOptions{
+	mock := &testutil.MockResourceMonitor{}
+	engine := run.NewEngine(config, &run.EngineOptions{
 		ProjectName:     "test-project",
 		StackName:       "dev",
 		ResourceMonitor: mock,
 		WorkDir:         t.TempDir(),
 		RootDir:         t.TempDir(),
-		SchemaLoader: newMockReferenceLoader(t, schema.PackageSpec{
+		SchemaLoader: schemaloader.New(t, schema.PackageSpec{
 			Name: "aws",
 			Resources: map[string]schema.ResourceSpec{
 				"aws:index:Instance": {
@@ -607,11 +481,11 @@ resource "aws_instance" "web" {
 		t.Fatalf("run error: %v", err)
 	}
 
-	if len(mock.registeredResources) != 2 {
-		t.Fatalf("expected 2 registered resources (stack + resource), got %d", len(mock.registeredResources))
+	if len(mock.RegisteredResources) != 2 {
+		t.Fatalf("expected 2 registered resources (stack + resource), got %d", len(mock.RegisteredResources))
 	}
 
-	req := mock.registeredResources[1]
+	req := mock.RegisteredResources[1]
 
 	// create_before_destroy = true should map to DeleteBeforeReplace = false
 	// (opposite semantics: TF "create before destroy" vs Pulumi "delete before replace")
@@ -644,14 +518,14 @@ resource "aws_instance" "web" {
 		t.Fatalf("parse error: %s", diags.Error())
 	}
 
-	mock := &mockResourceMonitor{}
-	engine := NewEngine(config, &EngineOptions{
+	mock := &testutil.MockResourceMonitor{}
+	engine := run.NewEngine(config, &run.EngineOptions{
 		ProjectName:     "test-project",
 		StackName:       "dev",
 		ResourceMonitor: mock,
 		WorkDir:         t.TempDir(),
 		RootDir:         t.TempDir(),
-		SchemaLoader: newMockReferenceLoader(t, schema.PackageSpec{
+		SchemaLoader: schemaloader.New(t, schema.PackageSpec{
 			Name: "aws",
 			Resources: map[string]schema.ResourceSpec{
 				"aws:index:Instance": {
@@ -673,11 +547,11 @@ resource "aws_instance" "web" {
 		t.Fatalf("run error: %v", err)
 	}
 
-	if len(mock.registeredResources) != 2 {
-		t.Fatalf("expected 2 registered resources (stack + resource), got %d", len(mock.registeredResources))
+	if len(mock.RegisteredResources) != 2 {
+		t.Fatalf("expected 2 registered resources (stack + resource), got %d", len(mock.RegisteredResources))
 	}
 
-	req := mock.registeredResources[1]
+	req := mock.RegisteredResources[1]
 
 	// create_before_destroy = false should map to DeleteBeforeReplace = true
 	// (Terraform's default: delete old, then create new)
@@ -709,14 +583,14 @@ output "region_value" {
 		t.Fatalf("parse error: %s", diags.Error())
 	}
 
-	mock := &mockResourceMonitor{}
-	engine := NewEngine(config, &EngineOptions{
+	mock := &testutil.MockResourceMonitor{}
+	engine := run.NewEngine(config, &run.EngineOptions{
 		ProjectName:     "test-project",
 		StackName:       "dev",
 		ResourceMonitor: mock,
 		WorkDir:         t.TempDir(),
 		RootDir:         t.TempDir(),
-		SchemaLoader: newMockReferenceLoader(t, schema.PackageSpec{
+		SchemaLoader: schemaloader.New(t, schema.PackageSpec{
 			Name: "aws",
 			Resources: map[string]schema.ResourceSpec{
 				"aws:index:Instance": {
@@ -742,10 +616,10 @@ output "region_value" {
 	}
 
 	// Check the stack outputs - region should be us-west-2 from config, not default
-	if mock.stackOutputs.Len() == 0 {
+	if mock.StackOutputs.Len() == 0 {
 		t.Fatal("expected stack outputs")
 	}
-	regionOutput, ok := mock.stackOutputs.GetOk("region_value")
+	regionOutput, ok := mock.StackOutputs.GetOk("region_value")
 	if !ok {
 		t.Fatal("expected region_value output")
 	}
@@ -775,14 +649,14 @@ output "region_value" {
 	// Set environment variable
 	t.Setenv("TF_VAR_region", "eu-west-1")
 
-	mock := &mockResourceMonitor{}
-	engine := NewEngine(config, &EngineOptions{
+	mock := &testutil.MockResourceMonitor{}
+	engine := run.NewEngine(config, &run.EngineOptions{
 		ProjectName:     "test-project",
 		StackName:       "dev",
 		ResourceMonitor: mock,
 		WorkDir:         t.TempDir(),
 		RootDir:         t.TempDir(),
-		SchemaLoader: newMockReferenceLoader(t, schema.PackageSpec{
+		SchemaLoader: schemaloader.New(t, schema.PackageSpec{
 			Name: "aws",
 			Resources: map[string]schema.ResourceSpec{
 				"aws:index:Instance": {
@@ -808,10 +682,10 @@ output "region_value" {
 	}
 
 	// Check the stack outputs - region should be eu-west-1 from env (highest priority)
-	if mock.stackOutputs.Len() == 0 {
+	if mock.StackOutputs.Len() == 0 {
 		t.Fatal("expected stack outputs")
 	}
-	regionOutput, ok := mock.stackOutputs.GetOk("region_value")
+	regionOutput, ok := mock.StackOutputs.GetOk("region_value")
 	if !ok {
 		t.Fatal("expected region_value output")
 	}
@@ -866,14 +740,14 @@ variable "required_var" {
 			config, diags := p.ParseSource("test.hcl", []byte(tc.src))
 			require.False(t, diags.HasErrors(), "parse error: %s", diags.Error())
 
-			mock := &mockResourceMonitor{}
-			engine := NewEngine(config, &EngineOptions{
+			mock := &testutil.MockResourceMonitor{}
+			engine := run.NewEngine(config, &run.EngineOptions{
 				ProjectName:     "test-project",
 				StackName:       "dev",
 				ResourceMonitor: mock,
 				WorkDir:         t.TempDir(),
 				RootDir:         t.TempDir(),
-				SchemaLoader:    newMockReferenceLoader(t, schema.PackageSpec{Name: "empty"}),
+				SchemaLoader:    schemaloader.New(t, schema.PackageSpec{Name: "empty"}),
 			})
 
 			err := engine.Run(t.Context())
@@ -909,14 +783,14 @@ output "instance_type" {
 		t.Fatalf("parse error: %s", diags.Error())
 	}
 
-	mock := &mockResourceMonitor{}
-	engine := NewEngine(config, &EngineOptions{
+	mock := &testutil.MockResourceMonitor{}
+	engine := run.NewEngine(config, &run.EngineOptions{
 		ProjectName:     "test-project",
 		StackName:       "dev",
 		ResourceMonitor: mock,
 		WorkDir:         t.TempDir(),
 		RootDir:         t.TempDir(),
-		SchemaLoader: newMockReferenceLoader(t, schema.PackageSpec{
+		SchemaLoader: schemaloader.New(t, schema.PackageSpec{
 			Name: "aws",
 			Resources: map[string]schema.ResourceSpec{
 				"aws:index:Instance": {
@@ -939,7 +813,7 @@ output "instance_type" {
 	}
 
 	// Should pass validation
-	output, ok := mock.stackOutputs.GetOk("instance_type")
+	output, ok := mock.StackOutputs.GetOk("instance_type")
 	if !ok {
 		t.Fatal("expected instance_type output")
 	}
@@ -969,14 +843,14 @@ variable "instance_type" {
 		t.Fatalf("parse error: %s", diags.Error())
 	}
 
-	mock := &mockResourceMonitor{}
-	engine := NewEngine(config, &EngineOptions{
+	mock := &testutil.MockResourceMonitor{}
+	engine := run.NewEngine(config, &run.EngineOptions{
 		ProjectName:     "test-project",
 		StackName:       "dev",
 		ResourceMonitor: mock,
 		WorkDir:         t.TempDir(),
 		RootDir:         t.TempDir(),
-		SchemaLoader: newMockReferenceLoader(t, schema.PackageSpec{
+		SchemaLoader: schemaloader.New(t, schema.PackageSpec{
 			Name: "aws",
 			Resources: map[string]schema.ResourceSpec{
 				"aws:index:Instance": {
@@ -1028,21 +902,21 @@ resource "test_resource" "res" {
 }
 `
 
-	runWithField := func(t *testing.T, value string) (*mockResourceMonitor, error) {
+	runWithField := func(t *testing.T, value string) (*testutil.MockResourceMonitor, error) {
 		t.Helper()
 		src := fmt.Appendf(nil, hclTemplate, value)
 		p := parser.NewParser()
 		config, diags := p.ParseSource("test.hcl", src)
 		require.False(t, diags.HasErrors(), diags.Error())
 
-		mock := &mockResourceMonitor{}
-		engine := NewEngine(config, &EngineOptions{
+		mock := &testutil.MockResourceMonitor{}
+		engine := run.NewEngine(config, &run.EngineOptions{
 			ProjectName:     "test-project",
 			StackName:       "dev",
 			ResourceMonitor: mock,
 			WorkDir:         t.TempDir(),
 			RootDir:         t.TempDir(),
-			SchemaLoader:    newMockReferenceLoader(t, testSchema()),
+			SchemaLoader:    schemaloader.New(t, testSchema()),
 		})
 		return mock, engine.Run(t.Context())
 	}
@@ -1084,21 +958,21 @@ resource "test_resource" "res" {
 }
 `
 
-	runWithField := func(t *testing.T, value string) (*mockResourceMonitor, error) {
+	runWithField := func(t *testing.T, value string) (*testutil.MockResourceMonitor, error) {
 		t.Helper()
 		src := fmt.Appendf(nil, hclTemplate, value)
 		p := parser.NewParser()
 		config, diags := p.ParseSource("test.hcl", src)
 		require.False(t, diags.HasErrors(), diags.Error())
 
-		mock := &mockResourceMonitor{}
-		engine := NewEngine(config, &EngineOptions{
+		mock := &testutil.MockResourceMonitor{}
+		engine := run.NewEngine(config, &run.EngineOptions{
 			ProjectName:     "test-project",
 			StackName:       "dev",
 			ResourceMonitor: mock,
 			WorkDir:         t.TempDir(),
 			RootDir:         t.TempDir(),
-			SchemaLoader:    newMockReferenceLoader(t, testSchema()),
+			SchemaLoader:    schemaloader.New(t, testSchema()),
 		})
 		return mock, engine.Run(t.Context())
 	}
@@ -1143,14 +1017,14 @@ resource "aws_instance" "web" {
 		t.Fatalf("parse error: %s", diags.Error())
 	}
 
-	mock := &mockResourceMonitor{}
-	engine := NewEngine(config, &EngineOptions{
+	mock := &testutil.MockResourceMonitor{}
+	engine := run.NewEngine(config, &run.EngineOptions{
 		ProjectName:     "test-project",
 		StackName:       "dev",
 		ResourceMonitor: mock,
 		WorkDir:         t.TempDir(),
 		RootDir:         t.TempDir(),
-		SchemaLoader: newMockReferenceLoader(t, schema.PackageSpec{
+		SchemaLoader: schemaloader.New(t, schema.PackageSpec{
 			Name: "aws",
 			Resources: map[string]schema.ResourceSpec{
 				"aws:index:Instance": {
@@ -1174,15 +1048,15 @@ resource "aws_instance" "web" {
 	}
 
 	// Should have registered: stack + resource + provisioner
-	if len(mock.registeredResources) < 3 {
-		t.Fatalf("expected at least 3 registered resources, got %d", len(mock.registeredResources))
+	if len(mock.RegisteredResources) < 3 {
+		t.Fatalf("expected at least 3 registered resources, got %d", len(mock.RegisteredResources))
 	}
 
 	// Find the provisioner resource
-	var provisionerReq *RegisterResourceRequest
-	for i := range mock.registeredResources {
-		if mock.registeredResources[i].Type == "command:local:Command" {
-			provisionerReq = &mock.registeredResources[i]
+	var provisionerReq *run.RegisterResourceRequest
+	for i := range mock.RegisteredResources {
+		if mock.RegisteredResources[i].Type == "command:local:Command" {
+			provisionerReq = &mock.RegisteredResources[i]
 			break
 		}
 	}
@@ -1231,14 +1105,14 @@ resource "aws_instance" "web" {
 		t.Fatalf("parse error: %s", diags.Error())
 	}
 
-	mock := &mockResourceMonitor{}
-	engine := NewEngine(config, &EngineOptions{
+	mock := &testutil.MockResourceMonitor{}
+	engine := run.NewEngine(config, &run.EngineOptions{
 		ProjectName:     "test-project",
 		StackName:       "dev",
 		ResourceMonitor: mock,
 		WorkDir:         t.TempDir(),
 		RootDir:         t.TempDir(),
-		SchemaLoader: newMockReferenceLoader(t, schema.PackageSpec{
+		SchemaLoader: schemaloader.New(t, schema.PackageSpec{
 			Name: "aws",
 			Resources: map[string]schema.ResourceSpec{
 				"aws:index:Instance": {
@@ -1263,7 +1137,7 @@ resource "aws_instance" "web" {
 
 	// Count provisioner resources
 	var provisionerCount int
-	for _, r := range mock.registeredResources {
+	for _, r := range mock.RegisteredResources {
 		if r.Type == "command:local:Command" {
 			provisionerCount++
 		}
@@ -1293,14 +1167,14 @@ resource "aws_instance" "web" {
 		t.Fatalf("parse error: %s", diags.Error())
 	}
 
-	mock := &mockResourceMonitor{}
-	engine := NewEngine(config, &EngineOptions{
+	mock := &testutil.MockResourceMonitor{}
+	engine := run.NewEngine(config, &run.EngineOptions{
 		ProjectName:     "test-project",
 		StackName:       "dev",
 		ResourceMonitor: mock,
 		WorkDir:         t.TempDir(),
 		RootDir:         t.TempDir(),
-		SchemaLoader: newMockReferenceLoader(t, schema.PackageSpec{
+		SchemaLoader: schemaloader.New(t, schema.PackageSpec{
 			Name: "aws",
 			Resources: map[string]schema.ResourceSpec{
 				"aws:index:Instance": {
@@ -1324,10 +1198,10 @@ resource "aws_instance" "web" {
 	}
 
 	// Find the provisioner resource
-	var provisionerReq *RegisterResourceRequest
-	for i := range mock.registeredResources {
-		if mock.registeredResources[i].Type == "command:local:Command" {
-			provisionerReq = &mock.registeredResources[i]
+	var provisionerReq *run.RegisterResourceRequest
+	for i := range mock.RegisteredResources {
+		if mock.RegisteredResources[i].Type == "command:local:Command" {
+			provisionerReq = &mock.RegisteredResources[i]
 			break
 		}
 	}
@@ -1408,14 +1282,14 @@ output "vpc_id" {
 		t.Fatalf("parse error: %s", diags.Error())
 	}
 
-	mock := &mockResourceMonitor{}
-	engine := NewEngine(config, &EngineOptions{
+	mock := &testutil.MockResourceMonitor{}
+	engine := run.NewEngine(config, &run.EngineOptions{
 		ProjectName:     "test-project",
 		StackName:       "dev",
 		ResourceMonitor: mock,
 		WorkDir:         tmpDir,
 		RootDir:         tmpDir,
-		SchemaLoader: newMockReferenceLoader(t, schema.PackageSpec{
+		SchemaLoader: schemaloader.New(t, schema.PackageSpec{
 			Name: "aws",
 			Resources: map[string]schema.ResourceSpec{
 				"aws:index:Vpc": {
@@ -1446,15 +1320,15 @@ output "vpc_id" {
 	}
 
 	// Should have registered: stack + module component + vpc resource
-	if len(mock.registeredResources) < 3 {
-		t.Fatalf("expected at least 3 registered resources, got %d", len(mock.registeredResources))
+	if len(mock.RegisteredResources) < 3 {
+		t.Fatalf("expected at least 3 registered resources, got %d", len(mock.RegisteredResources))
 	}
 
 	// Find the module component (type: components:index:{TypeName})
-	var moduleComponent *RegisterResourceRequest
-	for i := range mock.registeredResources {
-		if strings.HasPrefix(mock.registeredResources[i].Type, "components:index:") {
-			moduleComponent = &mock.registeredResources[i]
+	var moduleComponent *run.RegisterResourceRequest
+	for i := range mock.RegisteredResources {
+		if strings.HasPrefix(mock.RegisteredResources[i].Type, "components:index:") {
+			moduleComponent = &mock.RegisteredResources[i]
 			break
 		}
 	}
@@ -1471,10 +1345,10 @@ output "vpc_id" {
 	assert.Equal(t, "vpc", moduleComponent.Name)
 
 	// Find the VPC resource
-	var vpcResource *RegisterResourceRequest
-	for i := range mock.registeredResources {
-		if mock.registeredResources[i].Type == "aws:index:Vpc" {
-			vpcResource = &mock.registeredResources[i]
+	var vpcResource *run.RegisterResourceRequest
+	for i := range mock.RegisteredResources {
+		if mock.RegisteredResources[i].Type == "aws:index:Vpc" {
+			vpcResource = &mock.RegisteredResources[i]
 			break
 		}
 	}
@@ -1520,14 +1394,14 @@ module "vpc.primary" {
 	config, diags := p.ParseDirectory(tmpDir)
 	require.False(t, diags.HasErrors(), "parse error: %s", diags.Error())
 
-	mock := &mockResourceMonitor{}
-	engine := NewEngine(config, &EngineOptions{
+	mock := &testutil.MockResourceMonitor{}
+	engine := run.NewEngine(config, &run.EngineOptions{
 		ProjectName:     "test-project",
 		StackName:       "dev",
 		ResourceMonitor: mock,
 		WorkDir:         tmpDir,
 		RootDir:         tmpDir,
-		SchemaLoader: newMockReferenceLoader(t, schema.PackageSpec{
+		SchemaLoader: schemaloader.New(t, schema.PackageSpec{
 			Name: "aws",
 			Resources: map[string]schema.ResourceSpec{
 				"aws:index:Vpc": {
@@ -1546,10 +1420,10 @@ module "vpc.primary" {
 
 	require.NoError(t, engine.Run(t.Context()))
 
-	var moduleComponent *RegisterResourceRequest
-	for i := range mock.registeredResources {
-		if strings.HasPrefix(mock.registeredResources[i].Type, "components:index:") {
-			moduleComponent = &mock.registeredResources[i]
+	var moduleComponent *run.RegisterResourceRequest
+	for i := range mock.RegisteredResources {
+		if strings.HasPrefix(mock.RegisteredResources[i].Type, "components:index:") {
+			moduleComponent = &mock.RegisteredResources[i]
 			break
 		}
 	}
@@ -1557,10 +1431,10 @@ module "vpc.primary" {
 
 	assert.Equal(t, "vpc.primary", moduleComponent.Name)
 
-	var vpcResource *RegisterResourceRequest
-	for i := range mock.registeredResources {
-		if mock.registeredResources[i].Type == "aws:index:Vpc" {
-			vpcResource = &mock.registeredResources[i]
+	var vpcResource *run.RegisterResourceRequest
+	for i := range mock.RegisteredResources {
+		if mock.RegisteredResources[i].Type == "aws:index:Vpc" {
+			vpcResource = &mock.RegisteredResources[i]
 			break
 		}
 	}
@@ -1586,14 +1460,14 @@ output "name" { value = "leaf" }
 	config, diags := p.ParseDirectory(tmpDir)
 	require.False(t, diags.HasErrors(), "parse error: %s", diags.Error())
 
-	mock := &mockResourceMonitor{}
-	engine := NewEngine(config, &EngineOptions{
+	mock := &testutil.MockResourceMonitor{}
+	engine := run.NewEngine(config, &run.EngineOptions{
 		ProjectName:     "test-project",
 		StackName:       "dev",
 		ResourceMonitor: mock,
 		WorkDir:         tmpDir,
 		RootDir:         tmpDir,
-		SchemaLoader: newMockReferenceLoader(t, schema.PackageSpec{
+		SchemaLoader: schemaloader.New(t, schema.PackageSpec{
 			Name: "aws",
 			Resources: map[string]schema.ResourceSpec{
 				"aws:index:Vpc": {
@@ -1730,14 +1604,14 @@ module "multi" {
 		t.Fatalf("parse error: %s", diags.Error())
 	}
 
-	mock := &mockResourceMonitor{}
-	engine := NewEngine(config, &EngineOptions{
+	mock := &testutil.MockResourceMonitor{}
+	engine := run.NewEngine(config, &run.EngineOptions{
 		ProjectName:     "test-project",
 		StackName:       "dev",
 		ResourceMonitor: mock,
 		WorkDir:         tmpDir,
 		RootDir:         tmpDir,
-		SchemaLoader:    newMockReferenceLoader(t, schema.PackageSpec{Name: "empty"}),
+		SchemaLoader:    schemaloader.New(t, schema.PackageSpec{Name: "empty"}),
 	})
 
 	// Under -race this would fail before the fix due to concurrent map writes
@@ -1769,14 +1643,14 @@ resource "aws_instance" "web" {
 		t.Fatalf("parse error: %s", diags.Error())
 	}
 
-	mock := &mockResourceMonitor{}
-	engine := NewEngine(config, &EngineOptions{
+	mock := &testutil.MockResourceMonitor{}
+	engine := run.NewEngine(config, &run.EngineOptions{
 		ProjectName:     "test-project",
 		StackName:       "dev",
 		ResourceMonitor: mock,
 		WorkDir:         t.TempDir(),
 		RootDir:         t.TempDir(),
-		SchemaLoader: newMockReferenceLoader(t, schema.PackageSpec{
+		SchemaLoader: schemaloader.New(t, schema.PackageSpec{
 			Name: "aws",
 			Resources: map[string]schema.ResourceSpec{
 				"aws:index:Instance": {
@@ -1801,10 +1675,10 @@ resource "aws_instance" "web" {
 	}
 
 	// Find the instance resource
-	var instanceReq *RegisterResourceRequest
-	for i := range mock.registeredResources {
-		if mock.registeredResources[i].Type == "aws:index:Instance" {
-			instanceReq = &mock.registeredResources[i]
+	var instanceReq *run.RegisterResourceRequest
+	for i := range mock.RegisteredResources {
+		if mock.RegisteredResources[i].Type == "aws:index:Instance" {
+			instanceReq = &mock.RegisteredResources[i]
 			break
 		}
 	}
@@ -1851,14 +1725,14 @@ resource "aws_instance" "web" {
 		t.Fatalf("parse error: %s", diags.Error())
 	}
 
-	mock := &mockResourceMonitor{}
-	engine := NewEngine(config, &EngineOptions{
+	mock := &testutil.MockResourceMonitor{}
+	engine := run.NewEngine(config, &run.EngineOptions{
 		ProjectName:     "test-project",
 		StackName:       "dev",
 		ResourceMonitor: mock,
 		WorkDir:         t.TempDir(),
 		RootDir:         t.TempDir(),
-		SchemaLoader: newMockReferenceLoader(t, schema.PackageSpec{
+		SchemaLoader: schemaloader.New(t, schema.PackageSpec{
 			Name: "aws",
 			Resources: map[string]schema.ResourceSpec{
 				"aws:index:Instance": {
@@ -1883,10 +1757,10 @@ resource "aws_instance" "web" {
 	}
 
 	// Find the instance resource
-	var instanceReq *RegisterResourceRequest
-	for i := range mock.registeredResources {
-		if mock.registeredResources[i].Type == "aws:index:Instance" {
-			instanceReq = &mock.registeredResources[i]
+	var instanceReq *run.RegisterResourceRequest
+	for i := range mock.RegisteredResources {
+		if mock.RegisteredResources[i].Type == "aws:index:Instance" {
+			instanceReq = &mock.RegisteredResources[i]
 			break
 		}
 	}
@@ -1931,14 +1805,14 @@ resource "aws_instance" "imported" {
 		t.Fatalf("parse error: %s", diags.Error())
 	}
 
-	mock := &mockResourceMonitor{}
-	engine := NewEngine(config, &EngineOptions{
+	mock := &testutil.MockResourceMonitor{}
+	engine := run.NewEngine(config, &run.EngineOptions{
 		ProjectName:     "test-project",
 		StackName:       "dev",
 		ResourceMonitor: mock,
 		WorkDir:         t.TempDir(),
 		RootDir:         t.TempDir(),
-		SchemaLoader: newMockReferenceLoader(t, schema.PackageSpec{
+		SchemaLoader: schemaloader.New(t, schema.PackageSpec{
 			Name: "aws",
 			Resources: map[string]schema.ResourceSpec{
 				"aws:index:Instance": {
@@ -1963,10 +1837,10 @@ resource "aws_instance" "imported" {
 	}
 
 	// Find the instance resource
-	var instanceReq *RegisterResourceRequest
-	for i := range mock.registeredResources {
-		if mock.registeredResources[i].Type == "aws:index:Instance" {
-			instanceReq = &mock.registeredResources[i]
+	var instanceReq *run.RegisterResourceRequest
+	for i := range mock.RegisteredResources {
+		if mock.RegisteredResources[i].Type == "aws:index:Instance" {
+			instanceReq = &mock.RegisteredResources[i]
 			break
 		}
 	}
@@ -1999,8 +1873,8 @@ func testSchema() schema.PackageSpec {
 }
 
 // hasRegisteredResource reports whether the mock has a registered resource with the given type.
-func hasRegisteredResource(mock *mockResourceMonitor, typ string) bool {
-	for _, r := range mock.registeredResources {
+func hasRegisteredResource(mock *testutil.MockResourceMonitor, typ string) bool {
+	for _, r := range mock.RegisteredResources {
 		if r.Type == typ {
 			return true
 		}
@@ -2027,14 +1901,14 @@ resource "test_resource" "res" {
 		t.Fatalf("parse error: %s", diags.Error())
 	}
 
-	mock := &mockResourceMonitor{}
-	engine := NewEngine(config, &EngineOptions{
+	mock := &testutil.MockResourceMonitor{}
+	engine := run.NewEngine(config, &run.EngineOptions{
 		ProjectName:     "test-project",
 		StackName:       "dev",
 		ResourceMonitor: mock,
 		WorkDir:         t.TempDir(),
 		RootDir:         t.TempDir(),
-		SchemaLoader:    newMockReferenceLoader(t, testSchema()),
+		SchemaLoader:    schemaloader.New(t, testSchema()),
 	})
 
 	err := engine.Run(t.Context())

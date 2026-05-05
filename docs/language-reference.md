@@ -49,7 +49,6 @@ The full set of [expressions](#expressions) and [built-in functions](#built-in-f
 | `call`      | Invoke methods on resources                       |
 | `moved`     | Rename resources without recreation               |
 | `import`    | Import existing cloud resources                   |
-| `terraform` | Declare required providers (and ignored settings) |
 | `pulumi`    | Version constraints and component declarations    |
 
 ## Variables

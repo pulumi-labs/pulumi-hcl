@@ -7,3 +7,6 @@ output "plain" {
 output "secret" {
   value = pulumi_stackreference.ref.outputs["secret"]
 }
+output "secret_unsecret" {
+  value = nonsensitive(pulumi_stackreference.ref.outputs["secret"])
+}

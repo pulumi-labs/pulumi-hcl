@@ -25,7 +25,7 @@ import (
 	"github.com/hashicorp/hcl/v2/hclsyntax"
 	"github.com/hashicorp/hcl/v2/hclwrite"
 	"github.com/pulumi-labs/pulumi-hcl/pkg/codegen"
-	"github.com/pulumi-labs/pulumi-hcl/tests/testutil"
+	"github.com/pulumi-labs/pulumi-hcl/tests/testutil/schemaloader"
 	pclsyntax "github.com/pulumi/pulumi/pkg/v3/codegen/hcl2/syntax"
 	"github.com/pulumi/pulumi/pkg/v3/codegen/pcl"
 	"github.com/pulumi/pulumi/pkg/v3/codegen/schema"
@@ -332,7 +332,7 @@ func TestEjectDataBlockWithForEach(t *testing.T) {
 			},
 		},
 	}
-	loader := testutil.NewMockReferenceLoader(t, testSchema)
+	loader := schemaloader.New(t, testSchema)
 
 	src := []byte(`pulumi {
   required_providers {
@@ -408,7 +408,7 @@ func TestEjectInvokeInListComprehension(t *testing.T) {
 			},
 		},
 	}
-	loader := testutil.NewMockReferenceLoader(t, testSchema)
+	loader := schemaloader.New(t, testSchema)
 	src := []byte(`pulumi {
   required_providers {
     test = {
@@ -593,7 +593,7 @@ func serveLoader(t *testing.T, loader schema.ReferenceLoader) string {
 func TestGenerateProgramMultiFile(t *testing.T) {
 	t.Parallel()
 
-	loader := testutil.NewMockReferenceLoader(t, multiFileTestSchema)
+	loader := schemaloader.New(t, multiFileTestSchema)
 
 	program := parseAndBindMultiFile(t, loader, map[string]string{
 		"main.pp": `resource "thing" "test:index:Item" {
@@ -688,7 +688,7 @@ func TestConvertProgramCrossFileReferences(t *testing.T) {
 			},
 		},
 	}
-	loader := testutil.NewMockReferenceLoader(t, testSchema)
+	loader := schemaloader.New(t, testSchema)
 	loaderTarget := serveLoader(t, loader)
 
 	sourceDir := t.TempDir()
@@ -778,7 +778,7 @@ output "echoed" {
 func TestEjectMultiFileHCL(t *testing.T) {
 	t.Parallel()
 
-	loader := testutil.NewMockReferenceLoader(t, multiFileTestSchema)
+	loader := schemaloader.New(t, multiFileTestSchema)
 	loaderTarget := serveLoader(t, loader)
 
 	sourceDir := t.TempDir()

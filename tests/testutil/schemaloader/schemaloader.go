@@ -12,50 +12,47 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package testutil
+package schemaloader
 
 import (
 	"context"
-	"fmt"
 	"testing"
 
 	"github.com/blang/semver"
-	"github.com/pulumi-labs/pulumi-hcl/pkg/hcl/packages"
 	"github.com/pulumi/pulumi/pkg/v3/codegen/schema"
+	"github.com/pulumi/pulumi/sdk/v3/go/common/apitype"
+	"github.com/pulumi/pulumi/sdk/v3/go/common/workspace"
 	"github.com/stretchr/testify/require"
 )
 
-var _ schema.ReferenceLoader = MockReferenceLoader{}
+var _ schema.ReferenceLoader = Mock{}
 
-// MockReferenceLoader is a mock implementation of schema.ReferenceLoader for testing.
-type MockReferenceLoader map[string]schema.Package
+// Mock is a mock implementation of schema.ReferenceLoader for testing.
+type Mock map[string]*schema.Package // Entries should never be nil
 
-func (m MockReferenceLoader) LoadPackage(pkg string, version *semver.Version) (*schema.Package, error) {
+func (m Mock) LoadPackage(pkg string, version *semver.Version) (*schema.Package, error) {
 	return m.LoadPackageV2(context.Background(), &schema.PackageDescriptor{
 		Name:    pkg,
 		Version: version,
 	})
 }
 
-func (m MockReferenceLoader) LoadPackageV2(ctx context.Context, descriptor *schema.PackageDescriptor) (*schema.Package, error) {
-	p, ok := m[descriptor.String()]
-	if ok {
-		return &p, nil
+func (m Mock) LoadPackageV2(ctx context.Context, descriptor *schema.PackageDescriptor) (*schema.Package, error) {
+	ref, err := m.LoadPackageReferenceV2(ctx, descriptor)
+	if err != nil {
+		return nil, err
 	}
-	if p, ok := m.findByName(descriptor.Name); ok {
-		return &p, nil
-	}
-	return nil, packages.ErrNotFound
+	return ref.Definition()
 }
 
-func (m MockReferenceLoader) LoadPackageReference(pkg string, version *semver.Version) (schema.PackageReference, error) {
+func (m Mock) LoadPackageReference(pkg string, version *semver.Version) (schema.PackageReference, error) {
 	return m.LoadPackageReferenceV2(context.Background(), &schema.PackageDescriptor{
 		Name:    pkg,
 		Version: version,
 	})
 }
 
-func (m MockReferenceLoader) LoadPackageReferenceV2(ctx context.Context, descriptor *schema.PackageDescriptor) (schema.PackageReference, error) {
+func (m Mock) LoadPackageReferenceV2(ctx context.Context, descriptor *schema.PackageDescriptor) (schema.PackageReference, error) {
 	p, ok := m[descriptor.String()]
 	if ok {
 		return p.Reference(), nil
@@ -63,25 +60,26 @@ func (m MockReferenceLoader) LoadPackageReferenceV2(ctx context.Context, descrip
 	if p, ok := m.findByName(descriptor.Name); ok {
 		return p.Reference(), nil
 	}
-	fmt.Printf("Looking for %s\n", descriptor.String())
-	for k := range m {
-		fmt.Printf("Found: %s\n", k)
-	}
-	return nil, packages.ErrNotFound
+	return nil, workspace.NewMissingError(workspace.PluginDescriptor{
+		Kind:              apitype.ResourcePlugin,
+		Name:              descriptor.Name,
+		Version:           descriptor.Version,
+		PluginDownloadURL: descriptor.DownloadURL,
+	}, false)
 }
 
-func (m MockReferenceLoader) findByName(name string) (schema.Package, bool) {
+func (m Mock) findByName(name string) (*schema.Package, bool) {
 	for _, p := range m {
 		if p.Name == name {
 			return p, true
 		}
 	}
-	return schema.Package{}, false
+	return nil, false
 }
 
-// NewMockReferenceLoader creates a MockReferenceLoader from the given PackageSpecs.
-func NewMockReferenceLoader(t testing.TB, schemas ...schema.PackageSpec) schema.ReferenceLoader {
-	loader := MockReferenceLoader{}
+// New creates a Mock from the given PackageSpecs.
+func New(t testing.TB, schemas ...schema.PackageSpec) schema.ReferenceLoader {
+	loader := Mock{}
 	for _, spec := range schemas {
 		pkg, diag, err := schema.BindSpec(spec, loader, schema.ValidationOptions{})
 		require.NoError(t, err)
@@ -104,7 +102,7 @@ func NewMockReferenceLoader(t testing.TB, schemas ...schema.PackageSpec) schema.
 			Version:          d.Version,
 			DownloadURL:      d.PluginDownloadURL,
 			Parameterization: params(),
-		}).String()] = *pkg
+		}).String()] = pkg
 	}
 	return loader
 }

@@ -58,3 +58,7 @@ locals {
 output "ids" {
   value = local.idMap
 }
+// test an id value can flow through a string function
+output "base64" {
+  value = base64encode(primitive_resource.sink2.id)
+}
