@@ -26,6 +26,7 @@ import (
 	"github.com/pulumi-labs/pulumi-hcl/pkg/hcl/parser"
 	hclrun "github.com/pulumi-labs/pulumi-hcl/pkg/hcl/run"
 	"github.com/pulumi-labs/pulumi-hcl/tests/testutil"
+	"github.com/pulumi-labs/pulumi-hcl/tests/testutil/schemaloader"
 	"github.com/pulumi/pulumi/pkg/v3/codegen/hcl2/syntax"
 	"github.com/pulumi/pulumi/pkg/v3/codegen/pcl"
 	"github.com/pulumi/pulumi/pkg/v3/codegen/schema"
@@ -1150,7 +1151,7 @@ func TestNotImplemented(t *testing.T) {
 	generateHCL := func(t *testing.T, pclSource string) string {
 		t.Helper()
 
-		loader := testutil.NewMockReferenceLoader(t)
+		loader := schemaloader.New(t)
 
 		p := syntax.NewParser()
 		err := p.ParseFile(strings.NewReader(pclSource), "main.pp")
@@ -1488,7 +1489,7 @@ output "instance_ami" {
 		},
 	}
 
-	loader := testutil.NewMockReferenceLoader(t, awsSchema)
+	loader := schemaloader.New(t, awsSchema)
 
 	hclParser := parser.NewParser()
 	config, hclDiags := hclParser.ParseSource("main.hcl", []byte(src))
@@ -1779,7 +1780,7 @@ func TestModuleDataSourceDependencies(t *testing.T) {
 			},
 		},
 	}
-	loader := testutil.NewMockReferenceLoader(t, testSchema)
+	loader := schemaloader.New(t, testSchema)
 
 	// The module contains:
 	// - A resource (test_bucket.bucket)
@@ -1918,7 +1919,7 @@ func TestModuleScopeIsolation(t *testing.T) {
 			},
 		},
 	}
-	loader := testutil.NewMockReferenceLoader(t, testSchema)
+	loader := schemaloader.New(t, testSchema)
 
 	// The parent defines a local that the module tries to reference.
 	parentHCL := `
@@ -2036,7 +2037,7 @@ func testConvertedPCLWithComponent(
 ) *testutil.MockResourceMonitor {
 	t.Helper()
 
-	loader := testutil.NewMockReferenceLoader(t, schemas...)
+	loader := schemaloader.New(t, schemas...)
 
 	// Build an in-memory ComponentProgramBinder so we don't need files on disk
 	// for the PCL binding step. The binder is defined as a variable so the

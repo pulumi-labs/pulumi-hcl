@@ -15,76 +15,12 @@
 package packages
 
 import (
-	"context"
 	"testing"
 
-	"github.com/blang/semver"
+	"github.com/pulumi-labs/pulumi-hcl/tests/testutil/schemaloader"
 	"github.com/pulumi/pulumi/pkg/v3/codegen/schema"
 	"github.com/stretchr/testify/require"
 )
-
-var _ schema.ReferenceLoader = mockReferenceLoader{}
-
-type mockReferenceLoader map[string]schema.Package
-
-func (m mockReferenceLoader) LoadPackage(pkg string, version *semver.Version) (*schema.Package, error) {
-	return m.LoadPackageV2(context.Background(), &schema.PackageDescriptor{
-		Name:    pkg,
-		Version: version,
-	})
-}
-
-func (m mockReferenceLoader) LoadPackageV2(ctx context.Context, descriptor *schema.PackageDescriptor) (*schema.Package, error) {
-	p, ok := m[descriptor.String()]
-	if ok {
-		return &p, nil
-	}
-	return nil, ErrNotFound
-}
-
-func (m mockReferenceLoader) LoadPackageReference(pkg string, version *semver.Version) (schema.PackageReference, error) {
-	return m.LoadPackageReferenceV2(context.Background(), &schema.PackageDescriptor{
-		Name:    pkg,
-		Version: version,
-	})
-}
-
-func (m mockReferenceLoader) LoadPackageReferenceV2(ctx context.Context, descriptor *schema.PackageDescriptor) (schema.PackageReference, error) {
-	p, ok := m[descriptor.String()]
-	if ok {
-		return p.Reference(), nil
-	}
-	return nil, ErrNotFound
-}
-
-func newTestLoader(t *testing.T, specs ...schema.PackageSpec) schema.ReferenceLoader {
-	loader := mockReferenceLoader{}
-	for _, spec := range specs {
-		pkg, diag, err := schema.BindSpec(spec, loader, schema.ValidationOptions{})
-		require.NoError(t, err)
-		require.Empty(t, diag)
-		d, err := pkg.Descriptor(t.Context())
-		require.NoError(t, err)
-
-		params := func() *schema.ParameterizationDescriptor {
-			if d.Parameterization == nil {
-				return nil
-			}
-			return &schema.ParameterizationDescriptor{
-				Name:    d.Parameterization.Name,
-				Version: d.Parameterization.Version,
-				Value:   d.Parameterization.Value,
-			}
-		}
-		loader[(&schema.PackageDescriptor{
-			Name:             d.Name,
-			Version:          d.Version,
-			DownloadURL:      d.PluginDownloadURL,
-			Parameterization: params(),
-		}).String()] = *pkg
-	}
-	return loader
-}
 
 func TestInvalidToken_Error(t *testing.T) {
 	t.Parallel()
@@ -132,7 +68,7 @@ func TestInvalidToken_Error(t *testing.T) {
 func TestResolveResource(t *testing.T) {
 	t.Parallel()
 
-	loader := newTestLoader(t,
+	loader := schemaloader.New(t,
 		schema.PackageSpec{
 			Name: "aws",
 			Resources: map[string]schema.ResourceSpec{
@@ -263,7 +199,7 @@ func TestResolveResource(t *testing.T) {
 func TestResolveFunction(t *testing.T) {
 	t.Parallel()
 
-	loader := newTestLoader(t,
+	loader := schemaloader.New(t,
 		schema.PackageSpec{
 			Name: "aws",
 			Functions: map[string]schema.FunctionSpec{
