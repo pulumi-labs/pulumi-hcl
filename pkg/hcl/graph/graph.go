@@ -370,13 +370,8 @@ func (g *Graph) resourceDeps(resource *ast.Resource, prefix string) []pdag.Node 
 			seen[idx] = true
 		}
 	}
-	if resource.Provider != nil {
-		providerKey := resource.Provider.Name
-		if resource.Provider.Alias != "" {
-			providerKey = resource.Provider.Name + "." + resource.Provider.Alias
-		}
-		_, idx := g.newNode(prefix + providerKey)
-		seen[idx] = true
+	for _, dep := range g.exprDeps(resource.Provider, prefix) {
+		seen[dep] = true
 	}
 	for _, traversal := range resource.Providers {
 		if dep := formatTraversal(traversal); dep != "" {

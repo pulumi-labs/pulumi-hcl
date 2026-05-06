@@ -71,8 +71,9 @@ type Resource struct {
 	// DependsOn contains explicit dependencies from the depends_on meta-argument.
 	DependsOn []hcl.Traversal
 
-	// Provider is the provider configuration reference, if specified.
-	Provider *ProviderRef
+	// Provider is the raw expression from the `provider` attribute, if specified.
+	// It is evaluated at runtime; the resulting value supplies the provider URN/ID.
+	Provider hcl.Expression
 
 	// Providers is a list of explicit provider resources to pass to a component resource.
 	// Only valid for component resources.
@@ -147,18 +148,6 @@ type Resource struct {
 
 	// IsDataSource indicates if this is a data source (data block) vs managed resource.
 	IsDataSource bool
-}
-
-// ProviderRef is a reference to a provider configuration.
-type ProviderRef struct {
-	// Name is the provider local name (e.g., "aws").
-	Name string
-
-	// Alias is the provider alias, if specified (e.g., "west" in "aws.west").
-	Alias string
-
-	// Range is the source range of the provider reference.
-	Range hcl.Range
 }
 
 // Lifecycle contains lifecycle configuration for a resource.

@@ -35,8 +35,9 @@ type Import struct {
 	// Id is the external resource ID to import.
 	Id string
 
-	// Provider is an optional provider reference for this import.
-	Provider *ProviderRef
+	// Provider is the raw expression from the optional `provider` attribute.
+	// It is evaluated at runtime; the resulting value supplies the provider URN/ID.
+	Provider hcl.Expression
 
 	// DeclRange is the source range of the import block.
 	DeclRange hcl.Range
