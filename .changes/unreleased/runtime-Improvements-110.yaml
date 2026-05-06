@@ -1,6 +1,0 @@
-component: runtime
-kind: Improvements
-body: Add the `issensitive` function
-time: 2026-05-04T12:48:08.191637+02:00
-custom:
-    PR: "110"
