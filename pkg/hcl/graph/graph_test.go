@@ -24,6 +24,8 @@ import (
 	"github.com/zclconf/go-cty/cty"
 )
 
+func ptr[T any](v T) *T { return &v }
+
 func TestBuildFromConfig(t *testing.T) {
 	src := []byte(`
 variable "name" {
@@ -191,22 +193,22 @@ func TestParseInstanceKey(t *testing.T) {
 		{
 			input:     "aws_instance.web[0]",
 			wantBase:  "aws_instance.web",
-			wantIndex: new(0),
+			wantIndex: ptr(0),
 		},
 		{
 			input:     "aws_instance.web[42]",
 			wantBase:  "aws_instance.web",
-			wantIndex: new(42),
+			wantIndex: ptr(42),
 		},
 		{
 			input:       `aws_instance.web["a"]`,
 			wantBase:    "aws_instance.web",
-			wantEachKey: new("a"),
+			wantEachKey: ptr("a"),
 		},
 		{
 			input:       `aws_instance.web["my-key"]`,
 			wantBase:    "aws_instance.web",
-			wantEachKey: new("my-key"),
+			wantEachKey: ptr("my-key"),
 		},
 	}
 

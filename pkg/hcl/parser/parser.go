@@ -714,7 +714,7 @@ func (p *Parser) parseLifecycleBlock(block *hcl.Block) (*lifecycleResult, hcl.Di
 		val, valDiags := attr.Expr.Value(nil)
 		diags = append(diags, valDiags...)
 		if val.Type() == cty.Bool {
-			lifecycle.PreventDestroy = new(val.True())
+			lifecycle.PreventDestroy = ptr(val.True())
 		}
 	}
 
@@ -1109,3 +1109,5 @@ func (p *Parser) parseImportBlock(config *ast.Config, block *hcl.Block) hcl.Diag
 	config.Imports = append(config.Imports, imp)
 	return diags
 }
+
+func ptr[T any](v T) *T { return &v }
