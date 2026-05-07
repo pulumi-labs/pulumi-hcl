@@ -134,8 +134,7 @@ var expectedFailures = map[string]string{
 		" requires that HCL can distinguish between an empty and null List<Object>" +
 		" - not compatible with block syntax",
 	"l2-resource-option-hooks":        "PCL pcl.Hook nodes not yet supported by HCL codegen",
-	"l2-resource-read":                "PCL pcl.ReadResource nodes not yet supported by HCL codegen",
-	"provider-builtin-info-component": "missing testdata/providers/builtin-info-component fixture",
+	"l2-resource-read": "PCL pcl.ReadResource nodes not yet supported by HCL codegen",
 }
 
 // expectedEjectFailures lists tests whose eject (HCL→PCL conversion) step is
