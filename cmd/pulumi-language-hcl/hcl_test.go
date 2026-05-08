@@ -1203,6 +1203,48 @@ func TestNotImplemented(t *testing.T) {
 	})
 }
 
+// TestGenerateProgramSkipResourceTypechecking covers the program-generation path used by
+// pulumi/pulumi-terraform-bridge when converting third-party Terraform docs. The bridge
+// binds with AllowMissingProperties / AllowMissingVariables / SkipResourceTypechecking,
+// which can leave pcl.Resource.Schema unset (no schema is loaded for "simple:..." here).
+// scopeTraversalTokens used to dereference part.Schema.Properties unconditionally and
+// crashed with a nil-pointer panic on this input.
+func TestGenerateProgramSkipResourceTypechecking(t *testing.T) {
+	t.Parallel()
+
+	const src = `
+resource aResource "simple:index/resource:Resource" {
+    inputOne = "hello"
+}
+
+output someOutput {
+    value = aResource.result
+}
+`
+	loader := schemaloader.New(t)
+
+	p := syntax.NewParser()
+	require.NoError(t, p.ParseFile(strings.NewReader(src), "main.pp"))
+	require.False(t, p.Diagnostics.HasErrors(), p.Diagnostics.Error())
+
+	program, bindDiags, err := pcl.BindProgram(p.Files,
+		pcl.Loader(loader),
+		pcl.AllowMissingProperties,
+		pcl.AllowMissingVariables,
+		pcl.SkipResourceTypechecking,
+	)
+	require.NoError(t, err)
+	require.False(t, bindDiags.HasErrors(), bindDiags.Error())
+
+	files, genDiags, err := codegen.GenerateProgram(program)
+	require.NoError(t, err)
+	require.False(t, genDiags.HasErrors(), genDiags.Error())
+
+	hclParser := parser.NewParser()
+	_, hclDiags := hclParser.ParseSource("main.hcl", files["main.hcl"])
+	require.False(t, hclDiags.HasErrors(), hclDiags.Error())
+}
+
 // TestInvokeOutput locks in that traversals into an invoke's outputs are rewritten using
 // the function's schema.
 func TestInvokeOutput(t *testing.T) {
