@@ -955,7 +955,7 @@ func propertyValueToCty(path string, v property.Value, typ schema.Type, dryRun b
 		var t *cty.Type
 		for _, v := range m {
 			if t == nil {
-				t = new(v.Type())
+				t = ptr(v.Type())
 			}
 			if !v.Type().Equals(*t) {
 				return cty.ObjectVal(m), nil
@@ -1110,3 +1110,5 @@ func MakeSecret(pv resource.PropertyValue) resource.PropertyValue {
 func MakeComputed(pv resource.PropertyValue) resource.PropertyValue {
 	return resource.MakeComputed(pv)
 }
+
+func ptr[T any](v T) *T { return &v }

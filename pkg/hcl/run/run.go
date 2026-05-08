@@ -988,7 +988,7 @@ func (e *Engine) registerResourceInstanceInContext(
 
 	var iOpts inheritableOpts
 	if opts.Protect {
-		iOpts.Protect = new(true)
+		iOpts.Protect = ptr(true)
 	}
 	iOpts.RetainOnDelete = opts.RetainOnDelete
 	e.resourceInheritableOpts.Set(instance.Key, iOpts)
@@ -2757,3 +2757,5 @@ func (e *Engine) checkPulumiVersion(ctx context.Context) error {
 
 	return e.resmon.CheckPulumiVersion(ctx, versionRange)
 }
+
+func ptr[T any](v T) *T { return &v }
