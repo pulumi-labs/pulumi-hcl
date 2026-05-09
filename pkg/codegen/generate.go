@@ -2256,7 +2256,13 @@ func (g *generator) scopeTraversalTokens(expr *model.ScopeTraversalExpression) (
 		rewritten := make(hcl.Traversal, 0, len(traversal)+1)
 		rewritten = append(rewritten, hcl.TraverseRoot{Name: hclType})
 		rewritten = append(rewritten, traverseNameStep(part.LogicalName()))
-		return hclwrite.TokensForTraversal(append(rewritten, schemaAwareRewriteTraversal(part.Schema.Properties, traversal[1:])...)), nil
+		// part.Schema can be nil when the binder ran with SkipResourceTypechecking
+		// (or similar relaxed options); fall back to the unmodified traversal.
+		var props []*schema.Property
+		if part.Schema != nil {
+			props = part.Schema.Properties
+		}
+		return hclwrite.TokensForTraversal(append(rewritten, schemaAwareRewriteTraversal(props, traversal[1:])...)), nil
 	case *pcl.Component:
 		// Rewrite "someComponent.output" → "module.someComponent.output".
 		rewritten := make(hcl.Traversal, 0, len(traversal)+1)
