@@ -2178,3 +2178,162 @@ func testConvertedPCLWithComponent(
 
 	return mock
 }
+
+// TestRequiredProvidersWithoutVersion exercises the language host with a
+// `pulumi { required_providers { ... } }` block whose entries omit the
+// optional `version` attribute. SDK documentation snippets generated with
+// codegen.SkipRequiredProvidersVersion() produce input of this shape, so
+// the language host must accept it.
+func TestRequiredProvidersWithoutVersion(t *testing.T) {
+	t.Parallel()
+
+	src := `pulumi {
+  required_providers {
+    aws = {
+      source = "pulumi/aws"
+    }
+  }
+}
+
+resource "aws_instance" "web" {
+  ami           = "ami-12345"
+  instance_type = "t2.micro"
+}
+
+output "instance_ami" {
+  value = aws_instance.web.ami
+}`
+
+	awsSchema := schema.PackageSpec{
+		Name:    "aws",
+		Version: "6.0.0",
+		Resources: map[string]schema.ResourceSpec{
+			"aws:index:Instance": {
+				InputProperties: map[string]schema.PropertySpec{
+					"ami":          {TypeSpec: schema.TypeSpec{Type: "string"}},
+					"instanceType": {TypeSpec: schema.TypeSpec{Type: "string"}},
+				},
+				ObjectTypeSpec: schema.ObjectTypeSpec{
+					Properties: map[string]schema.PropertySpec{
+						"ami":          {TypeSpec: schema.TypeSpec{Type: "string"}},
+						"instanceType": {TypeSpec: schema.TypeSpec{Type: "string"}},
+					},
+				},
+			},
+		},
+	}
+
+	loader := schemaloader.New(t, awsSchema)
+
+	hclParser := parser.NewParser()
+	config, hclDiags := hclParser.ParseSource("main.hcl", []byte(src))
+	require.False(t, hclDiags.HasErrors(), hclDiags.Error())
+
+	mock := &testutil.MockResourceMonitor{}
+	engine := hclrun.NewEngine(config, &hclrun.EngineOptions{
+		ProjectName:     "test-project",
+		StackName:       "dev",
+		ResourceMonitor: mock,
+		WorkDir:         t.TempDir(),
+		RootDir:         t.TempDir(),
+		SchemaLoader:    loader,
+	})
+
+	require.NoError(t, engine.Run(t.Context()))
+
+	require.Len(t, mock.RegisteredResources, 2)
+	assert.Equal(t, "pulumi:pulumi:Stack", mock.RegisteredResources[0].Type)
+	assert.Equal(t, "aws:index:Instance", mock.RegisteredResources[1].Type)
+	assert.Equal(t, "web", mock.RegisteredResources[1].Name)
+}
+
+// TestGenerateProgramSkipRequiredProvidersVersion verifies the codegen option
+// omits the `version` attribute on every required_providers entry while
+// preserving `source`, and that the resulting HCL still parses and executes
+// end-to-end through the language host.
+func TestGenerateProgramSkipRequiredProvidersVersion(t *testing.T) {
+	t.Parallel()
+
+	const pclSrc = `package "aws" {
+  baseProviderName = "aws"
+  baseProviderVersion = "6.0.0"
+}
+
+resource web "aws:index:Instance" {
+  ami = "ami-12345"
+  instanceType = "t2.micro"
+}
+`
+
+	awsSchema := schema.PackageSpec{
+		Name:    "aws",
+		Version: "6.0.0",
+		Resources: map[string]schema.ResourceSpec{
+			"aws:index:Instance": {
+				InputProperties: map[string]schema.PropertySpec{
+					"ami":          {TypeSpec: schema.TypeSpec{Type: "string"}},
+					"instanceType": {TypeSpec: schema.TypeSpec{Type: "string"}},
+				},
+				ObjectTypeSpec: schema.ObjectTypeSpec{
+					Properties: map[string]schema.PropertySpec{
+						"ami":          {TypeSpec: schema.TypeSpec{Type: "string"}},
+						"instanceType": {TypeSpec: schema.TypeSpec{Type: "string"}},
+					},
+				},
+			},
+		},
+	}
+	loader := schemaloader.New(t, awsSchema)
+
+	p := syntax.NewParser()
+	require.NoError(t, p.ParseFile(strings.NewReader(pclSrc), "main.pp"))
+	require.False(t, p.Diagnostics.HasErrors(), p.Diagnostics.Error())
+
+	program, bindDiags, err := pcl.BindProgram(p.Files,
+		pcl.Loader(loader),
+		pcl.AllowMissingProperties,
+		pcl.AllowMissingVariables,
+		pcl.SkipResourceTypechecking,
+	)
+	require.NoError(t, err)
+	require.False(t, bindDiags.HasErrors(), bindDiags.Error())
+
+	files, diags, err := codegen.GenerateProgram(program, codegen.SkipRequiredProvidersVersion())
+	require.NoError(t, err)
+	require.False(t, diags.HasErrors(), diags.Error())
+	require.Len(t, files, 1)
+
+	var got []byte
+	for _, content := range files {
+		got = content
+	}
+	assert.Contains(t, string(got), `source = "pulumi/aws"`)
+	assert.NotContains(t, string(got), "version =", "version should be omitted from required_providers entries")
+
+	// Round-trip: write the generated HCL out, parse it back, and run
+	// through the engine to prove it's still executable.
+	outDir := t.TempDir()
+	for name, content := range files {
+		require.NoError(t, os.WriteFile(filepath.Join(outDir, name), content, 0o600))
+	}
+
+	hclParser := parser.NewParser()
+	config, hclDiags := hclParser.ParseDirectory(outDir)
+	require.False(t, hclDiags.HasErrors(), hclDiags.Error())
+
+	mock := &testutil.MockResourceMonitor{}
+	engine := hclrun.NewEngine(config, &hclrun.EngineOptions{
+		ProjectName:     "test-project",
+		StackName:       "dev",
+		ResourceMonitor: mock,
+		WorkDir:         outDir,
+		RootDir:         outDir,
+		SchemaLoader:    loader,
+	})
+	require.NoError(t, engine.Run(t.Context()))
+
+	require.Len(t, mock.RegisteredResources, 2)
+	assert.Equal(t, "pulumi:pulumi:Stack", mock.RegisteredResources[0].Type)
+	assert.Equal(t, "aws:index:Instance", mock.RegisteredResources[1].Type)
+	assert.Equal(t, "web", mock.RegisteredResources[1].Name)
+}
