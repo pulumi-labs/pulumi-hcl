@@ -122,9 +122,12 @@ func TestCollectionFunctions(t *testing.T) {
 		expr     string
 		expected cty.Value
 	}{
-		// length (stdlib.LengthFunc only works with collections, not strings)
 		{"length list", `length(["a", "b", "c"])`, cty.NumberIntVal(3)},
 		{"length tuple", `length(tolist(["a", "b"]))`, cty.NumberIntVal(2)},
+		{"length string", `length("hello")`, cty.NumberIntVal(5)},
+		{"length empty string", `length("")`, cty.NumberIntVal(0)},
+		{"length map", `length({a = 1, b = 2})`, cty.NumberIntVal(2)},
+		{"length object", `length({a = 1, b = "two", c = true})`, cty.NumberIntVal(3)},
 
 		// element
 		{"element", `element(["a", "b", "c"], 1)`, cty.StringVal("b")},

@@ -117,7 +117,7 @@ func Functions(baseDir string) map[string]function.Function {
 		"flatten":         stdlib.FlattenFunc,
 		"index":           indexFunc,
 		"keys":            stdlib.KeysFunc,
-		"length":          stdlib.LengthFunc,
+		"length":          lengthFunc,
 		"list":            listFunc,
 		"lookup":          lookupFunc,
 		"map":             mapFunc,
@@ -370,6 +370,47 @@ var coalesceListFunc = function.New(&function.Spec{
 			}
 		}
 		return cty.NilVal, fmt.Errorf("no non-empty list")
+	},
+})
+
+var lengthFunc = function.New(&function.Spec{
+	Params: []function.Parameter{
+		{
+			Name:             "value",
+			Type:             cty.DynamicPseudoType,
+			AllowDynamicType: true,
+			AllowUnknown:     true,
+			AllowMarked:      true,
+		},
+	},
+	Type: func(args []cty.Value) (cty.Type, error) {
+		ty := args[0].Type()
+		switch {
+		case ty == cty.String, ty == cty.DynamicPseudoType,
+			ty.IsTupleType(), ty.IsObjectType(),
+			ty.IsListType(), ty.IsMapType(), ty.IsSetType():
+			return cty.Number, nil
+		default:
+			return cty.Number, fmt.Errorf("argument must be a string, a collection type, or a structural type")
+		}
+	},
+	Impl: func(args []cty.Value, retType cty.Type) (cty.Value, error) {
+		v := args[0]
+		ty := v.Type()
+		switch {
+		case ty == cty.DynamicPseudoType:
+			return cty.UnknownVal(cty.Number), nil
+		case ty == cty.String:
+			return stdlib.Strlen(v)
+		case ty.IsTupleType():
+			return cty.NumberIntVal(int64(len(ty.TupleElementTypes()))), nil
+		case ty.IsObjectType():
+			return cty.NumberIntVal(int64(len(ty.AttributeTypes()))), nil
+		case ty.IsListType(), ty.IsMapType(), ty.IsSetType():
+			return v.Length(), nil
+		default:
+			return cty.UnknownVal(cty.Number), fmt.Errorf("impossible value type for length(...)")
+		}
 	},
 })
 
