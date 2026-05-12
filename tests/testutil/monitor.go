@@ -33,6 +33,9 @@ type MockResourceMonitor struct {
 
 	// InvokeHandler, if set, is called for each Invoke instead of the default behavior.
 	InvokeHandler func(ctx context.Context, req run.InvokeRequest) (*run.InvokeResponse, error)
+
+	// RegisterResourceHandler, if  set, is  called for each  RegisterResource instead of the default behavior.
+	RegisterResourceHandler func(ctx context.Context, req run.RegisterResourceRequest) (*run.RegisterResourceResponse, error)
 }
 
 func (m *MockResourceMonitor) RegisterResource(ctx context.Context, req run.RegisterResourceRequest) (*run.RegisterResourceResponse, error) {
@@ -42,6 +45,8 @@ func (m *MockResourceMonitor) RegisterResource(ctx context.Context, req run.Regi
 	urn := "urn:pulumi:test::project::" + req.Type + "::" + req.Name
 	if req.Type == "pulumi:pulumi:Stack" {
 		m.stackURN = urn
+	} else if m.RegisterResourceHandler != nil {
+		return m.RegisterResourceHandler(ctx, req)
 	}
 	return &run.RegisterResourceResponse{
 		URN:     urn,
