@@ -15,6 +15,7 @@
 package run_test
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"strings"
@@ -25,6 +26,7 @@ import (
 	"github.com/pulumi-labs/pulumi-hcl/tests/testutil"
 	"github.com/pulumi-labs/pulumi-hcl/tests/testutil/schemaloader"
 	"github.com/pulumi/pulumi/pkg/v3/codegen/schema"
+	"github.com/pulumi/pulumi/sdk/v3/go/property"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -1914,4 +1916,90 @@ resource "test_resource" "res" {
 	err := engine.Run(t.Context())
 	require.ErrorContains(t, err, "replace_triggered_by")
 	require.ErrorContains(t, err, "not supported")
+}
+
+// TestEngine_HetListOutputRoundTrip drives the engine against a mock provider whose
+// resource output is a list of objects with a nested optional object populated in some
+// elements and absent in others.
+func TestEngine_HetListOutputRoundTrip(t *testing.T) {
+	t.Parallel()
+
+	src := []byte(`resource "test_het_list" "het" {}`)
+	p := parser.NewParser()
+	config, diags := p.ParseSource("test.hcl", src)
+	require.False(t, diags.HasErrors(), diags.Error())
+
+	hetListSchema := schema.PackageSpec{
+		Name: "test",
+		Types: map[string]schema.ComplexTypeSpec{
+			"test:index:Token": {
+				ObjectTypeSpec: schema.ObjectTypeSpec{
+					Type: "object",
+					Properties: map[string]schema.PropertySpec{
+						"audience": {TypeSpec: schema.TypeSpec{Type: "string"}},
+					},
+				},
+			},
+			"test:index:Source": {
+				ObjectTypeSpec: schema.ObjectTypeSpec{
+					Type: "object",
+					Properties: map[string]schema.PropertySpec{
+						"token": {TypeSpec: schema.TypeSpec{Ref: "#/types/test:index:Token"}},
+					},
+				},
+			},
+		},
+		Resources: map[string]schema.ResourceSpec{
+			"test:index:HetList": {
+				ObjectTypeSpec: schema.ObjectTypeSpec{
+					Properties: map[string]schema.PropertySpec{
+						"sources": {
+							TypeSpec: schema.TypeSpec{
+								Type:  "array",
+								Items: &schema.TypeSpec{Ref: "#/types/test:index:Source"},
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	monitor := &testutil.MockResourceMonitor{
+		RegisterResourceHandler: func(ctx context.Context, req run.RegisterResourceRequest) (*run.RegisterResourceResponse, error) {
+			urn := "urn:pulumi:test::project::" + req.Type + "::" + req.Name
+			if req.Type == "test:index:HetList" {
+				return &run.RegisterResourceResponse{
+					URN: urn,
+					ID:  req.Name + "-id",
+					Outputs: property.NewMap(map[string]property.Value{
+						"sources": property.New([]property.Value{
+							property.New(property.NewMap(map[string]property.Value{
+								"token": property.New(property.NewMap(map[string]property.Value{})),
+							})),
+							property.New(property.NewMap(map[string]property.Value{})),
+						}),
+					}),
+				}, nil
+			}
+			return &run.RegisterResourceResponse{
+				URN:     urn,
+				ID:      req.Name + "-id",
+				Outputs: req.Inputs,
+			}, nil
+		},
+	}
+	engine := run.NewEngine(config, &run.EngineOptions{
+		ProjectName:     "test-project",
+		StackName:       "dev",
+		ResourceMonitor: monitor,
+		WorkDir:         t.TempDir(),
+		RootDir:         t.TempDir(),
+		SchemaLoader:    schemaloader.New(t, hetListSchema),
+	})
+
+	assert.NotPanics(t, func() {
+		err := engine.Run(t.Context())
+		require.NoError(t, err)
+	})
 }
