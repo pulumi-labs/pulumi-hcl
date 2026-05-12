@@ -952,3 +952,66 @@ func hasObjectCycle(pkg *schema.Package) bool {
 	}
 	return false
 }
+
+func TestResourceOutputToCtyUnionTypeCollapse(t *testing.T) {
+	t.Parallel()
+
+	obj1 := &schema.ObjectType{
+		Properties: []*schema.Property{
+			{Name: "fooBar", Type: schema.StringType},
+		},
+	}
+
+	obj2 := &schema.MapType{ElementType: schema.StringType}
+
+	union := &schema.UnionType{
+		ElementTypes: []schema.Type{obj1, obj2},
+	}
+
+	nested := &schema.ObjectType{
+		Properties: []*schema.Property{
+			{Name: "p", Type: union},
+		},
+	}
+
+	res := &schema.Resource{
+		Token: "test:index:R",
+		Properties: []*schema.Property{
+			{Name: "p", Type: nested},
+		},
+	}
+
+	test := func(t *testing.T, key string, expected cty.Value) {
+		outputs := property.NewMap(map[string]property.Value{
+			"p": property.New(map[string]property.Value{
+				"p": property.New(map[string]property.Value{
+					key: property.New("hello"),
+				}),
+			}),
+		})
+
+		r, err := ResourceOutputToCty(outputs, res, false)
+		require.NoError(t, err)
+		assert.Equal(t, map[string]cty.Value{
+			"p": cty.ObjectVal(map[string]cty.Value{
+				"p": expected,
+			}),
+		}, r)
+	}
+
+	t.Run("object", func(t *testing.T) {
+		t.Parallel()
+
+		test(t, "fooBar", cty.ObjectVal(map[string]cty.Value{
+			"foo_bar": cty.StringVal("hello"),
+		}))
+	})
+
+	t.Run("map", func(t *testing.T) {
+		t.Parallel()
+
+		test(t, "someKey", cty.MapVal(map[string]cty.Value{
+			"someKey": cty.StringVal("hello"),
+		}))
+	})
+}

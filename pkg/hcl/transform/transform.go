@@ -801,7 +801,7 @@ func propertyObjectToCtyMap(path string, m property.Map, properties []*schema.Pr
 		} else {
 			vPath = path + "." + hclName
 		}
-		convertedV, err := propertyValueToCty(fmt.Sprintf(vPath, path, hclName), v, p.Type, dryRun)
+		convertedV, err := propertyValueToCty(vPath, v, p.Type, dryRun)
 		if err != nil {
 			return nil, err
 		}
