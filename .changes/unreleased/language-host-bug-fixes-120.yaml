@@ -1,6 +1,6 @@
-component: language-host
 kind: bug-fixes
 body: Avoid a panic in the HCL parser when a `required_providers` entry omits the optional `version` attribute
 time: 2026-05-11T13:35:01.000000+02:00
 custom:
+    Component: language-host
     PR: "120"
