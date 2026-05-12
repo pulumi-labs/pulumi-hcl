@@ -1,0 +1,6 @@
+component: codegen
+kind: improvements
+body: Add a `SkipRequiredProvidersVersion` option to `GenerateProgram` that omits the `version` attribute from each `required_providers` entry while keeping `source`, for use by SDK-doc generators that should not bake the provider version into emitted snippets
+time: 2026-05-11T13:35:00.000000+02:00
+custom:
+    PR: "120"

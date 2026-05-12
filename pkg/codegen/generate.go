@@ -38,6 +38,22 @@ import (
 	"github.com/zclconf/go-cty/cty"
 )
 
+// GenerateProgramOption configures GenerateProgram.
+type GenerateProgramOption func(*generateProgramOptions)
+
+type generateProgramOptions struct {
+	skipRequiredProvidersVersion bool
+}
+
+// SkipRequiredProvidersVersion omits the `version` attribute from each entry
+// of an emitted `pulumi { required_providers { ... } }` block. The `source`
+// attribute is still emitted so symbol resolution remains unambiguous. Use
+// for snippets embedded in SDK documentation, where pinning a version would
+// bake the SDK's in-development version into every regenerated docstring.
+func SkipRequiredProvidersVersion() GenerateProgramOption {
+	return func(o *generateProgramOptions) { o.skipRequiredProvidersVersion = true }
+}
+
 // GenerateProgram generates HCL source code from a bound PCL program.
 //
 // The output preserves the program's source-file structure: each PCL file
@@ -46,12 +62,18 @@ import (
 // declared each package via a `package` block; references with no declaring
 // file are placed in main.hcl (or, if no main.pp exists, the first file in
 // alphabetical order).
-func GenerateProgram(program *pcl.Program) (map[string][]byte, hcl.Diagnostics, error) {
+func GenerateProgram(program *pcl.Program, opts ...GenerateProgramOption) (map[string][]byte, hcl.Diagnostics, error) {
+	var o generateProgramOptions
+	for _, opt := range opts {
+		opt(&o)
+	}
+
 	var diags hcl.Diagnostics
 
 	gen := &generator{
-		program:  program,
-		comments: buildProgramComments(program),
+		program:                      program,
+		comments:                     buildProgramComments(program),
+		skipRequiredProvidersVersion: o.skipRequiredProvidersVersion,
 	}
 
 	for _, node := range program.Nodes {
@@ -298,6 +320,9 @@ type generator struct {
 	// comments maps source filenames to leading-comment maps built from the
 	// PCL source files of this program.
 	comments map[string]*comments.Map
+	// skipRequiredProvidersVersion suppresses the `version` attribute on
+	// each `required_providers` entry. See SkipRequiredProvidersVersion.
+	skipRequiredProvidersVersion bool
 }
 
 // buildProgramComments parses the source of every PCL file in the program and
@@ -566,7 +591,7 @@ func (g *generator) genPulumiHeader(
 			attrs := map[string]cty.Value{
 				"source": cty.StringVal(namespace + "/" + ref.Name()),
 			}
-			if v := ref.Version(); v != nil {
+			if v := ref.Version(); v != nil && !g.skipRequiredProvidersVersion {
 				attrs["version"] = cty.StringVal(v.String())
 			}
 			reqProviders.Body().SetAttributeValue(ref.Name(), cty.ObjectVal(attrs))

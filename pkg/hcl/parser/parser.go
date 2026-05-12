@@ -307,11 +307,15 @@ func (p *Parser) parseRequiredProviders(pulumi *ast.Pulumi, block *hcl.Block) hc
 		if val.Type() == cty.String {
 			provider.Version = val.AsString()
 		} else if val.Type().IsObjectType() {
-			if sourceVal := val.GetAttr("source"); !sourceVal.IsNull() {
-				provider.Source = sourceVal.AsString()
+			if val.Type().HasAttribute("source") {
+				if sourceVal := val.GetAttr("source"); !sourceVal.IsNull() {
+					provider.Source = sourceVal.AsString()
+				}
 			}
-			if versionVal := val.GetAttr("version"); !versionVal.IsNull() {
-				provider.Version = versionVal.AsString()
+			if val.Type().HasAttribute("version") {
+				if versionVal := val.GetAttr("version"); !versionVal.IsNull() {
+					provider.Version = versionVal.AsString()
+				}
 			}
 		}
 
