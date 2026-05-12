@@ -18,11 +18,15 @@ import (
 	"testing"
 
 	"github.com/pulumi-labs/pulumi-hcl/pkg/hcl/eval"
+	"github.com/pulumi/pulumi/pkg/v3/codegen"
 	"github.com/pulumi/pulumi/pkg/v3/codegen/schema"
+	"github.com/pulumi/pulumi/pkg/v3/codegen/testing/utils/rapidresource"
+	"github.com/pulumi/pulumi/pkg/v3/codegen/testing/utils/rapidschema"
 	"github.com/pulumi/pulumi/sdk/v3/go/property"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/zclconf/go-cty/cty"
+	"pgregory.net/rapid"
 )
 
 func TestSnakeCaseFromCamelCase(t *testing.T) {
@@ -793,4 +797,158 @@ func TestRoundTrip(t *testing.T) {
 	if result.GetAttr("tags").GetAttr("env").AsString() != "prod" {
 		t.Error("tags.env mismatch")
 	}
+}
+
+// TestResourceOutputToCtyDoesNotErrorOnValidValues exercises ResourceOutputToCty across
+// rapid-drawn schemas and output values.
+//
+// Since all property bags conform to the schema, they should all be able to be translated
+// to [cty.Value] bags.
+func TestResourceOutputToCtyDoesNotErrorOnValidValues(t *testing.T) {
+	t.Parallel()
+
+	knownFailures := func(pkg *schema.Package) bool {
+		if hasObjectCycle(pkg) {
+			return false
+		}
+		for _, r := range pkg.Resources {
+			for _, p := range r.Properties {
+				if !schemaIsTestable(p.Type) {
+					return false
+				}
+			}
+		}
+		return true
+	}
+
+	rapid.Check(t, func(rt *rapid.T) {
+		pkg := rapidschema.Package().Filter(knownFailures).Draw(rt, "pkg")
+		for _, res := range pkg.Resources {
+			if res.IsProvider {
+				continue
+			}
+			outputs := rapidresource.ResourceProperties(res).Draw(rt, "outputs:"+res.Token)
+			_, err := ResourceOutputToCty(outputs, res, false)
+			require.NoError(t, err)
+		}
+	})
+}
+
+// schemaIsTestable is an allowlist of schema shapes that transform's output
+// conversion handles correctly today — i.e., shapes where
+// `transform.ResourceOutputToCty` produces a cty value for *any* output
+// rapidresource might draw. Shapes we exclude (and why):
+//
+//   - schema.JSONType, schema.AnyResourceType: transform.ctyTypeFromType has
+//     no case for these sentinel types, so they resolve to cty.NilType which
+//     cty's convert.Convert panics on via WithoutOptionalAttributesDeep.
+//   - *schema.UnionType: ctyTypeFromType collapses a union to one member's
+//     cty type. When rapidresource later draws a value of a *different*
+//     valid union member, convert.Convert rejects it ("attribute X: T
+//     required", "all list/map elements must have the same type").
+//   - *schema.TokenType: no case in ctyTypeFromType; resolves to NilType.
+//   - schema.AnyType: values are drawn with whatever cty type each picks
+//     (String/Bool/Tuple/Object/...); inside a Map<Any> they are
+//     heterogeneous and the outer convert.Convert call rejects the
+//     fallback Object value as "all map elements must have the same type".
+//   - default / unknown types: NilType by ctyTypeFromType's default branch.
+//
+// All of the above are pre-existing transform limitations on arbitrary
+// schemas, out of scope for the het-list fix this test guards.
+func schemaIsTestable(t schema.Type) bool {
+	t = codegen.UnwrapType(t)
+	if t == nil {
+		return false
+	}
+	switch t {
+	case schema.StringType, schema.BoolType, schema.NumberType, schema.IntType,
+		schema.AssetType, schema.ArchiveType:
+		return true
+	case schema.AnyType, schema.JSONType, schema.AnyResourceType:
+		return false
+	}
+	switch tt := t.(type) {
+	case *schema.ArrayType:
+		return schemaIsTestable(tt.ElementType)
+	case *schema.MapType:
+		return schemaIsTestable(tt.ElementType)
+	case *schema.EnumType:
+		return schemaIsTestable(tt.ElementType)
+	case *schema.ObjectType:
+		for _, p := range tt.Properties {
+			if !schemaIsTestable(p.Type) {
+				return false
+			}
+		}
+		return true
+	case *schema.ResourceType:
+		if tt.Resource != nil {
+			for _, p := range tt.Resource.Properties {
+				if !schemaIsTestable(p.Type) {
+					return false
+				}
+			}
+		}
+		return true
+	case *schema.InvalidType:
+		return true
+	}
+	return false
+}
+
+// hasObjectCycle reports whether any ObjectType in the package's type graph
+// reaches itself via property types. transform.ctyTypeFromType recurses
+// unguardedly through ObjectType.Properties, so cyclic types blow the stack
+// before any list-element-type check could fire.
+func hasObjectCycle(pkg *schema.Package) bool {
+	visited := map[schema.Type]bool{}
+	var walk func(t schema.Type, stack map[schema.Type]bool) bool
+	walk = func(t schema.Type, stack map[schema.Type]bool) bool {
+		if t == nil {
+			return false
+		}
+		if stack[t] {
+			return true
+		}
+		if visited[t] {
+			return false
+		}
+		stack[t] = true
+		defer func() {
+			delete(stack, t)
+			visited[t] = true
+		}()
+		switch tt := t.(type) {
+		case *schema.OptionalType:
+			return walk(tt.ElementType, stack)
+		case *schema.ArrayType:
+			return walk(tt.ElementType, stack)
+		case *schema.MapType:
+			return walk(tt.ElementType, stack)
+		case *schema.ObjectType:
+			for _, p := range tt.Properties {
+				if walk(p.Type, stack) {
+					return true
+				}
+			}
+		case *schema.UnionType:
+			if walk(tt.DefaultType, stack) {
+				return true
+			}
+			for _, et := range tt.ElementTypes {
+				if walk(et, stack) {
+					return true
+				}
+			}
+		}
+		return false
+	}
+	for _, r := range pkg.Resources {
+		for _, p := range r.Properties {
+			if walk(p.Type, map[schema.Type]bool{}) {
+				return true
+			}
+		}
+	}
+	return false
 }
