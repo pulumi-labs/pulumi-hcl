@@ -992,6 +992,17 @@ func propertyValueToCty(path string, v property.Value, typ schema.Type, dryRun b
 		if len(arr) == 0 {
 			return cty.ListValEmpty(ctyTypeFromType(elemType)), nil
 		}
+		// If elements end up with different cty types — which happens when
+		// the schema element type is dynamic (Any / JSON) or otherwise
+		// permits heterogeneous shapes — fall back to a tuple. cty.ListVal
+		// panics on inconsistent element types; the map case above takes the
+		// analogous fallback to cty.ObjectVal.
+		first := arr[0].Type()
+		for _, ev := range arr[1:] {
+			if !ev.Type().Equals(first) {
+				return cty.TupleVal(arr), nil
+			}
+		}
 		return cty.ListVal(arr), nil
 
 	case v.IsResourceReference():

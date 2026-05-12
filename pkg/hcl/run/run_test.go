@@ -23,12 +23,16 @@ import (
 
 	"github.com/pulumi-labs/pulumi-hcl/pkg/hcl/parser"
 	"github.com/pulumi-labs/pulumi-hcl/pkg/hcl/run"
+	"github.com/pulumi-labs/pulumi-hcl/pkg/hcl/transform"
 	"github.com/pulumi-labs/pulumi-hcl/tests/testutil"
 	"github.com/pulumi-labs/pulumi-hcl/tests/testutil/schemaloader"
 	"github.com/pulumi/pulumi/pkg/v3/codegen/schema"
+	"github.com/pulumi/pulumi/pkg/v3/codegen/testing/utils/rapidresource"
+	"github.com/pulumi/pulumi/pkg/v3/codegen/testing/utils/rapidschema"
 	"github.com/pulumi/pulumi/sdk/v3/go/property"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"pgregory.net/rapid"
 )
 
 func TestEngine_BasicResource(t *testing.T) {
@@ -2002,4 +2006,84 @@ func TestEngine_HetListOutputRoundTrip(t *testing.T) {
 		err := engine.Run(t.Context())
 		require.NoError(t, err)
 	})
+}
+
+// TestResourceOutputToCty_RandomSchemaAndOutputs exercises transform's output
+// conversion across rapid-drawn schemas and rapid-drawn outputs. This bypasses
+// the engine/parser to focus the property test on the conversion.
+func TestResourceOutputToCty_RandomSchemaAndOutputs(t *testing.T) {
+	t.Parallel()
+
+	knownFailures := func(pkg *schema.Package) bool {
+		return !hasObjectCycle(pkg)
+	}
+
+	rapid.Check(t, func(rt *rapid.T) {
+		pkg := rapidschema.Package().Filter(knownFailures).Draw(rt, "pkg")
+		for _, res := range pkg.Resources {
+			if res.IsProvider {
+				continue
+			}
+			outputs := rapidresource.ResourceProperties(res).Draw(rt, "outputs:"+res.Token)
+			_, err := transform.ResourceOutputToCty(outputs, res, false)
+			require.NoError(t, err)
+		}
+	})
+}
+
+// hasObjectCycle reports whether any ObjectType in the package's type graph
+// reaches itself via property types. transform.ctyTypeFromType recurses
+// unguardedly through ObjectType.Properties, so cyclic types blow the stack
+// before any list-element-type check could fire.
+func hasObjectCycle(pkg *schema.Package) bool {
+	visited := map[schema.Type]bool{}
+	var walk func(t schema.Type, stack map[schema.Type]bool) bool
+	walk = func(t schema.Type, stack map[schema.Type]bool) bool {
+		if t == nil {
+			return false
+		}
+		if stack[t] {
+			return true
+		}
+		if visited[t] {
+			return false
+		}
+		stack[t] = true
+		defer func() {
+			delete(stack, t)
+			visited[t] = true
+		}()
+		switch tt := t.(type) {
+		case *schema.OptionalType:
+			return walk(tt.ElementType, stack)
+		case *schema.ArrayType:
+			return walk(tt.ElementType, stack)
+		case *schema.MapType:
+			return walk(tt.ElementType, stack)
+		case *schema.ObjectType:
+			for _, p := range tt.Properties {
+				if walk(p.Type, stack) {
+					return true
+				}
+			}
+		case *schema.UnionType:
+			if walk(tt.DefaultType, stack) {
+				return true
+			}
+			for _, et := range tt.ElementTypes {
+				if walk(et, stack) {
+					return true
+				}
+			}
+		}
+		return false
+	}
+	for _, r := range pkg.Resources {
+		for _, p := range r.Properties {
+			if walk(p.Type, map[schema.Type]bool{}) {
+				return true
+			}
+		}
+	}
+	return false
 }
