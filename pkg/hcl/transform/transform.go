@@ -811,6 +811,18 @@ func propertyObjectToCtyMap(path string, m property.Map, properties []*schema.Pr
 	return result, nil
 }
 
+func convertToSchemaCtyType(path string, val cty.Value, typ schema.Type) (cty.Value, error) {
+	target := ctyTypeFromType(typ)
+	if val.Type().Equals(target) {
+		return val, nil
+	}
+	converted, err := convert.Convert(val, target)
+	if err != nil {
+		return cty.Value{}, fmt.Errorf("%s: %w", path, err)
+	}
+	return converted, nil
+}
+
 func ctyTypeFromType(typ schema.Type) cty.Type {
 	typ = codegen.UnwrapType(typ)
 
@@ -919,13 +931,13 @@ func propertyValueToCty(path string, v property.Value, typ schema.Type, dryRun b
 				ref := refVal.AsResourceReference()
 				result["__ref"] = cty.CapsuleVal(eval.ResourceReferenceCapsuleType, &ref)
 			}
-			return cty.ObjectVal(result), nil
+			return convertToSchemaCtyType(path, cty.ObjectVal(result), typ)
 		case *schema.ObjectType:
 			m, err := propertyObjectToCtyMap(path, v.AsMap(), typ.Properties, dryRun)
 			if err != nil {
 				return cty.Value{}, err
 			}
-			return cty.ObjectVal(m), nil
+			return convertToSchemaCtyType(path, cty.ObjectVal(m), typ)
 		case *schema.MapType:
 			elemType = typ.ElementType
 		}
