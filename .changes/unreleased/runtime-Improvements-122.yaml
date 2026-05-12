@@ -1,6 +1,0 @@
-kind: Improvements
-body: Allow calling `length` on strings
-time: 2026-05-12T09:57:53.359324+02:00
-custom:
-    Component: runtime
-    PR: "122"

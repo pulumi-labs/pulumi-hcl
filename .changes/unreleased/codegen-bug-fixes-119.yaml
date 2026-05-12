@@ -1,6 +1,0 @@
-kind: bug-fixes
-body: Avoid a nil-pointer panic in `GenerateProgram` when a resource scope traversal references a `pcl.Resource` whose schema was not populated (e.g. when the binder ran with `SkipResourceTypechecking`)
-time: 2026-05-08T18:37:49.844475+02:00
-custom:
-    Component: codegen
-    PR: "119"
