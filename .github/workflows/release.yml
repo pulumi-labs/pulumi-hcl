@@ -41,7 +41,7 @@ jobs:
         if: steps.check-release.outputs.exists == 'false'
         uses: goreleaser/goreleaser-action@v7
         with:
-          version: latest
+          version: '~> v2'
           args: release --clean --release-notes=${{ env.RELEASE_NOTES_PATH }} --skip=validate
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
