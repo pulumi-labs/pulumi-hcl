@@ -16,7 +16,9 @@ jobs:
         with:
           version: v2.9.0
       - name: Validate unreleased fragments batch cleanly
-        run: changie batch auto --dry-run
+        # We use a phony version instead of auto, so that `changie batch` works when there
+        # are no files to release (like during a release).
+        run: changie batch v0.0.0 --dry-run
 
   test:
     runs-on: ubuntu-latest
