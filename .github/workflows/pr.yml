@@ -5,8 +5,57 @@ on:
 
 permissions:
   contents: read
+  pull-requests: read
 
 jobs:
+  changes:
+    runs-on: ubuntu-latest
+    outputs:
+      code: ${{ steps.filter.outputs.code }}
+    steps:
+      - uses: dorny/paths-filter@v4
+        id: filter
+        with:
+          # 'every' makes negated patterns actually exclude — under the default
+          # 'some', `**` would short-circuit the `!` rules and the filter would
+          # always be true.
+          predicate-quantifier: 'every'
+          filters: |
+            code:
+              - '**'
+              - '!CHANGELOG.md'
+              - '!.changes/**'
+
+  validate-fragments:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: jdx/mise-action@v4
+      - name: Validate unreleased fragments batch cleanly
+        # Phony version (rather than `auto`) so this works when there are no
+        # fragments to release — e.g. the auto-maintained release PR.
+        run: changie batch v0.0.0 --dry-run
+
   ci:
+    needs: changes
+    # Skip CI when every changed file is the changelog or a fragment.
+    # The job still reports a check-run (conclusion: skipped), which
+    # branch protection treats as passing.
+    if: needs.changes.outputs.code == 'true'
     uses: ./.github/workflows/ci.yml
     secrets: inherit
+
+  # Stable aggregator for branch protection. The inner jobs (`lint`, `test`)
+  # only exist when `ci` actually runs, and `ci` itself only appears when
+  # skipped — neither is a reliable required-check target. Require `pr-ok`
+  # instead; it always reports and fails iff any dependency failed.
+  pr-ok:
+    needs: [validate-fragments, ci]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: All required PR checks passed (or skipped)
+        run: |
+          if [[ "${{ contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled') }}" == "true" ]]; then
+            exit 1
+          fi
