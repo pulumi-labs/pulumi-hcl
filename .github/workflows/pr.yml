@@ -2,17 +2,35 @@ name: PR
 
 on:
   pull_request:
-    # Skip CI on PRs that only touch the changelog (e.g. the auto-maintained
-    # `automation/next-release` PR). Normal PRs that change code alongside a
-    # changelog fragment still run CI.
-    paths-ignore:
-      - 'CHANGELOG.md'
-      - '.changes/**'
 
 permissions:
   contents: read
+  pull-requests: read
 
 jobs:
+  changes:
+    runs-on: ubuntu-latest
+    outputs:
+      code: ${{ steps.filter.outputs.code }}
+    steps:
+      - uses: dorny/paths-filter@v4
+        id: filter
+        with:
+          # 'every' makes negated patterns actually exclude — under the default
+          # 'some', `**` would short-circuit the `!` rules and the filter would
+          # always be true.
+          predicate-quantifier: 'every'
+          filters: |
+            code:
+              - '**'
+              - '!CHANGELOG.md'
+              - '!.changes/**'
+
   ci:
+    needs: changes
+    # Skip CI when every changed file is the changelog or a fragment.
+    # The job still reports a check-run (conclusion: skipped), which
+    # branch protection treats as passing.
+    if: needs.changes.outputs.code == 'true'
     uses: ./.github/workflows/ci.yml
     secrets: inherit
