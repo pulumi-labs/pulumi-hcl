@@ -876,17 +876,35 @@ func ctyTypeFromType(typ schema.Type) cty.Type {
 	case *schema.InvalidType:
 		return cty.DynamicPseudoType
 	case *schema.UnionType:
-		if typ.DefaultType != nil {
-			if t := ctyTypeFromType(typ.DefaultType); t != cty.NilType {
-				return t
+		// If all element types resolve to the same cty type, use it.
+		// Otherwise fall back to DynamicPseudoType so any union member is
+		// accepted without forcing conversion to one arbitrary member's type.
+		var common cty.Type
+		seen := false
+		consider := func(t schema.Type) bool {
+			ct := ctyTypeFromType(t)
+			if ct == cty.NilType {
+				return true
 			}
+			if !seen {
+				common = ct
+				seen = true
+				return true
+			}
+			return common.Equals(ct)
+		}
+		if typ.DefaultType != nil && !consider(typ.DefaultType) {
+			return cty.DynamicPseudoType
 		}
 		for _, t := range typ.ElementTypes {
-			if t := ctyTypeFromType(t); t != cty.NilType {
-				return t
+			if !consider(t) {
+				return cty.DynamicPseudoType
 			}
 		}
-		return cty.NilType
+		if !seen {
+			return cty.NilType
+		}
+		return common
 	default:
 		return cty.NilType
 	}
@@ -917,6 +935,11 @@ func propertyValueToCty(path string, v property.Value, typ schema.Type, dryRun b
 	// Collection types
 
 	case v.IsMap():
+		if u, ok := typ.(*schema.UnionType); ok {
+			if chosen := selectUnionMember(v, u); chosen != nil {
+				return propertyValueToCty(path, v, chosen, dryRun)
+			}
+		}
 		elemType := schema.AnyType
 		switch typ := typ.(type) {
 		case *schema.ResourceType:
@@ -977,6 +1000,11 @@ func propertyValueToCty(path string, v property.Value, typ schema.Type, dryRun b
 		return cty.MapVal(m), nil
 
 	case v.IsArray():
+		if u, ok := typ.(*schema.UnionType); ok {
+			if chosen := selectUnionMember(v, u); chosen != nil {
+				return propertyValueToCty(path, v, chosen, dryRun)
+			}
+		}
 		elemType := schema.AnyType
 		if arr, ok := typ.(*schema.ArrayType); ok {
 			elemType = arr.ElementType
@@ -1135,3 +1163,105 @@ func MakeComputed(pv resource.PropertyValue) resource.PropertyValue {
 }
 
 func ptr[T any](v T) *T { return &v }
+
+// selectUnionMember picks the union member that v conforms to by recursively
+// matching the value's shape against each candidate type. ObjectType members
+// are preferred over MapType members when both could fit, because objects are
+// the more specific shape.
+func selectUnionMember(v property.Value, typ *schema.UnionType) schema.Type {
+	candidates := slices.Clone(typ.ElementTypes)
+	if typ.DefaultType != nil {
+		candidates = append([]schema.Type{typ.DefaultType}, candidates...)
+	}
+
+	isObject := func(t schema.Type) bool {
+		_, ok := codegen.UnwrapType(t).(*schema.ObjectType)
+		return ok
+	}
+
+	for _, t := range candidates {
+		if !isObject(t) {
+			continue
+		}
+		if valueMatchesType(v, t) {
+			return t
+		}
+	}
+	for _, t := range candidates {
+		if !isObject(t) && valueMatchesType(v, t) {
+			return t
+		}
+	}
+	return nil
+}
+
+// valueMatchesType reports whether v could be produced from a schema of type
+// typ. It traverses recursively so a union nested inside arrays/maps/objects
+// is resolved by inspecting the corresponding sub-values.
+func valueMatchesType(v property.Value, typ schema.Type) bool {
+	typ = codegen.UnwrapType(typ)
+	if typ == schema.AnyType {
+		return true
+	}
+	if v.IsNull() || v.IsComputed() {
+		return true
+	}
+	if u, ok := typ.(*schema.UnionType); ok {
+		return selectUnionMember(v, u) != nil
+	}
+	switch {
+	case v.IsString():
+		return typ == schema.StringType
+	case v.IsBool():
+		return typ == schema.BoolType
+	case v.IsNumber():
+		return typ == schema.NumberType || typ == schema.IntType
+	case v.IsArray():
+		arr, ok := typ.(*schema.ArrayType)
+		if !ok {
+			return false
+		}
+		for _, e := range v.AsArray().All {
+			if !valueMatchesType(e, arr.ElementType) {
+				return false
+			}
+		}
+		return true
+	case v.IsMap():
+		m := v.AsMap()
+		switch typ := typ.(type) {
+		case *schema.ObjectType:
+			props := make(map[string]*schema.Property, len(typ.Properties))
+			for _, p := range typ.Properties {
+				props[p.Name] = p
+			}
+			for k, e := range m.All {
+				p, ok := props[string(k)]
+				if !ok {
+					return false
+				}
+				if !valueMatchesType(e, p.Type) {
+					return false
+				}
+			}
+			for _, p := range typ.Properties {
+				if !p.IsRequired() {
+					continue
+				}
+				v, ok := m.GetOk(p.Name)
+				if !ok || v.IsNull() {
+					return false
+				}
+			}
+			return true
+		case *schema.MapType:
+			for _, e := range m.All {
+				if !valueMatchesType(e, typ.ElementType) {
+					return false
+				}
+			}
+			return true
+		}
+	}
+	return false
+}
