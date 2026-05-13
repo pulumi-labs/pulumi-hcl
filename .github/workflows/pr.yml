@@ -44,3 +44,18 @@ jobs:
     if: needs.changes.outputs.code == 'true'
     uses: ./.github/workflows/ci.yml
     secrets: inherit
+
+  # Stable aggregator for branch protection. The inner jobs (`lint`, `test`)
+  # only exist when `ci` actually runs, and `ci` itself only appears when
+  # skipped — neither is a reliable required-check target. Require `pr-ok`
+  # instead; it always reports and fails iff any dependency failed.
+  pr-ok:
+    needs: [validate-fragments, ci]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: All required PR checks passed (or skipped)
+        run: |
+          if [[ "${{ contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled') }}" == "true" ]]; then
+            exit 1
+          fi
