@@ -868,6 +868,16 @@ func schemaIsTestable(t schema.Type) bool {
 		return false
 	}
 	switch tt := t.(type) {
+	case *schema.UnionType:
+		if !schemaIsTestable(tt.DefaultType) {
+			return false
+		}
+		for _, typ := range tt.ElementTypes {
+			if !schemaIsTestable(typ) {
+				return false
+			}
+		}
+		return true
 	case *schema.ArrayType:
 		return schemaIsTestable(tt.ElementType)
 	case *schema.MapType:
@@ -951,4 +961,377 @@ func hasObjectCycle(pkg *schema.Package) bool {
 		}
 	}
 	return false
+}
+
+func TestResourceOutputToCtyUnionTypeCollapse(t *testing.T) {
+	t.Parallel()
+
+	obj1 := &schema.ObjectType{
+		Properties: []*schema.Property{
+			{Name: "fooBar", Type: schema.StringType},
+		},
+	}
+
+	obj2 := &schema.MapType{ElementType: schema.StringType}
+
+	union := &schema.UnionType{
+		ElementTypes: []schema.Type{obj1, obj2},
+	}
+
+	nested := &schema.ObjectType{
+		Properties: []*schema.Property{
+			{Name: "p", Type: union},
+		},
+	}
+
+	res := &schema.Resource{
+		Token: "test:index:R",
+		Properties: []*schema.Property{
+			{Name: "p", Type: nested},
+		},
+	}
+
+	test := func(t *testing.T, key string, expected cty.Value) {
+		outputs := property.NewMap(map[string]property.Value{
+			"p": property.New(map[string]property.Value{
+				"p": property.New(map[string]property.Value{
+					key: property.New("hello"),
+				}),
+			}),
+		})
+
+		r, err := ResourceOutputToCty(outputs, res, false)
+		require.NoError(t, err)
+		assert.Equal(t, map[string]cty.Value{
+			"p": cty.ObjectVal(map[string]cty.Value{
+				"p": expected,
+			}),
+		}, r)
+	}
+
+	t.Run("object", func(t *testing.T) {
+		t.Parallel()
+
+		test(t, "fooBar", cty.ObjectVal(map[string]cty.Value{
+			"foo_bar": cty.StringVal("hello"),
+		}))
+	})
+
+	t.Run("map", func(t *testing.T) {
+		t.Parallel()
+
+		test(t, "someKey", cty.MapVal(map[string]cty.Value{
+			"someKey": cty.StringVal("hello"),
+		}))
+	})
+}
+
+// TestResourceOutputToCtyUnionTypeCollapseNested exercises union resolution
+// where the union sits underneath arrays/maps and contains itself nested
+// object/map members. The selector has to descend through the carrier
+// collections AND through the candidate types to find a match.
+func TestResourceOutputToCtyUnionTypeCollapseNested(t *testing.T) {
+	t.Parallel()
+
+	obj := &schema.ObjectType{
+		Properties: []*schema.Property{
+			{Name: "fooBar", Type: schema.StringType},
+		},
+	}
+	mp := &schema.MapType{ElementType: schema.StringType}
+	union := &schema.UnionType{ElementTypes: []schema.Type{obj, mp}}
+
+	t.Run("array_of_union", func(t *testing.T) {
+		t.Parallel()
+
+		res := &schema.Resource{
+			Token: "test:index:R",
+			Properties: []*schema.Property{
+				{Name: "items", Type: &schema.ArrayType{ElementType: union}},
+			},
+		}
+		outputs := property.NewMap(map[string]property.Value{
+			"items": property.New([]property.Value{
+				property.New(map[string]property.Value{"fooBar": property.New("hi")}),
+				property.New(map[string]property.Value{"loose": property.New("yo")}),
+			}),
+		})
+
+		r, err := ResourceOutputToCty(outputs, res, false)
+		require.NoError(t, err)
+		assert.Equal(t, map[string]cty.Value{
+			"items": cty.TupleVal([]cty.Value{
+				cty.ObjectVal(map[string]cty.Value{"foo_bar": cty.StringVal("hi")}),
+				cty.MapVal(map[string]cty.Value{"loose": cty.StringVal("yo")}),
+			}),
+		}, r)
+	})
+
+	t.Run("map_of_union", func(t *testing.T) {
+		t.Parallel()
+
+		res := &schema.Resource{
+			Token: "test:index:R",
+			Properties: []*schema.Property{
+				{Name: "lookup", Type: &schema.MapType{ElementType: union}},
+			},
+		}
+		outputs := property.NewMap(map[string]property.Value{
+			"lookup": property.New(map[string]property.Value{
+				"a": property.New(map[string]property.Value{"fooBar": property.New("hi")}),
+				"b": property.New(map[string]property.Value{"x": property.New("y")}),
+			}),
+		})
+
+		r, err := ResourceOutputToCty(outputs, res, false)
+		require.NoError(t, err)
+		assert.Equal(t, map[string]cty.Value{
+			"lookup": cty.ObjectVal(map[string]cty.Value{
+				"a": cty.ObjectVal(map[string]cty.Value{"foo_bar": cty.StringVal("hi")}),
+				"b": cty.MapVal(map[string]cty.Value{"x": cty.StringVal("y")}),
+			}),
+		}, r)
+	})
+
+	t.Run("array_of_map_of_union", func(t *testing.T) {
+		t.Parallel()
+
+		res := &schema.Resource{
+			Token: "test:index:R",
+			Properties: []*schema.Property{
+				{Name: "deep", Type: &schema.ArrayType{
+					ElementType: &schema.MapType{ElementType: union},
+				}},
+			},
+		}
+		outputs := property.NewMap(map[string]property.Value{
+			"deep": property.New([]property.Value{
+				property.New(map[string]property.Value{
+					"k1": property.New(map[string]property.Value{"fooBar": property.New("hi")}),
+					"k2": property.New(map[string]property.Value{"fooBar": property.New("ho")}),
+				}),
+				property.New(map[string]property.Value{
+					"k3": property.New(map[string]property.Value{"free": property.New("form")}),
+				}),
+			}),
+		})
+
+		r, err := ResourceOutputToCty(outputs, res, false)
+		require.NoError(t, err)
+		// Each outer map has homogeneous element shapes after union resolution,
+		// so each becomes a cty.MapVal. The outer array is heterogeneous across
+		// elements (Map<Object> vs Map<Map>), so it becomes a cty.TupleVal.
+		assert.Equal(t, map[string]cty.Value{
+			"deep": cty.TupleVal([]cty.Value{
+				cty.MapVal(map[string]cty.Value{
+					"k1": cty.ObjectVal(map[string]cty.Value{"foo_bar": cty.StringVal("hi")}),
+					"k2": cty.ObjectVal(map[string]cty.Value{"foo_bar": cty.StringVal("ho")}),
+				}),
+				cty.MapVal(map[string]cty.Value{
+					"k3": cty.MapVal(map[string]cty.Value{"free": cty.StringVal("form")}),
+				}),
+			}),
+		}, r)
+	})
+
+	t.Run("map_of_union_heterogeneous", func(t *testing.T) {
+		t.Parallel()
+
+		res := &schema.Resource{
+			Token: "test:index:R",
+			Properties: []*schema.Property{
+				{Name: "mixed", Type: &schema.MapType{ElementType: union}},
+			},
+		}
+		outputs := property.NewMap(map[string]property.Value{
+			"mixed": property.New(map[string]property.Value{
+				"a": property.New(map[string]property.Value{"fooBar": property.New("x")}),
+				"b": property.New(map[string]property.Value{"free": property.New("y")}),
+			}),
+		})
+
+		r, err := ResourceOutputToCty(outputs, res, false)
+		require.NoError(t, err)
+		// Mixed Object/Map elements force the outer collection to cty.ObjectVal.
+		assert.Equal(t, map[string]cty.Value{
+			"mixed": cty.ObjectVal(map[string]cty.Value{
+				"a": cty.ObjectVal(map[string]cty.Value{"foo_bar": cty.StringVal("x")}),
+				"b": cty.MapVal(map[string]cty.Value{"free": cty.StringVal("y")}),
+			}),
+		}, r)
+	})
+
+	t.Run("nested_union_disambiguated_by_inner_value", func(t *testing.T) {
+		t.Parallel()
+
+		// Both members are objects with a property "p", but the inner type
+		// differs. The selector must look at the inner value to choose.
+		innerString := &schema.ObjectType{
+			Properties: []*schema.Property{
+				{Name: "p", Type: schema.StringType},
+			},
+		}
+		innerBool := &schema.ObjectType{
+			Properties: []*schema.Property{
+				{Name: "p", Type: schema.BoolType},
+			},
+		}
+		uu := &schema.UnionType{ElementTypes: []schema.Type{innerString, innerBool}}
+
+		res := &schema.Resource{
+			Token: "test:index:R",
+			Properties: []*schema.Property{
+				{Name: "v", Type: uu},
+			},
+		}
+
+		t.Run("string_branch", func(t *testing.T) {
+			t.Parallel()
+
+			outputs := property.NewMap(map[string]property.Value{
+				"v": property.New(map[string]property.Value{"p": property.New("hi")}),
+			})
+			r, err := ResourceOutputToCty(outputs, res, false)
+			require.NoError(t, err)
+			assert.Equal(t, map[string]cty.Value{
+				"v": cty.ObjectVal(map[string]cty.Value{"p": cty.StringVal("hi")}),
+			}, r)
+		})
+
+		t.Run("bool_branch", func(t *testing.T) {
+			t.Parallel()
+
+			outputs := property.NewMap(map[string]property.Value{
+				"v": property.New(map[string]property.Value{"p": property.New(true)}),
+			})
+			r, err := ResourceOutputToCty(outputs, res, false)
+			require.NoError(t, err)
+			assert.Equal(t, map[string]cty.Value{
+				"v": cty.ObjectVal(map[string]cty.Value{"p": cty.BoolVal(true)}),
+			}, r)
+		})
+	})
+
+	t.Run("required_property_missing_falls_back_to_map", func(t *testing.T) {
+		t.Parallel()
+
+		// objBothRequired requires both x and y. The value omits y, so it
+		// cannot be a valid objBothRequired. The only fitting member is
+		// Map<string>. A matcher that only checks that value keys belong
+		// to the object's properties — without verifying that *required*
+		// properties of the object are present in the value — would
+		// incorrectly pick objBothRequired.
+		objBothRequired := &schema.ObjectType{
+			Properties: []*schema.Property{
+				{Name: "x", Type: schema.StringType},
+				{Name: "y", Type: schema.StringType},
+			},
+		}
+		mp := &schema.MapType{ElementType: schema.StringType}
+		uu := &schema.UnionType{ElementTypes: []schema.Type{objBothRequired, mp}}
+
+		res := &schema.Resource{
+			Token: "test:index:R",
+			Properties: []*schema.Property{
+				{Name: "v", Type: uu},
+			},
+		}
+
+		outputs := property.NewMap(map[string]property.Value{
+			"v": property.New(map[string]property.Value{
+				"x": property.New("hi"),
+			}),
+		})
+
+		r, err := ResourceOutputToCty(outputs, res, false)
+		require.NoError(t, err)
+		assert.Equal(t, map[string]cty.Value{
+			"v": cty.MapVal(map[string]cty.Value{
+				"x": cty.StringVal("hi"),
+			}),
+		}, r)
+	})
+
+	t.Run("optional_property_value_must_type_check", func(t *testing.T) {
+		t.Parallel()
+
+		// objA has a required `x` and an optional `extras` typed as int.
+		// The value provides `extras` as a string — that must disqualify
+		// objA. Map<string> is the only remaining valid member.
+		objA := &schema.ObjectType{
+			Properties: []*schema.Property{
+				{Name: "x", Type: schema.StringType},
+				{Name: "extras", Type: &schema.OptionalType{ElementType: schema.IntType}},
+			},
+		}
+		mp := &schema.MapType{ElementType: schema.StringType}
+		uu := &schema.UnionType{ElementTypes: []schema.Type{objA, mp}}
+
+		res := &schema.Resource{
+			Token: "test:index:R",
+			Properties: []*schema.Property{
+				{Name: "v", Type: uu},
+			},
+		}
+
+		outputs := property.NewMap(map[string]property.Value{
+			"v": property.New(map[string]property.Value{
+				"x":      property.New("hi"),
+				"extras": property.New("not-an-int"),
+			}),
+		})
+
+		r, err := ResourceOutputToCty(outputs, res, false)
+		require.NoError(t, err)
+		assert.Equal(t, map[string]cty.Value{
+			"v": cty.MapVal(map[string]cty.Value{
+				"x":      cty.StringVal("hi"),
+				"extras": cty.StringVal("not-an-int"),
+			}),
+		}, r)
+	})
+
+	t.Run("optional_present_picks_object_over_object_without_it", func(t *testing.T) {
+		t.Parallel()
+
+		// objA only has x. objB has x required and extras optional.
+		// When the value carries `extras`, only objB can describe it.
+		// objA is listed first, but the matcher must reject it because
+		// `extras` is not a property of objA.
+		objA := &schema.ObjectType{
+			Properties: []*schema.Property{
+				{Name: "x", Type: schema.StringType},
+			},
+		}
+		objB := &schema.ObjectType{
+			Properties: []*schema.Property{
+				{Name: "x", Type: schema.StringType},
+				{Name: "extras", Type: &schema.OptionalType{ElementType: schema.StringType}},
+			},
+		}
+		uu := &schema.UnionType{ElementTypes: []schema.Type{objA, objB}}
+
+		res := &schema.Resource{
+			Token: "test:index:R",
+			Properties: []*schema.Property{
+				{Name: "v", Type: uu},
+			},
+		}
+
+		outputs := property.NewMap(map[string]property.Value{
+			"v": property.New(map[string]property.Value{
+				"x":      property.New("hi"),
+				"extras": property.New("ho"),
+			}),
+		})
+
+		r, err := ResourceOutputToCty(outputs, res, false)
+		require.NoError(t, err)
+		assert.Equal(t, map[string]cty.Value{
+			"v": cty.ObjectVal(map[string]cty.Value{
+				"x":      cty.StringVal("hi"),
+				"extras": cty.StringVal("ho"),
+			}),
+		}, r)
+	})
 }
