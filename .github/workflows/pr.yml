@@ -26,6 +26,16 @@ jobs:
               - '!CHANGELOG.md'
               - '!.changes/**'
 
+  validate-fragments:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: jdx/mise-action@v4
+      - name: Validate unreleased fragments batch cleanly
+        # Phony version (rather than `auto`) so this works when there are no
+        # fragments to release — e.g. the auto-maintained release PR.
+        run: changie batch v0.0.0 --dry-run
+
   ci:
     needs: changes
     # Skip CI when every changed file is the changelog or a fragment.
