@@ -2,6 +2,12 @@ name: PR
 
 on:
   pull_request:
+    # Skip CI on PRs that only touch the changelog (e.g. the auto-maintained
+    # `automation/next-release` PR). Normal PRs that change code alongside a
+    # changelog fragment still run CI.
+    paths-ignore:
+      - 'CHANGELOG.md'
+      - '.changes/**'
 
 permissions:
   contents: read

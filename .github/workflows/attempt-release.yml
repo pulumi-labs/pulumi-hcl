@@ -3,15 +3,22 @@
 name: Maintain Release PR
 
 on:
-  schedule:
-    # Daily at 09:00 UTC.
-    - cron: '0 9 * * *'
+  push:
+    branches: [master]
+    paths:
+      - '.changes/unreleased/**'
   workflow_dispatch:
     inputs:
       auto_merge:
         description: 'Merge the resulting PR immediately after refresh/create'
         type: boolean
         default: false
+
+# Serialize runs so back-to-back merges to master refresh the release PR
+# in order rather than racing each other on the `automation/next-release` branch.
+concurrency:
+  group: maintain-release-pr
+  cancel-in-progress: false
 
 permissions:
   contents: write
