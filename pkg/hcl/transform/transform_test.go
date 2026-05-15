@@ -839,17 +839,10 @@ func TestResourceOutputToCtyDoesNotErrorOnValidValues(t *testing.T) {
 // `transform.ResourceOutputToCty` produces a cty value for *any* output
 // rapidresource might draw. Shapes we exclude (and why):
 //
-//   - schema.AnyType, schema.JSONType, schema.AnyResourceType: values are
-//     drawn with whatever cty type each picks
-//     (String/Bool/Tuple/Object/...); inside a Map<Any> they are
-//     heterogeneous and the outer convert.Convert call rejects the
-//     fallback Object value as "all map elements must have the same type".
 //   - *schema.UnionType: ctyTypeFromType collapses a union to one member's
 //     cty type. When rapidresource later draws a value of a *different*
 //     valid union member, convert.Convert rejects it ("attribute X: T
 //     required", "all list/map elements must have the same type").
-//   - *schema.TokenType: same dynamic-element problem as AnyType when the
-//     token has no underlying type.
 //
 // All of the above are pre-existing transform limitations on arbitrary
 // schemas, out of scope for this test.
@@ -860,10 +853,9 @@ func schemaIsTestable(t schema.Type) bool {
 	}
 	switch t {
 	case schema.StringType, schema.BoolType, schema.NumberType, schema.IntType,
-		schema.AssetType, schema.ArchiveType:
+		schema.AssetType, schema.ArchiveType,
+		schema.AnyType, schema.JSONType, schema.AnyResourceType:
 		return true
-	case schema.AnyType, schema.JSONType, schema.AnyResourceType:
-		return false
 	}
 	switch tt := t.(type) {
 	case *schema.UnionType:
@@ -904,7 +896,7 @@ func schemaIsTestable(t schema.Type) bool {
 		if tt.UnderlyingType != nil {
 			return schemaIsTestable(tt.UnderlyingType)
 		}
-		return false
+		return true
 	}
 	return false
 }
@@ -1062,9 +1054,11 @@ func TestResourceOutputToCtyUnionTypeCollapseNested(t *testing.T) {
 
 		r, err := ResourceOutputToCty(outputs, res, false)
 		require.NoError(t, err)
+		// Object{foo_bar:String} and Map<String> unify to Map<String>, so the
+		// outer array can stay as a clean cty.ListVal of cty.MapVal.
 		assert.Equal(t, map[string]cty.Value{
-			"items": cty.TupleVal([]cty.Value{
-				cty.ObjectVal(map[string]cty.Value{"foo_bar": cty.StringVal("hi")}),
+			"items": cty.ListVal([]cty.Value{
+				cty.MapVal(map[string]cty.Value{"foo_bar": cty.StringVal("hi")}),
 				cty.MapVal(map[string]cty.Value{"loose": cty.StringVal("yo")}),
 			}),
 		}, r)
@@ -1089,8 +1083,8 @@ func TestResourceOutputToCtyUnionTypeCollapseNested(t *testing.T) {
 		r, err := ResourceOutputToCty(outputs, res, false)
 		require.NoError(t, err)
 		assert.Equal(t, map[string]cty.Value{
-			"lookup": cty.ObjectVal(map[string]cty.Value{
-				"a": cty.ObjectVal(map[string]cty.Value{"foo_bar": cty.StringVal("hi")}),
+			"lookup": cty.MapVal(map[string]cty.Value{
+				"a": cty.MapVal(map[string]cty.Value{"foo_bar": cty.StringVal("hi")}),
 				"b": cty.MapVal(map[string]cty.Value{"x": cty.StringVal("y")}),
 			}),
 		}, r)
@@ -1121,14 +1115,13 @@ func TestResourceOutputToCtyUnionTypeCollapseNested(t *testing.T) {
 
 		r, err := ResourceOutputToCty(outputs, res, false)
 		require.NoError(t, err)
-		// Each outer map has homogeneous element shapes after union resolution,
-		// so each becomes a cty.MapVal. The outer array is heterogeneous across
-		// elements (Map<Object> vs Map<Map>), so it becomes a cty.TupleVal.
+		// After union resolution every leaf becomes Map<String>, so both the
+		// inner maps and the outer array can stay homogeneous.
 		assert.Equal(t, map[string]cty.Value{
-			"deep": cty.TupleVal([]cty.Value{
+			"deep": cty.ListVal([]cty.Value{
 				cty.MapVal(map[string]cty.Value{
-					"k1": cty.ObjectVal(map[string]cty.Value{"foo_bar": cty.StringVal("hi")}),
-					"k2": cty.ObjectVal(map[string]cty.Value{"foo_bar": cty.StringVal("ho")}),
+					"k1": cty.MapVal(map[string]cty.Value{"foo_bar": cty.StringVal("hi")}),
+					"k2": cty.MapVal(map[string]cty.Value{"foo_bar": cty.StringVal("ho")}),
 				}),
 				cty.MapVal(map[string]cty.Value{
 					"k3": cty.MapVal(map[string]cty.Value{"free": cty.StringVal("form")}),
@@ -1155,10 +1148,11 @@ func TestResourceOutputToCtyUnionTypeCollapseNested(t *testing.T) {
 
 		r, err := ResourceOutputToCty(outputs, res, false)
 		require.NoError(t, err)
-		// Mixed Object/Map elements force the outer collection to cty.ObjectVal.
+		// Object{foo_bar:String} and Map<String> unify to Map<String>, so the
+		// outer collection can stay as a clean cty.MapVal of cty.MapVal.
 		assert.Equal(t, map[string]cty.Value{
-			"mixed": cty.ObjectVal(map[string]cty.Value{
-				"a": cty.ObjectVal(map[string]cty.Value{"foo_bar": cty.StringVal("x")}),
+			"mixed": cty.MapVal(map[string]cty.Value{
+				"a": cty.MapVal(map[string]cty.Value{"foo_bar": cty.StringVal("x")}),
 				"b": cty.MapVal(map[string]cty.Value{"free": cty.StringVal("y")}),
 			}),
 		}, r)
