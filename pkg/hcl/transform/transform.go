@@ -1246,8 +1246,6 @@ func MakeComputed(pv resource.PropertyValue) resource.PropertyValue {
 	return resource.MakeComputed(pv)
 }
 
-func ptr[T any](v T) *T { return &v }
-
 // selectUnionMember picks the union member that v conforms to by recursively
 // matching the value's shape against each candidate type. ObjectType members
 // are preferred over MapType members when both could fit, because objects are
