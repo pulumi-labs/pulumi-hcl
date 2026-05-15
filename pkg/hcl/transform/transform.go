@@ -833,7 +833,7 @@ func ctyTypeFromType(typ schema.Type) cty.Type {
 		return cty.Bool
 	case schema.NumberType, schema.IntType:
 		return cty.Number
-	case schema.AnyType:
+	case schema.AnyType, schema.JSONType, schema.AnyResourceType:
 		return cty.DynamicPseudoType
 	case schema.AssetType:
 		return eval.AssetCapsuleType
@@ -843,9 +843,17 @@ func ctyTypeFromType(typ schema.Type) cty.Type {
 
 	switch typ := typ.(type) {
 	case *schema.ArrayType:
-		return cty.List(ctyTypeFromType(typ.ElementType))
+		et := ctyTypeFromType(typ.ElementType)
+		if ctyTypeContainsDynamic(et) {
+			return cty.DynamicPseudoType
+		}
+		return cty.List(et)
 	case *schema.MapType:
-		return cty.Map(ctyTypeFromType(typ.ElementType))
+		et := ctyTypeFromType(typ.ElementType)
+		if ctyTypeContainsDynamic(et) {
+			return cty.DynamicPseudoType
+		}
+		return cty.Map(et)
 	case *schema.EnumType:
 		return ctyTypeFromType(typ.ElementType)
 	case *schema.ObjectType:
@@ -874,6 +882,11 @@ func ctyTypeFromType(typ schema.Type) cty.Type {
 		}
 		return cty.ObjectWithOptionalAttrs(attrs, optional)
 	case *schema.InvalidType:
+		return cty.DynamicPseudoType
+	case *schema.TokenType:
+		if typ.UnderlyingType != nil {
+			return ctyTypeFromType(typ.UnderlyingType)
+		}
 		return cty.DynamicPseudoType
 	case *schema.UnionType:
 		// If all element types resolve to the same cty type, use it.
@@ -908,6 +921,93 @@ func ctyTypeFromType(typ schema.Type) cty.Type {
 	default:
 		return cty.NilType
 	}
+}
+
+// ctyTypeContainsDynamic reports whether the given cty type embeds
+// [cty.DynamicPseudoType].
+func ctyTypeContainsDynamic(t cty.Type) bool {
+	switch {
+	case t == cty.DynamicPseudoType:
+		return true
+	case t.IsListType(), t.IsMapType(), t.IsSetType():
+		return ctyTypeContainsDynamic(t.ElementType())
+	case t.IsTupleType():
+		return slices.ContainsFunc(t.TupleElementTypes(), ctyTypeContainsDynamic)
+	case t.IsObjectType():
+		return slices.ContainsFunc(slices.Collect(maps.Values(t.AttributeTypes())), ctyTypeContainsDynamic)
+	default:
+		return false
+	}
+}
+
+// unifyOrObject collapses a heterogeneous map of cty values into either a
+// homogeneous cty.MapVal (if the element types unify cleanly) or a
+// cty.ObjectVal (which permits per-attribute types). cty does not have a
+// union type, so these are the two ways to carry heterogeneous-element data.
+func unifyOrObject(m map[string]cty.Value) cty.Value {
+	keys := make([]string, 0, len(m))
+	types := make([]cty.Type, 0, len(m))
+	for k, v := range m {
+		keys = append(keys, k)
+		types = append(types, v.Type())
+	}
+	unified, conversions := convert.UnifyUnsafe(types)
+	if unified == cty.NilType {
+		return cty.ObjectVal(m)
+	}
+	out := make(map[string]cty.Value, len(m))
+	for i, k := range keys {
+		v := m[k]
+		if conv := conversions[i]; conv != nil {
+			cv, err := conv(v)
+			if err != nil {
+				return cty.ObjectVal(m)
+			}
+			v = cv
+		}
+		out[k] = v
+	}
+	// cty.MapVal panics on inconsistent element types. Unification can
+	// pick a DynamicPseudoType supertype yet leave concrete elements
+	// untouched; verify post-conversion homogeneity before committing.
+	first := out[keys[0]].Type()
+	for _, k := range keys[1:] {
+		if !out[k].Type().Equals(first) {
+			return cty.ObjectVal(m)
+		}
+	}
+	return cty.MapVal(out)
+}
+
+// unifyOrTuple is the slice counterpart to unifyOrObject: a homogeneous
+// cty.ListVal when element types unify cleanly, otherwise cty.TupleVal.
+func unifyOrTuple(arr []cty.Value) cty.Value {
+	types := make([]cty.Type, len(arr))
+	for i, v := range arr {
+		types[i] = v.Type()
+	}
+	unified, conversions := convert.UnifyUnsafe(types)
+	if unified == cty.NilType {
+		return cty.TupleVal(arr)
+	}
+	out := make([]cty.Value, len(arr))
+	for i, v := range arr {
+		if conv := conversions[i]; conv != nil {
+			cv, err := conv(v)
+			if err != nil {
+				return cty.TupleVal(arr)
+			}
+			v = cv
+		}
+		out[i] = v
+	}
+	first := out[0].Type()
+	for _, v := range out[1:] {
+		if !v.Type().Equals(first) {
+			return cty.TupleVal(arr)
+		}
+	}
+	return cty.ListVal(out)
 }
 
 func propertyValueToCty(path string, v property.Value, typ schema.Type, dryRun bool) (cty.Value, error) {
@@ -976,10 +1076,12 @@ func propertyValueToCty(path string, v property.Value, typ schema.Type, dryRun b
 			return cty.MapValEmpty(ctyTypeFromType(elemType)), nil
 		}
 
-		// If all elements are not the same - then cty requires an object type.
-		//
-		// This occurs when we have a non-homogeneous block not typed like an object. For example with the
-		// pulumi_stack resource:
+		// When elements have differing cty types — e.g. a Map<Any|JSON> whose
+		// values pick String, Number, Object, ... — try to unify them so we
+		// can still emit a cty.MapVal. If unification fails (truly
+		// incompatible shapes), fall back to cty.ObjectVal, which cty allows
+		// to have heterogeneous attribute values. See the pulumi_stack
+		// example, where a non-homogeneous block is typed dynamically:
 		//
 		//	 resource "pulumi_stash" "myStash" {
 		//	   input = {
@@ -987,17 +1089,7 @@ func propertyValueToCty(path string, v property.Value, typ schema.Type, dryRun b
 		//	     ""    = false
 		//	   }
 		//	 }
-		var t *cty.Type
-		for _, v := range m {
-			if t == nil {
-				t = ptr(v.Type())
-			}
-			if !v.Type().Equals(*t) {
-				return cty.ObjectVal(m), nil
-			}
-		}
-
-		return cty.MapVal(m), nil
+		return unifyOrObject(m), nil
 
 	case v.IsArray():
 		if u, ok := typ.(*schema.UnionType); ok {
@@ -1020,18 +1112,10 @@ func propertyValueToCty(path string, v property.Value, typ schema.Type, dryRun b
 		if len(arr) == 0 {
 			return cty.ListValEmpty(ctyTypeFromType(elemType)), nil
 		}
-		// If elements end up with different cty types — which happens when
-		// the schema element type is dynamic (Any / JSON) or otherwise
-		// permits heterogeneous shapes — fall back to a tuple. cty.ListVal
-		// panics on inconsistent element types; the map case above takes the
-		// analogous fallback to cty.ObjectVal.
-		first := arr[0].Type()
-		for _, ev := range arr[1:] {
-			if !ev.Type().Equals(first) {
-				return cty.TupleVal(arr), nil
-			}
-		}
-		return cty.ListVal(arr), nil
+		// Same story as the map case: if elements ended up with different cty
+		// types (dynamic schema element), try to unify into a common type
+		// for cty.ListVal; otherwise fall back to cty.TupleVal.
+		return unifyOrTuple(arr), nil
 
 	case v.IsResourceReference():
 		ref := v.AsResourceReference()
@@ -1161,8 +1245,6 @@ func MakeSecret(pv resource.PropertyValue) resource.PropertyValue {
 func MakeComputed(pv resource.PropertyValue) resource.PropertyValue {
 	return resource.MakeComputed(pv)
 }
-
-func ptr[T any](v T) *T { return &v }
 
 // selectUnionMember picks the union member that v conforms to by recursively
 // matching the value's shape against each candidate type. ObjectType members
