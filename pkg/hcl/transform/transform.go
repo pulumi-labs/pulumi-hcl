@@ -833,7 +833,7 @@ func ctyTypeFromType(typ schema.Type) cty.Type {
 		return cty.Bool
 	case schema.NumberType, schema.IntType:
 		return cty.Number
-	case schema.AnyType:
+	case schema.AnyType, schema.JSONType, schema.AnyResourceType:
 		return cty.DynamicPseudoType
 	case schema.AssetType:
 		return eval.AssetCapsuleType
@@ -874,6 +874,11 @@ func ctyTypeFromType(typ schema.Type) cty.Type {
 		}
 		return cty.ObjectWithOptionalAttrs(attrs, optional)
 	case *schema.InvalidType:
+		return cty.DynamicPseudoType
+	case *schema.TokenType:
+		if typ.UnderlyingType != nil {
+			return ctyTypeFromType(typ.UnderlyingType)
+		}
 		return cty.DynamicPseudoType
 	case *schema.UnionType:
 		// If all element types resolve to the same cty type, use it.

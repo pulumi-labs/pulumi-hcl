@@ -839,22 +839,20 @@ func TestResourceOutputToCtyDoesNotErrorOnValidValues(t *testing.T) {
 // `transform.ResourceOutputToCty` produces a cty value for *any* output
 // rapidresource might draw. Shapes we exclude (and why):
 //
-//   - schema.JSONType, schema.AnyResourceType: transform.ctyTypeFromType has
-//     no case for these sentinel types, so they resolve to cty.NilType which
-//     cty's convert.Convert panics on via WithoutOptionalAttributesDeep.
+//   - schema.AnyType, schema.JSONType, schema.AnyResourceType: values are
+//     drawn with whatever cty type each picks
+//     (String/Bool/Tuple/Object/...); inside a Map<Any> they are
+//     heterogeneous and the outer convert.Convert call rejects the
+//     fallback Object value as "all map elements must have the same type".
 //   - *schema.UnionType: ctyTypeFromType collapses a union to one member's
 //     cty type. When rapidresource later draws a value of a *different*
 //     valid union member, convert.Convert rejects it ("attribute X: T
 //     required", "all list/map elements must have the same type").
-//   - *schema.TokenType: no case in ctyTypeFromType; resolves to NilType.
-//   - schema.AnyType: values are drawn with whatever cty type each picks
-//     (String/Bool/Tuple/Object/...); inside a Map<Any> they are
-//     heterogeneous and the outer convert.Convert call rejects the
-//     fallback Object value as "all map elements must have the same type".
-//   - default / unknown types: NilType by ctyTypeFromType's default branch.
+//   - *schema.TokenType: same dynamic-element problem as AnyType when the
+//     token has no underlying type.
 //
 // All of the above are pre-existing transform limitations on arbitrary
-// schemas, out of scope for the het-list fix this test guards.
+// schemas, out of scope for this test.
 func schemaIsTestable(t schema.Type) bool {
 	t = codegen.UnwrapType(t)
 	if t == nil {
@@ -902,6 +900,11 @@ func schemaIsTestable(t schema.Type) bool {
 		return true
 	case *schema.InvalidType:
 		return true
+	case *schema.TokenType:
+		if tt.UnderlyingType != nil {
+			return schemaIsTestable(tt.UnderlyingType)
+		}
+		return false
 	}
 	return false
 }
@@ -1333,5 +1336,76 @@ func TestResourceOutputToCtyUnionTypeCollapseNested(t *testing.T) {
 				"extras": cty.StringVal("ho"),
 			}),
 		}, r)
+	})
+}
+
+// TestResourceOutputToCtyJSONType exercises the panic from
+// https://github.com/pulumi-labs/pulumi-hcl/issues/135. The kubernetes
+// ConfigMap (and many other k8s resources) exposes a JSON-typed field
+// (`metadata.managedFields[].fieldsV1`). Before the fix, ctyTypeFromType had
+// no case for schema.JSONType / AnyResourceType / *schema.TokenType and
+// returned cty.NilType, which causes cty's convert.Convert to panic with
+// "WithoutOptionalAttributesDeep does not support the given type".
+func TestResourceOutputToCtyJSONType(t *testing.T) {
+	t.Parallel()
+
+	managedFieldsEntry := &schema.ObjectType{
+		Properties: []*schema.Property{
+			{Name: "manager", Type: schema.StringType},
+			{Name: "fieldsV1", Type: schema.JSONType},
+		},
+	}
+	objectMeta := &schema.ObjectType{
+		Properties: []*schema.Property{
+			{Name: "name", Type: schema.StringType},
+			{Name: "managedFields", Type: &schema.ArrayType{ElementType: managedFieldsEntry}},
+		},
+	}
+	res := &schema.Resource{
+		Token: "kubernetes:core/v1:ConfigMap",
+		Properties: []*schema.Property{
+			{Name: "data", Type: &schema.MapType{ElementType: schema.StringType}},
+			{Name: "metadata", Type: objectMeta},
+		},
+	}
+
+	t.Run("preview_unknown_metadata", func(t *testing.T) {
+		t.Parallel()
+
+		outputs := property.NewMap(map[string]property.Value{
+			"data":     property.New(map[string]property.Value{"hello": property.New("world")}),
+			"metadata": property.New(property.Computed),
+		})
+
+		_, err := ResourceOutputToCty(outputs, res, true)
+		require.NoError(t, err)
+	})
+
+	t.Run("realized_fields_v1", func(t *testing.T) {
+		t.Parallel()
+
+		outputs := property.NewMap(map[string]property.Value{
+			"data": property.New(map[string]property.Value{"hello": property.New("world")}),
+			"metadata": property.New(map[string]property.Value{
+				"name": property.New("cm"),
+				"managedFields": property.New([]property.Value{
+					property.New(map[string]property.Value{
+						"manager": property.New("kubectl"),
+						"fieldsV1": property.New(map[string]property.Value{
+							"f:data": property.New(map[string]property.Value{}),
+						}),
+					}),
+				}),
+			}),
+		})
+
+		r, err := ResourceOutputToCty(outputs, res, false)
+		require.NoError(t, err)
+		// fieldsV1 is JSON-typed, so it is exposed as a dynamic value. We only
+		// check that the conversion succeeded and the surrounding shape is
+		// preserved; the dynamic value's exact type is left to cty.
+		require.Contains(t, r, "metadata")
+		meta := r["metadata"]
+		require.True(t, meta.Type().IsObjectType())
 	})
 }
