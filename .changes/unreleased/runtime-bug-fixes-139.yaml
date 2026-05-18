@@ -1,0 +1,6 @@
+kind: bug-fixes
+body: Correctly handle const values from the schema
+time: 2026-05-18T14:36:49.104944+02:00
+custom:
+    Component: runtime
+    PR: "139"
