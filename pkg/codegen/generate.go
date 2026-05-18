@@ -1772,7 +1772,7 @@ func (g *generator) exprTokens(expr model.Expression, typ schema.Type) (hclwrite
 	case *model.ScopeTraversalExpression:
 		return g.scopeTraversalTokens(e)
 	case *model.TupleConsExpression:
-		return g.tupleTokens(e)
+		return g.tupleTokens(e, typ)
 	case *model.ObjectConsExpression:
 		return g.objectTokens(e, typ)
 	case *model.IndexExpression:
@@ -2552,6 +2552,70 @@ func (g *generator) splatTokens(expr *model.SplatExpression) (hclwrite.Tokens, h
 	return tokens, diags
 }
 
+// pickUnionVariantFromObjectExpr resolves a const-discriminated union
+// to the matching object variant by inspecting the discriminator key in
+// the given PCL object expression. Returns nil if the union is not
+// const-discriminated or the value doesn't match any variant.
+func pickUnionVariantFromObjectExpr(u *schema.UnionType, expr *model.ObjectConsExpression) *schema.ObjectType {
+	candidates := u.ElementTypes
+	if u.DefaultType != nil {
+		candidates = append([]schema.Type{u.DefaultType}, candidates...)
+	}
+	type cand struct {
+		obj      *schema.ObjectType
+		disc     *schema.Property
+		constStr string
+	}
+	var withConst []cand
+	for _, t := range candidates {
+		obj, ok := codegen.UnwrapType(t).(*schema.ObjectType)
+		if !ok {
+			continue
+		}
+		var disc *schema.Property
+		for _, p := range obj.Properties {
+			if p.ConstValue != nil {
+				disc = p
+				break
+			}
+		}
+		if disc == nil {
+			continue
+		}
+		s, isString := disc.ConstValue.(string)
+		if !isString {
+			continue
+		}
+		withConst = append(withConst, cand{obj: obj, disc: disc, constStr: s})
+	}
+	if len(withConst) == 0 {
+		return nil
+	}
+	discName := withConst[0].disc.Name
+	for _, c := range withConst[1:] {
+		if c.disc.Name != discName {
+			return nil
+		}
+	}
+	for _, item := range expr.Items {
+		keyName, ok := extractStringLiteral(item.Key)
+		if !ok || keyName != discName {
+			continue
+		}
+		valueStr, ok := extractStringLiteral(item.Value)
+		if !ok {
+			return nil
+		}
+		for _, c := range withConst {
+			if c.constStr == valueStr {
+				return c.obj
+			}
+		}
+		return nil
+	}
+	return nil
+}
+
 // extractStringLiteral extracts a string from a literal expression,
 // unwrapping TemplateExpressions that contain a single literal part.
 func extractStringLiteral(expr model.Expression) (string, bool) {
@@ -2568,7 +2632,11 @@ func extractStringLiteral(expr model.Expression) (string, bool) {
 	return "", false
 }
 
-func (g *generator) tupleTokens(expr *model.TupleConsExpression) (hclwrite.Tokens, hcl.Diagnostics) {
+func (g *generator) tupleTokens(expr *model.TupleConsExpression, typ schema.Type) (hclwrite.Tokens, hcl.Diagnostics) {
+	elemType := schema.Type(schema.AnyType)
+	if arr, ok := codegen.UnwrapType(typ).(*schema.ArrayType); ok {
+		elemType = arr.ElementType
+	}
 	tokens := hclwrite.Tokens{
 		{Type: hclsyntax.TokenOBrack, Bytes: []byte("[")},
 	}
@@ -2577,7 +2645,7 @@ func (g *generator) tupleTokens(expr *model.TupleConsExpression) (hclwrite.Token
 		if i > 0 {
 			tokens = append(tokens, &hclwrite.Token{Type: hclsyntax.TokenComma, Bytes: []byte(",")})
 		}
-		elemTokens, d := g.exprTokens(elem, schema.AnyType)
+		elemTokens, d := g.exprTokens(elem, elemType)
 		diags = append(diags, d...)
 		if d.HasErrors() {
 			return nil, diags
@@ -2607,7 +2675,17 @@ func (g *generator) objectTokens(expr *model.ObjectConsExpression, typ schema.Ty
 	propType := func(key model.Expression) schema.Type {
 		return schema.AnyType
 	}
-	switch typ := codegen.UnwrapType(typ).(type) {
+	// If the schema type is a const-discriminated union, narrow it to the
+	// matching object variant by reading the discriminator value off the
+	// PCL items; this lets us emit identifier keys (snake_case) instead
+	// of falling back to quoted string-map keys.
+	narrowedTyp := codegen.UnwrapType(typ)
+	if u, ok := narrowedTyp.(*schema.UnionType); ok {
+		if obj := pickUnionVariantFromObjectExpr(u, expr); obj != nil {
+			narrowedTyp = obj
+		}
+	}
+	switch typ := narrowedTyp.(type) {
 	case *schema.ObjectType:
 		keyName = func(key model.Expression) (hclwrite.Tokens, hcl.Diagnostics) {
 			name, _ := extractStringLiteral(key)

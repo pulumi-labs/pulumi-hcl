@@ -403,7 +403,7 @@ func ctyToObject(path string, val cty.Value, properties []*schema.Property, alre
 	result := map[string]property.Value{}
 	for it := val.ElementIterator(); it.Next(); {
 		k, v := it.Element()
-		puField, prop := lookupProperty(k.AsString(), properties)
+		puField, prop := camelCaseFromSnakeCase(k.AsString(), properties)
 		if prop == nil {
 			// We have not found the correct field in the property list, so we should put together an error
 			// message.
@@ -619,19 +619,6 @@ func camelCaseFromSnakeCase(s string, props []*schema.Property) (string, *schema
 		}
 	}
 	return cgstrings.ModifyStringAroundDelimeter(s, "_", cgstrings.UppercaseFirst), nil
-}
-
-// lookupProperty finds the schema property matching an HCL-supplied key,
-// which may be either the conventional snake_case form or the schema's
-// camelCase form. The camelCase form shows up when HCL is generated from
-// PCL using quoted map-literal keys (e.g. `{ "discriminantKind" = ... }`).
-func lookupProperty(s string, props []*schema.Property) (string, *schema.Property) {
-	for _, p := range props {
-		if p.Name == s {
-			return p.Name, p
-		}
-	}
-	return camelCaseFromSnakeCase(s, props)
 }
 
 func SnakeCaseFromPulumiCase(s string) string {
@@ -1286,48 +1273,45 @@ func MakeComputed(pv resource.PropertyValue) resource.PropertyValue {
 	return resource.MakeComputed(pv)
 }
 
-// unionDiscriminatorReason categorises why a const-discriminated union
-// could not be resolved to a specific variant.
-type unionDiscriminatorReason int
-
-const (
-	// unionDiscriminatorMissing means the value lacks the discriminator
-	// property entirely.
-	unionDiscriminatorMissing unionDiscriminatorReason = iota
-	// unionDiscriminatorUnrecognized means the discriminator was present
-	// but its value did not match any variant's Const.
-	unionDiscriminatorUnrecognized
-	// unionDiscriminatorNotObject means the value is not an object/map
-	// and so cannot carry a discriminator at all.
-	unionDiscriminatorNotObject
-)
-
-// unionDiscriminatorError describes why a const-discriminated union
-// could not be resolved. Carrying structured fields lets the caller
-// compose the right message for its context (a plain Go error, an HCL
-// diagnostic split into Summary and Detail, etc.) without re-parsing
-// pre-formatted strings.
-type unionDiscriminatorError struct {
-	Reason        unionDiscriminatorReason
+// missingDiscriminatorError reports that a const-discriminated union
+// could not be resolved because the value lacks the discriminator
+// property entirely.
+type missingDiscriminatorError struct {
 	Discriminator string   // snake_case name for HCL display
 	Allowed       []string // quoted const values: `"a"`, `"b"`, ...
-	Actual        string   // quoted actual value (Reason == Unrecognized)
-	GotType       string   // friendly type name (Reason == NotObject)
 }
 
-func (e *unionDiscriminatorError) Error() string {
-	switch e.Reason {
-	case unionDiscriminatorMissing:
-		return fmt.Sprintf("missing discriminator %q (expected one of %s)",
-			e.Discriminator, strings.Join(e.Allowed, ", "))
-	case unionDiscriminatorUnrecognized:
-		return fmt.Sprintf("discriminator %q is %s, expected one of %s",
-			e.Discriminator, e.Actual, strings.Join(e.Allowed, ", "))
-	case unionDiscriminatorNotObject:
-		return fmt.Sprintf("expected an object with discriminator %q (one of %s), got %s",
-			e.Discriminator, strings.Join(e.Allowed, ", "), e.GotType)
-	}
-	return "cannot determine union variant"
+func (e *missingDiscriminatorError) Error() string {
+	return fmt.Sprintf("missing discriminator %q (expected one of %s)",
+		e.Discriminator, strings.Join(e.Allowed, ", "))
+}
+
+// unrecognizedDiscriminatorError reports that a const-discriminated
+// union's discriminator was present but its value did not match any
+// variant's Const.
+type unrecognizedDiscriminatorError struct {
+	Discriminator string
+	Allowed       []string
+	Actual        string // pre-formatted (quoted for strings, GoString otherwise)
+}
+
+func (e *unrecognizedDiscriminatorError) Error() string {
+	return fmt.Sprintf("discriminator %q is %s, expected one of %s",
+		e.Discriminator, e.Actual, strings.Join(e.Allowed, ", "))
+}
+
+// nonObjectDiscriminatorError reports that the value supplied for a
+// const-discriminated union is not an object/map and so cannot carry a
+// discriminator at all.
+type nonObjectDiscriminatorError struct {
+	Discriminator string
+	Allowed       []string
+	GotType       string // friendly type name of the actual value
+}
+
+func (e *nonObjectDiscriminatorError) Error() string {
+	return fmt.Sprintf("expected an object with discriminator %q (one of %s), got %s",
+		e.Discriminator, strings.Join(e.Allowed, ", "), e.GotType)
 }
 
 // selectUnionMemberByConst inspects a union whose object members carry
@@ -1335,11 +1319,11 @@ func (e *unionDiscriminatorError) Error() string {
 // discriminator matches the value's corresponding attribute.
 //
 // Returns (nil, nil) if the union is not const-discriminated (the caller
-// should fall back to shape-based matching). Returns a non-nil
-// *unionDiscriminatorError when the union *is* const-discriminated but
-// the value cannot be matched — either the discriminator attribute is
-// missing or it carries an unrecognised value.
-func selectUnionMemberByConst(val cty.Value, u *schema.UnionType) (schema.Type, *unionDiscriminatorError) {
+// should fall back to shape-based matching). Returns a non-nil error
+// when the union *is* const-discriminated but the value cannot be
+// matched; the concrete type is one of *missingDiscriminatorError,
+// *unrecognizedDiscriminatorError, or *nonObjectDiscriminatorError.
+func selectUnionMemberByConst(val cty.Value, u *schema.UnionType) (schema.Type, error) {
 	candidates := slices.Clone(u.ElementTypes)
 	if u.DefaultType != nil {
 		candidates = append([]schema.Type{u.DefaultType}, candidates...)
@@ -1397,8 +1381,7 @@ func selectUnionMemberByConst(val cty.Value, u *schema.UnionType) (schema.Type, 
 	}
 
 	if !val.Type().IsObjectType() && !val.Type().IsMapType() {
-		return nil, &unionDiscriminatorError{
-			Reason:        unionDiscriminatorNotObject,
+		return nil, &nonObjectDiscriminatorError{
 			Discriminator: hclName,
 			Allowed:       allowed,
 			GotType:       val.Type().FriendlyName(),
@@ -1406,17 +1389,9 @@ func selectUnionMemberByConst(val cty.Value, u *schema.UnionType) (schema.Type, 
 	}
 
 	attrs := val.AsValueMap()
-	// The HCL author may have written the discriminator in either
-	// snake_case (the usual HCL convention) or the schema's camelCase
-	// form (common when the value comes from a generated map literal).
-	// Accept either.
 	discVal, ok := attrs[hclName]
 	if !ok || discVal.IsNull() {
-		discVal, ok = attrs[discName]
-	}
-	if !ok || discVal.IsNull() {
-		return nil, &unionDiscriminatorError{
-			Reason:        unionDiscriminatorMissing,
+		return nil, &missingDiscriminatorError{
 			Discriminator: hclName,
 			Allowed:       allowed,
 		}
@@ -1437,8 +1412,7 @@ func selectUnionMemberByConst(val cty.Value, u *schema.UnionType) (schema.Type, 
 	} else {
 		actual = discVal.GoString()
 	}
-	return nil, &unionDiscriminatorError{
-		Reason:        unionDiscriminatorUnrecognized,
+	return nil, &unrecognizedDiscriminatorError{
 		Discriminator: hclName,
 		Allowed:       allowed,
 		Actual:        actual,

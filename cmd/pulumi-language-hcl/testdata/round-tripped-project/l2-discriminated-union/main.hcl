@@ -9,24 +9,24 @@ pulumi {
 
 resource "discriminated-union_example" "example1" {
   union_of = {
-    "discriminantKind" = "variant1"
-    "field1"           = "v1 union"
+    discriminant_kind = "variant1"
+    field1            = "v1 union"
   }
   array_of_union_of = [{
-    "discriminantKind" = "variant1"
-    "field1"           = "v1 array(union)"
+    discriminant_kind = "variant1"
+    field1            = "v1 array(union)"
   }]
 }
 resource "discriminated-union_example" "example2" {
   union_of = {
-    "discriminantKind" = "variant2"
-    "field2"           = "v2 union"
+    discriminant_kind = "variant2"
+    field2            = "v2 union"
   }
   array_of_union_of = [{
-    "discriminantKind" = "variant2"
-    "field2"           = "v2 array(union)"
+    discriminant_kind = "variant2"
+    field2            = "v2 array(union)"
     }, {
-    "discriminantKind" = "variant1"
-    "field1"           = "v1 array(union)"
+    discriminant_kind = "variant1"
+    field1            = "v1 array(union)"
   }]
 }
