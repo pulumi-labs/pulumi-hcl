@@ -2009,19 +2009,11 @@ func TestEngine_HetListOutputRoundTrip(t *testing.T) {
 func TestEngine_SchemaConstValues(t *testing.T) {
 	t.Parallel()
 
-	// constSchema describes a single resource "test:index:Widget" whose
-	// `parts` list is a union of two variants that differ only in (a) the
-	// value of their const-pinned `kind` discriminator and (b) the *type*
-	// of their `field` property: PartA's `field` is an object with a
-	// `fooBar` property, while PartB's `field` is a map(string).
-	//
-	// The map/object distinction is the key signal the test uses to prove
-	// the engine is type-aware: HCL bodies are written with snake_case
-	// keys, and the engine must convert snake_case → camelCase for object
-	// property names (so `foo_bar` becomes `fooBar` for PartA.field) but
-	// leave map keys untouched (so `foo_bar` stays `foo_bar` for
-	// PartB.field). Choosing the right rule per element requires the
-	// engine to consult the const discriminator first.
+	// PartA and PartB differ only in the *type* of their `field`
+	// property — an object{fooBar} vs map(string) — so renaming
+	// `foo_bar` → `fooBar` is correct for one branch and wrong for the
+	// other. Picking the right rule per element requires the engine to
+	// consult the const-pinned `kind` discriminator first.
 	constSchema := func() schema.PackageSpec {
 		return schema.PackageSpec{
 			Name: "test",
@@ -2106,8 +2098,6 @@ func TestEngine_SchemaConstValues(t *testing.T) {
 		return mock, engine.Run(t.Context())
 	}
 
-	// findWidget returns the registered "test:index:Widget" request from the
-	// mock monitor (skipping the synthetic Stack registration).
 	findWidget := func(t *testing.T, mock *testutil.MockResourceMonitor) run.RegisterResourceRequest {
 		t.Helper()
 		for _, r := range mock.RegisteredResources {
@@ -2119,9 +2109,6 @@ func TestEngine_SchemaConstValues(t *testing.T) {
 		return run.RegisterResourceRequest{}
 	}
 
-	// 1. The const value is applied even though the user did not supply it and
-	//    the schema marks it as required. The engine should fill in `kind`
-	//    from the schema's Const without complaint.
 	t.Run("applied when omitted", func(t *testing.T) {
 		t.Parallel()
 
@@ -2137,13 +2124,6 @@ resource "test_widget" "w" {
 		assert.Equal(t, property.New("hello"), req.Inputs.Get("name"))
 	})
 
-	// 2. A list of union variants is disambiguated by the const-pinned
-	//    discriminator. Both elements have the *same* HCL shape —
-	//    `{ kind = "...", field = { foo_bar = "..." } }` — so only the
-	//    const discriminator can tell the engine that the first element's
-	//    `field` is an object (whose `foo_bar` key must be renamed to the
-	//    schema's `fooBar`) and the second element's `field` is a map
-	//    (whose `foo_bar` key is user data and must be preserved verbatim).
 	t.Run("distinguishes union by const", func(t *testing.T) {
 		t.Parallel()
 
@@ -2164,8 +2144,7 @@ resource "test_widget" "w" {
 		parts := req.Inputs.Get("parts").AsArray().AsSlice()
 		require.Len(t, parts, 2)
 
-		// PartA: `field` is an object, so the schema-defined property
-		// `fooBar` must come through camelCased.
+		// PartA: object property — `foo_bar` is renamed to `fooBar`.
 		assert.Equal(t, property.New(property.NewMap(map[string]property.Value{
 			"kind": property.New("a"),
 			"field": property.New(property.NewMap(map[string]property.Value{
@@ -2173,8 +2152,7 @@ resource "test_widget" "w" {
 			})),
 		})), parts[0])
 
-		// PartB: `field` is a map(string), so the user-chosen key
-		// `foo_bar` must be preserved exactly as written.
+		// PartB: map key — `foo_bar` is preserved verbatim.
 		assert.Equal(t, property.New(property.NewMap(map[string]property.Value{
 			"kind": property.New("b"),
 			"field": property.New(property.NewMap(map[string]property.Value{
@@ -2183,10 +2161,6 @@ resource "test_widget" "w" {
 		})), parts[1])
 	})
 
-	// 3. When the const discriminator is the only thing distinguishing the
-	//    union variants and the user omits it, the engine cannot pick a
-	//    variant and must surface a clear error naming the property and
-	//    the missing discriminator with the set of allowed values.
 	t.Run("missing union discriminator errors clearly", func(t *testing.T) {
 		t.Parallel()
 
@@ -2201,7 +2175,7 @@ resource "test_widget" "w" {
 		require.Error(t, err)
 		assert.EqualError(t, err,
 			`registering test_widget.w: test.hcl:5,5-42: `+
-				`cannot determine union variant for "parts" element 0; `+
+				`cannot determine union variant for "parts[0]"; `+
 				`missing discriminator "kind" (expected one of "a", "b")`)
 	})
 }

@@ -2552,10 +2552,9 @@ func (g *generator) splatTokens(expr *model.SplatExpression) (hclwrite.Tokens, h
 	return tokens, diags
 }
 
-// pickUnionVariantFromObjectExpr resolves a const-discriminated union
-// to the matching object variant by inspecting the discriminator key in
-// the given PCL object expression. Returns nil if the union is not
-// const-discriminated or the value doesn't match any variant.
+// pickUnionVariantFromObjectExpr resolves a const-discriminated union to
+// its matching object variant by reading the discriminator off expr.
+// Returns nil when no match can be made.
 func pickUnionVariantFromObjectExpr(u *schema.UnionType, expr *model.ObjectConsExpression) *schema.ObjectType {
 	candidates := u.ElementTypes
 	if u.DefaultType != nil {
@@ -2675,10 +2674,8 @@ func (g *generator) objectTokens(expr *model.ObjectConsExpression, typ schema.Ty
 	propType := func(key model.Expression) schema.Type {
 		return schema.AnyType
 	}
-	// If the schema type is a const-discriminated union, narrow it to the
-	// matching object variant by reading the discriminator value off the
-	// PCL items; this lets us emit identifier keys (snake_case) instead
-	// of falling back to quoted string-map keys.
+	// Narrow a const-discriminated union to its variant so object keys
+	// are emitted as snake_case identifiers, not quoted map keys.
 	narrowedTyp := codegen.UnwrapType(typ)
 	if u, ok := narrowedTyp.(*schema.UnionType); ok {
 		if obj := pickUnionVariantFromObjectExpr(u, expr); obj != nil {

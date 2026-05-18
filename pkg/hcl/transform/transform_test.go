@@ -385,7 +385,7 @@ func TestCtyToResourceInputs(t *testing.T) {
 			result, err := ctyToResourceInputs(tt.input, &schema.Resource{
 				Token:           "pkg:mod:Name",
 				InputProperties: tt.properties,
-			})
+			}, nil)
 			require.NoError(t, err)
 			assert.Equal(t, tt.expected, result)
 		})
