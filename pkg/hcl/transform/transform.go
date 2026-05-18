@@ -117,6 +117,16 @@ func evalBlockWithSchema(config hcl.Body, props []*schema.Property, eval EvalFun
 		if attrDiag.HasErrors() {
 			return cty.Value{}, diags
 		}
+
+		// Validate union discriminators while we still have the HCL
+		// expression in hand; this lets us point error diagnostics at the
+		// specific sub-expression that lacks a discriminator.
+		valDiags := validateUnionDiscriminators(fmt.Sprintf("%q", name), out, prop.Type, attr.Expr)
+		diags = diags.Extend(valDiags)
+		if valDiags.HasErrors() {
+			return cty.Value{}, diags
+		}
+
 		resourceInputs[name] = conformCtyToType(out, ctyTypeFromType(prop.Type))
 	}
 
@@ -361,8 +371,10 @@ func inputBodyFromProperties(r []*schema.Property) *hcl.BodySchema {
 			continue
 		}
 		body.Attributes = append(body.Attributes, hcl.AttributeSchema{
-			Name:     typeName,
-			Required: p.IsRequired(),
+			Name: typeName,
+			// A property with a schema-pinned const value is auto-filled
+			// by ctyToObject and is therefore not required in the HCL body.
+			Required: p.IsRequired() && p.ConstValue == nil,
 		})
 	}
 	if hasBlockTypes {
@@ -391,7 +403,7 @@ func ctyToObject(path string, val cty.Value, properties []*schema.Property, alre
 	result := map[string]property.Value{}
 	for it := val.ElementIterator(); it.Next(); {
 		k, v := it.Element()
-		puField, prop := camelCaseFromSnakeCase(k.AsString(), properties)
+		puField, prop := lookupProperty(k.AsString(), properties)
 		if prop == nil {
 			// We have not found the correct field in the property list, so we should put together an error
 			// message.
@@ -416,6 +428,14 @@ func ctyToObject(path string, val cty.Value, properties []*schema.Property, alre
 	for _, prop := range properties {
 		_, ok := seen[prop.Name]
 		if ok {
+			continue
+		}
+		if c := prop.ConstValue; c != nil {
+			v, err := property.Any(c)
+			if err != nil {
+				return property.Map{}, fmt.Errorf("%q: const value %#v: %w", prop.Name, c, err)
+			}
+			result[prop.Name] = v.WithSecret(prop.Secret)
 			continue
 		}
 		if d := prop.DefaultValue; d != nil {
@@ -579,12 +599,19 @@ func ctyToResourceProperty(path string, val cty.Value, prop schema.Type, already
 		}
 		return property.New(m), nil
 	case *schema.UnionType:
+		if chosen, err := selectUnionMemberByConst(val, prop); err != nil {
+			return property.Value{}, fmt.Errorf(
+				"cannot determine union variant for %q: %w", path, err)
+		} else if chosen != nil {
+			return ctyToResourceProperty(path, val, chosen, alreadyInSecret)
+		}
 		return ctyToPropertyValue(val)
 	default:
 		return property.Value{}, fmt.Errorf("%q: unknown schema type %s when converting %#v", path, prop, val.Type())
 	}
 }
 
+// camelCaseFromSnakeCase converts s from snake_case to camelCase.
 func camelCaseFromSnakeCase(s string, props []*schema.Property) (string, *schema.Property) {
 	for _, p := range props {
 		if snakeCaseFromCamelCase(p.Name) == s {
@@ -592,6 +619,19 @@ func camelCaseFromSnakeCase(s string, props []*schema.Property) (string, *schema
 		}
 	}
 	return cgstrings.ModifyStringAroundDelimeter(s, "_", cgstrings.UppercaseFirst), nil
+}
+
+// lookupProperty finds the schema property matching an HCL-supplied key,
+// which may be either the conventional snake_case form or the schema's
+// camelCase form. The camelCase form shows up when HCL is generated from
+// PCL using quoted map-literal keys (e.g. `{ "discriminantKind" = ... }`).
+func lookupProperty(s string, props []*schema.Property) (string, *schema.Property) {
+	for _, p := range props {
+		if p.Name == s {
+			return p.Name, p
+		}
+	}
+	return camelCaseFromSnakeCase(s, props)
 }
 
 func SnakeCaseFromPulumiCase(s string) string {
@@ -1244,6 +1284,275 @@ func MakeSecret(pv resource.PropertyValue) resource.PropertyValue {
 // MakeComputed wraps a PropertyValue as computed/unknown.
 func MakeComputed(pv resource.PropertyValue) resource.PropertyValue {
 	return resource.MakeComputed(pv)
+}
+
+// unionDiscriminatorReason categorises why a const-discriminated union
+// could not be resolved to a specific variant.
+type unionDiscriminatorReason int
+
+const (
+	// unionDiscriminatorMissing means the value lacks the discriminator
+	// property entirely.
+	unionDiscriminatorMissing unionDiscriminatorReason = iota
+	// unionDiscriminatorUnrecognized means the discriminator was present
+	// but its value did not match any variant's Const.
+	unionDiscriminatorUnrecognized
+	// unionDiscriminatorNotObject means the value is not an object/map
+	// and so cannot carry a discriminator at all.
+	unionDiscriminatorNotObject
+)
+
+// unionDiscriminatorError describes why a const-discriminated union
+// could not be resolved. Carrying structured fields lets the caller
+// compose the right message for its context (a plain Go error, an HCL
+// diagnostic split into Summary and Detail, etc.) without re-parsing
+// pre-formatted strings.
+type unionDiscriminatorError struct {
+	Reason        unionDiscriminatorReason
+	Discriminator string   // snake_case name for HCL display
+	Allowed       []string // quoted const values: `"a"`, `"b"`, ...
+	Actual        string   // quoted actual value (Reason == Unrecognized)
+	GotType       string   // friendly type name (Reason == NotObject)
+}
+
+func (e *unionDiscriminatorError) Error() string {
+	switch e.Reason {
+	case unionDiscriminatorMissing:
+		return fmt.Sprintf("missing discriminator %q (expected one of %s)",
+			e.Discriminator, strings.Join(e.Allowed, ", "))
+	case unionDiscriminatorUnrecognized:
+		return fmt.Sprintf("discriminator %q is %s, expected one of %s",
+			e.Discriminator, e.Actual, strings.Join(e.Allowed, ", "))
+	case unionDiscriminatorNotObject:
+		return fmt.Sprintf("expected an object with discriminator %q (one of %s), got %s",
+			e.Discriminator, strings.Join(e.Allowed, ", "), e.GotType)
+	}
+	return "cannot determine union variant"
+}
+
+// selectUnionMemberByConst inspects a union whose object members carry
+// const-pinned discriminator properties and picks the member whose
+// discriminator matches the value's corresponding attribute.
+//
+// Returns (nil, nil) if the union is not const-discriminated (the caller
+// should fall back to shape-based matching). Returns a non-nil
+// *unionDiscriminatorError when the union *is* const-discriminated but
+// the value cannot be matched — either the discriminator attribute is
+// missing or it carries an unrecognised value.
+func selectUnionMemberByConst(val cty.Value, u *schema.UnionType) (schema.Type, *unionDiscriminatorError) {
+	candidates := slices.Clone(u.ElementTypes)
+	if u.DefaultType != nil {
+		candidates = append([]schema.Type{u.DefaultType}, candidates...)
+	}
+
+	type cand struct {
+		typ       schema.Type
+		disc      *schema.Property
+		constStr  string
+		hasString bool
+	}
+	var withConst []cand
+	for _, t := range candidates {
+		obj, ok := codegen.UnwrapType(t).(*schema.ObjectType)
+		if !ok {
+			continue
+		}
+		var disc *schema.Property
+		for _, p := range obj.Properties {
+			if p.ConstValue != nil {
+				disc = p
+				break
+			}
+		}
+		if disc == nil {
+			continue
+		}
+		s, isString := disc.ConstValue.(string)
+		withConst = append(withConst, cand{
+			typ:       t,
+			disc:      disc,
+			constStr:  s,
+			hasString: isString,
+		})
+	}
+
+	if len(withConst) == 0 {
+		return nil, nil
+	}
+	discName := withConst[0].disc.Name
+	for _, c := range withConst[1:] {
+		if c.disc.Name != discName {
+			return nil, nil
+		}
+	}
+
+	hclName := snakeCaseFromCamelCase(discName)
+	allowed := make([]string, 0, len(withConst))
+	for _, c := range withConst {
+		if c.hasString {
+			allowed = append(allowed, fmt.Sprintf("%q", c.constStr))
+		} else {
+			allowed = append(allowed, fmt.Sprintf("%v", c.disc.ConstValue))
+		}
+	}
+
+	if !val.Type().IsObjectType() && !val.Type().IsMapType() {
+		return nil, &unionDiscriminatorError{
+			Reason:        unionDiscriminatorNotObject,
+			Discriminator: hclName,
+			Allowed:       allowed,
+			GotType:       val.Type().FriendlyName(),
+		}
+	}
+
+	attrs := val.AsValueMap()
+	// The HCL author may have written the discriminator in either
+	// snake_case (the usual HCL convention) or the schema's camelCase
+	// form (common when the value comes from a generated map literal).
+	// Accept either.
+	discVal, ok := attrs[hclName]
+	if !ok || discVal.IsNull() {
+		discVal, ok = attrs[discName]
+	}
+	if !ok || discVal.IsNull() {
+		return nil, &unionDiscriminatorError{
+			Reason:        unionDiscriminatorMissing,
+			Discriminator: hclName,
+			Allowed:       allowed,
+		}
+	}
+
+	for _, c := range withConst {
+		if !c.hasString {
+			continue
+		}
+		if discVal.Type() == cty.String && discVal.AsString() == c.constStr {
+			return c.typ, nil
+		}
+	}
+
+	var actual string
+	if discVal.Type() == cty.String {
+		actual = fmt.Sprintf("%q", discVal.AsString())
+	} else {
+		actual = discVal.GoString()
+	}
+	return nil, &unionDiscriminatorError{
+		Reason:        unionDiscriminatorUnrecognized,
+		Discriminator: hclName,
+		Allowed:       allowed,
+		Actual:        actual,
+	}
+}
+
+// validateUnionDiscriminators walks val/typ/expr in parallel and emits HCL
+// diagnostics — with source ranges drawn from expr — for any union whose
+// const-pinned discriminator cannot be resolved on the value. It only
+// reports errors; choosing a variant for actual conversion happens later
+// in ctyToResourceProperty.
+func validateUnionDiscriminators(label string, val cty.Value, typ schema.Type, expr hcl.Expression) hcl.Diagnostics {
+	typ = codegen.UnwrapType(typ)
+	if val.IsMarked() {
+		val, _ = val.Unmark()
+	}
+	if val.IsNull() || !val.IsKnown() {
+		return nil
+	}
+
+	var diags hcl.Diagnostics
+
+	switch t := typ.(type) {
+	case *schema.UnionType:
+		if _, err := selectUnionMemberByConst(val, t); err != nil {
+			diags = append(diags, &hcl.Diagnostic{
+				Severity: hcl.DiagError,
+				Summary:  fmt.Sprintf("cannot determine union variant for %s", label),
+				Detail:   err.Error(),
+				Subject:  exprRangePtr(expr),
+			})
+		}
+
+	case *schema.ArrayType:
+		if !val.Type().IsListType() && !val.Type().IsTupleType() {
+			return nil
+		}
+		elemExprs, _ := hcl.ExprList(expr)
+		i := 0
+		for it := val.ElementIterator(); it.Next(); {
+			_, ev := it.Element()
+			sub := expr
+			if i < len(elemExprs) {
+				sub = elemExprs[i]
+			}
+			subLabel := fmt.Sprintf("%s element %d", label, i)
+			diags = append(diags, validateUnionDiscriminators(subLabel, ev, t.ElementType, sub)...)
+			i++
+		}
+
+	case *schema.ObjectType:
+		if !val.Type().IsObjectType() {
+			return nil
+		}
+		attrs := val.AsValueMap()
+		attrExprs := attrExprsByKey(expr)
+		for _, p := range t.Properties {
+			hclName := snakeCaseFromCamelCase(p.Name)
+			v, ok := attrs[hclName]
+			if !ok {
+				continue
+			}
+			sub, found := attrExprs[hclName]
+			if !found {
+				sub = expr
+			}
+			diags = append(diags,
+				validateUnionDiscriminators(fmt.Sprintf("%s.%s", label, hclName), v, p.Type, sub)...)
+		}
+
+	case *schema.MapType:
+		if !val.Type().IsMapType() && !val.Type().IsObjectType() {
+			return nil
+		}
+		attrExprs := attrExprsByKey(expr)
+		for it := val.ElementIterator(); it.Next(); {
+			k, ev := it.Element()
+			key := k.AsString()
+			sub, found := attrExprs[key]
+			if !found {
+				sub = expr
+			}
+			diags = append(diags,
+				validateUnionDiscriminators(fmt.Sprintf("%s[%q]", label, key), ev, t.ElementType, sub)...)
+		}
+	}
+	return diags
+}
+
+// attrExprsByKey returns a lookup from attribute key (as written in HCL)
+// to the value expression, when expr is an object/map construction. Keys
+// that cannot be statically evaluated are skipped.
+func attrExprsByKey(expr hcl.Expression) map[string]hcl.Expression {
+	pairs, diags := hcl.ExprMap(expr)
+	if diags.HasErrors() {
+		return nil
+	}
+	out := make(map[string]hcl.Expression, len(pairs))
+	for _, kv := range pairs {
+		k, kd := kv.Key.Value(nil)
+		if kd.HasErrors() || k.Type() != cty.String {
+			continue
+		}
+		out[k.AsString()] = kv.Value
+	}
+	return out
+}
+
+func exprRangePtr(e hcl.Expression) *hcl.Range {
+	if e == nil {
+		return nil
+	}
+	r := e.Range()
+	return &r
 }
 
 // selectUnionMember picks the union member that v conforms to by recursively

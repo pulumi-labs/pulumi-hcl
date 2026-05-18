@@ -2003,3 +2003,205 @@ func TestEngine_HetListOutputRoundTrip(t *testing.T) {
 		require.NoError(t, err)
 	})
 }
+
+// TestEngine_SchemaConstValues verifies that the engine applies "const" values
+// declared in the Pulumi schema.
+func TestEngine_SchemaConstValues(t *testing.T) {
+	t.Parallel()
+
+	// constSchema describes a single resource "test:index:Widget" whose
+	// `parts` list is a union of two variants that differ only in (a) the
+	// value of their const-pinned `kind` discriminator and (b) the *type*
+	// of their `field` property: PartA's `field` is an object with a
+	// `fooBar` property, while PartB's `field` is a map(string).
+	//
+	// The map/object distinction is the key signal the test uses to prove
+	// the engine is type-aware: HCL bodies are written with snake_case
+	// keys, and the engine must convert snake_case → camelCase for object
+	// property names (so `foo_bar` becomes `fooBar` for PartA.field) but
+	// leave map keys untouched (so `foo_bar` stays `foo_bar` for
+	// PartB.field). Choosing the right rule per element requires the
+	// engine to consult the const discriminator first.
+	constSchema := func() schema.PackageSpec {
+		return schema.PackageSpec{
+			Name: "test",
+			Types: map[string]schema.ComplexTypeSpec{
+				"test:index:PartAField": {
+					ObjectTypeSpec: schema.ObjectTypeSpec{
+						Type: "object",
+						Properties: map[string]schema.PropertySpec{
+							"fooBar": {TypeSpec: schema.TypeSpec{Type: "string"}},
+						},
+					},
+				},
+				"test:index:PartA": {
+					ObjectTypeSpec: schema.ObjectTypeSpec{
+						Type: "object",
+						Properties: map[string]schema.PropertySpec{
+							"kind":  {TypeSpec: schema.TypeSpec{Type: "string"}, Const: "a"},
+							"field": {TypeSpec: schema.TypeSpec{Ref: "#/types/test:index:PartAField"}},
+						},
+						Required: []string{"kind"},
+					},
+				},
+				"test:index:PartB": {
+					ObjectTypeSpec: schema.ObjectTypeSpec{
+						Type: "object",
+						Properties: map[string]schema.PropertySpec{
+							"kind": {TypeSpec: schema.TypeSpec{Type: "string"}, Const: "b"},
+							"field": {TypeSpec: schema.TypeSpec{
+								Type:                 "object",
+								AdditionalProperties: &schema.TypeSpec{Type: "string"},
+							}},
+						},
+						Required: []string{"kind"},
+					},
+				},
+			},
+			Resources: map[string]schema.ResourceSpec{
+				"test:index:Widget": {
+					InputProperties: map[string]schema.PropertySpec{
+						"kind": {TypeSpec: schema.TypeSpec{Type: "string"}, Const: "widget"},
+						"name": {TypeSpec: schema.TypeSpec{Type: "string"}},
+						"parts": {
+							TypeSpec: schema.TypeSpec{
+								Type: "array",
+								Items: &schema.TypeSpec{
+									OneOf: []schema.TypeSpec{
+										{Ref: "#/types/test:index:PartA"},
+										{Ref: "#/types/test:index:PartB"},
+									},
+								},
+							},
+						},
+					},
+					RequiredInputs: []string{"kind", "name"},
+					ObjectTypeSpec: schema.ObjectTypeSpec{
+						Properties: map[string]schema.PropertySpec{
+							"kind": {TypeSpec: schema.TypeSpec{Type: "string"}, Const: "widget"},
+							"name": {TypeSpec: schema.TypeSpec{Type: "string"}},
+						},
+						Required: []string{"kind", "name"},
+					},
+				},
+			},
+		}
+	}
+
+	runEngine := func(t *testing.T, src string) (*testutil.MockResourceMonitor, error) {
+		t.Helper()
+		p := parser.NewParser()
+		config, diags := p.ParseSource("test.hcl", []byte(src))
+		require.False(t, diags.HasErrors(), "parse error: %s", diags.Error())
+
+		mock := &testutil.MockResourceMonitor{}
+		engine := run.NewEngine(config, &run.EngineOptions{
+			ProjectName:     "test-project",
+			StackName:       "dev",
+			ResourceMonitor: mock,
+			WorkDir:         t.TempDir(),
+			RootDir:         t.TempDir(),
+			SchemaLoader:    schemaloader.New(t, constSchema()),
+		})
+		return mock, engine.Run(t.Context())
+	}
+
+	// findWidget returns the registered "test:index:Widget" request from the
+	// mock monitor (skipping the synthetic Stack registration).
+	findWidget := func(t *testing.T, mock *testutil.MockResourceMonitor) run.RegisterResourceRequest {
+		t.Helper()
+		for _, r := range mock.RegisteredResources {
+			if r.Type == "test:index:Widget" {
+				return r
+			}
+		}
+		t.Fatal("expected a test:index:Widget registration")
+		return run.RegisterResourceRequest{}
+	}
+
+	// 1. The const value is applied even though the user did not supply it and
+	//    the schema marks it as required. The engine should fill in `kind`
+	//    from the schema's Const without complaint.
+	t.Run("applied when omitted", func(t *testing.T) {
+		t.Parallel()
+
+		mock, err := runEngine(t, `
+resource "test_widget" "w" {
+  name = "hello"
+}
+`)
+		require.NoError(t, err)
+
+		req := findWidget(t, mock)
+		assert.Equal(t, property.New("widget"), req.Inputs.Get("kind"))
+		assert.Equal(t, property.New("hello"), req.Inputs.Get("name"))
+	})
+
+	// 2. A list of union variants is disambiguated by the const-pinned
+	//    discriminator. Both elements have the *same* HCL shape —
+	//    `{ kind = "...", field = { foo_bar = "..." } }` — so only the
+	//    const discriminator can tell the engine that the first element's
+	//    `field` is an object (whose `foo_bar` key must be renamed to the
+	//    schema's `fooBar`) and the second element's `field` is a map
+	//    (whose `foo_bar` key is user data and must be preserved verbatim).
+	t.Run("distinguishes union by const", func(t *testing.T) {
+		t.Parallel()
+
+		mock, err := runEngine(t, `
+resource "test_widget" "w" {
+  name = "hello"
+  parts = [
+    { kind = "a", field = { foo_bar = "object-value" } },
+    { kind = "b", field = { foo_bar = "map-value" } },
+  ]
+}
+`)
+		require.NoError(t, err)
+
+		req := findWidget(t, mock)
+		assert.Equal(t, property.New("widget"), req.Inputs.Get("kind"))
+
+		parts := req.Inputs.Get("parts").AsArray().AsSlice()
+		require.Len(t, parts, 2)
+
+		// PartA: `field` is an object, so the schema-defined property
+		// `fooBar` must come through camelCased.
+		assert.Equal(t, property.New(property.NewMap(map[string]property.Value{
+			"kind": property.New("a"),
+			"field": property.New(property.NewMap(map[string]property.Value{
+				"fooBar": property.New("object-value"),
+			})),
+		})), parts[0])
+
+		// PartB: `field` is a map(string), so the user-chosen key
+		// `foo_bar` must be preserved exactly as written.
+		assert.Equal(t, property.New(property.NewMap(map[string]property.Value{
+			"kind": property.New("b"),
+			"field": property.New(property.NewMap(map[string]property.Value{
+				"foo_bar": property.New("map-value"),
+			})),
+		})), parts[1])
+	})
+
+	// 3. When the const discriminator is the only thing distinguishing the
+	//    union variants and the user omits it, the engine cannot pick a
+	//    variant and must surface a clear error naming the property and
+	//    the missing discriminator with the set of allowed values.
+	t.Run("missing union discriminator errors clearly", func(t *testing.T) {
+		t.Parallel()
+
+		_, err := runEngine(t, `
+resource "test_widget" "w" {
+  name = "hello"
+  parts = [
+    { field = { foo_bar = "ambiguous" } },
+  ]
+}
+`)
+		require.Error(t, err)
+		assert.EqualError(t, err,
+			`registering test_widget.w: test.hcl:5,5-42: `+
+				`cannot determine union variant for "parts" element 0; `+
+				`missing discriminator "kind" (expected one of "a", "b")`)
+	})
+}
