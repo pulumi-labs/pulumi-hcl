@@ -958,7 +958,7 @@ func (e *Engine) registerResourceInstanceInContext(
 		}
 	}
 
-	resourceName := e.extractModuleResourceName(instance.Key, node.ModuleInfo, modInst)
+	resourceName := e.extractModuleResourceName(res.Name, instance.Key, node.ModuleInfo, modInst)
 
 	urn, id, outputs, err := e.registerResource(ctx, resSchema.Token, resourceName, resourceInputs, opts)
 	if err != nil {
@@ -1400,8 +1400,6 @@ func (e *Engine) evaluateAliases(expr hcl.Expression) ([]Alias, error) {
 	return aliases, nil
 }
 
-// extractResourceName extracts the resource name from an instance key.
-// For example: "pulumi_stash.myStash" -> "myStash", "aws_instance.web[0]" -> "web[0]".
 // packageNameFromResourceType extracts the provider package name from an HCL resource type.
 // For example, "config_resource" returns "config" and "pulumi_providers_config" returns "config".
 func packageNameFromResourceType(token string) string {
@@ -1486,24 +1484,19 @@ func ExtractSemverFromConstraint(constraint string) string {
 	}
 }
 
-// extractResourceName converts an instance key into a Pulumi resource name.
+// buildResourceName builds the Pulumi resource name from the logical name and instance key.
 // Single instances use the logical name as-is. Count instances get a "-N" suffix.
 // ForEach instances get a "-key" suffix.
-func extractResourceName(key string) string {
-	baseKey, index, eachKey := graph.ParseInstanceKey(key)
-
-	// Strip the "type." prefix from the base key to get the logical name.
-	if _, after, ok := strings.Cut(baseKey, "."); ok {
-		baseKey = after
-	}
+func buildResourceName(logicalName, instanceKey string) string {
+	_, index, eachKey := graph.ParseInstanceKey(instanceKey)
 
 	if index != nil {
-		return fmt.Sprintf("%s-%d", baseKey, *index)
+		return fmt.Sprintf("%s-%d", logicalName, *index)
 	}
 	if eachKey != nil {
-		return fmt.Sprintf("%s-%s", baseKey, *eachKey)
+		return fmt.Sprintf("%s-%s", logicalName, *eachKey)
 	}
-	return baseKey
+	return logicalName
 }
 
 // extractModuleResourceName computes the Pulumi resource name for a resource inside a module.
@@ -1511,15 +1504,15 @@ func extractResourceName(key string) string {
 // For example, resource "res" inside component "comp" becomes "comp-res",
 // and inside "comp[0]" becomes "comp[0]-res".
 func (*Engine) extractModuleResourceName(
-	instanceKey string, modInfo *graph.ModuleInfo, modInst *moduleInstance,
+	logicalName, instanceKey string, modInfo *graph.ModuleInfo, modInst *moduleInstance,
 ) string {
 	if modInfo == nil || modInst == nil {
-		return extractResourceName(instanceKey)
+		return buildResourceName(logicalName, instanceKey)
 	}
 
-	// Strip the module prefix to get the bare resource key (e.g., "simple_resource.name").
+	// Strip the module prefix to get the bare instance key (e.g., "simple_resource.name").
 	bareKey := strings.TrimPrefix(instanceKey, modInfo.Prefix())
-	bareResourceName := extractResourceName(bareKey)
+	bareResourceName := buildResourceName(logicalName, bareKey)
 
 	// Extract the module instance name (e.g., "many" or "many[0]").
 	modInstanceName := modInst.Path.LogicalName()

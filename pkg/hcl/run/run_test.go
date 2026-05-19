@@ -1444,6 +1444,73 @@ module "vpc.primary" {
 	assert.Equal(t, "vpc.primary-main", vpcResource.Name)
 }
 
+// TestEngine_ResourceTypeWithDot verifies that a resource whose HCL type label
+// contains dots (e.g. "kubernetes_networking.k8s.io_v1_ingress", resolving to
+// "kubernetes:networking.k8s.io/v1:Ingress") still produces a Pulumi resource
+// name equal to the second block label, rather than leaking part of the type.
+// Regression test for #140.
+func TestEngine_ResourceTypeWithDot(t *testing.T) {
+	t.Parallel()
+
+	src := []byte(`
+resource "kubernetes_networking.k8s.io_v1_ingress" "ingress" {
+  metadata = {
+    name = "minimal-ingress"
+  }
+}
+`)
+
+	p := parser.NewParser()
+	config, diags := p.ParseSource("test.hcl", src)
+	require.False(t, diags.HasErrors(), "parse error: %s", diags.Error())
+
+	mock := &testutil.MockResourceMonitor{}
+	engine := run.NewEngine(config, &run.EngineOptions{
+		ProjectName:     "test-project",
+		StackName:       "dev",
+		ResourceMonitor: mock,
+		WorkDir:         t.TempDir(),
+		RootDir:         t.TempDir(),
+		SchemaLoader: schemaloader.New(t, schema.PackageSpec{
+			Name: "kubernetes",
+			Resources: map[string]schema.ResourceSpec{
+				"kubernetes:networking.k8s.io/v1:Ingress": {
+					InputProperties: map[string]schema.PropertySpec{
+						"metadata": {TypeSpec: schema.TypeSpec{Ref: "#/types/kubernetes:meta/v1:ObjectMeta"}},
+					},
+					ObjectTypeSpec: schema.ObjectTypeSpec{
+						Properties: map[string]schema.PropertySpec{
+							"metadata": {TypeSpec: schema.TypeSpec{Ref: "#/types/kubernetes:meta/v1:ObjectMeta"}},
+						},
+					},
+				},
+			},
+			Types: map[string]schema.ComplexTypeSpec{
+				"kubernetes:meta/v1:ObjectMeta": {
+					ObjectTypeSpec: schema.ObjectTypeSpec{
+						Type: "object",
+						Properties: map[string]schema.PropertySpec{
+							"name": {TypeSpec: schema.TypeSpec{Type: "string"}},
+						},
+					},
+				},
+			},
+		}),
+	})
+
+	require.NoError(t, engine.Run(t.Context()))
+
+	var ingress *run.RegisterResourceRequest
+	for i := range mock.RegisteredResources {
+		if mock.RegisteredResources[i].Type == "kubernetes:networking.k8s.io/v1:Ingress" {
+			ingress = &mock.RegisteredResources[i]
+			break
+		}
+	}
+	require.NotNil(t, ingress, "expected kubernetes:networking.k8s.io/v1:Ingress resource to be registered")
+	assert.Equal(t, "ingress", ingress.Name)
+}
+
 // runSensitiveMetaArgTest is a shared driver for the four "sensitive value
 // rejected by count/for_each" tests. It writes the given root.hcl into a
 // temp dir, runs the engine, and returns the resulting error.
