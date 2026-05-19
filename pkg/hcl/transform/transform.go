@@ -16,8 +16,10 @@
 package transform
 
 import (
+	"errors"
 	"fmt"
 	"maps"
+	"math/big"
 	"os"
 	"slices"
 	"strconv"
@@ -50,44 +52,72 @@ func EvalFunctionWithSchema(config hcl.Body, r *schema.Function, eval EvalFunc) 
 	if r.Inputs != nil {
 		props = r.Inputs.Properties
 	}
-	functionInputs, diags := evalBlockWithSchema(config, props, eval)
+	functionInputs, attrExprs, diags := evalBlockWithSchema(config, props, eval)
 	if diags.HasErrors() {
 		return property.Map{}, diags
 	}
 
-	m, err := ctyToFunctionInputs(functionInputs, r)
+	m, err := ctyToFunctionInputs(functionInputs, r, attrExprs)
 	if err != nil {
-		return property.Map{}, append(diags, &hcl.Diagnostic{
-			Severity: hcl.DiagError,
-			Summary:  "failed to convert HCL function inputs to Pulumi inputs",
-			Detail:   err.Error(),
-		})
+		return property.Map{}, append(diags,
+			conversionDiagnostic(err, "failed to convert HCL function inputs to Pulumi inputs"))
 	}
 	return m, diags
 }
 
 func EvalResourceWithSchema(config hcl.Body, r *schema.Resource, eval EvalFunc) (property.Map, hcl.Diagnostics) {
-	resourceInputs, diags := evalBlockWithSchema(config, r.InputProperties, eval)
+	resourceInputs, attrExprs, diags := evalBlockWithSchema(config, r.InputProperties, eval)
 	if diags.HasErrors() {
 		return property.Map{}, diags
 	}
 
-	m, err := ctyToResourceInputs(resourceInputs, r)
+	m, err := ctyToResourceInputs(resourceInputs, r, attrExprs)
 	if err != nil {
-		return property.Map{}, append(diags, &hcl.Diagnostic{
-			Severity: hcl.DiagError,
-			Summary:  "failed to convert HCL resource inputs to Pulumi inputs",
-			Detail:   err.Error(),
-		})
+		return property.Map{}, append(diags,
+			conversionDiagnostic(err, "failed to convert HCL resource inputs to Pulumi inputs"))
 	}
 	return m, diags
+}
+
+func conversionDiagnostic(err error, fallbackSummary string) *hcl.Diagnostic {
+	var re *rangedDiagError
+	if errors.As(err, &re) {
+		rng := re.rng
+		return &hcl.Diagnostic{
+			Severity: hcl.DiagError,
+			Summary:  re.summary,
+			Detail:   re.detail,
+			Subject:  &rng,
+		}
+	}
+	return &hcl.Diagnostic{
+		Severity: hcl.DiagError,
+		Summary:  fallbackSummary,
+		Detail:   err.Error(),
+	}
+}
+
+// rangedDiagError carries the HCL source range to blame, so a deep
+// conversion failure can anchor its top-level diagnostic at the
+// originating sub-expression.
+type rangedDiagError struct {
+	summary string
+	detail  string
+	rng     hcl.Range
+}
+
+func (e *rangedDiagError) Error() string {
+	if e.detail == "" {
+		return e.summary
+	}
+	return e.summary + "; " + e.detail
 }
 
 func evalBlocksWithSchema(config hcl.Blocks, props []*schema.Property, eval EvalFunc) ([]cty.Value, hcl.Diagnostics) {
 	out := make([]cty.Value, len(config))
 	var diags hcl.Diagnostics
 	for i, v := range config {
-		evaluated, diag := evalBlockWithSchema(v.Body, props, eval)
+		evaluated, _, diag := evalBlockWithSchema(v.Body, props, eval)
 		diags = diags.Extend(diag)
 		if diag.HasErrors() {
 			return nil, diags
@@ -97,16 +127,19 @@ func evalBlocksWithSchema(config hcl.Blocks, props []*schema.Property, eval Eval
 	return out, diags
 }
 
-func evalBlockWithSchema(config hcl.Body, props []*schema.Property, eval EvalFunc) (cty.Value, hcl.Diagnostics) {
+// evalBlockWithSchema also returns each top-level attribute's source
+// expression so the conversion path can anchor error diagnostics.
+func evalBlockWithSchema(config hcl.Body, props []*schema.Property, eval EvalFunc) (cty.Value, map[string]hcl.Expression, hcl.Diagnostics) {
 	body, diags := config.Content(inputBodyFromProperties(props))
 	if diags.HasErrors() {
-		return cty.Value{}, diags
+		return cty.Value{}, nil, diags
 	}
 
 	if len(props) == 0 {
-		return cty.EmptyObjectVal, diags
+		return cty.EmptyObjectVal, nil, diags
 	}
 
+	attrExprs := make(map[string]hcl.Expression, len(body.Attributes))
 	resourceInputs := make(map[string]cty.Value, len(body.Attributes)+len(body.Blocks))
 	for name, attr := range body.Attributes {
 		_, prop := camelCaseFromSnakeCase(name, props)
@@ -115,8 +148,9 @@ func evalBlockWithSchema(config hcl.Body, props []*schema.Property, eval EvalFun
 		out, attrDiag := eval(resource.PropertyKey(prop.Name), attr.Expr, nil)
 		diags = diags.Extend(attrDiag)
 		if attrDiag.HasErrors() {
-			return cty.Value{}, diags
+			return cty.Value{}, nil, diags
 		}
+		attrExprs[name] = attr.Expr
 		resourceInputs[name] = conformCtyToType(out, ctyTypeFromType(prop.Type))
 	}
 
@@ -125,7 +159,7 @@ func evalBlockWithSchema(config hcl.Body, props []*schema.Property, eval EvalFun
 			d := evalDynamicBlocks(blocks, props, resourceInputs, eval)
 			diags = diags.Extend(d)
 			if d.HasErrors() {
-				return cty.Value{}, diags
+				return cty.Value{}, nil, diags
 			}
 			continue
 		}
@@ -143,12 +177,12 @@ func evalBlockWithSchema(config hcl.Body, props []*schema.Property, eval EvalFun
 		values, d := evalBlocksWithSchema(blocks, blockType.Properties, eval)
 		if d.HasErrors() {
 			diags = diags.Extend(d)
-			return cty.Value{}, diags
+			return cty.Value{}, nil, diags
 		}
 		resourceInputs[name] = cty.ListVal(values)
 	}
 
-	return cty.ObjectVal(resourceInputs), diags
+	return cty.ObjectVal(resourceInputs), attrExprs, diags
 }
 
 // dynamicBlockSchema is the body schema for the inside of a dynamic block.
@@ -269,7 +303,7 @@ func evalDynamicBlocks(
 				return eval(propKey, expr, merged)
 			}
 
-			evaluated, d := evalBlockWithSchema(contentBody, blockType.Properties, dynamicEval)
+			evaluated, _, d := evalBlockWithSchema(contentBody, blockType.Properties, dynamicEval)
 			diags = diags.Extend(d)
 			if d.HasErrors() {
 				return diags
@@ -361,8 +395,10 @@ func inputBodyFromProperties(r []*schema.Property) *hcl.BodySchema {
 			continue
 		}
 		body.Attributes = append(body.Attributes, hcl.AttributeSchema{
-			Name:     typeName,
-			Required: p.IsRequired(),
+			Name: typeName,
+			// A property with a schema-pinned const value is auto-filled
+			// by ctyToObject and is therefore not required in the HCL body.
+			Required: p.IsRequired() && p.ConstValue == nil,
 		})
 	}
 	if hasBlockTypes {
@@ -374,24 +410,28 @@ func inputBodyFromProperties(r []*schema.Property) *hcl.BodySchema {
 	return body
 }
 
-func ctyToResourceInputs(val cty.Value, r *schema.Resource) (property.Map, error) {
-	return ctyToObject(r.Token, val, r.InputProperties, false /* already in a secret */)
+func ctyToResourceInputs(val cty.Value, r *schema.Resource, attrExprs map[string]hcl.Expression) (property.Map, error) {
+	return ctyToObject(r.Token, val, r.InputProperties, attrExprs, false /* already in a secret */)
 }
 
-func ctyToFunctionInputs(val cty.Value, r *schema.Function) (property.Map, error) {
+func ctyToFunctionInputs(val cty.Value, r *schema.Function, attrExprs map[string]hcl.Expression) (property.Map, error) {
 	var inputs []*schema.Property
 	if r.Inputs != nil {
 		inputs = r.Inputs.Properties
 	}
-	return ctyToObject(r.Token, val, inputs, false /* already in a secret */)
+	return ctyToObject(r.Token, val, inputs, attrExprs, false /* already in a secret */)
 }
 
-func ctyToObject(path string, val cty.Value, properties []*schema.Property, alreadyInSecret bool) (property.Map, error) {
+// ctyToObject's attrExprs maps each attribute's HCL (snake_case) name to
+// its source expression; passing nil disables source-range error
+// reporting for this object's children.
+func ctyToObject(path string, val cty.Value, properties []*schema.Property, attrExprs map[string]hcl.Expression, alreadyInSecret bool) (property.Map, error) {
 	seen := make(map[string]struct{})
 	result := map[string]property.Value{}
 	for it := val.ElementIterator(); it.Next(); {
 		k, v := it.Element()
-		puField, prop := camelCaseFromSnakeCase(k.AsString(), properties)
+		keyStr := k.AsString()
+		puField, prop := camelCaseFromSnakeCase(keyStr, properties)
 		if prop == nil {
 			// We have not found the correct field in the property list, so we should put together an error
 			// message.
@@ -400,11 +440,11 @@ func ctyToObject(path string, val cty.Value, properties []*schema.Property, alre
 				paths[i] = p.Name
 			}
 			return property.Map{}, fmt.Errorf("could not find %q (translated from %q) in %q: %s",
-				puField, k.AsString(), path, strings.Join(paths, ", "))
+				puField, keyStr, path, strings.Join(paths, ", "))
 		}
 		seen[puField] = struct{}{}
 		var err error
-		result[puField], err = ctyToResourceProperty(k.AsString(), v, prop.Type, prop.Secret || alreadyInSecret)
+		result[puField], err = ctyToResourceProperty(keyStr, v, prop.Type, attrExprs[keyStr], prop.Secret || alreadyInSecret)
 		if err != nil {
 			return property.Map{}, err
 		}
@@ -416,6 +456,14 @@ func ctyToObject(path string, val cty.Value, properties []*schema.Property, alre
 	for _, prop := range properties {
 		_, ok := seen[prop.Name]
 		if ok {
+			continue
+		}
+		if c := prop.ConstValue; c != nil {
+			v, err := property.Any(c)
+			if err != nil {
+				return property.Map{}, fmt.Errorf("%q: const value %#v: %w", prop.Name, c, err)
+			}
+			result[prop.Name] = v.WithSecret(prop.Secret)
 			continue
 		}
 		if d := prop.DefaultValue; d != nil {
@@ -468,12 +516,14 @@ func getDefault(path string, d *schema.DefaultValue, typ schema.Type) (property.
 	return property.New(property.Null), nil
 }
 
-func ctyToResourceProperty(path string, val cty.Value, prop schema.Type, alreadyInSecret bool) (property.Value, error) {
+// ctyToResourceProperty's expr, when non-nil, lets union-discrimination
+// failures attach an HCL source range to the returned error.
+func ctyToResourceProperty(path string, val cty.Value, prop schema.Type, expr hcl.Expression, alreadyInSecret bool) (property.Value, error) {
 	if val.IsMarked() {
 		var marks cty.ValueMarks
 		val, marks = val.Unmark()
 		if _, isSensitive := marks[eval.SensitiveMark]; isSensitive && !alreadyInSecret {
-			v, err := ctyToResourceProperty(path, val, prop, true)
+			v, err := ctyToResourceProperty(path, val, prop, expr, true)
 			return v.WithSecret(true), err
 		}
 	}
@@ -548,16 +598,22 @@ func ctyToResourceProperty(path string, val cty.Value, prop schema.Type, already
 		if !val.Type().IsObjectType() {
 			return property.Value{}, fmt.Errorf("expected object at %q, found %#v", path, val.Type())
 		}
-		m, err := ctyToObject(path, val, prop.Properties, alreadyInSecret)
+		m, err := ctyToObject(path, val, prop.Properties, attrExprsByKey(expr), alreadyInSecret)
 		return property.New(m), err
 	case *schema.ArrayType:
 		if !val.Type().IsListType() && !val.Type().IsSetType() && !val.Type().IsTupleType() {
 			return property.Value{}, fmt.Errorf("expected list or set at %q, found %#v", path, val.Type())
 		}
+		elemExprs := exprListElements(expr)
 		arr := make([]property.Value, 0, val.LengthInt())
 		for it := val.ElementIterator(); it.Next(); {
 			_, elem := it.Element()
-			convertedElem, err := ctyToResourceProperty(fmt.Sprintf("%s[%d]", path, len(arr)), elem, prop.ElementType, alreadyInSecret)
+			i := len(arr)
+			var sub hcl.Expression
+			if i < len(elemExprs) {
+				sub = elemExprs[i]
+			}
+			convertedElem, err := ctyToResourceProperty(fmt.Sprintf("%s[%d]", path, i), elem, prop.ElementType, sub, alreadyInSecret)
 			if err != nil {
 				return property.Value{}, err
 			}
@@ -568,17 +624,32 @@ func ctyToResourceProperty(path string, val cty.Value, prop schema.Type, already
 		if !val.Type().IsMapType() && !val.Type().IsObjectType() {
 			return property.Value{}, fmt.Errorf("expected map at %q, found %#v", path, val.Type())
 		}
+		elemExprs := attrExprsByKey(expr)
 		m := make(map[string]property.Value, val.LengthInt())
 		for it := val.ElementIterator(); it.Next(); {
 			k, elem := it.Element()
-			convertedElem, err := ctyToResourceProperty(fmt.Sprintf("%s[%q]", path, k.AsString()), elem, prop.ElementType, alreadyInSecret)
+			key := k.AsString()
+			convertedElem, err := ctyToResourceProperty(fmt.Sprintf("%s[%q]", path, key), elem, prop.ElementType, elemExprs[key], alreadyInSecret)
 			if err != nil {
 				return property.Value{}, err
 			}
-			m[k.AsString()] = convertedElem
+			m[key] = convertedElem
 		}
 		return property.New(m), nil
 	case *schema.UnionType:
+		if chosen, err := selectUnionMemberByConst(val, prop); err != nil {
+			summary := fmt.Sprintf("cannot determine union variant for %q", path)
+			if expr != nil {
+				return property.Value{}, &rangedDiagError{
+					summary: summary,
+					detail:  err.Error(),
+					rng:     expr.Range(),
+				}
+			}
+			return property.Value{}, fmt.Errorf("%s: %w", summary, err)
+		} else if chosen != nil {
+			return ctyToResourceProperty(path, val, chosen, expr, alreadyInSecret)
+		}
 		return ctyToPropertyValue(val)
 	default:
 		return property.Value{}, fmt.Errorf("%q: unknown schema type %s when converting %#v", path, prop, val.Type())
@@ -1244,6 +1315,205 @@ func MakeSecret(pv resource.PropertyValue) resource.PropertyValue {
 // MakeComputed wraps a PropertyValue as computed/unknown.
 func MakeComputed(pv resource.PropertyValue) resource.PropertyValue {
 	return resource.MakeComputed(pv)
+}
+
+// missingDiscriminatorError: the value lacks the discriminator property.
+type missingDiscriminatorError struct {
+	Discriminator string   // snake_case name for HCL display
+	Allowed       []string // quoted const values: `"a"`, `"b"`, ...
+}
+
+func (e *missingDiscriminatorError) Error() string {
+	return fmt.Sprintf("missing discriminator %q (expected one of %s)",
+		e.Discriminator, strings.Join(e.Allowed, ", "))
+}
+
+// unrecognizedDiscriminatorError: the discriminator value matches no variant's Const.
+type unrecognizedDiscriminatorError struct {
+	Discriminator string
+	Allowed       []string
+	Actual        string // pre-formatted (quoted for strings, GoString otherwise)
+}
+
+func (e *unrecognizedDiscriminatorError) Error() string {
+	return fmt.Sprintf("discriminator %q is %s, expected one of %s",
+		e.Discriminator, e.Actual, strings.Join(e.Allowed, ", "))
+}
+
+// nonObjectDiscriminatorError: the value is not an object/map and so cannot carry a discriminator.
+type nonObjectDiscriminatorError struct {
+	Discriminator string
+	Allowed       []string
+	GotType       string
+}
+
+func (e *nonObjectDiscriminatorError) Error() string {
+	return fmt.Sprintf("expected an object with discriminator %q (one of %s), got %s",
+		e.Discriminator, strings.Join(e.Allowed, ", "), e.GotType)
+}
+
+// selectUnionMemberByConst picks the union member whose const-pinned
+// discriminator matches val. Returns (nil, nil) if no member is
+// const-discriminated (caller falls back to shape-based matching);
+// otherwise either a chosen type or one of *missingDiscriminatorError,
+// *unrecognizedDiscriminatorError, *nonObjectDiscriminatorError.
+func selectUnionMemberByConst(val cty.Value, u *schema.UnionType) (schema.Type, error) {
+	candidates := slices.Clone(u.ElementTypes)
+	if u.DefaultType != nil {
+		candidates = append([]schema.Type{u.DefaultType}, candidates...)
+	}
+
+	type cand struct {
+		typ  schema.Type
+		disc *schema.Property
+	}
+	var withConst []cand
+	for _, t := range candidates {
+		obj, ok := codegen.UnwrapType(t).(*schema.ObjectType)
+		if !ok {
+			continue
+		}
+		var disc *schema.Property
+		for _, p := range obj.Properties {
+			if p.ConstValue != nil {
+				disc = p
+				break
+			}
+		}
+		if disc == nil {
+			continue
+		}
+		withConst = append(withConst, cand{typ: t, disc: disc})
+	}
+
+	if len(withConst) == 0 {
+		return nil, nil
+	}
+	discName := withConst[0].disc.Name
+	for _, c := range withConst[1:] {
+		if c.disc.Name != discName {
+			return nil, nil
+		}
+	}
+
+	hclName := snakeCaseFromCamelCase(discName)
+	allowed := make([]string, 0, len(withConst))
+	for _, c := range withConst {
+		allowed = append(allowed, formatConstValue(c.disc.ConstValue))
+	}
+
+	if !val.Type().IsObjectType() && !val.Type().IsMapType() {
+		return nil, &nonObjectDiscriminatorError{
+			Discriminator: hclName,
+			Allowed:       allowed,
+			GotType:       val.Type().FriendlyName(),
+		}
+	}
+
+	attrs := val.AsValueMap()
+	discVal, ok := attrs[hclName]
+	if !ok || discVal.IsNull() {
+		return nil, &missingDiscriminatorError{
+			Discriminator: hclName,
+			Allowed:       allowed,
+		}
+	}
+
+	for _, c := range withConst {
+		if CtyEqualsConst(discVal, c.disc.ConstValue) {
+			return c.typ, nil
+		}
+	}
+
+	return nil, &unrecognizedDiscriminatorError{
+		Discriminator: hclName,
+		Allowed:       allowed,
+		Actual:        formatCtyDiscriminator(discVal),
+	}
+}
+
+// formatConstValue renders a schema const for display in an error
+// message. Strings are quoted; other scalars (bool/int32/float64) use
+// their natural Go representation.
+func formatConstValue(v any) string {
+	if s, ok := v.(string); ok {
+		return fmt.Sprintf("%q", s)
+	}
+	return fmt.Sprintf("%v", v)
+}
+
+// formatCtyDiscriminator renders an observed discriminator value for
+// inclusion in an error; the format mirrors formatConstValue.
+func formatCtyDiscriminator(v cty.Value) string {
+	switch v.Type() {
+	case cty.String:
+		return fmt.Sprintf("%q", v.AsString())
+	case cty.Bool:
+		return fmt.Sprintf("%v", v.True())
+	case cty.Number:
+		f, _ := v.AsBigFloat().Float64()
+		return strconv.FormatFloat(f, 'g', -1, 64)
+	}
+	return v.GoString()
+}
+
+// CtyEqualsConst reports whether a cty value matches a schema-bound
+// const value. bindConstValue normalises consts to one of string, bool,
+// int32, or float64, so those are the cases we accept.
+func CtyEqualsConst(v cty.Value, constVal any) bool {
+	switch c := constVal.(type) {
+	case string:
+		return v.Type() == cty.String && v.AsString() == c
+	case bool:
+		return v.Type() == cty.Bool && v.True() == c
+	case int32:
+		if v.Type() != cty.Number {
+			return false
+		}
+		n, acc := v.AsBigFloat().Int64()
+		return acc == big.Exact && n == int64(c)
+	case float64:
+		if v.Type() != cty.Number {
+			return false
+		}
+		f, _ := v.AsBigFloat().Float64()
+		return f == c
+	}
+	return false
+}
+
+// attrExprsByKey returns the per-key value expressions of an object/map
+// construction, or nil if expr is nil or not statically destructurable.
+func attrExprsByKey(expr hcl.Expression) map[string]hcl.Expression {
+	if expr == nil {
+		return nil
+	}
+	pairs, diags := hcl.ExprMap(expr)
+	if diags.HasErrors() {
+		return nil
+	}
+	out := make(map[string]hcl.Expression, len(pairs))
+	for _, kv := range pairs {
+		k, kd := kv.Key.Value(nil)
+		if kd.HasErrors() || k.Type() != cty.String {
+			continue
+		}
+		out[k.AsString()] = kv.Value
+	}
+	return out
+}
+
+// exprListElements returns the element expressions of a list/tuple
+// construction, or nil if expr is nil or not statically destructurable.
+func exprListElements(expr hcl.Expression) []hcl.Expression {
+	if expr == nil {
+		return nil
+	}
+	elems, diags := hcl.ExprList(expr)
+	if diags.HasErrors() {
+		return nil
+	}
+	return elems
 }
 
 // selectUnionMember picks the union member that v conforms to by recursively

@@ -1772,7 +1772,7 @@ func (g *generator) exprTokens(expr model.Expression, typ schema.Type) (hclwrite
 	case *model.ScopeTraversalExpression:
 		return g.scopeTraversalTokens(e)
 	case *model.TupleConsExpression:
-		return g.tupleTokens(e)
+		return g.tupleTokens(e, typ)
 	case *model.ObjectConsExpression:
 		return g.objectTokens(e, typ)
 	case *model.IndexExpression:
@@ -2552,6 +2552,79 @@ func (g *generator) splatTokens(expr *model.SplatExpression) (hclwrite.Tokens, h
 	return tokens, diags
 }
 
+// pickUnionVariantFromObjectExpr resolves a const-discriminated union to
+// its matching object variant by reading the discriminator off expr.
+// Returns nil when no match can be made.
+func pickUnionVariantFromObjectExpr(u *schema.UnionType, expr *model.ObjectConsExpression) *schema.ObjectType {
+	candidates := u.ElementTypes
+	if u.DefaultType != nil {
+		candidates = append([]schema.Type{u.DefaultType}, candidates...)
+	}
+	type cand struct {
+		obj  *schema.ObjectType
+		disc *schema.Property
+	}
+	var withConst []cand
+	for _, t := range candidates {
+		obj, ok := codegen.UnwrapType(t).(*schema.ObjectType)
+		if !ok {
+			continue
+		}
+		var disc *schema.Property
+		for _, p := range obj.Properties {
+			if p.ConstValue != nil {
+				disc = p
+				break
+			}
+		}
+		if disc == nil {
+			continue
+		}
+		withConst = append(withConst, cand{obj: obj, disc: disc})
+	}
+	if len(withConst) == 0 {
+		return nil
+	}
+	discName := withConst[0].disc.Name
+	for _, c := range withConst[1:] {
+		if c.disc.Name != discName {
+			return nil
+		}
+	}
+	for _, item := range expr.Items {
+		keyName, ok := extractStringLiteral(item.Key)
+		if !ok || keyName != discName {
+			continue
+		}
+		val, ok := extractCtyLiteral(item.Value)
+		if !ok {
+			return nil
+		}
+		for _, c := range withConst {
+			if transform.CtyEqualsConst(val, c.disc.ConstValue) {
+				return c.obj
+			}
+		}
+		return nil
+	}
+	return nil
+}
+
+// extractCtyLiteral pulls a static cty value out of a PCL literal
+// expression, unwrapping single-part templates. Reports false when the
+// expression isn't a static literal.
+func extractCtyLiteral(expr model.Expression) (cty.Value, bool) {
+	switch e := expr.(type) {
+	case *model.LiteralValueExpression:
+		return e.Value, true
+	case *model.TemplateExpression:
+		if len(e.Parts) == 1 {
+			return extractCtyLiteral(e.Parts[0])
+		}
+	}
+	return cty.NilVal, false
+}
+
 // extractStringLiteral extracts a string from a literal expression,
 // unwrapping TemplateExpressions that contain a single literal part.
 func extractStringLiteral(expr model.Expression) (string, bool) {
@@ -2568,7 +2641,11 @@ func extractStringLiteral(expr model.Expression) (string, bool) {
 	return "", false
 }
 
-func (g *generator) tupleTokens(expr *model.TupleConsExpression) (hclwrite.Tokens, hcl.Diagnostics) {
+func (g *generator) tupleTokens(expr *model.TupleConsExpression, typ schema.Type) (hclwrite.Tokens, hcl.Diagnostics) {
+	elemType := schema.Type(schema.AnyType)
+	if arr, ok := codegen.UnwrapType(typ).(*schema.ArrayType); ok {
+		elemType = arr.ElementType
+	}
 	tokens := hclwrite.Tokens{
 		{Type: hclsyntax.TokenOBrack, Bytes: []byte("[")},
 	}
@@ -2577,7 +2654,7 @@ func (g *generator) tupleTokens(expr *model.TupleConsExpression) (hclwrite.Token
 		if i > 0 {
 			tokens = append(tokens, &hclwrite.Token{Type: hclsyntax.TokenComma, Bytes: []byte(",")})
 		}
-		elemTokens, d := g.exprTokens(elem, schema.AnyType)
+		elemTokens, d := g.exprTokens(elem, elemType)
 		diags = append(diags, d...)
 		if d.HasErrors() {
 			return nil, diags
@@ -2607,7 +2684,15 @@ func (g *generator) objectTokens(expr *model.ObjectConsExpression, typ schema.Ty
 	propType := func(key model.Expression) schema.Type {
 		return schema.AnyType
 	}
-	switch typ := codegen.UnwrapType(typ).(type) {
+	// Narrow a const-discriminated union to its variant so object keys
+	// are emitted as snake_case identifiers, not quoted map keys.
+	narrowedTyp := codegen.UnwrapType(typ)
+	if u, ok := narrowedTyp.(*schema.UnionType); ok {
+		if obj := pickUnionVariantFromObjectExpr(u, expr); obj != nil {
+			narrowedTyp = obj
+		}
+	}
+	switch typ := narrowedTyp.(type) {
 	case *schema.ObjectType:
 		keyName = func(key model.Expression) (hclwrite.Tokens, hcl.Diagnostics) {
 			name, _ := extractStringLiteral(key)

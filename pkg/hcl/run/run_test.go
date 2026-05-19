@@ -2003,3 +2003,179 @@ func TestEngine_HetListOutputRoundTrip(t *testing.T) {
 		require.NoError(t, err)
 	})
 }
+
+// TestEngine_SchemaConstValues verifies that the engine applies "const" values
+// declared in the Pulumi schema.
+func TestEngine_SchemaConstValues(t *testing.T) {
+	t.Parallel()
+
+	// PartA and PartB differ only in the *type* of their `field`
+	// property — an object{fooBar} vs map(string) — so renaming
+	// `foo_bar` → `fooBar` is correct for one branch and wrong for the
+	// other. Picking the right rule per element requires the engine to
+	// consult the const-pinned `kind` discriminator first.
+	constSchema := func() schema.PackageSpec {
+		return schema.PackageSpec{
+			Name: "test",
+			Types: map[string]schema.ComplexTypeSpec{
+				"test:index:PartAField": {
+					ObjectTypeSpec: schema.ObjectTypeSpec{
+						Type: "object",
+						Properties: map[string]schema.PropertySpec{
+							"fooBar": {TypeSpec: schema.TypeSpec{Type: "string"}},
+						},
+					},
+				},
+				"test:index:PartA": {
+					ObjectTypeSpec: schema.ObjectTypeSpec{
+						Type: "object",
+						Properties: map[string]schema.PropertySpec{
+							"kind":  {TypeSpec: schema.TypeSpec{Type: "string"}, Const: "a"},
+							"field": {TypeSpec: schema.TypeSpec{Ref: "#/types/test:index:PartAField"}},
+						},
+						Required: []string{"kind"},
+					},
+				},
+				"test:index:PartB": {
+					ObjectTypeSpec: schema.ObjectTypeSpec{
+						Type: "object",
+						Properties: map[string]schema.PropertySpec{
+							"kind": {TypeSpec: schema.TypeSpec{Type: "string"}, Const: "b"},
+							"field": {TypeSpec: schema.TypeSpec{
+								Type:                 "object",
+								AdditionalProperties: &schema.TypeSpec{Type: "string"},
+							}},
+						},
+						Required: []string{"kind"},
+					},
+				},
+			},
+			Resources: map[string]schema.ResourceSpec{
+				"test:index:Widget": {
+					InputProperties: map[string]schema.PropertySpec{
+						"kind": {TypeSpec: schema.TypeSpec{Type: "string"}, Const: "widget"},
+						"name": {TypeSpec: schema.TypeSpec{Type: "string"}},
+						"parts": {
+							TypeSpec: schema.TypeSpec{
+								Type: "array",
+								Items: &schema.TypeSpec{
+									OneOf: []schema.TypeSpec{
+										{Ref: "#/types/test:index:PartA"},
+										{Ref: "#/types/test:index:PartB"},
+									},
+								},
+							},
+						},
+					},
+					RequiredInputs: []string{"kind", "name"},
+					ObjectTypeSpec: schema.ObjectTypeSpec{
+						Properties: map[string]schema.PropertySpec{
+							"kind": {TypeSpec: schema.TypeSpec{Type: "string"}, Const: "widget"},
+							"name": {TypeSpec: schema.TypeSpec{Type: "string"}},
+						},
+						Required: []string{"kind", "name"},
+					},
+				},
+			},
+		}
+	}
+
+	runEngine := func(t *testing.T, src string) (*testutil.MockResourceMonitor, error) {
+		t.Helper()
+		p := parser.NewParser()
+		config, diags := p.ParseSource("test.hcl", []byte(src))
+		require.False(t, diags.HasErrors(), "parse error: %s", diags.Error())
+
+		mock := &testutil.MockResourceMonitor{}
+		engine := run.NewEngine(config, &run.EngineOptions{
+			ProjectName:     "test-project",
+			StackName:       "dev",
+			ResourceMonitor: mock,
+			WorkDir:         t.TempDir(),
+			RootDir:         t.TempDir(),
+			SchemaLoader:    schemaloader.New(t, constSchema()),
+		})
+		return mock, engine.Run(t.Context())
+	}
+
+	findWidget := func(t *testing.T, mock *testutil.MockResourceMonitor) run.RegisterResourceRequest {
+		t.Helper()
+		for _, r := range mock.RegisteredResources {
+			if r.Type == "test:index:Widget" {
+				return r
+			}
+		}
+		t.Fatal("expected a test:index:Widget registration")
+		return run.RegisterResourceRequest{}
+	}
+
+	t.Run("applied when omitted", func(t *testing.T) {
+		t.Parallel()
+
+		mock, err := runEngine(t, `
+resource "test_widget" "w" {
+  name = "hello"
+}
+`)
+		require.NoError(t, err)
+
+		req := findWidget(t, mock)
+		assert.Equal(t, property.New("widget"), req.Inputs.Get("kind"))
+		assert.Equal(t, property.New("hello"), req.Inputs.Get("name"))
+	})
+
+	t.Run("distinguishes union by const", func(t *testing.T) {
+		t.Parallel()
+
+		mock, err := runEngine(t, `
+resource "test_widget" "w" {
+  name = "hello"
+  parts = [
+    { kind = "a", field = { foo_bar = "object-value" } },
+    { kind = "b", field = { foo_bar = "map-value" } },
+  ]
+}
+`)
+		require.NoError(t, err)
+
+		req := findWidget(t, mock)
+		assert.Equal(t, property.New("widget"), req.Inputs.Get("kind"))
+
+		parts := req.Inputs.Get("parts").AsArray().AsSlice()
+		require.Len(t, parts, 2)
+
+		// PartA: object property — `foo_bar` is renamed to `fooBar`.
+		assert.Equal(t, property.New(property.NewMap(map[string]property.Value{
+			"kind": property.New("a"),
+			"field": property.New(property.NewMap(map[string]property.Value{
+				"fooBar": property.New("object-value"),
+			})),
+		})), parts[0])
+
+		// PartB: map key — `foo_bar` is preserved verbatim.
+		assert.Equal(t, property.New(property.NewMap(map[string]property.Value{
+			"kind": property.New("b"),
+			"field": property.New(property.NewMap(map[string]property.Value{
+				"foo_bar": property.New("map-value"),
+			})),
+		})), parts[1])
+	})
+
+	t.Run("missing union discriminator errors clearly", func(t *testing.T) {
+		t.Parallel()
+
+		_, err := runEngine(t, `
+resource "test_widget" "w" {
+  name = "hello"
+  parts = [
+    { field = { foo_bar = "ambiguous" } },
+  ]
+}
+`)
+		require.Error(t, err)
+		assert.EqualError(t, err,
+			`registering test_widget.w: test.hcl:5,5-42: `+
+				`cannot determine union variant for "parts[0]"; `+
+				`missing discriminator "kind" (expected one of "a", "b")`)
+	})
+}
