@@ -126,14 +126,24 @@ func ResolveResource(ctx context.Context, loader schema.ReferenceLoader, knownPr
 
 	key := strings.ReplaceAll(token[len(pkgName)+1:], "_", "")
 	for iter := pkg.Resources().Range(); iter.Next(); {
-		mod := pkg.TokenToModule(iter.Token())
-		name := strings.Split(iter.Token(), ":")[2]
-		rKey := strings.NewReplacer("/", "", "_", "").Replace(strings.ToLower(mod + name))
-		if rKey == key {
+		if tokenSearchKey(pkg, iter.Token()) == key {
 			return iter.Resource()
 		}
 	}
 	return nil, ErrNotFound
+}
+
+// tokenSearchKey produces a normalized lookup key for a Pulumi token by
+// concatenating the schema-declared module and member name and stripping
+// "_" and "/" separators after lowercasing. The schema's ModuleFormat regex
+// (applied by TokenToModule) is responsible for separating the module from
+// the member name and for collapsing the implicit "index" root module to
+// the empty string; bridged-style tokens like "aws:iam/getRole:getRole"
+// resolve correctly only when the schema sets that regex.
+func tokenSearchKey(pkg schema.PackageReference, tok string) string {
+	mod := pkg.TokenToModule(tok)
+	name := strings.Split(tok, ":")[2]
+	return strings.NewReplacer("/", "", "_", "").Replace(strings.ToLower(mod + name))
 }
 
 func resolvePackage(ctx context.Context, loader schema.ReferenceLoader, descriptor *schema.PackageDescriptor) (schema.PackageReference, error) {
@@ -228,20 +238,26 @@ func ResolveFunction(ctx context.Context, loader schema.ReferenceLoader, knownPr
 
 	key := strings.ReplaceAll(suffix, "_", "")
 	for iter := pkg.Functions().Range(); iter.Next(); {
-		mod := pkg.TokenToModule(iter.Token())
-		name := strings.Split(iter.Token(), ":")[2]
-		if strings.NewReplacer("/", "", "_", "").Replace(strings.ToLower(mod+name)) == key {
+		if tokenSearchKey(pkg, iter.Token()) == key {
 			return iter.Function()
 		}
 	}
 
-	// Allow omitting the "get" on Pulumi datasources.
-	implicitGetKey := suffixParts[0] + "get" + strings.Join(suffixParts[1:], "")
-	for iter := pkg.Functions().Range(); iter.Next(); {
-		mod := pkg.TokenToModule(iter.Token())
-		name := strings.Split(iter.Token(), ":")[2]
-		if strings.NewReplacer("/", "", "_", "").Replace(strings.ToLower(mod+name)) == implicitGetKey {
-			return iter.Function()
+	// Allow omitting the "get" on Pulumi datasources. Try two placements:
+	// after the first segment (for `<mod>_<name>` HCL forms — e.g.
+	// "aws_iam_role" → "iamgetrole") and prepended to the whole suffix (for
+	// index-module functions — e.g. "aws_availability_zone" →
+	// "getavailabilityzone"). The mid-segment form is tried first to preserve
+	// the existing precedence for moduled functions.
+	implicitGetKeys := []string{
+		suffixParts[0] + "get" + strings.Join(suffixParts[1:], ""),
+		"get" + strings.Join(suffixParts, ""),
+	}
+	for _, implicitGetKey := range implicitGetKeys {
+		for iter := pkg.Functions().Range(); iter.Next(); {
+			if tokenSearchKey(pkg, iter.Token()) == implicitGetKey {
+				return iter.Function()
+			}
 		}
 	}
 
