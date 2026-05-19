@@ -89,6 +89,19 @@ func TestResolveResource(t *testing.T) {
 				"fail_on_create:index:Resource": {},
 			},
 		},
+		// Bridged-provider style: tokens use the `<mod>/<Member>:<Member>`
+		// shape and the schema sets the ModuleFormat regex used by pulumi-aws
+		// and other terraform-bridge providers. The resolver must match HCL
+		// forms like "bridged_iam_role" against these tokens.
+		schema.PackageSpec{
+			Name: "bridged",
+			Meta: &schema.MetadataSpec{
+				ModuleFormat: `(.*)(?:/[^/]*)`,
+			},
+			Resources: map[string]schema.ResourceSpec{
+				"bridged:iam/Role:Role": {},
+			},
+		},
 	)
 
 	ctx := t.Context()
@@ -107,6 +120,12 @@ func TestResolveResource(t *testing.T) {
 			knownProviders: []string{"aws"},
 			token:          "aws_s3_bucket",
 			wantToken:      "aws:s3:Bucket",
+		},
+		{
+			name:           "bridged-style module embeds member name",
+			knownProviders: []string{"bridged"},
+			token:          "bridged_iam_role",
+			wantToken:      "bridged:iam/Role:Role",
 		},
 		{
 			name:           "index module",
@@ -226,6 +245,21 @@ func TestResolveFunction(t *testing.T) {
 				"mypkg:mod/nested_concatWorld:concatWorld": {},
 			},
 		},
+		// Bridged-provider style: tokens use a `<mod>/<Member>:<Member>` shape
+		// and the schema sets the ModuleFormat regex used by pulumi-aws and
+		// other terraform-bridge providers. The resolver must still match
+		// against HCL data source names like "bridged_iam_role" (moduled) and
+		// "bridged_availability_zone" (root/index module).
+		schema.PackageSpec{
+			Name: "bridged",
+			Meta: &schema.MetadataSpec{
+				ModuleFormat: `(.*)(?:/[^/]*)`,
+			},
+			Functions: map[string]schema.FunctionSpec{
+				"bridged:iam/getRole:getRole":                           {},
+				"bridged:index/getAvailabilityZone:getAvailabilityZone": {},
+			},
+		},
 	)
 
 	ctx := t.Context()
@@ -298,6 +332,18 @@ func TestResolveFunction(t *testing.T) {
 			knownProviders: []string{"mypkg"},
 			token:          "mypkg_mod_nested_concatworld",
 			wantToken:      "mypkg:mod/nested_concatWorld:concatWorld",
+		},
+		{
+			name:           "bridged-style data source implicit get",
+			knownProviders: []string{"bridged"},
+			token:          "bridged_iam_role",
+			wantToken:      "bridged:iam/getRole:getRole",
+		},
+		{
+			name:           "bridged-style index module implicit get",
+			knownProviders: []string{"bridged"},
+			token:          "bridged_availability_zone",
+			wantToken:      "bridged:index/getAvailabilityZone:getAvailabilityZone",
 		},
 		{
 			name:           "function not found",

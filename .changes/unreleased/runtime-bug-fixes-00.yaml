@@ -1,0 +1,6 @@
+kind: bug-fixes
+body: Fix token lookup for functions with get & modules
+time: 2026-05-19T14:38:45.558256+02:00
+custom:
+    Component: runtime
+    PR: "144"
