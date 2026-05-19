@@ -2561,9 +2561,8 @@ func pickUnionVariantFromObjectExpr(u *schema.UnionType, expr *model.ObjectConsE
 		candidates = append([]schema.Type{u.DefaultType}, candidates...)
 	}
 	type cand struct {
-		obj      *schema.ObjectType
-		disc     *schema.Property
-		constStr string
+		obj  *schema.ObjectType
+		disc *schema.Property
 	}
 	var withConst []cand
 	for _, t := range candidates {
@@ -2581,11 +2580,7 @@ func pickUnionVariantFromObjectExpr(u *schema.UnionType, expr *model.ObjectConsE
 		if disc == nil {
 			continue
 		}
-		s, isString := disc.ConstValue.(string)
-		if !isString {
-			continue
-		}
-		withConst = append(withConst, cand{obj: obj, disc: disc, constStr: s})
+		withConst = append(withConst, cand{obj: obj, disc: disc})
 	}
 	if len(withConst) == 0 {
 		return nil
@@ -2601,18 +2596,33 @@ func pickUnionVariantFromObjectExpr(u *schema.UnionType, expr *model.ObjectConsE
 		if !ok || keyName != discName {
 			continue
 		}
-		valueStr, ok := extractStringLiteral(item.Value)
+		val, ok := extractCtyLiteral(item.Value)
 		if !ok {
 			return nil
 		}
 		for _, c := range withConst {
-			if c.constStr == valueStr {
+			if transform.CtyEqualsConst(val, c.disc.ConstValue) {
 				return c.obj
 			}
 		}
 		return nil
 	}
 	return nil
+}
+
+// extractCtyLiteral pulls a static cty value out of a PCL literal
+// expression, unwrapping single-part templates. Reports false when the
+// expression isn't a static literal.
+func extractCtyLiteral(expr model.Expression) (cty.Value, bool) {
+	switch e := expr.(type) {
+	case *model.LiteralValueExpression:
+		return e.Value, true
+	case *model.TemplateExpression:
+		if len(e.Parts) == 1 {
+			return extractCtyLiteral(e.Parts[0])
+		}
+	}
+	return cty.NilVal, false
 }
 
 // extractStringLiteral extracts a string from a literal expression,

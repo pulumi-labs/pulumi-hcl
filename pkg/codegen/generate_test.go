@@ -17,7 +17,11 @@ package codegen
 import (
 	"testing"
 
+	"github.com/pulumi/pulumi/pkg/v3/codegen/hcl2/model"
+	"github.com/pulumi/pulumi/pkg/v3/codegen/schema"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+	"github.com/zclconf/go-cty/cty"
 )
 
 func TestOrderedSourceFiles(t *testing.T) {
@@ -102,4 +106,45 @@ func TestOutputFileName(t *testing.T) {
 	assert.Equal(t, "main.hcl", outputFileName("main.pp"))
 	assert.Equal(t, "output.hcl", outputFileName("output.pp"))
 	assert.Equal(t, "no-ext.hcl", outputFileName("no-ext"))
+}
+
+// TestPickUnionVariantFromObjectExpr_NonStringDiscriminator pins the
+// codegen helper for the int32 case — earlier versions only matched
+// string consts, so a union pinned by a numeric discriminator silently
+// fell through to a quoted string-map key.
+func TestPickUnionVariantFromObjectExpr_NonStringDiscriminator(t *testing.T) {
+	t.Parallel()
+
+	v1 := &schema.ObjectType{
+		Token: "test:index:V1",
+		Properties: []*schema.Property{
+			{Name: "version", Type: schema.IntType, ConstValue: int32(1)},
+			{Name: "a", Type: schema.StringType},
+		},
+	}
+	v2 := &schema.ObjectType{
+		Token: "test:index:V2",
+		Properties: []*schema.Property{
+			{Name: "version", Type: schema.IntType, ConstValue: int32(2)},
+			{Name: "b", Type: schema.StringType},
+		},
+	}
+	u := &schema.UnionType{ElementTypes: []schema.Type{v1, v2}}
+
+	expr := &model.ObjectConsExpression{
+		Items: []model.ObjectConsItem{
+			{
+				Key:   &model.LiteralValueExpression{Value: cty.StringVal("version")},
+				Value: &model.LiteralValueExpression{Value: cty.NumberIntVal(2)},
+			},
+			{
+				Key:   &model.LiteralValueExpression{Value: cty.StringVal("b")},
+				Value: &model.LiteralValueExpression{Value: cty.StringVal("hello")},
+			},
+		},
+	}
+
+	picked := pickUnionVariantFromObjectExpr(u, expr)
+	require.NotNil(t, picked)
+	assert.Same(t, v2, picked)
 }

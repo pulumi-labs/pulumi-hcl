@@ -19,6 +19,7 @@ import (
 	"errors"
 	"fmt"
 	"maps"
+	"math/big"
 	"os"
 	"slices"
 	"strconv"
@@ -1363,10 +1364,8 @@ func selectUnionMemberByConst(val cty.Value, u *schema.UnionType) (schema.Type, 
 	}
 
 	type cand struct {
-		typ       schema.Type
-		disc      *schema.Property
-		constStr  string
-		hasString bool
+		typ  schema.Type
+		disc *schema.Property
 	}
 	var withConst []cand
 	for _, t := range candidates {
@@ -1384,13 +1383,7 @@ func selectUnionMemberByConst(val cty.Value, u *schema.UnionType) (schema.Type, 
 		if disc == nil {
 			continue
 		}
-		s, isString := disc.ConstValue.(string)
-		withConst = append(withConst, cand{
-			typ:       t,
-			disc:      disc,
-			constStr:  s,
-			hasString: isString,
-		})
+		withConst = append(withConst, cand{typ: t, disc: disc})
 	}
 
 	if len(withConst) == 0 {
@@ -1406,11 +1399,7 @@ func selectUnionMemberByConst(val cty.Value, u *schema.UnionType) (schema.Type, 
 	hclName := snakeCaseFromCamelCase(discName)
 	allowed := make([]string, 0, len(withConst))
 	for _, c := range withConst {
-		if c.hasString {
-			allowed = append(allowed, fmt.Sprintf("%q", c.constStr))
-		} else {
-			allowed = append(allowed, fmt.Sprintf("%v", c.disc.ConstValue))
-		}
+		allowed = append(allowed, formatConstValue(c.disc.ConstValue))
 	}
 
 	if !val.Type().IsObjectType() && !val.Type().IsMapType() {
@@ -1431,25 +1420,66 @@ func selectUnionMemberByConst(val cty.Value, u *schema.UnionType) (schema.Type, 
 	}
 
 	for _, c := range withConst {
-		if !c.hasString {
-			continue
-		}
-		if discVal.Type() == cty.String && discVal.AsString() == c.constStr {
+		if CtyEqualsConst(discVal, c.disc.ConstValue) {
 			return c.typ, nil
 		}
 	}
 
-	var actual string
-	if discVal.Type() == cty.String {
-		actual = fmt.Sprintf("%q", discVal.AsString())
-	} else {
-		actual = discVal.GoString()
-	}
 	return nil, &unrecognizedDiscriminatorError{
 		Discriminator: hclName,
 		Allowed:       allowed,
-		Actual:        actual,
+		Actual:        formatCtyDiscriminator(discVal),
 	}
+}
+
+// formatConstValue renders a schema const for display in an error
+// message. Strings are quoted; other scalars (bool/int32/float64) use
+// their natural Go representation.
+func formatConstValue(v any) string {
+	if s, ok := v.(string); ok {
+		return fmt.Sprintf("%q", s)
+	}
+	return fmt.Sprintf("%v", v)
+}
+
+// formatCtyDiscriminator renders an observed discriminator value for
+// inclusion in an error; the format mirrors formatConstValue.
+func formatCtyDiscriminator(v cty.Value) string {
+	switch v.Type() {
+	case cty.String:
+		return fmt.Sprintf("%q", v.AsString())
+	case cty.Bool:
+		return fmt.Sprintf("%v", v.True())
+	case cty.Number:
+		f, _ := v.AsBigFloat().Float64()
+		return strconv.FormatFloat(f, 'g', -1, 64)
+	}
+	return v.GoString()
+}
+
+// CtyEqualsConst reports whether a cty value matches a schema-bound
+// const value. bindConstValue normalises consts to one of string, bool,
+// int32, or float64, so those are the cases we accept.
+func CtyEqualsConst(v cty.Value, constVal any) bool {
+	switch c := constVal.(type) {
+	case string:
+		return v.Type() == cty.String && v.AsString() == c
+	case bool:
+		return v.Type() == cty.Bool && v.True() == c
+	case int32:
+		if v.Type() != cty.Number {
+			return false
+		}
+		n, acc := v.AsBigFloat().Int64()
+		return acc == big.Exact && n == int64(c)
+	case float64:
+		if v.Type() != cty.Number {
+			return false
+		}
+		f, _ := v.AsBigFloat().Float64()
+		return f == c
+	}
+	return false
 }
 
 // attrExprsByKey returns the per-key value expressions of an object/map

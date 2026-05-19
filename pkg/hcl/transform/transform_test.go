@@ -1285,3 +1285,86 @@ func TestResourceOutputToCtyJSONType(t *testing.T) {
 		}),
 	}, r)
 }
+
+// TestCtyEqualsConst exercises every Go type that bindConstValue is
+// documented to produce (string, bool, int32, float64). Earlier versions
+// of selectUnionMemberByConst only compared strings, so other-typed
+// discriminators silently failed to match.
+func TestCtyEqualsConst(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name  string
+		val   cty.Value
+		c     any
+		match bool
+	}{
+		{"string match", cty.StringVal("a"), "a", true},
+		{"string mismatch", cty.StringVal("a"), "b", false},
+		{"string vs bool", cty.StringVal("true"), true, false},
+
+		{"bool match", cty.True, true, true},
+		{"bool mismatch", cty.False, true, false},
+		{"bool vs string", cty.True, "true", false},
+
+		{"int32 match", cty.NumberIntVal(7), int32(7), true},
+		{"int32 mismatch", cty.NumberIntVal(7), int32(8), false},
+		{"int32 vs fractional", cty.NumberFloatVal(7.5), int32(7), false},
+		{"int32 vs string-typed", cty.StringVal("7"), int32(7), false},
+
+		{"float64 match", cty.NumberFloatVal(1.5), 1.5, true},
+		{"float64 mismatch", cty.NumberFloatVal(1.5), 2.5, false},
+		{"float64 vs string-typed", cty.StringVal("1.5"), 1.5, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			assert.Equal(t, tt.match, CtyEqualsConst(tt.val, tt.c))
+		})
+	}
+}
+
+// TestSelectUnionMemberByConst_IntDiscriminator proves the non-string
+// path end-to-end: a union of two object variants whose only difference
+// is an int32-valued `version` const is correctly resolved.
+func TestSelectUnionMemberByConst_IntDiscriminator(t *testing.T) {
+	t.Parallel()
+
+	v1 := &schema.ObjectType{
+		Token: "test:index:V1",
+		Properties: []*schema.Property{
+			{Name: "version", Type: schema.IntType, ConstValue: int32(1)},
+			{Name: "a", Type: schema.StringType},
+		},
+	}
+	v2 := &schema.ObjectType{
+		Token: "test:index:V2",
+		Properties: []*schema.Property{
+			{Name: "version", Type: schema.IntType, ConstValue: int32(2)},
+			{Name: "b", Type: schema.StringType},
+		},
+	}
+	u := &schema.UnionType{ElementTypes: []schema.Type{v1, v2}}
+
+	picked, err := selectUnionMemberByConst(cty.ObjectVal(map[string]cty.Value{
+		"version": cty.NumberIntVal(2),
+		"b":       cty.StringVal("hello"),
+	}), u)
+	require.NoError(t, err)
+	assert.Same(t, v2, picked)
+
+	picked, err = selectUnionMemberByConst(cty.ObjectVal(map[string]cty.Value{
+		"version": cty.NumberIntVal(1),
+		"a":       cty.StringVal("hello"),
+	}), u)
+	require.NoError(t, err)
+	assert.Same(t, v1, picked)
+
+	_, err = selectUnionMemberByConst(cty.ObjectVal(map[string]cty.Value{
+		"version": cty.NumberIntVal(99),
+	}), u)
+	var unrecognized *unrecognizedDiscriminatorError
+	require.ErrorAs(t, err, &unrecognized)
+	assert.Equal(t, []string{"1", "2"}, unrecognized.Allowed)
+	assert.Equal(t, "99", unrecognized.Actual)
+}
