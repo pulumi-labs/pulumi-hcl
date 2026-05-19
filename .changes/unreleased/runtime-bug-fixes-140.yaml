@@ -1,0 +1,6 @@
+kind: bug-fixes
+body: Don't corrupt the Pulumi resource name when a resource's HCL type contains dots
+time: 2026-05-19T12:00:00+02:00
+custom:
+    Component: runtime
+    PR: "140"
