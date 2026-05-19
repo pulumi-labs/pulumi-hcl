@@ -1,0 +1,6 @@
+kind: bug-fixes
+body: Do not panic on unknown values in yamlencode
+time: 2026-05-19T15:08:23.414146+02:00
+custom:
+    Component: runtime
+    PR: "143"
