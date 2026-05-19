@@ -1,6 +1,0 @@
-kind: bug-fixes
-body: Don't panic when a schema property's type is `JSON`, `AnyResource`, or a `TokenType` (e.g. running `pulumi preview` on a `kubernetes:core/v1:ConfigMap`)
-time: 2026-05-15T14:10:00+02:00
-custom:
-    Component: runtime
-    PR: "136"
