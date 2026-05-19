@@ -27,6 +27,8 @@ import (
 
 	"github.com/hashicorp/hcl/v2"
 	"github.com/hashicorp/hcl/v2/hclsyntax"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"github.com/zclconf/go-cty/cty"
 )
 
@@ -767,6 +769,76 @@ func TestYAMLFunctions(t *testing.T) {
 			t.Errorf("Expected %s, got %s", expected.GoString(), result.GoString())
 		}
 	})
+}
+
+// Regression for https://github.com/pulumi-labs/pulumi-hcl/issues/143:
+// functions that recurse into argument collections must lift nested unknowns
+// to an unknown result, not panic when ctyToGo or similar helpers reach an
+// unknown leaf. go-cty's AllowUnknown:false only auto-lifts shallow unknowns,
+// so each function below is responsible for the deep check itself.
+func TestUnknownPropagation(t *testing.T) {
+	funcs := Functions("/tmp")
+
+	tests := []struct {
+		name string
+		fn   string
+		args []cty.Value
+		want cty.Value
+	}{
+		{
+			name: "yamlencode with unknown nested in object",
+			fn:   "yamlencode",
+			args: []cty.Value{cty.ObjectVal(map[string]cty.Value{"id": cty.UnknownVal(cty.String)})},
+			want: cty.UnknownVal(cty.String),
+		},
+		{
+			name: "tostring with unknown nested in object",
+			fn:   "tostring",
+			args: []cty.Value{cty.ObjectVal(map[string]cty.Value{"id": cty.UnknownVal(cty.String)})},
+			want: cty.UnknownVal(cty.String),
+		},
+		{
+			name: "alltrue with unknown element",
+			fn:   "alltrue",
+			args: []cty.Value{cty.ListVal([]cty.Value{cty.True, cty.UnknownVal(cty.Bool)})},
+			want: cty.UnknownVal(cty.Bool),
+		},
+		{
+			name: "anytrue with unknown element (no true present)",
+			fn:   "anytrue",
+			args: []cty.Value{cty.ListVal([]cty.Value{cty.False, cty.UnknownVal(cty.Bool)})},
+			want: cty.UnknownVal(cty.Bool),
+		},
+		{
+			name: "index with unknown element in haystack",
+			fn:   "index",
+			args: []cty.Value{
+				cty.ListVal([]cty.Value{cty.StringVal("a"), cty.UnknownVal(cty.String)}),
+				cty.StringVal("b"),
+			},
+			want: cty.UnknownVal(cty.Number),
+		},
+		{
+			name: "index with unknown element after goal",
+			fn:   "index",
+			args: []cty.Value{
+				cty.ListVal([]cty.Value{cty.StringVal("a"), cty.UnknownVal(cty.String)}),
+				cty.StringVal("a"),
+			},
+			want: cty.NumberIntVal(0),
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			fn, ok := funcs[tt.fn]
+			require.True(t, ok, "function %q not registered", tt.fn)
+
+			got, err := fn.Call(tt.args)
+			require.NoError(t, err)
+			assert.Equal(t, tt.want, got)
+		})
+	}
 }
 
 func TestAbspathAndBasename(t *testing.T) {

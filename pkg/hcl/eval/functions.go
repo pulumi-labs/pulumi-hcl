@@ -108,7 +108,7 @@ func Functions(baseDir string) map[string]function.Function {
 		"anytrue":         anyTrueFunc,
 		"chunklist":       stdlib.ChunklistFunc,
 		"coalesce":        stdlib.CoalesceFunc,
-		"coalescelist":    coalesceListFunc,
+		"coalescelist":    stdlib.CoalesceListFunc,
 		"compact":         stdlib.CompactFunc,
 		"concat":          stdlib.ConcatFunc,
 		"contains":        stdlib.ContainsFunc,
@@ -325,6 +325,9 @@ var allTrueFunc = function.New(&function.Spec{
 	Impl: func(args []cty.Value, retType cty.Type) (cty.Value, error) {
 		for it := args[0].ElementIterator(); it.Next(); {
 			_, v := it.Element()
+			if !v.IsKnown() {
+				return cty.UnknownVal(cty.Bool), nil
+			}
 			if v.False() {
 				return cty.False, nil
 			}
@@ -341,35 +344,14 @@ var anyTrueFunc = function.New(&function.Spec{
 	Impl: func(args []cty.Value, retType cty.Type) (cty.Value, error) {
 		for it := args[0].ElementIterator(); it.Next(); {
 			_, v := it.Element()
+			if !v.IsKnown() {
+				return cty.UnknownVal(cty.Bool), nil
+			}
 			if v.True() {
 				return cty.True, nil
 			}
 		}
 		return cty.False, nil
-	},
-})
-
-var coalesceListFunc = function.New(&function.Spec{
-	Params: []function.Parameter{},
-	VarParam: &function.Parameter{
-		Name: "lists",
-		Type: cty.DynamicPseudoType,
-	},
-	Type: func(args []cty.Value) (cty.Type, error) {
-		for _, arg := range args {
-			if !arg.Type().IsListType() && !arg.Type().IsTupleType() {
-				return cty.NilType, fmt.Errorf("arguments must be lists")
-			}
-		}
-		return cty.DynamicPseudoType, nil
-	},
-	Impl: func(args []cty.Value, retType cty.Type) (cty.Value, error) {
-		for _, arg := range args {
-			if arg.LengthInt() > 0 {
-				return arg, nil
-			}
-		}
-		return cty.NilVal, fmt.Errorf("no non-empty list")
 	},
 })
 
@@ -426,6 +408,9 @@ var indexFunc = function.New(&function.Spec{
 		i := 0
 		for it := list.ElementIterator(); it.Next(); {
 			_, v := it.Element()
+			if !v.IsWhollyKnown() {
+				return cty.UnknownVal(cty.Number), nil
+			}
 			if v.Equals(value).True() {
 				return cty.NumberIntVal(int64(i)), nil
 			}
@@ -469,22 +454,23 @@ var lookupFunc = function.New(&function.Spec{
 		m := args[0]
 		key := args[1].AsString()
 
-		if m.Type().IsMapType() || m.Type().IsObjectType() {
-			if m.Type().IsObjectType() {
-				if m.Type().HasAttribute(key) {
-					return m.GetAttr(key), nil
-				}
-			} else {
-				idx := cty.StringVal(key)
-				if m.HasIndex(idx).True() {
-					return m.Index(idx), nil
-				}
+		switch {
+		case m.Type().IsMapType():
+			idx := cty.StringVal(key)
+			if m.HasIndex(idx).True() {
+				return m.Index(idx), nil
+			}
+		case m.Type().IsObjectType():
+			if m.Type().HasAttribute(key) {
+				return m.GetAttr(key), nil
 			}
 		}
 
+		// Return the default value, if any
 		if len(args) > 2 {
 			return args[2], nil
 		}
+
 		return cty.NilVal, fmt.Errorf("key %q not found", key)
 	},
 })
@@ -803,6 +789,9 @@ var yamlEncodeFunc = function.New(&function.Spec{
 	},
 	Type: function.StaticReturnType(cty.String),
 	Impl: func(args []cty.Value, retType cty.Type) (cty.Value, error) {
+		if !args[0].IsWhollyKnown() {
+			return cty.UnknownVal(retType), nil
+		}
 		data := ctyToGo(args[0])
 		out, err := yaml.Marshal(data)
 		if err != nil {
@@ -1760,25 +1749,28 @@ var toStringFunc = function.New(&function.Spec{
 	Type: function.StaticReturnType(cty.String),
 	Impl: func(args []cty.Value, retType cty.Type) (cty.Value, error) {
 		val := args[0]
-		if val.Type() == cty.String {
+		switch val.Type() {
+		case cty.String:
 			return val, nil
-		}
-		if val.Type() == cty.Number {
+		case cty.Number:
 			f, _ := val.AsBigFloat().Float64()
 			if f == math.Trunc(f) {
 				return cty.StringVal(fmt.Sprintf("%d", int64(f))), nil
 			}
 			return cty.StringVal(fmt.Sprintf("%g", f)), nil
-		}
-		if val.Type() == cty.Bool {
+		case cty.Bool:
 			return cty.StringVal(fmt.Sprintf("%t", val.True())), nil
-		}
 		// For complex types, JSON encode
-		jsonBytes, err := json.Marshal(ctyToGo(val))
-		if err != nil {
-			return cty.NilVal, err
+		default:
+			if !val.IsWhollyKnown() {
+				return cty.UnknownVal(retType), nil
+			}
+			jsonBytes, err := json.Marshal(ctyToGo(val))
+			if err != nil {
+				return cty.NilVal, err
+			}
+			return cty.StringVal(string(jsonBytes)), nil
 		}
-		return cty.StringVal(string(jsonBytes)), nil
 	},
 })
 
