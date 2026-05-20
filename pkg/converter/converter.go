@@ -201,6 +201,11 @@ func (*hclConverter) ConvertProgram(
 	return &plugin.ConvertProgramResponse{Diagnostics: allDiags}, nil
 }
 
+func (*hclConverter) ConvertSnippet(ctx context.Context, req *plugin.ConvertSnippetRequest) (*plugin.ConvertSnippetResponse, error) {
+	// TODO[https://github.com/pulumi-labs/pulumi-hcl/issues/151]: Implement
+	return nil, plugin.ErrNotYetImplemented
+}
+
 // callReference identifies a call block by resource name and method name.
 type callReference struct {
 	resourceName string
