@@ -2291,7 +2291,8 @@ resource "aws_ec2_vpd" "example" {}
 
 	err := engine.Run(t.Context())
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), `did you mean "aws_ec2_vpc"?`)
+	assert.EqualError(t, err,
+		`test.hcl:11,10-23: unknown resource type "aws_ec2_vpd"; did you mean "aws_ec2_vpc"?`)
 }
 
 // TestEngine_UnknownDataSourceSuggestsAlternative is the data-source
@@ -2336,5 +2337,6 @@ data "aws_ec2_vpd" "example" {}
 
 	err := engine.Run(t.Context())
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), `did you mean "aws_ec2_vpc"?`)
+	assert.EqualError(t, err,
+		`test.hcl:11,6-19: unknown data source type "aws_ec2_vpd"; did you mean "aws_ec2_vpc"?`)
 }

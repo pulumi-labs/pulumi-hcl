@@ -32,6 +32,25 @@ import (
 
 var ErrNotFound = errors.New("not found")
 
+// NotFoundError signals that the package for a token was loaded successfully
+// but the specific resource or function was not in the schema. Suggestion, if
+// non-empty, is the closest HCL form by Levenshtein distance and is intended
+// to be rendered as a "did you mean" hint by callers that build richer
+// diagnostics. NotFoundError satisfies errors.Is(err, ErrNotFound).
+type NotFoundError struct {
+	Token      string
+	Suggestion string
+}
+
+func (e *NotFoundError) Error() string {
+	if e.Suggestion != "" {
+		return fmt.Sprintf("not found; did you mean %q?", e.Suggestion)
+	}
+	return "not found"
+}
+
+func (e *NotFoundError) Unwrap() error { return ErrNotFound }
+
 type InvalidToken struct {
 	token, reason string
 }
@@ -133,16 +152,14 @@ func ResolveResource(ctx context.Context, loader schema.ReferenceLoader, knownPr
 	return nil, notFoundWithSuggestion(pkg, token, false)
 }
 
-// notFoundWithSuggestion wraps ErrNotFound with a "did you mean" hint when the
-// schema in pkg contains a token within edit-distance reach of hclToken.
-// Returns plain ErrNotFound when no usable candidate is found, so callers can
-// still match with errors.Is(err, ErrNotFound).
+// notFoundWithSuggestion builds a NotFoundError carrying the closest HCL form
+// in pkg by edit distance, or an empty Suggestion when no candidate is within
+// reach. The returned error always satisfies errors.Is(err, ErrNotFound).
 func notFoundWithSuggestion(pkg schema.PackageReference, hclToken string, isFunction bool) error {
-	s := nearestHCLToken(pkg, hclToken, isFunction)
-	if s == "" {
-		return ErrNotFound
+	return &NotFoundError{
+		Token:      hclToken,
+		Suggestion: nearestHCLToken(pkg, hclToken, isFunction),
 	}
-	return fmt.Errorf("%w; did you mean %q?", ErrNotFound, s)
 }
 
 // tokenSearchKey produces a normalized lookup key for a Pulumi token by
