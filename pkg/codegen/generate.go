@@ -17,7 +17,6 @@ package codegen
 import (
 	"fmt"
 	"path/filepath"
-	"regexp"
 	"slices"
 	"sort"
 	"strings"
@@ -1498,8 +1497,7 @@ func (g *generator) genConfigVariable(body *hclwrite.Body, cv *pcl.ConfigVariabl
 
 	// Set the type constraint if the config has a type label.
 	if len(cv.SyntaxNode().(*hclsyntax.Block).Labels) == 2 {
-		typeStr := cv.SyntaxNode().(*hclsyntax.Block).Labels[1]
-		hclTypeStr := convertPCLTypeToHCL(typeStr)
+		hclTypeStr := pclTypeToHCL(cv.Type())
 		block.Body().SetAttributeRaw("type", hclwrite.Tokens{
 			{Type: hclsyntax.TokenIdent, Bytes: []byte(hclTypeStr)},
 		})
@@ -1521,15 +1519,61 @@ func (g *generator) genConfigVariable(body *hclwrite.Body, cv *pcl.ConfigVariabl
 	return nil
 }
 
-// convertPCLTypeToHCL converts a PCL type string to an HCL type string.
-// The main difference is that PCL uses "int" but HCL uses "number".
-// Uses word boundaries to only replace complete "int" tokens, not substrings.
-func convertPCLTypeToHCL(pclType string) string {
-	// Replace "int" only when it's a complete word/token, not part of another word.
-	// This handles cases like "int", "map(int)", "list(int)", "object({prop=list(int)})", etc.
-	// while avoiding incorrect replacements like "integer" -> "numberer".
-	re := regexp.MustCompile(`\bint\b`)
-	return re.ReplaceAllString(pclType, "number")
+// pclTypeToHCL converts a PCL model.Type to an HCL type constraint string.
+// HCL config values are always nullable here, so union(T, None) wrappers
+// produced by PCL's optional() are stripped.
+func pclTypeToHCL(t model.Type) string {
+	if out, ok := t.(*model.OutputType); ok {
+		return pclTypeToHCL(out.ElementType)
+	}
+	if union, ok := t.(*model.UnionType); ok {
+		nonNone := make([]model.Type, 0, len(union.ElementTypes))
+		for _, e := range union.ElementTypes {
+			if e != model.NoneType {
+				nonNone = append(nonNone, e)
+			}
+		}
+		if len(nonNone) == 1 {
+			return pclTypeToHCL(nonNone[0])
+		}
+		return "any"
+	}
+	switch t {
+	case model.StringType:
+		return "string"
+	case model.BoolType:
+		return "bool"
+	case model.NumberType, model.IntType:
+		return "number"
+	case model.DynamicType:
+		return "any"
+	}
+	switch tt := t.(type) {
+	case *model.ListType:
+		return "list(" + pclTypeToHCL(tt.ElementType) + ")"
+	case *model.MapType:
+		return "map(" + pclTypeToHCL(tt.ElementType) + ")"
+	case *model.SetType:
+		return "set(" + pclTypeToHCL(tt.ElementType) + ")"
+	case *model.ObjectType:
+		keys := make([]string, 0, len(tt.Properties))
+		for k := range tt.Properties {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		parts := make([]string, len(keys))
+		for i, k := range keys {
+			parts[i] = k + "=" + pclTypeToHCL(tt.Properties[k])
+		}
+		return "object({" + strings.Join(parts, ", ") + "})"
+	case *model.TupleType:
+		elems := make([]string, len(tt.ElementTypes))
+		for i, et := range tt.ElementTypes {
+			elems[i] = pclTypeToHCL(et)
+		}
+		return "tuple([" + strings.Join(elems, ", ") + "])"
+	}
+	return "any"
 }
 
 func (g *generator) genLocalVariable(body *hclwrite.Body, lv *pcl.LocalVariable) hcl.Diagnostics {
