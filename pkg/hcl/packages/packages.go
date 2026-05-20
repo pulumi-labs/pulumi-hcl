@@ -130,7 +130,19 @@ func ResolveResource(ctx context.Context, loader schema.ReferenceLoader, knownPr
 			return iter.Resource()
 		}
 	}
-	return nil, ErrNotFound
+	return nil, notFoundWithSuggestion(pkg, token, false)
+}
+
+// notFoundWithSuggestion wraps ErrNotFound with a "did you mean" hint when the
+// schema in pkg contains a token within edit-distance reach of hclToken.
+// Returns plain ErrNotFound when no usable candidate is found, so callers can
+// still match with errors.Is(err, ErrNotFound).
+func notFoundWithSuggestion(pkg schema.PackageReference, hclToken string, isFunction bool) error {
+	s := nearestHCLToken(pkg, hclToken, isFunction)
+	if s == "" {
+		return ErrNotFound
+	}
+	return fmt.Errorf("%w; did you mean %q?", ErrNotFound, s)
 }
 
 // tokenSearchKey produces a normalized lookup key for a Pulumi token by
@@ -261,5 +273,5 @@ func ResolveFunction(ctx context.Context, loader schema.ReferenceLoader, knownPr
 		}
 	}
 
-	return nil, ErrNotFound
+	return nil, notFoundWithSuggestion(pkg, token, true)
 }

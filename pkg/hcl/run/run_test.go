@@ -2246,3 +2246,95 @@ resource "test_widget" "w" {
 				`missing discriminator "kind" (expected one of "a", "b")`)
 	})
 }
+
+// TestEngine_UnknownResourceSuggestsAlternative verifies that at `pulumi up`
+// time, an unknown HCL resource type produces a "did you mean" suggestion
+// derived from the schema via edit distance. The Mapper field is left unset
+// to mirror the real language-runtime path, which has no mapper service.
+func TestEngine_UnknownResourceSuggestsAlternative(t *testing.T) {
+	t.Parallel()
+
+	src := []byte(`
+pulumi {
+  required_providers {
+    aws = {
+      source  = "pulumi/aws"
+      version = "1.0.0"
+    }
+  }
+}
+
+resource "aws_ec2_vpd" "example" {}
+`)
+
+	p := parser.NewParser()
+	config, diags := p.ParseSource("test.hcl", src)
+	require.Empty(t, diags)
+
+	mock := &testutil.MockResourceMonitor{}
+	engine := run.NewEngine(config, &run.EngineOptions{
+		ProjectName:     "test-project",
+		StackName:       "dev",
+		ResourceMonitor: mock,
+		WorkDir:         t.TempDir(),
+		RootDir:         t.TempDir(),
+		SchemaLoader: schemaloader.New(t, schema.PackageSpec{
+			Name: "aws",
+			Meta: &schema.MetadataSpec{
+				ModuleFormat: `(.*)(?:/[^/]*)`,
+			},
+			Resources: map[string]schema.ResourceSpec{
+				"aws:ec2/vpc:Vpc": {},
+			},
+		}),
+	})
+
+	err := engine.Run(t.Context())
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), `did you mean "aws_ec2_vpc"?`)
+}
+
+// TestEngine_UnknownDataSourceSuggestsAlternative is the data-source
+// counterpart of TestEngine_UnknownResourceSuggestsAlternative.
+func TestEngine_UnknownDataSourceSuggestsAlternative(t *testing.T) {
+	t.Parallel()
+
+	src := []byte(`
+pulumi {
+  required_providers {
+    aws = {
+      source  = "pulumi/aws"
+      version = "1.0.0"
+    }
+  }
+}
+
+data "aws_ec2_vpd" "example" {}
+`)
+
+	p := parser.NewParser()
+	config, diags := p.ParseSource("test.hcl", src)
+	require.False(t, diags.HasErrors(), diags.Error())
+
+	mock := &testutil.MockResourceMonitor{}
+	engine := run.NewEngine(config, &run.EngineOptions{
+		ProjectName:     "test-project",
+		StackName:       "dev",
+		ResourceMonitor: mock,
+		WorkDir:         t.TempDir(),
+		RootDir:         t.TempDir(),
+		SchemaLoader: schemaloader.New(t, schema.PackageSpec{
+			Name: "aws",
+			Meta: &schema.MetadataSpec{
+				ModuleFormat: `(.*)(?:/[^/]*)`,
+			},
+			Functions: map[string]schema.FunctionSpec{
+				"aws:ec2/getVpc:getVpc": {},
+			},
+		}),
+	})
+
+	err := engine.Run(t.Context())
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), `did you mean "aws_ec2_vpc"?`)
+}
