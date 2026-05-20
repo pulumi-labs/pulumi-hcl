@@ -22,7 +22,7 @@ resource "keywords_lambda_someresource" "lambdaModuleResource" {
   lambda   = "lambda"
   property = "property"
 }
-resource "keywords_lambda" "lambdaResource" {
+resource "keywords_module_lambda" "lambdaResource" {
   builtins = "builtins"
   lambda   = "lambda"
   property = "property"

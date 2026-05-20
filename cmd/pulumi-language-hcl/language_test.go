@@ -133,14 +133,19 @@ var expectedFailures = map[string]string{
 	"l2-plain": "unsupported in HCL:" +
 		" requires that HCL can distinguish between an empty and null List<Object>" +
 		" - not compatible with block syntax",
-	"l2-resource-option-hooks":        "PCL pcl.Hook nodes not yet supported by HCL codegen",
-	"l2-resource-read": "PCL pcl.ReadResource nodes not yet supported by HCL codegen",
+	"l2-resource-option-hooks":       "PCL pcl.Hook nodes not yet supported by HCL codegen",
+	"l2-resource-hook-after-failure": "PCL pcl.Hook nodes not yet supported by HCL codegen",
+	"l2-resource-hook-ignore-errors": "PCL pcl.Hook nodes not yet supported by HCL codegen",
+	"l2-resource-read":               "PCL pcl.ReadResource nodes not yet supported by HCL codegen",
 }
 
 // expectedEjectFailures lists tests whose eject (HCL→PCL conversion) step is
 // expected to fail because the converter does not yet support resources, data
 // sources, or other constructs used by those tests.
-var expectedEjectFailures = map[string]string{}
+var expectedEjectFailures = map[string]string{
+	"l1-config-types-optional": "HCL drops PCL optional() in config types so round-tripping a null-bearing" +
+		" default through HCL loses the nullability the original PCL declared",
+}
 
 func has[K comparable, V any, M ~map[K]V](m M, k K) bool {
 	_, ok := m[k]
