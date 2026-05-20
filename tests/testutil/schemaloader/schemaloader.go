@@ -16,7 +16,6 @@ package schemaloader
 
 import (
 	"context"
-	"testing"
 
 	"github.com/blang/semver"
 	"github.com/pulumi/pulumi/pkg/v3/codegen/schema"
@@ -78,7 +77,10 @@ func (m Mock) findByName(name string) (*schema.Package, bool) {
 }
 
 // New creates a Mock from the given PackageSpecs.
-func New(t testing.TB, schemas ...schema.PackageSpec) schema.ReferenceLoader {
+func New(t interface {
+	require.TestingT
+	Context() context.Context
+}, schemas ...schema.PackageSpec) schema.ReferenceLoader {
 	loader := Mock{}
 	for _, spec := range schemas {
 		pkg, diag, err := schema.BindSpec(spec, loader, schema.ValidationOptions{})

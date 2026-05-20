@@ -48,10 +48,7 @@ func nearestHCLToken(pkg schema.PackageReference, hclToken string, isFunction bo
 			visit(iter.Token())
 		}
 	}
-	if bestDist <= suggestEditDistanceThreshold {
-		return best
-	}
-	return ""
+	return best
 }
 
 // pulumiTokenToHCLForm converts a Pulumi token (e.g. "aws:ec2/vpc:Vpc") to

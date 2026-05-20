@@ -19,7 +19,10 @@ import (
 
 	"github.com/pulumi-labs/pulumi-hcl/tests/testutil/schemaloader"
 	"github.com/pulumi/pulumi/pkg/v3/codegen/schema"
+	"github.com/pulumi/pulumi/pkg/v3/codegen/testing/utils/rapidschema"
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"pgregory.net/rapid"
 )
 
 func TestNearestHCLToken(t *testing.T) {
@@ -100,6 +103,22 @@ func TestPulumiTokenToHCLForm(t *testing.T) {
 			require.Equal(t, tt.want, got)
 		})
 	}
+}
+
+func TestPulumiTokenToHCLFormRoundtrip(t *testing.T) {
+	t.Parallel()
+
+	rapid.Check(t, func(t *rapid.T) {
+		pkg := rapidschema.Package().Draw(t, "pkg")
+		spec, err := pkg.MarshalSpec()
+		require.NoError(t, err)
+		for _, r := range pkg.Resources {
+			hclTk := pulumiTokenToHCLForm(pkg.Reference(), r.Token, false)
+			resolved, err := ResolveResource(t.Context(), schemaloader.New(t, *spec), nil, hclTk)
+			require.NoError(t, err)
+			assert.Equal(t, r, resolved)
+		}
+	})
 }
 
 func TestLevenshtein(t *testing.T) {
