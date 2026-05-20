@@ -32,11 +32,9 @@ import (
 
 var ErrNotFound = errors.New("not found")
 
-// NotFoundError signals that the package for a token was loaded successfully
-// but the specific resource or function was not in the schema. Suggestion, if
-// non-empty, is the closest HCL form by Levenshtein distance and is intended
-// to be rendered as a "did you mean" hint by callers that build richer
-// diagnostics. NotFoundError satisfies errors.Is(err, ErrNotFound).
+// NotFoundError wraps ErrNotFound (via Unwrap) and carries an optional
+// Suggestion: the closest HCL form by edit distance, when the package was
+// loaded but the specific token was missing.
 type NotFoundError struct {
 	Token      string
 	Suggestion string
@@ -152,9 +150,6 @@ func ResolveResource(ctx context.Context, loader schema.ReferenceLoader, knownPr
 	return nil, notFoundWithSuggestion(pkg, token, false)
 }
 
-// notFoundWithSuggestion builds a NotFoundError carrying the closest HCL form
-// in pkg by edit distance, or an empty Suggestion when no candidate is within
-// reach. The returned error always satisfies errors.Is(err, ErrNotFound).
 func notFoundWithSuggestion(pkg schema.PackageReference, hclToken string, isFunction bool) error {
 	return &NotFoundError{
 		Token:      hclToken,

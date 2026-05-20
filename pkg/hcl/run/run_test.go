@@ -2247,10 +2247,6 @@ resource "test_widget" "w" {
 	})
 }
 
-// TestEngine_UnknownResourceSuggestsAlternative verifies that at `pulumi up`
-// time, an unknown HCL resource type produces a "did you mean" suggestion
-// derived from the schema via edit distance. The Mapper field is left unset
-// to mirror the real language-runtime path, which has no mapper service.
 func TestEngine_UnknownResourceSuggestsAlternative(t *testing.T) {
 	t.Parallel()
 
@@ -2295,8 +2291,6 @@ resource "aws_ec2_vpd" "example" {}
 		`test.hcl:11,10-23: unknown resource type "aws_ec2_vpd"; did you mean "aws_ec2_vpc"?`)
 }
 
-// TestEngine_UnknownDataSourceSuggestsAlternative is the data-source
-// counterpart of TestEngine_UnknownResourceSuggestsAlternative.
 func TestEngine_UnknownDataSourceSuggestsAlternative(t *testing.T) {
 	t.Parallel()
 

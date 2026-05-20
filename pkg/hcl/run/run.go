@@ -206,12 +206,9 @@ type inheritableOpts struct {
 	RetainOnDelete *bool
 }
 
-// unknownTokenDiag converts an error returned by packages.ResolveResource /
-// ResolveFunction into a properly-located hcl.Diagnostic when the underlying
-// cause is a NotFoundError. Other errors fall through with a generic wrap so
-// callers can still surface them via fmt.Errorf. typeRange must point to the
-// HCL type label so the engine renders the diagnostic at the user's call
-// site rather than as a context-free string.
+// unknownTokenDiag turns a packages.NotFoundError into an hcl.Diagnostic
+// anchored at typeRange. Other errors pass through unchanged for the caller
+// to wrap.
 func unknownTokenDiag(kind string, typeRange hcl.Range, err error) error {
 	var nfe *packages.NotFoundError
 	if !errors.As(err, &nfe) {

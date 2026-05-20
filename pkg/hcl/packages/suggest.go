@@ -21,17 +21,10 @@ import (
 	"github.com/pulumi/pulumi/pkg/v3/codegen/schema"
 )
 
-// suggestEditDistanceThreshold is the maximum edit distance between the user's
-// HCL token and a candidate token from the schema for which we will surface a
-// "did you mean" suggestion. Picked empirically so a one-character typo on a
-// short member name still triggers, while completely unrelated names do not.
+// suggestEditDistanceThreshold caps how far a candidate can be from the
+// user's input before we stay silent rather than emit a misleading hint.
 const suggestEditDistanceThreshold = 3
 
-// nearestHCLToken returns the HCL form of the schema token in pkg closest to
-// hclToken under Levenshtein distance, or "" if no candidate is within
-// suggestEditDistanceThreshold. isFunction selects pkg.Functions() over
-// pkg.Resources(). Callers must only invoke this when pkg has been
-// successfully loaded but a specific resource/function lookup failed.
 func nearestHCLToken(pkg schema.PackageReference, hclToken string, isFunction bool) string {
 	bestDist := suggestEditDistanceThreshold + 1
 	var best string
@@ -62,9 +55,9 @@ func nearestHCLToken(pkg schema.PackageReference, hclToken string, isFunction bo
 }
 
 // pulumiTokenToHCLForm converts a Pulumi token (e.g. "aws:ec2/vpc:Vpc") to
-// the HCL form that the resolver would accept (e.g. "aws_ec2_vpc"). It uses
-// pkg.TokenToModule so bridged-provider tokens (with their schema
-// ModuleFormat regex) are normalized correctly.
+// the HCL form the resolver accepts (e.g. "aws_ec2_vpc"). TokenToModule
+// applies the schema's ModuleFormat regex, so bridged-provider tokens
+// normalize correctly.
 func pulumiTokenToHCLForm(pkg schema.PackageReference, token string, isFunction bool) string {
 	parts := strings.SplitN(token, ":", 3)
 	if len(parts) < 3 {
@@ -110,8 +103,6 @@ func camelToSnake(s string) string {
 	return b.String()
 }
 
-// levenshtein computes the edit distance between two ASCII-ish strings using
-// the standard two-row dynamic-programming variant.
 func levenshtein(a, b string) int {
 	if a == b {
 		return 0

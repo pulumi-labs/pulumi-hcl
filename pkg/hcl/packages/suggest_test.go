@@ -25,26 +25,21 @@ import (
 func TestNearestHCLToken(t *testing.T) {
 	t.Parallel()
 
-	loader := schemaloader.New(t,
-		// Bridged-style aws schema mirroring the real pulumi-aws layout: the
-		// ModuleFormat regex strips the trailing "/<Member>" so candidate HCL
-		// forms are computed against the normalized module.
-		schema.PackageSpec{
-			Name: "aws",
-			Meta: &schema.MetadataSpec{
-				ModuleFormat: `(.*)(?:/[^/]*)`,
-			},
-			Resources: map[string]schema.ResourceSpec{
-				"aws:ec2/vpc:Vpc":                  {},
-				"aws:s3/bucket:Bucket":             {},
-				"aws:lb/loadBalancer:LoadBalancer": {},
-			},
-			Functions: map[string]schema.FunctionSpec{
-				"aws:ec2/getVpc:getVpc":                             {},
-				"aws:index/getAvailabilityZone:getAvailabilityZone": {},
-			},
+	loader := schemaloader.New(t, schema.PackageSpec{
+		Name: "aws",
+		Meta: &schema.MetadataSpec{
+			ModuleFormat: `(.*)(?:/[^/]*)`,
 		},
-	)
+		Resources: map[string]schema.ResourceSpec{
+			"aws:ec2/vpc:Vpc":                  {},
+			"aws:s3/bucket:Bucket":             {},
+			"aws:lb/loadBalancer:LoadBalancer": {},
+		},
+		Functions: map[string]schema.FunctionSpec{
+			"aws:ec2/getVpc:getVpc":                             {},
+			"aws:index/getAvailabilityZone:getAvailabilityZone": {},
+		},
+	})
 	pkg, err := loader.LoadPackageReferenceV2(t.Context(), &schema.PackageDescriptor{Name: "aws"})
 	require.NoError(t, err)
 
