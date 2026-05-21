@@ -1336,11 +1336,11 @@ func TestNotImplemented(t *testing.T) {
 		require.NoError(t, err)
 		require.False(t, genDiags.HasErrors(), genDiags.Error())
 
-		generatedHCL := string(files["main.hcl"])
+		generatedHCL := string(files["main.tf"])
 		require.NotEmpty(t, generatedHCL)
 
 		hclParser := parser.NewParser()
-		_, hclDiags := hclParser.ParseSource("main.hcl", files["main.hcl"])
+		_, hclDiags := hclParser.ParseSource("main.tf", files["main.tf"])
 		require.False(t, hclDiags.HasErrors(), hclDiags.Error())
 
 		return generatedHCL
@@ -1411,7 +1411,7 @@ output someOutput {
 	require.False(t, genDiags.HasErrors(), genDiags.Error())
 
 	hclParser := parser.NewParser()
-	_, hclDiags := hclParser.ParseSource("main.hcl", files["main.hcl"])
+	_, hclDiags := hclParser.ParseSource("main.tf", files["main.tf"])
 	require.False(t, hclDiags.HasErrors(), hclDiags.Error())
 }
 
@@ -1712,7 +1712,7 @@ func TestResourceModuleFormat(t *testing.T) {
 func TestLocalExecProvisioner(t *testing.T) {
 	t.Parallel()
 
-	src := `pulumi {
+	src := `terraform {
   required_providers {
     aws = {
       source  = "pulumi/aws"
@@ -1757,7 +1757,7 @@ output "instance_ami" {
 	loader := schemaloader.New(t, awsSchema)
 
 	hclParser := parser.NewParser()
-	config, hclDiags := hclParser.ParseSource("main.hcl", []byte(src))
+	config, hclDiags := hclParser.ParseSource("main.tf", []byte(src))
 	require.False(t, hclDiags.HasErrors(), hclDiags.Error())
 
 	mock := &testutil.MockResourceMonitor{}
@@ -2054,7 +2054,7 @@ func TestModuleDataSourceDependencies(t *testing.T) {
 	// This exercises the module-prefix dependency tracking in
 	// processDataSourceInContext for both expression dependencies and depends_on.
 	parentHCL := `
-pulumi {
+terraform {
   required_providers {
     test = {
       source  = "pulumi/test"
@@ -2073,7 +2073,7 @@ output "result" {
 }
 `
 	modHCL := `
-pulumi {
+terraform {
   required_providers {
     test = {
       source  = "pulumi/test"
@@ -2104,9 +2104,9 @@ output "result" {
 }
 `
 	dir := t.TempDir()
-	require.NoError(t, os.WriteFile(filepath.Join(dir, "main.hcl"), []byte(parentHCL), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "main.tf"), []byte(parentHCL), 0o644))
 	require.NoError(t, os.MkdirAll(filepath.Join(dir, "mod"), 0o755))
-	require.NoError(t, os.WriteFile(filepath.Join(dir, "mod", "main.hcl"), []byte(modHCL), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "mod", "main.tf"), []byte(modHCL), 0o644))
 
 	hclParser := parser.NewParser()
 	config, diags := hclParser.ParseDirectory(dir)
@@ -2188,7 +2188,7 @@ func TestModuleScopeIsolation(t *testing.T) {
 
 	// The parent defines a local that the module tries to reference.
 	parentHCL := `
-pulumi {
+terraform {
   required_providers {
     test = {
       source  = "pulumi/test"
@@ -2212,7 +2212,7 @@ module "mod" {
 		// The module's resource references local.parentName, which only
 		// exists in the parent scope and should not be visible here.
 		modHCL := `
-pulumi {
+terraform {
   required_providers {
     test = {
       source  = "pulumi/test"
@@ -2226,9 +2226,9 @@ resource "test_bucket" "bucket" {
 }
 `
 		dir := t.TempDir()
-		require.NoError(t, os.WriteFile(filepath.Join(dir, "main.hcl"), []byte(parentHCL), 0o644))
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "main.tf"), []byte(parentHCL), 0o644))
 		require.NoError(t, os.MkdirAll(filepath.Join(dir, "mod"), 0o755))
-		require.NoError(t, os.WriteFile(filepath.Join(dir, "mod", "main.hcl"), []byte(modHCL), 0o644))
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "mod", "main.tf"), []byte(modHCL), 0o644))
 
 		hclParser := parser.NewParser()
 		config, diags := hclParser.ParseDirectory(dir)
@@ -2257,7 +2257,7 @@ resource "test_bucket" "bucket" {
 		// The module's data source references local.parentName, which only
 		// exists in the parent scope and should not be visible here.
 		modHCL := `
-pulumi {
+terraform {
   required_providers {
     test = {
       source  = "pulumi/test"
@@ -2271,9 +2271,9 @@ data "test_getlen" "invoke_0" {
 }
 `
 		dir := t.TempDir()
-		require.NoError(t, os.WriteFile(filepath.Join(dir, "main.hcl"), []byte(parentHCL), 0o644))
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "main.tf"), []byte(parentHCL), 0o644))
 		require.NoError(t, os.MkdirAll(filepath.Join(dir, "mod"), 0o755))
-		require.NoError(t, os.WriteFile(filepath.Join(dir, "mod", "main.hcl"), []byte(modHCL), 0o644))
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "mod", "main.tf"), []byte(modHCL), 0o644))
 
 		hclParser := parser.NewParser()
 		config, diags := hclParser.ParseDirectory(dir)
@@ -2358,7 +2358,7 @@ func testConvertedPCLWithComponent(
 	require.NoError(t, err)
 	require.False(t, bindDiags.HasErrors(), bindDiags.Error())
 
-	// Generate HCL (produces parent main.hcl + component subdirs).
+	// Generate HCL (produces parent main.tf + component subdirs).
 	files, genDiags, err := codegen.GenerateProgram(program)
 	require.NoError(t, err)
 	require.False(t, genDiags.HasErrors(), genDiags.Error())
@@ -2409,14 +2409,14 @@ func testConvertedPCLWithComponent(
 }
 
 // TestRequiredProvidersWithoutVersion exercises the language host with a
-// `pulumi { required_providers { ... } }` block whose entries omit the
+// `terraform { required_providers { ... } }` block whose entries omit the
 // optional `version` attribute. SDK documentation snippets generated with
 // codegen.SkipRequiredProvidersVersion() produce input of this shape, so
 // the language host must accept it.
 func TestRequiredProvidersWithoutVersion(t *testing.T) {
 	t.Parallel()
 
-	src := `pulumi {
+	src := `terraform {
   required_providers {
     aws = {
       source = "pulumi/aws"
@@ -2455,7 +2455,7 @@ output "instance_ami" {
 	loader := schemaloader.New(t, awsSchema)
 
 	hclParser := parser.NewParser()
-	config, hclDiags := hclParser.ParseSource("main.hcl", []byte(src))
+	config, hclDiags := hclParser.ParseSource("main.tf", []byte(src))
 	require.False(t, hclDiags.HasErrors(), hclDiags.Error())
 
 	mock := &testutil.MockResourceMonitor{}

@@ -109,8 +109,8 @@ func (host *LanguageHost) GetRequiredPackages(
 	}
 
 	var pkgs []*pulumirpc.PackageDependency
-	if config.Pulumi != nil {
-		for alias, provider := range config.Pulumi.RequiredProviders {
+	if config.Terraform != nil {
+		for alias, provider := range config.Terraform.RequiredProviders {
 
 			version := func(v *semver.Version) string {
 				if v == nil {
@@ -227,7 +227,7 @@ func (host *LanguageHost) Run(
 		}, nil
 	}
 
-	if config.Pulumi != nil && (config.Pulumi.Component != nil || config.Pulumi.Package != nil) {
+	if config.Terraform != nil && (config.Terraform.Component != nil || config.Terraform.Package != nil) {
 		return &pulumirpc.RunResponse{
 			Error: "pulumi.component and pulumi.package blocks are only valid in " +
 				"multi-language component modules, not in regular programs",
@@ -345,8 +345,8 @@ func (host *LanguageHost) GetProgramDependencies(
 	var deps []*pulumirpc.DependencyInfo
 
 	// Extract dependencies from pulumi.required_providers
-	if config.Pulumi != nil {
-		for name, provider := range config.Pulumi.RequiredProviders {
+	if config.Terraform != nil {
+		for name, provider := range config.Terraform.RequiredProviders {
 			dep := &pulumirpc.DependencyInfo{
 				Name: name,
 			}
@@ -385,7 +385,7 @@ func (host *LanguageHost) RunPlugin(
 		modulePath = req.Info.ProgramDirectory
 	}
 
-	// Create the provider (name and version are derived from the module's pulumi {} block)
+	// Create the provider (name and version are derived from the module's terraform {} block)
 	provider, err := NewHCLProvider(modulePath, req.LoaderTarget)
 	if err != nil {
 		errBytes := fmt.Appendf(nil, "Error creating provider: %v\n", err)
@@ -460,7 +460,7 @@ func (host *LanguageHost) GenerateProgram(
 ) (*pulumirpc.GenerateProgramResponse, error) {
 	if len(req.Source) == 0 {
 		return &pulumirpc.GenerateProgramResponse{
-			Source: map[string][]byte{"main.hcl": {}},
+			Source: map[string][]byte{"main.tf": {}},
 		}, nil
 	}
 

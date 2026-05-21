@@ -93,8 +93,8 @@ func (p *Parser) parseFiles(files map[string]*hcl.File) (*ast.Config, hcl.Diagno
 // parseBlock parses a single top-level block.
 func (p *Parser) parseBlock(config *ast.Config, block *hcl.Block) hcl.Diagnostics {
 	switch block.Type {
-	case "pulumi":
-		return p.parsePulumiBlock(config, block)
+	case "terraform":
+		return p.parseTerraformBlock(config, block)
 	case "provider":
 		return p.parseProviderBlock(config, block)
 	case "variable":
@@ -125,83 +125,83 @@ func (p *Parser) parseBlock(config *ast.Config, block *hcl.Block) hcl.Diagnostic
 	}
 }
 
-// parsePulumiBlock parses a pulumi block.
-func (p *Parser) parsePulumiBlock(config *ast.Config, block *hcl.Block) hcl.Diagnostics {
+// parseTerraformBlock parses a terraform block.
+func (p *Parser) parseTerraformBlock(config *ast.Config, block *hcl.Block) hcl.Diagnostics {
 	var diags hcl.Diagnostics
 
-	if config.Pulumi != nil {
+	if config.Terraform != nil {
 		diags = append(diags, &hcl.Diagnostic{
 			Severity: hcl.DiagError,
-			Summary:  "Duplicate pulumi block",
-			Detail:   "Only one pulumi block is allowed per configuration.",
+			Summary:  "Duplicate terraform block",
+			Detail:   "Only one terraform block is allowed per configuration.",
 			Subject:  &block.DefRange,
 		})
 		return diags
 	}
 
-	content, contentDiags := block.Body.Content(pulumiSchema)
+	content, contentDiags := block.Body.Content(terraformSchema)
 	diags = append(diags, contentDiags...)
 
 	if len(block.Labels) != 0 {
 		diags = append(diags, &hcl.Diagnostic{
 			Severity: hcl.DiagError,
-			Summary:  "Invalid pulumi block",
-			Detail:   "The pulumi block does not accept any labels.",
+			Summary:  "Invalid terraform block",
+			Detail:   "The terraform block does not accept any labels.",
 			Subject:  &block.DefRange,
 		})
 		return diags
 	}
 
-	pulumi := &ast.Pulumi{
+	tf := &ast.Terraform{
 		RequiredProviders: make(map[string]*ast.RequiredProvider),
 		DeclRange:         block.DefRange,
 	}
 
 	if attr, ok := content.Attributes["required_version_range"]; ok {
-		pulumi.RequiredVersionRange = attr.Expr
+		tf.RequiredVersionRange = attr.Expr
 	}
 
 	for _, subBlock := range content.Blocks {
 		switch subBlock.Type {
 		case "required_providers":
-			providerDiags := p.parseRequiredProviders(pulumi, subBlock)
+			providerDiags := p.parseRequiredProviders(tf, subBlock)
 			diags = append(diags, providerDiags...)
 		case "component":
-			if pulumi.Component != nil {
+			if tf.Component != nil {
 				diags = append(diags, &hcl.Diagnostic{
 					Severity: hcl.DiagError,
 					Summary:  "Duplicate component block",
-					Detail:   "Only one component block is allowed per pulumi block.",
+					Detail:   "Only one component block is allowed per terraform block.",
 					Subject:  &subBlock.DefRange,
 				})
 				continue
 			}
-			comp, compDiags := p.parsePulumiComponentBlock(subBlock)
+			comp, compDiags := p.parseTerraformComponentBlock(subBlock)
 			diags = append(diags, compDiags...)
-			pulumi.Component = comp
+			tf.Component = comp
 		case "package":
-			if pulumi.Package != nil {
+			if tf.Package != nil {
 				diags = append(diags, &hcl.Diagnostic{
 					Severity: hcl.DiagError,
 					Summary:  "Duplicate package block",
-					Detail:   "Only one package block is allowed per pulumi block.",
+					Detail:   "Only one package block is allowed per terraform block.",
 					Subject:  &subBlock.DefRange,
 				})
 				continue
 			}
-			pkg, pkgDiags := p.parsePulumiPackageBlock(subBlock)
+			pkg, pkgDiags := p.parseTerraformPackageBlock(subBlock)
 			diags = append(diags, pkgDiags...)
-			pulumi.Package = pkg
+			tf.Package = pkg
 		}
 	}
 
-	config.Pulumi = pulumi
+	config.Terraform = tf
 	return diags
 }
 
-// parsePulumiComponentBlock parses a component sub-block within pulumi.
-func (p *Parser) parsePulumiComponentBlock(block *hcl.Block) (*ast.ComponentBlock, hcl.Diagnostics) {
-	content, diags := block.Body.Content(pulumiComponentSchema)
+// parseTerraformComponentBlock parses a component sub-block within terraform.
+func (p *Parser) parseTerraformComponentBlock(block *hcl.Block) (*ast.ComponentBlock, hcl.Diagnostics) {
+	content, diags := block.Body.Content(terraformComponentSchema)
 
 	comp := &ast.ComponentBlock{
 		Module:    "index",
@@ -243,9 +243,9 @@ func (p *Parser) parsePulumiComponentBlock(block *hcl.Block) (*ast.ComponentBloc
 	return comp, diags
 }
 
-// parsePulumiPackageBlock parses a package sub-block within pulumi.
-func (p *Parser) parsePulumiPackageBlock(block *hcl.Block) (*ast.PackageBlock, hcl.Diagnostics) {
-	content, diags := block.Body.Content(pulumiPackageSchema)
+// parseTerraformPackageBlock parses a package sub-block within terraform.
+func (p *Parser) parseTerraformPackageBlock(block *hcl.Block) (*ast.PackageBlock, hcl.Diagnostics) {
+	content, diags := block.Body.Content(terraformPackageSchema)
 
 	pkg := &ast.PackageBlock{
 		Version:   "0.0.0-dev",
@@ -288,7 +288,7 @@ func (p *Parser) parsePulumiPackageBlock(block *hcl.Block) (*ast.PackageBlock, h
 }
 
 // parseRequiredProviders parses the required_providers block.
-func (p *Parser) parseRequiredProviders(pulumi *ast.Pulumi, block *hcl.Block) hcl.Diagnostics {
+func (p *Parser) parseRequiredProviders(tf *ast.Terraform, block *hcl.Block) hcl.Diagnostics {
 	var diags hcl.Diagnostics
 
 	attrs, attrDiags := block.Body.JustAttributes()
@@ -319,7 +319,7 @@ func (p *Parser) parseRequiredProviders(pulumi *ast.Pulumi, block *hcl.Block) hc
 			}
 		}
 
-		pulumi.RequiredProviders[name] = provider
+		tf.RequiredProviders[name] = provider
 	}
 
 	return diags

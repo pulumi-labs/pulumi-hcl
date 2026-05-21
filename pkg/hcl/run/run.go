@@ -961,8 +961,8 @@ func (e *Engine) registerResourceInstanceInContext(
 
 	if opts.Version == "" {
 		pkgName := packageNameFromResourceType(res.Type)
-		if e.config.Pulumi != nil {
-			if req, ok := e.config.Pulumi.RequiredProviders[pkgName]; ok && req.Version != "" {
+		if e.config.Terraform != nil {
+			if req, ok := e.config.Terraform.RequiredProviders[pkgName]; ok && req.Version != "" {
 				opts.Version = ExtractSemverFromConstraint(req.Version)
 			}
 		}
@@ -1437,11 +1437,11 @@ func (e *Engine) packageRefForType(hclToken string) PackageRef {
 }
 
 func (e *Engine) knownProviders() []string {
-	if e.config.Pulumi == nil {
+	if e.config.Terraform == nil {
 		return nil
 	}
-	providers := make([]string, 0, len(e.config.Pulumi.RequiredProviders))
-	for name := range e.config.Pulumi.RequiredProviders {
+	providers := make([]string, 0, len(e.config.Terraform.RequiredProviders))
+	for name := range e.config.Terraform.RequiredProviders {
 		providers = append(providers, name)
 	}
 	return providers
@@ -2755,13 +2755,13 @@ func (e *Engine) evaluateCheckRules(
 // The version requirement is specified via the pulumi block's requiredVersionRange attribute.
 func (e *Engine) checkPulumiVersion(ctx context.Context) error {
 	// Check if the pulumi block exists and has a version requirement
-	if e.config.Pulumi == nil || e.config.Pulumi.RequiredVersionRange == nil {
+	if e.config.Terraform == nil || e.config.Terraform.RequiredVersionRange == nil {
 		// No version requirement specified
 		return nil
 	}
 
 	// Evaluate the requiredVersionRange expression
-	versionVal, diags := e.evaluator.EvaluateExpression(e.config.Pulumi.RequiredVersionRange)
+	versionVal, diags := e.evaluator.EvaluateExpression(e.config.Terraform.RequiredVersionRange)
 	if diags.HasErrors() {
 		return fmt.Errorf("evaluating requiredVersionRange: %s", diags.Error())
 	}

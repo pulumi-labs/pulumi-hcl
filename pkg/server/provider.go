@@ -78,12 +78,12 @@ func NewHCLProvider(modulePath, addr string) (*HCLProvider, error) {
 		return nil, fmt.Errorf("loading module: %w", err)
 	}
 
-	if loaded.Config.Pulumi == nil || loaded.Config.Pulumi.Component == nil {
-		return nil, fmt.Errorf("module at %q is missing a pulumi { component { ... } } block", modulePath)
+	if loaded.Config.Terraform == nil || loaded.Config.Terraform.Component == nil {
+		return nil, fmt.Errorf("module at %q is missing a terraform { component { ... } } block", modulePath)
 	}
 
-	comp := loaded.Config.Pulumi.Component
-	pkg := loaded.Config.Pulumi.Package
+	comp := loaded.Config.Terraform.Component
+	pkg := loaded.Config.Terraform.Package
 
 	pkgName := filepath.Base(modulePath)
 	pkgVersion := "0.0.0-dev"

@@ -103,9 +103,9 @@ package "random" {
 
 func TestOutputFileName(t *testing.T) {
 	t.Parallel()
-	assert.Equal(t, "main.hcl", outputFileName("main.pp"))
-	assert.Equal(t, "output.hcl", outputFileName("output.pp"))
-	assert.Equal(t, "no-ext.hcl", outputFileName("no-ext"))
+	assert.Equal(t, "main.tf", outputFileName("main.pp"))
+	assert.Equal(t, "output.tf", outputFileName("output.pp"))
+	assert.Equal(t, "no-ext.tf", outputFileName("no-ext"))
 }
 
 // TestPickUnionVariantFromObjectExpr_NonStringDiscriminator pins the

@@ -1258,7 +1258,7 @@ output "cidr_block" {
   value = var.cidr
 }
 `
-	if err := os.WriteFile(moduleDir+"/main.hcl", []byte(moduleMain), 0644); err != nil {
+	if err := os.WriteFile(moduleDir+"/main.tf", []byte(moduleMain), 0644); err != nil {
 		t.Fatalf("writing module file: %v", err)
 	}
 
@@ -1273,7 +1273,7 @@ output "vpc_id" {
   value = module.vpc.vpc_id
 }
 `
-	if err := os.WriteFile(tmpDir+"/main.hcl", []byte(rootMain), 0644); err != nil {
+	if err := os.WriteFile(tmpDir+"/main.tf", []byte(rootMain), 0644); err != nil {
 		t.Fatalf("writing root file: %v", err)
 	}
 
@@ -1383,14 +1383,14 @@ resource "aws_vpc" "main" {
   cidr_block = "10.0.0.0/16"
 }
 `
-	require.NoError(t, os.WriteFile(moduleDir+"/main.hcl", []byte(moduleMain), 0644))
+	require.NoError(t, os.WriteFile(moduleDir+"/main.tf", []byte(moduleMain), 0644))
 
 	rootMain := `
 module "vpc.primary" {
   source = "./modules/vpc"
 }
 `
-	require.NoError(t, os.WriteFile(tmpDir+"/main.hcl", []byte(rootMain), 0644))
+	require.NoError(t, os.WriteFile(tmpDir+"/main.tf", []byte(rootMain), 0644))
 
 	p := parser.NewParser()
 	config, diags := p.ParseDirectory(tmpDir)
@@ -1520,10 +1520,10 @@ func runSensitiveMetaArgTest(t *testing.T, rootMain string) error {
 
 	moduleDir := tmpDir + "/modules/m"
 	require.NoError(t, os.MkdirAll(moduleDir, 0755))
-	require.NoError(t, os.WriteFile(moduleDir+"/main.hcl", []byte(`
+	require.NoError(t, os.WriteFile(moduleDir+"/main.tf", []byte(`
 output "name" { value = "leaf" }
 `), 0644))
-	require.NoError(t, os.WriteFile(tmpDir+"/main.hcl", []byte(rootMain), 0644))
+	require.NoError(t, os.WriteFile(tmpDir+"/main.tf", []byte(rootMain), 0644))
 
 	p := parser.NewParser()
 	config, diags := p.ParseDirectory(tmpDir)
@@ -1653,7 +1653,7 @@ output "out_f" { value = var.input }
 output "out_g" { value = var.input }
 output "out_h" { value = var.input }
 `
-	if err := os.WriteFile(moduleDir+"/main.hcl", []byte(moduleMain), 0644); err != nil {
+	if err := os.WriteFile(moduleDir+"/main.tf", []byte(moduleMain), 0644); err != nil {
 		t.Fatalf("writing module file: %v", err)
 	}
 
@@ -1663,7 +1663,7 @@ module "multi" {
   input  = "hello"
 }
 `
-	if err := os.WriteFile(tmpDir+"/main.hcl", []byte(rootMain), 0644); err != nil {
+	if err := os.WriteFile(tmpDir+"/main.tf", []byte(rootMain), 0644); err != nil {
 		t.Fatalf("writing root file: %v", err)
 	}
 
@@ -2251,7 +2251,7 @@ func TestEngine_UnknownResourceSuggestsAlternative(t *testing.T) {
 	t.Parallel()
 
 	src := []byte(`
-pulumi {
+terraform {
   required_providers {
     aws = {
       source  = "pulumi/aws"
@@ -2295,7 +2295,7 @@ func TestEngine_UnknownDataSourceSuggestsAlternative(t *testing.T) {
 	t.Parallel()
 
 	src := []byte(`
-pulumi {
+terraform {
   required_providers {
     aws = {
       source  = "pulumi/aws"

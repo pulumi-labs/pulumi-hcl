@@ -45,7 +45,7 @@ type generateProgramOptions struct {
 }
 
 // SkipRequiredProvidersVersion omits the `version` attribute from each entry
-// of an emitted `pulumi { required_providers { ... } }` block. The `source`
+// of an emitted `terraform { required_providers { ... } }` block. The `source`
 // attribute is still emitted so symbol resolution remains unambiguous. Use
 // for snippets embedded in SDK documentation, where pinning a version would
 // bake the SDK's in-development version into every regenerated docstring.
@@ -53,13 +53,13 @@ func SkipRequiredProvidersVersion() GenerateProgramOption {
 	return func(o *generateProgramOptions) { o.skipRequiredProvidersVersion = true }
 }
 
-// GenerateProgram generates HCL source code from a bound PCL program.
+// GenerateProgram generates Terraform HCL source code from a bound PCL program.
 //
 // The output preserves the program's source-file structure: each PCL file
-// produces a corresponding ".hcl" file containing the nodes that were declared
+// produces a corresponding ".tf" file containing the nodes that were declared
 // in it. Required-providers entries are placed in the first source file that
 // declared each package via a `package` block; references with no declaring
-// file are placed in main.hcl (or, if no main.pp exists, the first file in
+// file are placed in main.tf (or, if no main.pp exists, the first file in
 // alphabetical order).
 func GenerateProgram(program *pcl.Program, opts ...GenerateProgramOption) (map[string][]byte, hcl.Diagnostics, error) {
 	var o generateProgramOptions
@@ -122,7 +122,7 @@ func GenerateProgram(program *pcl.Program, opts ...GenerateProgramOption) (map[s
 		f := hclwrite.NewEmptyFile()
 		body := f.Body()
 
-		d := gen.genPulumiHeader(body, providersByFile[srcName], pulumiBlocksByFile[srcName])
+		d := gen.genTerraformHeader(body, providersByFile[srcName], pulumiBlocksByFile[srcName])
 		diags = append(diags, d...)
 
 		for _, ds := range invokesByFile[srcName] {
@@ -158,7 +158,7 @@ func GenerateProgram(program *pcl.Program, opts ...GenerateProgramOption) (map[s
 				d := gen.genLocalVariable(body, n)
 				diags = append(diags, d...)
 			case *pcl.PulumiBlock:
-				// Emitted by genPulumiHeader above.
+				// Emitted by genTerraformHeader above.
 			case *pcl.Component:
 				d := gen.genModule(body, n)
 				diags = append(diags, d...)
@@ -180,8 +180,8 @@ func GenerateProgram(program *pcl.Program, opts ...GenerateProgramOption) (map[s
 
 	if len(files) == 0 {
 		// A program with no source content still needs at least one file so the
-		// runtime can locate a module. Emit an empty main.hcl.
-		files["main.hcl"] = nil
+		// runtime can locate a module. Emit an empty main.tf.
+		files["main.tf"] = nil
 	}
 
 	for componentDir, component := range program.CollectComponents() {
@@ -283,10 +283,10 @@ func nodeSourceFile(node pcl.Node) string {
 	return "main.pp"
 }
 
-// outputFileName converts a PCL source filename to its HCL output counterpart
-// by replacing the ".pp" extension with ".hcl".
+// outputFileName converts a PCL source filename to its Terraform output counterpart
+// by replacing the ".pp" extension with ".tf".
 func outputFileName(srcName string) string {
-	return strings.TrimSuffix(srcName, ".pp") + ".hcl"
+	return strings.TrimSuffix(srcName, ".pp") + ".tf"
 }
 
 type rangeKind int
@@ -600,14 +600,14 @@ type spilledCall struct {
 	sourceFile   string
 }
 
-// genPulumiHeader emits the per-file `pulumi { ... }` block, combining
+// genTerraformHeader emits the per-file `terraform { ... }` block, combining
 // required-provider entries (sourced from the program's PackageReferences)
-// with a PCL `pulumi { requiredVersionRange = ... }` node when present in
-// this file. Returns no diags except those produced by genPulumiBlockBody.
+// with a PCL `pulumi { requiredVersionRange = ... }` node (PCL syntax) when present in
+// this file. Returns no diags except those produced by genTerraformBlockBody.
 //
 // When neither providers nor a PulumiBlock node are present, no block is
 // emitted (and no trailing newline is added).
-func (g *generator) genPulumiHeader(
+func (g *generator) genTerraformHeader(
 	body *hclwrite.Body, pkgRefs []schema.PackageReference, pb *pcl.PulumiBlock,
 ) hcl.Diagnostics {
 	providers := make([]schema.PackageReference, 0, len(pkgRefs))
@@ -624,7 +624,7 @@ func (g *generator) genPulumiHeader(
 		return nil
 	}
 
-	block := body.AppendNewBlock("pulumi", nil)
+	block := body.AppendNewBlock("terraform", nil)
 	var diags hcl.Diagnostics
 	if hasVersion {
 		d := g.genExpression(block.Body(), "required_version_range", pb.RequiredVersion, schema.StringType)

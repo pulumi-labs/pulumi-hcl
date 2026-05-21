@@ -105,7 +105,7 @@ func (*hclConverter) ConvertProgram(
 		return nil, fmt.Errorf("writing Pulumi.yaml: %w", err)
 	}
 
-	// Collect every .hcl file in the source tree.
+	// Collect every .tf file in the source tree.
 	type hclSource struct {
 		relPath string
 		content []byte
@@ -121,7 +121,7 @@ func (*hclConverter) ConvertProgram(
 			}
 			return nil
 		}
-		if !strings.HasSuffix(d.Name(), ".hcl") {
+		if !strings.HasSuffix(d.Name(), ".tf") {
 			return nil
 		}
 		relPath, err := filepath.Rel(req.SourceDirectory, path)
@@ -183,7 +183,7 @@ func (*hclConverter) ConvertProgram(
 		}
 		allDiags = append(allDiags, diags...)
 
-		dstRelPath := strings.TrimSuffix(p.relPath, ".hcl") + ".pp"
+		dstRelPath := strings.TrimSuffix(p.relPath, ".tf") + ".pp"
 		dstPath := filepath.Join(req.TargetDirectory, dstRelPath)
 		if err := os.MkdirAll(filepath.Dir(dstPath), 0o755); err != nil {
 			return nil, fmt.Errorf("creating directory for %s: %w", dstRelPath, err)
@@ -322,7 +322,7 @@ func (ft *fileTransformer) scanProviders(body *hclsyntax.Body) {
 		seen[name] = true
 	}
 	for _, block := range body.Blocks {
-		if block.Type != "pulumi" {
+		if block.Type != "terraform" {
 			continue
 		}
 		for _, sub := range block.Body.Blocks {
@@ -778,7 +778,7 @@ func (ft *fileTransformer) emitFile(
 			}
 			out.AppendNewline()
 
-		case "pulumi":
+		case "terraform":
 			// required_providers is parsed for symbol resolution but has no PCL
 			// equivalent at this position (PCL declares providers via top-level
 			// `package "<alias>" { ... }` blocks instead). Emit a PCL pulumi
