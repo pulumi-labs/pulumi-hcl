@@ -1145,6 +1145,46 @@ func TestCustomInvokeHoistedInListComprehensionNoKey(t *testing.T) {
 	}, results.AsArray().AsSlice())
 }
 
+// TestCustomInvokeHoistedReferencesOuterForCollection covers a nested for-comprehension
+// where an invoke is bound to the innermost for-expression (via its ValueVariable), but
+// that for's collection itself references the outer for-expression's iter var.
+func TestCustomInvokeHoistedReferencesOuterForCollection(t *testing.T) {
+	t.Parallel()
+
+	// We don't correctly convert nested for-each constucts where the inner
+	// construct needs to be hoisted into a `data` block.
+	t.Skip(`TODO[https://github.com/pulumi-labs/pulumi-hcl/issues/157]: unknown node "entry.filter"`)
+
+	testSchema := schema.PackageSpec{
+		Name:    "test",
+		Version: "1.0.0",
+		Functions: map[string]schema.FunctionSpec{
+			"test:index:echo": {
+				Inputs: &schema.ObjectTypeSpec{
+					Properties: map[string]schema.PropertySpec{
+						"input": {TypeSpec: schema.TypeSpec{Type: "string"}},
+					},
+				},
+				Outputs: &schema.ObjectTypeSpec{
+					Properties: map[string]schema.PropertySpec{
+						"result": {TypeSpec: schema.TypeSpec{Type: "string"}},
+					},
+				},
+			},
+		},
+	}
+
+	pclSource := `output results {
+    value = [for entry in [{filter = "alpha"}, {filter = "bravo"}] :
+        [for v in try([entry.filter], []) : invoke("test:index:echo", {
+            input = v
+        }).result]]
+}
+`
+
+	testConvertedPCL(t, pclSource, testSchema)
+}
+
 func TestNotImplemented(t *testing.T) {
 	t.Parallel()
 
