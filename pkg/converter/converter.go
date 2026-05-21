@@ -1945,10 +1945,10 @@ func emitPackageBlock(out *hclwrite.Body, alias string, desc workspace.PackageDe
 	out.AppendNewline()
 }
 
-// readParameterizationInfos reads .hcl/sdks/*/hcl.sdk.json files from dir
+// readParameterizationInfos reads sdks/*/hcl.sdk.json files from dir
 // and returns parameterized package descriptors keyed by alias.
 func readParameterizationInfos(dir string) (map[string]workspace.PackageDescriptor, error) {
-	sdksDir := filepath.Join(dir, ".hcl", "sdks")
+	sdksDir := filepath.Join(dir, "sdks")
 	entries, err := os.ReadDir(sdksDir)
 	if os.IsNotExist(err) {
 		return nil, nil

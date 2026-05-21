@@ -159,10 +159,10 @@ func (host *LanguageHost) GetRequiredPackages(
 	return &pulumirpc.GetRequiredPackagesResponse{Packages: pkgs}, nil
 }
 
-// readParameterizationInfos reads .hcl/sdks/*/hcl.sdk.json files from dir and
+// readParameterizationInfos reads sdks/*/hcl.sdk.json files from dir and
 // returns a map from parameterized package alias to its ParameterizationInfo.
 func readParameterizationInfos(dir string) (map[string]workspace.PackageDescriptor, error) {
-	sdksDir := filepath.Join(dir, ".hcl", "sdks")
+	sdksDir := filepath.Join(dir, "sdks")
 	entries, err := os.ReadDir(sdksDir)
 	if os.IsNotExist(err) {
 		return nil, nil
@@ -504,7 +504,7 @@ func (host *LanguageHost) GenerateProgram(
 		return nil, fmt.Errorf("generating program: %w", err)
 	}
 
-	// Include .hcl/sdks/<alias>/hcl.sdk.json for parameterized packages so that
+	// Include sdks/<alias>/hcl.sdk.json for parameterized packages so that
 	// ConvertProgram can load their schemas when the round-trip test writes these
 	// files to a temp directory and then calls ConvertProgram on that directory.
 	for _, ref := range program.PackageReferences() {
@@ -536,7 +536,7 @@ func (host *LanguageHost) GenerateProgram(
 		if marshalErr != nil {
 			continue
 		}
-		files[".hcl/sdks/"+pkg.Name+"/hcl.sdk.json"] = data
+		files["sdks/"+pkg.Name+"/hcl.sdk.json"] = data
 	}
 
 	return &pulumirpc.GenerateProgramResponse{
@@ -632,7 +632,7 @@ func (host *LanguageHost) GenerateProject(
 		if desc.Parameterization == nil {
 			continue
 		}
-		sdkDir := filepath.Join(programDir, ".hcl", "sdks", alias)
+		sdkDir := filepath.Join(programDir, "sdks", alias)
 		if err := os.MkdirAll(sdkDir, 0755); err != nil {
 			return nil, fmt.Errorf("creating sdk dir for %s: %w", alias, err)
 		}
