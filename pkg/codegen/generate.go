@@ -2788,6 +2788,10 @@ func (g *generator) objectTokens(expr *model.ObjectConsExpression, typ schema.Ty
 // For a single literal part, it returns the literal value directly.
 // For multiple parts, it generates a template string like "${expr}suffix".
 func (g *generator) templateTokens(expr *model.TemplateExpression) (hclwrite.Tokens, hcl.Diagnostics) {
+	if delim, indented, ok := heredocOpen(expr); ok {
+		return g.heredocTemplateTokens(expr, delim, indented)
+	}
+
 	// If template has a single literal part, just return that literal.
 	if len(expr.Parts) == 1 {
 		if lit, ok := expr.Parts[0].(*model.LiteralValueExpression); ok {
@@ -2826,6 +2830,88 @@ func (g *generator) templateTokens(expr *model.TemplateExpression) (hclwrite.Tok
 	return hclwrite.Tokens{
 		{Type: hclsyntax.TokenQuotedLit, Bytes: []byte(buf.String())},
 	}, diags
+}
+
+// heredocTemplateTokens emits a template expression as a heredoc, preserving
+// the source delimiter and indent-strip style. Interpolated parts are wrapped
+// in `${...}` exactly as in the source; literal parts are written verbatim so
+// embedded newlines stay as newlines (not `\n` escapes) inside the heredoc.
+func (g *generator) heredocTemplateTokens(
+	expr *model.TemplateExpression, delim string, indented bool,
+) (hclwrite.Tokens, hcl.Diagnostics) {
+	prefix := "<<"
+	if indented {
+		prefix = "<<-"
+	}
+	tokens := hclwrite.Tokens{
+		{Type: hclsyntax.TokenOHeredoc, Bytes: []byte(prefix + delim + "\n")},
+	}
+	var diags hcl.Diagnostics
+	var trailingNewline bool
+	for i, part := range expr.Parts {
+		switch p := part.(type) {
+		case *model.LiteralValueExpression:
+			s := ""
+			if p.Value.Type() == cty.String {
+				s = p.Value.AsString()
+			} else {
+				s = fmt.Sprintf("%v", p.Value.GoString())
+			}
+			tokens = append(tokens, &hclwrite.Token{
+				Type: hclsyntax.TokenStringLit, Bytes: []byte(s),
+			})
+			trailingNewline = i == len(expr.Parts)-1 && strings.HasSuffix(s, "\n")
+		default:
+			partTokens, d := g.exprTokens(part, schema.AnyType)
+			diags = append(diags, d...)
+			if d.HasErrors() {
+				return nil, diags
+			}
+			tokens = append(tokens,
+				&hclwrite.Token{Type: hclsyntax.TokenTemplateInterp, Bytes: []byte("${")},
+			)
+			tokens = append(tokens, partTokens...)
+			tokens = append(tokens,
+				&hclwrite.Token{Type: hclsyntax.TokenTemplateSeqEnd, Bytes: []byte("}")},
+			)
+			trailingNewline = false
+		}
+	}
+	// HCL requires the closing delimiter to start a new line; if the literal
+	// content does not already end with a newline, insert one so the heredoc
+	// is well-formed. The trailing newline becomes part of the parsed value,
+	// matching how the source heredoc would have been read.
+	if !trailingNewline {
+		tokens = append(tokens, &hclwrite.Token{
+			Type: hclsyntax.TokenStringLit, Bytes: []byte("\n"),
+		})
+	}
+	tokens = append(tokens, &hclwrite.Token{
+		Type: hclsyntax.TokenCHeredoc, Bytes: []byte(delim + "\n"),
+	})
+	return tokens, diags
+}
+
+// heredocOpen inspects expr's recorded open token to recover the heredoc form
+// from the source PCL. It returns the delimiter identifier (e.g. "EOT") and
+// whether the source used the indent-stripping `<<-` variant. ok is false if
+// expr did not originate from a heredoc.
+func heredocOpen(expr *model.TemplateExpression) (delim string, indented bool, ok bool) {
+	if expr.Tokens == nil {
+		return "", false, false
+	}
+	open := expr.Tokens.GetOpen()
+	if open.Raw.Type != hclsyntax.TokenOHeredoc {
+		return "", false, false
+	}
+	// Open token bytes are "<<EOT\n" or "<<-EOT\n"; strip leading "<<" /
+	// "<<-" and the trailing newline to recover the bare delimiter.
+	raw := strings.TrimRight(string(open.Raw.Bytes), "\r\n")
+	raw = strings.TrimPrefix(raw, "<<")
+	if strings.HasPrefix(raw, "-") {
+		return strings.TrimPrefix(raw, "-"), true, true
+	}
+	return raw, false, true
 }
 
 // binaryOpTokens generates HCL tokens for a binary operation expression.

@@ -8,8 +8,16 @@ pulumi {
 }
 
 resource "test_res" "normal" {
-  prop = " hello\nworld\n"
+  prop = <<EON
+ hello
+world
+EON
+
 }
 resource "test_res" "indented" {
-  prop = "hello\n world\n"
+  prop = <<-EOI
+hello: ${test_res.normal.id}
+ world
+EOI
+
 }

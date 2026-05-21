@@ -16,6 +16,7 @@
 package converter
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/json"
@@ -1139,6 +1140,9 @@ func (ft *fileTransformer) transformSplatEach(expr hclsyntax.Expression, element
 }
 
 func (ft *fileTransformer) transformTemplate(e *hclsyntax.TemplateExpr) hclwrite.Tokens {
+	if open, indented, ok := ft.detectHeredocOpen(e.SrcRange); ok {
+		return ft.transformHeredocTemplate(e, open, indented)
+	}
 	tokens := hclwrite.Tokens{
 		&hclwrite.Token{Type: hclsyntax.TokenOQuote, Bytes: []byte{'"'}},
 	}
@@ -1160,6 +1164,66 @@ func (ft *fileTransformer) transformTemplate(e *hclsyntax.TemplateExpr) hclwrite
 		}
 	}
 	tokens = append(tokens, &hclwrite.Token{Type: hclsyntax.TokenCQuote, Bytes: []byte{'"'}})
+	return tokens
+}
+
+// detectHeredocOpen inspects the source bytes of a template expression to see
+// whether the expression originated from a heredoc (`<<DELIM` or `<<-DELIM`).
+// Returns the bare delimiter and whether the indent-stripping form was used.
+// The TemplateExpr AST node does not record this information, so we recover it
+// from the source.
+func (ft *fileTransformer) detectHeredocOpen(r hcl.Range) (delim string, indented bool, ok bool) {
+	src := ft.srcBytes(r)
+	if !bytes.HasPrefix(src, []byte("<<")) {
+		return "", false, false
+	}
+	rest := src[2:]
+	if len(rest) > 0 && rest[0] == '-' {
+		indented = true
+		rest = rest[1:]
+	}
+	nl := bytes.IndexByte(rest, '\n')
+	if nl < 0 {
+		return "", false, false
+	}
+	delim = strings.TrimRight(string(rest[:nl]), "\r")
+	if delim == "" {
+		return "", false, false
+	}
+	return delim, indented, true
+}
+
+// transformHeredocTemplate emits PCL tokens that re-create a heredoc with the
+// original delimiter and indent-strip style. Literal parts are taken verbatim
+// from the source so embedded `${`-escapes and indentation are preserved; the
+// runtime parse value will match the input.
+func (ft *fileTransformer) transformHeredocTemplate(
+	e *hclsyntax.TemplateExpr, delim string, indented bool,
+) hclwrite.Tokens {
+	prefix := "<<"
+	if indented {
+		prefix = "<<-"
+	}
+	tokens := hclwrite.Tokens{
+		{Type: hclsyntax.TokenOHeredoc, Bytes: []byte(prefix + delim + "\n")},
+	}
+	for _, part := range e.Parts {
+		if lit, ok := part.(*hclsyntax.LiteralValueExpr); ok {
+			tokens = append(tokens, &hclwrite.Token{
+				Type:  hclsyntax.TokenStringLit,
+				Bytes: ft.srcBytes(lit.SrcRange),
+			})
+			continue
+		}
+		tokens = append(tokens,
+			&hclwrite.Token{Type: hclsyntax.TokenTemplateInterp, Bytes: []byte("${")},
+		)
+		tokens = append(tokens, ft.transformExpr(part)...)
+		tokens = append(tokens,
+			&hclwrite.Token{Type: hclsyntax.TokenTemplateSeqEnd, Bytes: []byte("}")},
+		)
+	}
+	tokens = append(tokens, &hclwrite.Token{Type: hclsyntax.TokenCHeredoc, Bytes: []byte(delim + "\n")})
 	return tokens
 }
 

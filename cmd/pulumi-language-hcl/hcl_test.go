@@ -1449,7 +1449,7 @@ EON
 
 resource indented "test:index:Res" {
     prop = <<-EOI
-      hello
+      hello: ${normal.id}
        world
       EOI
 }
@@ -1479,7 +1479,7 @@ resource indented "test:index:Res" {
 			found1 = true
 		case "indented":
 			assert.Equal(t, property.NewMap(map[string]property.Value{
-				"prop": property.New("hello\n world\n"),
+				"prop": property.New("hello: normal-id\n world\n"),
 			}), r.Inputs)
 			found2 = true
 		}
