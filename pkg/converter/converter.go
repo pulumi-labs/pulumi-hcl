@@ -228,6 +228,9 @@ type fileTransformer struct {
 	knownHCLTypes   map[string]bool // set of HCL type labels used in resource blocks
 	stackRefNames   map[string]bool // set of logical names of pulumi_stackreference resources
 	knownProviders  []string        // provider names from pulumi.required_providers
+	// providerAliases is the set of "<pkg>.<alias>" pairs declared by
+	// `provider` blocks; used to detect provider references in traversals.
+	providerAliases map[string]bool
 	callBlocks      map[callReference]*hclsyntax.Body
 	dataBlocks      map[dataReference]*hclsyntax.Body
 	dataTokens      map[string]string // key: hclType, value: resolved PCL token
@@ -300,6 +303,7 @@ func newProjectTransformer(
 		resourceSchemas: make(map[string]*schema.Resource),
 		nameRewrites:    make(map[string]string),
 		functionSchemas: make(map[string]*schema.Function),
+		providerAliases: make(map[string]bool),
 	}
 	// Phase 1: collect pulumi.required_providers across every body so that
 	// later resolution sees the full set regardless of which file declared it.
@@ -348,6 +352,15 @@ func (ft *fileTransformer) scanSymbols(ctx context.Context, body *hclsyntax.Body
 			if block.Labels[0] == "pulumi_stackreference" && len(block.Labels) >= 2 {
 				ft.stackRefNames[block.Labels[1]] = true
 			}
+		}
+		if block.Type == "provider" && len(block.Labels) >= 1 {
+			alias := block.Labels[0]
+			if attr, ok := block.Body.Attributes["alias"]; ok {
+				if val, vdiags := attr.Expr.Value(nil); !vdiags.HasErrors() && val.Type() == cty.String {
+					alias = val.AsString()
+				}
+			}
+			ft.providerAliases[block.Labels[0]+"."+alias] = true
 		}
 		if block.Type == "call" && len(block.Labels) == 2 {
 			ft.callBlocks[callReference{block.Labels[0], block.Labels[1]}] = block.Body
@@ -769,6 +782,93 @@ func (ft *fileTransformer) emitFile(
 			for _, objAttr := range ft.blocksToObjectAttrs(propertyBlocks, res.InputProperties) {
 				name := strings.TrimSpace(string(objAttr.Name.Bytes()))
 				blk.Body().SetAttributeRaw(name, objAttr.Value)
+			}
+			if len(opts) > 0 {
+				optBlk := blk.Body().AppendNewBlock("options", nil)
+				for _, o := range opts {
+					optBlk.Body().SetAttributeRaw(o.name, o.tokens)
+				}
+			}
+			out.AppendNewline()
+
+		case "provider":
+			// `provider "<pkg>" { ... }` → PCL `resource "<alias>" "pulumi:providers:<pkg>" { ... }`.
+			if len(block.Labels) < 1 {
+				resultDiags = append(resultDiags, &hcl.Diagnostic{
+					Severity: hcl.DiagError,
+					Summary:  "malformed provider block",
+					Detail:   "provider block requires exactly 1 label: <name>",
+					Subject:  block.TypeRange.Ptr(),
+				})
+				continue
+			}
+			pkgName := block.Labels[0]
+			providerToken := "pulumi:providers:" + pkgName
+
+			resourceName := pkgName
+			var aliasAttr *hclsyntax.Attribute
+			for _, attr := range block.Body.Attributes {
+				if attr.Name == "alias" {
+					aliasAttr = attr
+					break
+				}
+			}
+			if aliasAttr != nil {
+				val, vdiags := aliasAttr.Expr.Value(nil)
+				if !vdiags.HasErrors() && val.Type() == cty.String {
+					resourceName = val.AsString()
+				}
+			}
+
+			pkg, perr := packages.ResolvePackage(ctx, ft.loader, ft.knownProviders, "pulumi_providers_"+pkgName)
+			if perr != nil {
+				resultDiags = append(resultDiags, &hcl.Diagnostic{
+					Severity: hcl.DiagError,
+					Summary:  "unknown provider",
+					Detail:   fmt.Sprintf("cannot resolve provider %q: %v", pkgName, perr),
+					Subject:  block.TypeRange.Ptr(),
+				})
+				continue
+			}
+			providerRes, perr := pkg.Provider()
+			if perr != nil {
+				resultDiags = append(resultDiags, &hcl.Diagnostic{
+					Severity: hcl.DiagError,
+					Summary:  "unknown provider",
+					Detail:   fmt.Sprintf("cannot load provider schema for %q: %v", pkgName, perr),
+					Subject:  block.TypeRange.Ptr(),
+				})
+				continue
+			}
+
+			blk := out.AppendNewBlock("resource", []string{resourceName, providerToken})
+
+			type optEntry struct {
+				name   string
+				tokens hclwrite.Tokens
+			}
+			var opts []optEntry
+			for _, attr := range sortedAttributes(block.Body.Attributes) {
+				switch attr.Name {
+				case "alias":
+					continue
+				case "env_var_mappings":
+					opts = append(opts, optEntry{"envVarMappings", ft.transformExpr(attr.Expr)})
+					continue
+				case "plugin_download_url":
+					opts = append(opts, optEntry{"pluginDownloadURL", ft.transformExpr(attr.Expr)})
+					continue
+				case "version":
+					opts = append(opts, optEntry{"version", ft.transformExpr(attr.Expr)})
+					continue
+				case "additional_secret_outputs":
+					opts = append(opts, optEntry{"additionalSecretOutputs", ft.transformPropertyPathList(attr.Expr)})
+					continue
+				}
+				name, _ := transform.PulumiCaseFromSnakeCase(attr.Name, providerRes.InputProperties)
+				start := attr.Range().Start.Byte
+				ft.emitLeadingComments(blk.Body(), start)
+				blk.Body().SetAttributeRaw(name, ft.withTrailing(ft.transformExpr(attr.Expr), start))
 			}
 			if len(opts) > 0 {
 				optBlk := blk.Body().AppendNewBlock("options", nil)
@@ -1280,6 +1380,34 @@ func unaryOpToken(op *hclsyntax.Operation) *hclwrite.Token {
 func (ft *fileTransformer) transformTraversal(e *hclsyntax.ScopeTraversalExpr) hclwrite.Tokens {
 	root := e.Traversal.RootName()
 
+	// Provider references: `<pkg>.<alias>.x` → `<alias>.x` in PCL.
+	// Trailing snake_case attrs become camelCase; the synthetic provider
+	// outputs need a casing hint so `URL` doesn't get mangled to `Url`.
+	// Defer to the call-inlining path when the alias names a call block.
+	if ft.isKnownProvider(root) && len(e.Traversal) >= 2 {
+		if attr, ok := e.Traversal[1].(hcl.TraverseAttr); ok &&
+			ft.providerAliases[root+"."+attr.Name] {
+			isCallMethod := false
+			if len(e.Traversal) >= 3 {
+				if method, ok := e.Traversal[2].(hcl.TraverseAttr); ok {
+					if _, hasCall := ft.callBlocks[callReference{attr.Name, method.Name}]; hasCall {
+						isCallMethod = true
+					}
+				}
+			}
+			if !isCallMethod {
+				stripped := stripRoot(e.Traversal)
+				for i := 1; i < len(stripped); i++ {
+					if a, ok := stripped[i].(hcl.TraverseAttr); ok {
+						name, _ := transform.PulumiCaseFromSnakeCase(a.Name, providerSyntheticOutputs)
+						stripped[i] = hcl.TraverseAttr{Name: name, SrcRange: a.SrcRange}
+					}
+				}
+				return hclwrite.TokensForTraversal(stripped)
+			}
+		}
+	}
+
 	// Resource traversal: strip the HCL type prefix (e.g., "pulumi_stash.myRes.prop" → "myRes.prop"),
 	// and convert property attribute names from snake_case to camelCase.
 	if ft.knownHCLTypes[root] {
@@ -1512,6 +1640,19 @@ func stripRoot(trav hcl.Traversal) hcl.Traversal {
 	result[0] = hcl.TraverseRoot{Name: name}
 	copy(result[1:], trav[2:])
 	return result
+}
+
+// providerSyntheticOutputs disambiguates provider outputs whose snake_case
+// HCL form has uppercase-acronym components (`URL` → `Url` by default).
+var providerSyntheticOutputs = []*schema.Property{
+	{Name: "id", Type: schema.StringType},
+	{Name: "urn", Type: schema.StringType},
+	{Name: "version", Type: schema.StringType},
+	{Name: "pluginDownloadURL", Type: schema.StringType},
+}
+
+func (ft *fileTransformer) isKnownProvider(name string) bool {
+	return slices.Contains(ft.knownProviders, name)
 }
 
 // rewriteTraversalRoot replaces the root name of a traversal if the name has

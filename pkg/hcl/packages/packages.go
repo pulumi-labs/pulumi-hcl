@@ -137,42 +137,116 @@ func packageFromToken(knownProviders []string, token string) (string, error) {
 	}
 }
 
-func ResolveResource(ctx context.Context, loader schema.ReferenceLoader, knownProviders []string, token string) (*schema.Resource, error) {
+// ProviderAsResourceError is returned by ResolveResource when an HCL token
+// resolves to a package's Provider schema. Providers must use a `provider`
+// block, not a `resource` block.
+type ProviderAsResourceError struct {
+	Token string // resolved Pulumi token, e.g. "pulumi:providers:simple"
+}
+
+func (e *ProviderAsResourceError) Error() string {
+	name := e.Token
+	if i := strings.LastIndex(e.Token, ":"); i >= 0 {
+		name = e.Token[i+1:]
+	}
+	return fmt.Sprintf(
+		"%q is a provider type and cannot be declared with a resource block; "+
+			"declare it with a `provider %q { ... }` block instead",
+		e.Token, name)
+}
+
+// ResolvePackage resolves the package reference for an HCL resource or
+// function token. Pair with pkg.Provider() when you need the Provider
+// schema — ResolveResource rejects provider tokens.
+func ResolvePackage(
+	ctx context.Context, loader schema.ReferenceLoader, knownProviders []string, token string,
+) (schema.PackageReference, error) {
 	parts := strings.Split(token, "_")
 	if len(parts) < 2 {
 		return nil, InvalidToken{token: token, reason: "Pulumi HCL tokens must have at least 2 parts"}
 	}
-
 	if provider, ok := strings.CutPrefix(token, "pulumi_providers_"); ok {
-		pkg, err := resolvePackage(ctx, loader, &schema.PackageDescriptor{Name: provider})
-		if err != nil {
-			return nil, err
-		}
-		return pkg.Provider()
+		return resolvePackage(ctx, loader, &schema.PackageDescriptor{Name: provider})
 	}
-
-	// Prevent users from needing to write pulumi_pulumi_stack_reference.
-	// Both the underscore-split form and the legacy collapsed form are accepted.
-	if token == "pulumi_stack_reference" || token == "pulumi_stackreference" {
-		pkg, err := resolvePackage(ctx, loader, &schema.PackageDescriptor{Name: "pulumi"})
-		if err != nil {
-			return nil, err
-		}
-		r, ok, err := pkg.Resources().Get("pulumi:pulumi:StackReference")
-		contract.Assertf(ok, "stack references are there")
-		return r, err
+	if isStackReferenceToken(token) {
+		return resolvePackage(ctx, loader, &schema.PackageDescriptor{Name: "pulumi"})
 	}
-
 	pkgName, err := packageFromToken(knownProviders, token)
 	if err != nil {
 		return nil, err
 	}
+	return resolvePackage(ctx, loader, &schema.PackageDescriptor{Name: pkgName})
+}
 
+// isStackReferenceToken accepts both the underscore-split form and the legacy
+// collapsed form so users don't have to write pulumi_pulumi_stack_reference.
+func isStackReferenceToken(token string) bool {
+	return token == "pulumi_stack_reference" || token == "pulumi_stackreference"
+}
+
+func ResolveResource(ctx context.Context, loader schema.ReferenceLoader, knownProviders []string, token string) (*schema.Resource, error) {
+	pkg, err := resolvePackageForToken(ctx, loader, knownProviders, token)
+	if err != nil {
+		return nil, err
+	}
+
+	res, err := findResource(pkg, knownProviders, token)
+	if err != nil {
+		return nil, err
+	}
+	if res != nil && res.IsProvider {
+		return nil, &ProviderAsResourceError{Token: res.Token}
+	}
+	return res, nil
+}
+
+// resolvePackageForToken collapses package-load failures to ErrNotFound;
+// structural errors (InvalidToken, ambiguous matches) propagate.
+func resolvePackageForToken(
+	ctx context.Context, loader schema.ReferenceLoader, knownProviders []string, token string,
+) (schema.PackageReference, error) {
+	parts := strings.Split(token, "_")
+	if len(parts) < 2 {
+		return nil, InvalidToken{token: token, reason: "Pulumi HCL tokens must have at least 2 parts"}
+	}
+	if provider, ok := strings.CutPrefix(token, "pulumi_providers_"); ok {
+		pkg, err := resolvePackage(ctx, loader, &schema.PackageDescriptor{Name: provider})
+		if err != nil {
+			return nil, ErrNotFound
+		}
+		return pkg, nil
+	}
+	if isStackReferenceToken(token) {
+		pkg, err := resolvePackage(ctx, loader, &schema.PackageDescriptor{Name: "pulumi"})
+		if err != nil {
+			return nil, ErrNotFound
+		}
+		return pkg, nil
+	}
+	pkgName, err := packageFromToken(knownProviders, token)
+	if err != nil {
+		return nil, err
+	}
 	pkg, err := resolvePackage(ctx, loader, &schema.PackageDescriptor{Name: pkgName})
 	if err != nil {
 		return nil, ErrNotFound
 	}
+	return pkg, nil
+}
 
+func findResource(pkg schema.PackageReference, knownProviders []string, token string) (*schema.Resource, error) {
+	if strings.HasPrefix(token, "pulumi_providers_") {
+		return pkg.Provider()
+	}
+	if isStackReferenceToken(token) {
+		r, ok, err := pkg.Resources().Get("pulumi:pulumi:StackReference")
+		contract.Assertf(ok, "stack references are there")
+		return r, err
+	}
+	pkgName, err := packageFromToken(knownProviders, token)
+	if err != nil {
+		return nil, err
+	}
 	key := strings.ReplaceAll(token[len(pkgName)+1:], "_", "")
 	for iter := pkg.Resources().Range(); iter.Next(); {
 		if tokenSearchKey(pkg, iter.Token()) == key {

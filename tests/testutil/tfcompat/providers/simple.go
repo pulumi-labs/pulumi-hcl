@@ -23,23 +23,42 @@ import (
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
 )
 
-// SimpleProvider returns a provider exposing a single resource with one
-// computed attribute derived from its inputs. Mirrors the shape of the
-// "simple" provider used by pulumi-converter-terraform's conformance suite.
+type simpleProviderMeta struct {
+	prefix string
+}
+
+// SimpleProvider exposes one resource and a `prefix` provider-config
+// attribute that the resource concatenates into `prefix_result`, so tests
+// can observe provider config flowing end-to-end.
 func SimpleProvider() *schema.Provider {
 	return &schema.Provider{
+		Schema: map[string]*schema.Schema{
+			"prefix": {Type: schema.TypeString, Optional: true},
+		},
+		ConfigureContextFunc: func(_ context.Context, d *schema.ResourceData) (any, diag.Diagnostics) {
+			prefix, _ := d.Get("prefix").(string)
+			return &simpleProviderMeta{prefix: prefix}, nil
+		},
 		ResourcesMap: map[string]*schema.Resource{
 			"simple_resource": {
 				Schema: map[string]*schema.Schema{
-					"input_one": {Type: schema.TypeString, Optional: true},
-					"input_two": {Type: schema.TypeBool, Optional: true},
-					"result":    {Type: schema.TypeString, Computed: true},
+					"input_one":     {Type: schema.TypeString, Optional: true},
+					"input_two":     {Type: schema.TypeBool, Optional: true},
+					"result":        {Type: schema.TypeString, Computed: true},
+					"prefix_result": {Type: schema.TypeString, Computed: true},
 				},
-				CreateContext: func(_ context.Context, d *schema.ResourceData, _ any) diag.Diagnostics {
+				CreateContext: func(_ context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
 					d.SetId("simple-id")
 					one, _ := d.Get("input_one").(string)
 					two, _ := d.Get("input_two").(bool)
 					if err := d.Set("result", fmt.Sprintf("%s-%t", one, two)); err != nil {
+						return diag.FromErr(err)
+					}
+					var prefix string
+					if m, ok := meta.(*simpleProviderMeta); ok && m != nil {
+						prefix = m.prefix
+					}
+					if err := d.Set("prefix_result", prefix+"-"+one); err != nil {
 						return diag.FromErr(err)
 					}
 					return nil

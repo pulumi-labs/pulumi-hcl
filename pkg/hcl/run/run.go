@@ -206,10 +206,18 @@ type inheritableOpts struct {
 	RetainOnDelete *bool
 }
 
-// unknownTokenDiag turns a packages.NotFoundError into an hcl.Diagnostic
-// anchored at typeRange. Other errors pass through unchanged for the caller
-// to wrap.
+// unknownTokenDiag turns a packages.NotFoundError or ProviderAsResourceError
+// into an hcl.Diagnostic anchored at typeRange. Other errors pass through.
 func unknownTokenDiag(kind string, typeRange hcl.Range, err error) error {
+	var pae *packages.ProviderAsResourceError
+	if errors.As(err, &pae) {
+		return hcl.Diagnostics{{
+			Severity: hcl.DiagError,
+			Summary:  "Provider declared as a resource",
+			Detail:   pae.Error(),
+			Subject:  typeRange.Ptr(),
+		}}
+	}
 	var nfe *packages.NotFoundError
 	if !errors.As(err, &nfe) {
 		return err
@@ -721,27 +729,36 @@ func (e *Engine) registerProviderInContext(
 ) error {
 	typeToken := "pulumi:providers:" + provider.Name
 
-	attrs, _ := provider.Config.JustAttributes()
-	inputs := make(map[string]property.Value)
-
 	hclCtx := evalCtx.HCLContext()
-	for name, attr := range attrs {
-		if name == "alias" {
-			continue
-		}
 
-		val, diags := attr.Expr.Value(hclCtx)
-		if diags.HasErrors() {
-			return fmt.Errorf("evaluating provider attribute %s: %s", name, diags.Error())
-		}
-
-		pv, err := transform.CtyToPropertyValue(val)
-		if err != nil {
-			return fmt.Errorf("converting provider attribute %s: %w", name, err)
-		}
-
-		inputs[name] = pv
+	// Schema-aware eval is needed so schema.Property.Secret marks survive.
+	pkg, perr := packages.ResolvePackage(ctx, e.pkgLoader, e.knownProviders(), "pulumi_providers_"+provider.Name)
+	if perr != nil {
+		return fmt.Errorf("resolving provider package %s: %w", provider.Name, perr)
 	}
+	resSchema, perr := pkg.Provider()
+	if perr != nil {
+		return fmt.Errorf("resolving provider schema for %s: %w", provider.Name, perr)
+	}
+
+	inputsMap, diags := transform.EvalResourceWithSchema(provider.Config, resSchema,
+		func(_ resource.PropertyKey, expr hcl.Expression, extraVars map[string]cty.Value) (cty.Value, hcl.Diagnostics) {
+			c := hclCtx
+			if len(extraVars) > 0 {
+				child := hclCtx.NewChild()
+				child.Variables = extraVars
+				c = child
+			}
+			return expr.Value(c)
+		})
+	if diags.HasErrors() {
+		return fmt.Errorf("evaluating provider %s config: %s", provider.Name, diags.Error())
+	}
+	inputs := make(map[string]property.Value, inputsMap.Len())
+	inputsMap.AllStable(func(k string, v property.Value) bool {
+		inputs[k] = v
+		return true
+	})
 
 	logicalName := provider.Alias
 	if logicalName == "" {
@@ -752,27 +769,103 @@ func (e *Engine) registerProviderInContext(
 		logicalName = modInstanceName + "-" + logicalName
 	}
 
-	resp, err := e.resmon.RegisterResource(ctx, RegisterResourceRequest{
-		Type:   typeToken,
-		Name:   logicalName,
-		Inputs: property.NewMap(inputs),
-		Custom: true,
-		Parent: parentURN,
-	})
+	// Version comes from an explicit attribute, else required_providers.
+	var version string
+	if provider.Version != nil {
+		val, vdiags := provider.Version.Value(hclCtx)
+		if vdiags.HasErrors() {
+			return fmt.Errorf("evaluating provider version: %s", vdiags.Error())
+		}
+		if val.Type() == cty.String {
+			version = val.AsString()
+		}
+	}
+	if version == "" && e.config.Terraform != nil {
+		if req, ok := e.config.Terraform.RequiredProviders[provider.Name]; ok && req.Version != "" {
+			version = ExtractSemverFromConstraint(req.Version)
+		}
+	}
+
+	req := RegisterResourceRequest{
+		Type:       typeToken,
+		Name:       logicalName,
+		Custom:     true,
+		Parent:     parentURN,
+		Version:    version,
+		PackageRef: e.packageRefs[provider.Name],
+	}
+	if resSchema.PackageReference != nil {
+		req.PluginDownloadURL = resSchema.PackageReference.PluginDownloadURL()
+	}
+
+	if provider.EnvVarMappings != nil {
+		val, vdiags := provider.EnvVarMappings.Value(hclCtx)
+		if vdiags.HasErrors() {
+			return fmt.Errorf("evaluating env_var_mappings: %s", vdiags.Error())
+		}
+		mappings, err := transform.CtyToPropertyValue(val)
+		if err != nil {
+			return fmt.Errorf("converting env_var_mappings: %w", err)
+		}
+		if mappings.IsMap() {
+			req.EnvVarMappings = make(map[string]string)
+			mappings.AsMap().AllStable(func(k string, v property.Value) bool {
+				if v.IsString() {
+					req.EnvVarMappings[k] = v.AsString()
+				}
+				return true
+			})
+		}
+	}
+
+	if provider.PluginDownloadURL != nil {
+		val, vdiags := provider.PluginDownloadURL.Value(hclCtx)
+		if vdiags.HasErrors() {
+			return fmt.Errorf("evaluating plugin_download_url: %s", vdiags.Error())
+		}
+		if val.Type() == cty.String {
+			// Surface via Inputs so it appears as a top-level output;
+			// the resource-option field (req.PluginDownloadURL) is
+			// set below to the package's schema default.
+			inputs["pluginDownloadURL"] = property.New(val.AsString())
+		}
+	}
+
+	if provider.AdditionalSecretOutputs != nil {
+		val, vdiags := provider.AdditionalSecretOutputs.Value(hclCtx)
+		if vdiags.HasErrors() {
+			return fmt.Errorf("evaluating additional_secret_outputs: %s", vdiags.Error())
+		}
+		if val.Type().IsTupleType() || val.Type().IsListType() {
+			for it := val.ElementIterator(); it.Next(); {
+				_, v := it.Element()
+				if v.Type() == cty.String {
+					req.AdditionalSecretOutputs = append(req.AdditionalSecretOutputs, v.AsString())
+				}
+			}
+		}
+	}
+
+	req.Inputs = property.NewMap(inputs)
+
+	resp, err := e.resmon.RegisterResource(ctx, req)
 	if err != nil {
 		return fmt.Errorf("registering provider %s: %w", node.Key, err)
 	}
 
 	providerID := resp.ID
 
-	outputObj := make(map[string]cty.Value)
-	outputObj["id"] = cty.StringVal(providerID)
-	outputObj["urn"] = cty.StringVal(resp.URN)
-
-	for k, v := range resp.Outputs.All {
-		snakeKey := camelToSnake(string(k))
-		outputObj[snakeKey] = transform.PropertyValueToCty(v)
+	// Use ResourceOutputToCty to match processResource's snake_case key emission.
+	outputObj, err := transform.ResourceOutputToCty(resp.Outputs, resSchema, e.dryRun)
+	if err != nil {
+		return fmt.Errorf("converting provider outputs to HCL types: %w", err)
 	}
+	if e.dryRun && providerID == "" {
+		outputObj["id"] = cty.UnknownVal(cty.String)
+	} else {
+		outputObj["id"] = cty.StringVal(providerID)
+	}
+	outputObj["urn"] = cty.StringVal(resp.URN)
 
 	e.resourceOutputs.Set(node.Key, cty.ObjectVal(outputObj))
 
@@ -1925,14 +2018,24 @@ func (e *Engine) processCall(ctx context.Context, node *graph.Node) error {
 	}
 
 	if resKey == "" {
-		// Try providers
-		if _, exists := e.config.Providers[call.ResourceName]; exists {
-			resKey = call.ResourceName
-			var err error
-			// Providers use their name as the key
-			providerToken := "pulumi_providers_" + e.config.Providers[call.ResourceName].Name
+		// Try providers — config.Providers is keyed by provider.Key(),
+		// so we search by alias / name instead of by ResourceName directly.
+		var matched *ast.Provider
+		for _, p := range e.config.Providers {
+			if p.Alias == call.ResourceName || (p.Alias == "" && p.Name == call.ResourceName) {
+				matched = p
+				break
+			}
+		}
+		if matched != nil {
+			resKey = matched.Key()
+			providerToken := "pulumi_providers_" + matched.Name
 			resType = providerToken
-			resSchema, err = packages.ResolveResource(ctx, e.pkgLoader, e.knownProviders(), providerToken)
+			pkg, err := packages.ResolvePackage(ctx, e.pkgLoader, e.knownProviders(), providerToken)
+			if err != nil {
+				return fmt.Errorf("resolving provider package for call: %w", err)
+			}
+			resSchema, err = pkg.Provider()
 			if err != nil {
 				return fmt.Errorf("resolving provider schema for call: %w", err)
 			}
@@ -2653,22 +2756,6 @@ func providerRefFromCty(val cty.Value) (string, error) {
 	return "", errors.New("provider value is not a resource reference")
 }
 
-// camelToSnake converts a camelCase string to snake_case.
-// For example, "publicIp" becomes "public_ip", "vpcSecurityGroupIds" becomes "vpc_security_group_ids".
-func camelToSnake(s string) string {
-	var result strings.Builder
-	for i, r := range s {
-		if i > 0 && r >= 'A' && r <= 'Z' {
-			result.WriteByte('_')
-		}
-		if r >= 'A' && r <= 'Z' {
-			result.WriteRune(r + 32) // Convert to lowercase
-		} else {
-			result.WriteRune(r)
-		}
-	}
-	return result.String()
-}
 
 // RunFromDirectory parses and executes an HCL program from a directory.
 func RunFromDirectory(ctx context.Context, dir string, opts *EngineOptions) error {

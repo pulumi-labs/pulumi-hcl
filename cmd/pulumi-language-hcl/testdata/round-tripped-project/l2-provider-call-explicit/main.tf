@@ -15,11 +15,12 @@ call "explicitProv" "prefixed" {
   prefix = "call-prefix-"
 }
 
-resource "pulumi_providers_call" "explicitProv" {
+provider "call" {
+  alias = "explicitProv"
   value = "explicitProvValue"
 }
 resource "call_custom" "explicitRes" {
-  provider = pulumi_providers_call.explicitProv
+  provider = call.explicitProv
   value    = "explicitValue"
 }
 output "explicitProviderValue" {

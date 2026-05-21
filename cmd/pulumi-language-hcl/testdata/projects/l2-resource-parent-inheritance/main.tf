@@ -7,10 +7,11 @@ terraform {
   }
 }
 
-resource "pulumi_providers_simple" "provider" {
+provider "simple" {
+  alias = "provider"
 }
 resource "simple_resource" "parent1" {
-  provider = pulumi_providers_simple.provider
+  provider = simple.provider
   value    = true
 }
 resource "simple_resource" "child1" {

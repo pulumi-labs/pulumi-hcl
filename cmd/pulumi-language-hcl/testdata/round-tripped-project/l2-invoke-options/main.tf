@@ -9,13 +9,14 @@ terraform {
 
 data "simple-invoke_my_invoke" "invoke_0" {
   value               = "hello"
-  provider            = pulumi_providers_simple-invoke.explicitProvider
-  parent              = pulumi_providers_simple-invoke.explicitProvider
+  provider            = simple-invoke.explicitProvider
+  parent              = simple-invoke.explicitProvider
   version             = "10.0.0"
   plugin_download_url = "https://example.com/github/example"
 }
 
-resource "pulumi_providers_simple-invoke" "explicitProvider" {
+provider "simple-invoke" {
+  alias = "explicitProvider"
 }
 output "hello" {
   value = data.simple-invoke_my_invoke.invoke_0.result

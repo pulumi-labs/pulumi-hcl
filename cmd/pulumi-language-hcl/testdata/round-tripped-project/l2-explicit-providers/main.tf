@@ -7,13 +7,14 @@ terraform {
   }
 }
 
-resource "pulumi_providers_component" "explicit" {
+provider "component" {
+  alias = "explicit"
 }
-resource "component_component_callable" "list" {
-  providers = [pulumi_providers_component.explicit]
+resource "component_componentcallable" "list" {
+  providers = [component.explicit]
   value     = "value"
 }
-resource "component_component_callable" "map" {
-  providers = [pulumi_providers_component.explicit]
+resource "component_componentcallable" "map" {
+  providers = [component.explicit]
   value     = "value"
 }

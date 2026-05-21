@@ -820,12 +820,13 @@ func ctyObjectToPropertyValue(val cty.Value) (property.Value, error) {
 
 func ResourceOutputToCty(pv property.Map, r *schema.Resource, dryRun bool) (map[string]cty.Value, error) {
 	properties := r.Properties
-	// Providers pass "version" as an output - even though it's not in the schema.
+	// version + pluginDownloadURL aren't in the schema Properties but
+	// flow through as outputs via the Pulumi resource-options machinery.
 	if r.IsProvider {
-		properties = append(slices.Clone(r.Properties), &schema.Property{
-			Name: "version",
-			Type: schema.StringType,
-		})
+		properties = append(slices.Clone(r.Properties),
+			&schema.Property{Name: "version", Type: schema.StringType},
+			&schema.Property{Name: "pluginDownloadURL", Type: schema.StringType},
+		)
 	}
 	return propertyObjectToCtyMap("", pv, properties, dryRun)
 }

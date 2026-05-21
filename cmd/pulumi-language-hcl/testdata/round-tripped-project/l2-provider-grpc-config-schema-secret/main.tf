@@ -8,7 +8,8 @@ terraform {
 }
 
 # This provider covers scenarios where configuration properties are marked as secret in the schema.
-resource "pulumi_providers_config-grpc" "config_grpc_provider" {
+provider "config-grpc" {
+  alias               = "config_grpc_provider"
   secret_string1      = "SECRET"
   secret_int1         = 16
   secret_num1         = 123456.789
@@ -22,6 +23,6 @@ resource "pulumi_providers_config-grpc" "config_grpc_provider" {
     secret_x = "SECRET"
   }
 }
-resource "config-grpc_config_fetcher" "config" {
-  provider = pulumi_providers_config-grpc.config_grpc_provider
+resource "config-grpc_configfetcher" "config" {
+  provider = config-grpc.config_grpc_provider
 }

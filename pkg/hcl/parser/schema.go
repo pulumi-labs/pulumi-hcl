@@ -64,10 +64,16 @@ var terraformPackageSchema = &hcl.BodySchema{
 	},
 }
 
-// providerSchema defines the structure of a provider block.
+// providerSchema defines the structure of a provider block. Includes the
+// Pulumi-specific resource-option attributes since they can no longer be
+// set via a `resource` block.
 var providerSchema = &hcl.BodySchema{
 	Attributes: []hcl.AttributeSchema{
 		{Name: "alias"},
+		{Name: "env_var_mappings"},
+		{Name: "plugin_download_url"},
+		{Name: "additional_secret_outputs"},
+		{Name: "version"},
 	},
 }
 

@@ -329,6 +329,18 @@ func (p *Parser) parseRequiredProviders(tf *ast.Terraform, block *hcl.Block) hcl
 func (p *Parser) parseProviderBlock(config *ast.Config, block *hcl.Block) hcl.Diagnostics {
 	var diags hcl.Diagnostics
 
+	// `call` is reserved for the method-call namespace populated by
+	// `call "<res>" "<method>" { ... }` blocks.
+	if block.Labels[0] == "call" {
+		return hcl.Diagnostics{{
+			Severity: hcl.DiagError,
+			Summary:  "Reserved provider name",
+			Detail: `"call" is reserved as the namespace for method calls on resources ` +
+				`(declared via call blocks) and cannot be used as a provider package name.`,
+			Subject: block.LabelRanges[0].Ptr(),
+		}}
+	}
+
 	content, remain, contentDiags := block.Body.PartialContent(providerSchema)
 	diags = append(diags, contentDiags...)
 
@@ -344,6 +356,18 @@ func (p *Parser) parseProviderBlock(config *ast.Config, block *hcl.Block) hcl.Di
 		if val.Type() == cty.String {
 			provider.Alias = val.AsString()
 		}
+	}
+	if attr, ok := content.Attributes["env_var_mappings"]; ok {
+		provider.EnvVarMappings = attr.Expr
+	}
+	if attr, ok := content.Attributes["plugin_download_url"]; ok {
+		provider.PluginDownloadURL = attr.Expr
+	}
+	if attr, ok := content.Attributes["additional_secret_outputs"]; ok {
+		provider.AdditionalSecretOutputs = attr.Expr
+	}
+	if attr, ok := content.Attributes["version"]; ok {
+		provider.Version = attr.Expr
 	}
 
 	key := provider.Key()

@@ -180,6 +180,12 @@ func TestResolveResource(t *testing.T) {
 			token:          "foo_bar_thing",
 			errContains:    "ambiguous token",
 		},
+		{
+			name:           "provider as resource (pulumi_providers_ prefix)",
+			knownProviders: []string{"aws"},
+			token:          "pulumi_providers_aws",
+			errContains:    "is a provider type and cannot be declared with a resource block",
+		},
 	}
 
 	for _, tt := range tests {

@@ -1105,6 +1105,11 @@ func (g *generator) genResource(body *hclwrite.Body, r *pcl.Resource) hcl.Diagno
 	defer func() { g.currentRangeKind = rangeKindNone }()
 
 	token, _ := r.GetToken()
+
+	if r.Schema != nil && r.Schema.IsProvider {
+		return g.genProvider(body, r)
+	}
+
 	hclType, d := packages.PulumiResourceTokenToHCL(resourceSchemaPackage(r.Schema), resourceSchemaToken(r.Schema, token))
 	if d.HasErrors() {
 		return d
@@ -1120,6 +1125,71 @@ func (g *generator) genResource(body *hclwrite.Body, r *pcl.Resource) hcl.Diagno
 		inputs = r.Schema.InputProperties
 	}
 
+	for _, attr := range r.Inputs {
+		inputType := findPropertyType(inputs, attr.Name)
+		hclName := transform.SnakeCaseFromPulumiCase(attr.Name)
+		g.emitLeadingComments(block.Body(), attr.SyntaxNode())
+		if objType, ok := transform.AsHCLBlockType(inputType); ok {
+			d := g.genBlocks(block.Body(), hclName, attr.Value, objType)
+			diags = append(diags, d...)
+		} else {
+			d := g.genAttributeWithTrailing(block.Body(), hclName, attr.Value, inputType, attr.SyntaxNode())
+			diags = append(diags, d...)
+		}
+	}
+	return diags
+}
+
+// genProvider emits a `provider "<pkg>" { ... }` block for a PCL provider
+// resource (token "pulumi:providers:<pkg>").
+func (g *generator) genProvider(body *hclwrite.Body, r *pcl.Resource) hcl.Diagnostics {
+	contract.Assertf(r.Schema == nil || r.Schema.IsProvider, "genProvider not given provider")
+	token, _ := r.GetToken()
+	pkgName := token
+	if i := strings.LastIndex(token, ":"); i >= 0 {
+		pkgName = token[i+1:]
+	}
+	block := body.AppendNewBlock("provider", []string{pkgName})
+	if r.LogicalName() != "" && r.LogicalName() != pkgName {
+		block.Body().SetAttributeValue("alias", cty.StringVal(r.LogicalName()))
+	}
+
+	var diags hcl.Diagnostics
+
+	// Pulumi-specific options are emitted inline; provider blocks have no
+	// `options` sub-block.
+	opts := r.Options
+	if opts != nil {
+		if opts.PluginDownloadURL != nil {
+			tokens, d := g.exprTokens(opts.PluginDownloadURL, schema.StringType)
+			diags = append(diags, d...)
+			if !d.HasErrors() {
+				block.Body().SetAttributeRaw("plugin_download_url", tokens)
+			}
+		}
+		if opts.Version != nil {
+			tokens, d := g.exprTokens(opts.Version, schema.StringType)
+			diags = append(diags, d...)
+			if !d.HasErrors() {
+				block.Body().SetAttributeRaw("version", tokens)
+			}
+		}
+		if opts.AdditionalSecretOutputs != nil {
+			g.genPropertyPathList(block.Body(), "additional_secret_outputs", opts.AdditionalSecretOutputs, &diags)
+		}
+		if opts.EnvVarMappings != nil {
+			tokens, d := g.exprTokens(opts.EnvVarMappings, schema.AnyType)
+			diags = append(diags, d...)
+			if !d.HasErrors() {
+				block.Body().SetAttributeRaw("env_var_mappings", tokens)
+			}
+		}
+	}
+
+	var inputs []*schema.Property
+	if r.Schema != nil {
+		inputs = r.Schema.InputProperties
+	}
 	for _, attr := range r.Inputs {
 		inputType := findPropertyType(inputs, attr.Name)
 		hclName := transform.SnakeCaseFromPulumiCase(attr.Name)
@@ -2443,17 +2513,32 @@ func (g *generator) scopeTraversalTokens(expr *model.ScopeTraversalExpression) (
 		rewritten = append(rewritten, traverseNameStep(part.LogicalName()))
 		return hclwrite.TokensForTraversal(append(rewritten, traversal[1:]...)), nil
 	case *pcl.Resource:
-		// Rewrite "myResource.property" → "resource_type.myResource.property".
+		// Rewrite "myResource.property" → "resource_type.myResource.property"
+		// for normal resources, or "<pkg>.<alias>.property" for providers
+		// (which are declared with a `provider` block, not a `resource` block).
 		//
 		// TODO: Resource traversal needs to be type (and schema) aware. It needs to invoke
 		// [transform.SnakeCaseFromPulumiCase] on property values, and the invoke the standard ["<key>"]
 		// & [<idx>] operators otherwise.
 		token, _ := part.GetToken()
+		rewritten := make(hcl.Traversal, 0, len(traversal)+1)
+		if part.Schema != nil && part.Schema.IsProvider {
+			pkgName := token
+			if i := strings.LastIndex(token, ":"); i >= 0 {
+				pkgName = token[i+1:]
+			}
+			rewritten = append(rewritten, hcl.TraverseRoot{Name: pkgName})
+			rewritten = append(rewritten, traverseNameStep(part.LogicalName()))
+			var props []*schema.Property
+			if part.Schema != nil {
+				props = part.Schema.Properties
+			}
+			return hclwrite.TokensForTraversal(append(rewritten, schemaAwareRewriteTraversal(props, traversal[1:])...)), nil
+		}
 		hclType, diags := packages.PulumiResourceTokenToHCL(resourceSchemaPackage(part.Schema), resourceSchemaToken(part.Schema, token))
 		if diags.HasErrors() {
 			return nil, diags
 		}
-		rewritten := make(hcl.Traversal, 0, len(traversal)+1)
 		rewritten = append(rewritten, hcl.TraverseRoot{Name: hclType})
 		rewritten = append(rewritten, traverseNameStep(part.LogicalName()))
 		// part.Schema can be nil when the binder ran with SkipResourceTypechecking

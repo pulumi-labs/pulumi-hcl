@@ -36,6 +36,7 @@ import (
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
 	"github.com/pulumi-labs/pulumi-hcl/tests/testutil/pulexec"
 	"github.com/pulumi-labs/pulumi-hcl/tests/testutil/tfexec"
+	"github.com/pulumi/pulumi/sdk/v3/go/common/apitype"
 	"github.com/stretchr/testify/require"
 )
 
@@ -49,6 +50,10 @@ type Provider struct {
 type Case struct {
 	Providers []Provider
 	Config    map[string]string
+
+	// AssertState, if set, runs after `pulumi up`. Use for assertions on
+	// resource fields that aren't reachable via stack outputs (e.g. Protect).
+	AssertState func(t *testing.T, resources []apitype.ResourceV3)
 }
 
 // RunCase resolves testdata/cases/<caseName>/ relative to the calling test
@@ -81,7 +86,8 @@ func runCaseFromDir(t *testing.T, caseDir string, c Case) {
 		}
 	}
 
-	var outA, outB map[string]string
+	var outA map[string]string
+	var pulResult pulexec.Result
 	var wg sync.WaitGroup
 	wg.Add(2)
 	go func() {
@@ -90,7 +96,7 @@ func runCaseFromDir(t *testing.T, caseDir string, c Case) {
 	}()
 	go func() {
 		defer wg.Done()
-		outB = pulexec.Run(t, pulProvs, files, c.Config).Outputs
+		pulResult = pulexec.Run(t, pulProvs, files, c.Config)
 	}()
 	wg.Wait()
 
@@ -98,8 +104,12 @@ func runCaseFromDir(t *testing.T, caseDir string, c Case) {
 		return
 	}
 
-	require.Equal(t, outA, outB, "stack outputs differ between tofu apply and pulumi up")
+	require.Equal(t, outA, pulResult.Outputs, "stack outputs differ between tofu apply and pulumi up")
 	require.Equal(t, recA.Ops(), recB.Ops(), "provider operations differ between tofu apply and pulumi up")
+
+	if c.AssertState != nil {
+		c.AssertState(t, pulResult.Resources)
+	}
 }
 
 // loadCase walks caseDir and returns a map of relative-path → file contents

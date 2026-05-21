@@ -7,9 +7,10 @@ terraform {
   }
 }
 
-resource "pulumi_providers_simple" "prov" {
+provider "simple" {
+  alias = "prov"
 }
 resource "simple_resource" "res" {
-  provider = pulumi_providers_simple.prov
+  provider = simple.prov
   value    = true
 }

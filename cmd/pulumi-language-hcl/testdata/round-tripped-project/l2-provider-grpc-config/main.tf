@@ -8,7 +8,8 @@ terraform {
 }
 
 # Cover interesting schema shapes.
-resource "pulumi_providers_config-grpc" "config_grpc_provider" {
+provider "config-grpc" {
+  alias   = "config_grpc_provider"
   string1 = ""
   string2 = "x"
   # Test a JSON-like string to see if it trips up JSON detectors.
@@ -39,6 +40,6 @@ resource "pulumi_providers_config-grpc" "config_grpc_provider" {
     x = 42
   }
 }
-resource "config-grpc_config_fetcher" "config" {
-  provider = pulumi_providers_config-grpc.config_grpc_provider
+resource "config-grpc_configfetcher" "config" {
+  provider = config-grpc.config_grpc_provider
 }

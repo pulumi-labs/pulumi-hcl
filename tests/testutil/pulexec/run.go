@@ -26,6 +26,7 @@ import (
 
 	"github.com/pulumi/providertest/providers"
 	"github.com/pulumi/providertest/pulumitest"
+	"github.com/pulumi/providertest/pulumitest/optnewstack"
 	"github.com/pulumi/providertest/pulumitest/opttest"
 	"github.com/pulumi/pulumi-terraform-bridge/v3/pkg/tfbridge"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/apitype"
@@ -111,11 +112,14 @@ backend:
 		require.NoError(t, os.WriteFile(fullPath, []byte(content), 0o600))
 	}
 
-	opts := append(make([]opttest.Option, 0, 4+len(provs)),
+	opts := append(make([]opttest.Option, 0, 5+len(provs)),
 		opttest.Env("PULUMI_DISABLE_AUTOMATIC_PLUGIN_ACQUISITION", "true"),
 		opttest.Env("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH")),
 		opttest.TestInPlace(),
 		opttest.SkipInstall(),
+		// Cleanup destroy fails on prevent_destroy cases; temp dir is
+		// discarded by t.TempDir anyway.
+		opttest.NewStackOptions(optnewstack.DisableAutoDestroy()),
 	)
 
 	for _, p := range provs {

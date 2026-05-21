@@ -328,3 +328,30 @@ resource "aws_instance" "app" {
 		t.Error("Expected ignore_changes = all")
 	}
 }
+
+
+func TestParseProviderCallReserved(t *testing.T) {
+	src := []byte(`
+provider "call" {
+  value = "x"
+}
+`)
+
+	p := NewParser()
+	_, diags := p.ParseSource("test.tf", src)
+	if !diags.HasErrors() {
+		t.Fatal("expected parse error for provider named \"call\"")
+	}
+	if got := diags.Error(); !contains(got, `"call" is reserved`) {
+		t.Errorf("parser error missing expected substring; got: %q", got)
+	}
+}
+
+func contains(s, sub string) bool {
+	for i := 0; i+len(sub) <= len(s); i++ {
+		if s[i:i+len(sub)] == sub {
+			return true
+		}
+	}
+	return false
+}

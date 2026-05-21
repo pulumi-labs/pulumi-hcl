@@ -16,7 +16,8 @@ data "simple-invoke_my_invoke" "invoke_1" {
   depends_on = [simple-invoke_string_resource.first]
 }
 
-resource "pulumi_providers_simple-invoke" "explicitProvider" {
+provider "simple-invoke" {
+  alias = "explicitProvider"
 }
 resource "simple-invoke_string_resource" "first" {
   text = "first hello"

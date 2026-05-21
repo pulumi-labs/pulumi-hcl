@@ -7,14 +7,15 @@ terraform {
   }
 }
 
-resource "pulumi_providers_config" "prov" {
+provider "config" {
+  alias               = "prov"
   plugin_download_url = "not the same as the pulumi resource option"
   name                = "my config"
 }
 // Note this isn't _using_ the explicit provider, it's just grabbing a value from it.
 resource "config_resource" "res" {
-  text = pulumi_providers_config.prov.version
+  text = config.prov.version
 }
 output "pluginDownloadURL" {
-  value = pulumi_providers_config.prov.plugin_download_url
+  value = config.prov.plugin_download_url
 }
