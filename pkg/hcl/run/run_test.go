@@ -2246,3 +2246,91 @@ resource "test_widget" "w" {
 				`missing discriminator "kind" (expected one of "a", "b")`)
 	})
 }
+
+func TestEngine_UnknownResourceSuggestsAlternative(t *testing.T) {
+	t.Parallel()
+
+	src := []byte(`
+pulumi {
+  required_providers {
+    aws = {
+      source  = "pulumi/aws"
+      version = "1.0.0"
+    }
+  }
+}
+
+resource "aws_ec2_vpd" "example" {}
+`)
+
+	p := parser.NewParser()
+	config, diags := p.ParseSource("test.hcl", src)
+	require.Empty(t, diags)
+
+	mock := &testutil.MockResourceMonitor{}
+	engine := run.NewEngine(config, &run.EngineOptions{
+		ProjectName:     "test-project",
+		StackName:       "dev",
+		ResourceMonitor: mock,
+		WorkDir:         t.TempDir(),
+		RootDir:         t.TempDir(),
+		SchemaLoader: schemaloader.New(t, schema.PackageSpec{
+			Name: "aws",
+			Meta: &schema.MetadataSpec{
+				ModuleFormat: `(.*)(?:/[^/]*)`,
+			},
+			Resources: map[string]schema.ResourceSpec{
+				"aws:ec2/vpc:Vpc": {},
+			},
+		}),
+	})
+
+	err := engine.Run(t.Context())
+	require.Error(t, err)
+	assert.EqualError(t, err,
+		`test.hcl:11,10-23: unknown resource type "aws_ec2_vpd"; did you mean "aws_ec2_vpc"?`)
+}
+
+func TestEngine_UnknownDataSourceSuggestsAlternative(t *testing.T) {
+	t.Parallel()
+
+	src := []byte(`
+pulumi {
+  required_providers {
+    aws = {
+      source  = "pulumi/aws"
+      version = "1.0.0"
+    }
+  }
+}
+
+data "aws_ec2_vpd" "example" {}
+`)
+
+	p := parser.NewParser()
+	config, diags := p.ParseSource("test.hcl", src)
+	require.False(t, diags.HasErrors(), diags.Error())
+
+	mock := &testutil.MockResourceMonitor{}
+	engine := run.NewEngine(config, &run.EngineOptions{
+		ProjectName:     "test-project",
+		StackName:       "dev",
+		ResourceMonitor: mock,
+		WorkDir:         t.TempDir(),
+		RootDir:         t.TempDir(),
+		SchemaLoader: schemaloader.New(t, schema.PackageSpec{
+			Name: "aws",
+			Meta: &schema.MetadataSpec{
+				ModuleFormat: `(.*)(?:/[^/]*)`,
+			},
+			Functions: map[string]schema.FunctionSpec{
+				"aws:ec2/getVpc:getVpc": {},
+			},
+		}),
+	})
+
+	err := engine.Run(t.Context())
+	require.Error(t, err)
+	assert.EqualError(t, err,
+		`test.hcl:11,6-19: unknown data source type "aws_ec2_vpd"; did you mean "aws_ec2_vpc"?`)
+}

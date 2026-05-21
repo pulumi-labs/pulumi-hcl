@@ -206,6 +206,25 @@ type inheritableOpts struct {
 	RetainOnDelete *bool
 }
 
+// unknownTokenDiag turns a packages.NotFoundError into an hcl.Diagnostic
+// anchored at typeRange. Other errors pass through unchanged for the caller
+// to wrap.
+func unknownTokenDiag(kind string, typeRange hcl.Range, err error) error {
+	var nfe *packages.NotFoundError
+	if !errors.As(err, &nfe) {
+		return err
+	}
+	d := &hcl.Diagnostic{
+		Severity: hcl.DiagError,
+		Summary:  fmt.Sprintf("unknown %s type %q", kind, nfe.Token),
+		Subject:  typeRange.Ptr(),
+	}
+	if nfe.Suggestion != "" {
+		d.Detail = fmt.Sprintf("did you mean %q?", nfe.Suggestion)
+	}
+	return hcl.Diagnostics{d}
+}
+
 // Engine executes HCL programs against the Pulumi engine.
 type Engine struct {
 	// config is the parsed HCL configuration.
@@ -790,6 +809,9 @@ func (e *Engine) processResourceInContext(
 ) error {
 	resSchema, err := packages.ResolveResource(ctx, e.pkgLoader, e.knownProviders(), res.Type)
 	if err != nil {
+		if diag := unknownTokenDiag("resource", res.TypeRange, err); diag != err {
+			return diag
+		}
 		return fmt.Errorf("resolving resource type %s: %w", res.Type, err)
 	}
 
@@ -1650,6 +1672,9 @@ func (e *Engine) processDataSourceInContext(
 ) error {
 	funcSchema, err := packages.ResolveFunction(ctx, e.pkgLoader, e.knownProviders(), ds.Type)
 	if err != nil {
+		if diag := unknownTokenDiag("data source", ds.TypeRange, err); diag != err {
+			return diag
+		}
 		return fmt.Errorf("resolving data source type %s: %w", ds.Type, err)
 	}
 
@@ -1889,6 +1914,9 @@ func (e *Engine) processCall(ctx context.Context, node *graph.Node) error {
 			var err error
 			resSchema, err = packages.ResolveResource(ctx, e.pkgLoader, e.knownProviders(), res.Type)
 			if err != nil {
+				if diag := unknownTokenDiag("resource", res.TypeRange, err); diag != err {
+					return diag
+				}
 				return fmt.Errorf("resolving resource type %s for call: %w", res.Type, err)
 			}
 			isProviderResource = strings.HasPrefix(res.Type, "pulumi_providers_")

@@ -32,6 +32,23 @@ import (
 
 var ErrNotFound = errors.New("not found")
 
+// NotFoundError wraps ErrNotFound (via Unwrap) and carries an optional
+// Suggestion: the closest HCL form by edit distance, when the package was
+// loaded but the specific token was missing.
+type NotFoundError struct {
+	Token      string
+	Suggestion string
+}
+
+func (e *NotFoundError) Error() string {
+	if e.Suggestion != "" {
+		return fmt.Sprintf("not found; did you mean %q?", e.Suggestion)
+	}
+	return "not found"
+}
+
+func (e *NotFoundError) Unwrap() error { return ErrNotFound }
+
 type InvalidToken struct {
 	token, reason string
 }
@@ -130,7 +147,14 @@ func ResolveResource(ctx context.Context, loader schema.ReferenceLoader, knownPr
 			return iter.Resource()
 		}
 	}
-	return nil, ErrNotFound
+	return nil, notFoundWithSuggestion(pkg, token, false)
+}
+
+func notFoundWithSuggestion(pkg schema.PackageReference, hclToken string, isFunction bool) error {
+	return &NotFoundError{
+		Token:      hclToken,
+		Suggestion: nearestHCLToken(pkg, hclToken, isFunction),
+	}
 }
 
 // tokenSearchKey produces a normalized lookup key for a Pulumi token by
@@ -261,5 +285,5 @@ func ResolveFunction(ctx context.Context, loader schema.ReferenceLoader, knownPr
 		}
 	}
 
-	return nil, ErrNotFound
+	return nil, notFoundWithSuggestion(pkg, token, true)
 }
