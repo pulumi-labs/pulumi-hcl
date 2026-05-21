@@ -1436,6 +1436,59 @@ output result {
 	testConvertedPCL(t, pclSource, testSchema)
 }
 
+func TestConvertHeredoc(t *testing.T) {
+	t.Parallel()
+
+	pclSource := `
+resource normal "test:index:Res" {
+    prop = <<EON
+ hello
+world
+EON
+}
+
+resource indented "test:index:Res" {
+    prop = <<-EOI
+      hello: ${normal.id}
+       world
+      EOI
+}
+`
+
+	testSchema := schema.PackageSpec{
+		Name:    "test",
+		Version: "1.0.0",
+		Resources: map[string]schema.ResourceSpec{
+			"test:index:Res": {
+				InputProperties: map[string]schema.PropertySpec{
+					"prop": {TypeSpec: schema.TypeSpec{Type: "string"}},
+				},
+			},
+		},
+	}
+
+	m := testConvertedPCL(t, pclSource, testSchema)
+
+	var found1, found2 bool
+	for _, r := range m.RegisteredResources {
+		switch r.Name {
+		case "normal":
+			assert.Equal(t, property.NewMap(map[string]property.Value{
+				"prop": property.New(" hello\nworld\n"),
+			}), r.Inputs)
+			found1 = true
+		case "indented":
+			assert.Equal(t, property.NewMap(map[string]property.Value{
+				"prop": property.New("hello: normal-id\n world\n"),
+			}), r.Inputs)
+			found2 = true
+		}
+	}
+
+	assert.True(t, found1)
+	assert.True(t, found2)
+}
+
 func TestResourceModuleFormat(t *testing.T) {
 	t.Parallel()
 
