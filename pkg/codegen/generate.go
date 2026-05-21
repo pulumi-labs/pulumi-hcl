@@ -2908,8 +2908,8 @@ func heredocOpen(expr *model.TemplateExpression) (delim string, indented bool, o
 	// "<<-" and the trailing newline to recover the bare delimiter.
 	raw := strings.TrimRight(string(open.Raw.Bytes), "\r\n")
 	raw = strings.TrimPrefix(raw, "<<")
-	if strings.HasPrefix(raw, "-") {
-		return strings.TrimPrefix(raw, "-"), true, true
+	if after, ok := strings.CutPrefix(raw, "-"); ok {
+		return after, true, true
 	}
 	return raw, false, true
 }

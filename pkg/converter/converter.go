@@ -1182,11 +1182,11 @@ func (ft *fileTransformer) detectHeredocOpen(r hcl.Range) (delim string, indente
 		indented = true
 		rest = rest[1:]
 	}
-	nl := bytes.IndexByte(rest, '\n')
-	if nl < 0 {
+	line, _, found := bytes.Cut(rest, []byte("\n"))
+	if !found {
 		return "", false, false
 	}
-	delim = strings.TrimRight(string(rest[:nl]), "\r")
+	delim = strings.TrimRight(string(line), "\r")
 	if delim == "" {
 		return "", false, false
 	}
