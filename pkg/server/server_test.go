@@ -20,6 +20,7 @@ import (
 	"testing"
 
 	pulumirpc "github.com/pulumi/pulumi/sdk/v3/proto/go"
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
@@ -83,4 +84,79 @@ fizz: buzz
 
 		test(t, json, yaml)
 	})
+}
+
+// TestGeneratePackageAndRunUseSameSdksDir locks in the contract that the
+// language writes parameterization info to <projectDir>/sdks/<name>/hcl.sdk.json
+// (where `pulumi package add` puts it) and that GetRequiredPackages reads it
+// from the same place. Conformance tests previously masked a mismatch where
+// GeneratePackage wrote to sdks/ but the runtime read from .hcl/sdks/.
+func TestGeneratePackageAndRunUseSameSdksDir(t *testing.T) {
+	t.Parallel()
+
+	projectDir := t.TempDir()
+
+	// Mirror `pulumi package add`: caller creates sdks/<name>/ then calls
+	// GeneratePackage with that directory.
+	const alias = "myparam"
+	sdkDir := filepath.Join(projectDir, "sdks", alias)
+	require.NoError(t, os.MkdirAll(sdkDir, 0o755))
+
+	schema := `{
+		"name": "myparam",
+		"version": "1.2.3",
+		"parameterization": {
+			"baseProvider": {
+				"name": "baseplugin",
+				"version": "1.0.0"
+			},
+			"parameter": "aGVsbG8="
+		}
+	}`
+
+	host := &LanguageHost{}
+	_, err := host.GeneratePackage(t.Context(), &pulumirpc.GeneratePackageRequest{
+		Directory: sdkDir,
+		Schema:    schema,
+	})
+	require.NoError(t, err)
+
+	// Lock in the path: GeneratePackage must write here, not under .hcl/sdks.
+	_, err = os.Stat(filepath.Join(projectDir, "sdks", alias, "hcl.sdk.json"))
+	require.NoError(t, err, "GeneratePackage must write hcl.sdk.json to sdks/<name>/")
+	_, err = os.Stat(filepath.Join(projectDir, ".hcl", "sdks", alias, "hcl.sdk.json"))
+	require.True(t, os.IsNotExist(err), "hcl.sdk.json must not be written under .hcl/sdks/")
+
+	// Write an HCL program that references the alias.
+	program := `pulumi {
+  required_providers {
+    myparam = {
+      source  = "myparam"
+      version = "1.2.3"
+    }
+  }
+}
+`
+	require.NoError(t, os.WriteFile(filepath.Join(projectDir, "main.hcl"), []byte(program), 0o600))
+
+	resp, err := host.GetRequiredPackages(t.Context(), &pulumirpc.GetRequiredPackagesRequest{
+		Info: &pulumirpc.ProgramInfo{
+			ProgramDirectory: projectDir,
+			RootDirectory:    projectDir,
+			EntryPoint:       ".",
+		},
+	})
+	require.NoError(t, err)
+
+	require.Len(t, resp.Packages, 1)
+	assert.Equal(t, &pulumirpc.PackageDependency{
+		Name:    "baseplugin",
+		Version: "1.0.0",
+		Kind:    "resource",
+		Parameterization: &pulumirpc.PackageParameterization{
+			Name:    "myparam",
+			Version: "1.2.3",
+			Value:   []byte("hello"),
+		},
+	}, resp.Packages[0])
 }
