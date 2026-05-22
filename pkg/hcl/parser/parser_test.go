@@ -26,7 +26,7 @@ terraform {
   required_providers {
     aws = {
       source  = "pulumi/aws"
-      version = "~> 6.0"
+      version = "6.0.0"
     }
   }
 }
@@ -248,6 +248,72 @@ resource "aws_instance" "web" {
 
 	if r.Provisioners[2].Type != "file" {
 		t.Errorf("Expected third provisioner to be 'file', got %q", r.Provisioners[2].Type)
+	}
+}
+
+func TestRequiredProvidersVersionMustBeSemver(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name    string
+		hcl     string
+		wantErr bool
+	}{
+		{
+			name: "pulumi_source_semver_ok",
+			hcl: `terraform {
+  required_providers {
+    aws = { source = "pulumi/aws", version = "6.0.0" }
+  }
+}`,
+		},
+		{
+			name: "pulumi_source_constraint_rejected",
+			hcl: `terraform {
+  required_providers {
+    aws = { source = "pulumi/aws", version = "~> 6.0" }
+  }
+}`,
+			wantErr: true,
+		},
+		{
+			name: "no_source_constraint_rejected",
+			hcl: `terraform {
+  required_providers {
+    aws = { version = "~> 6.0" }
+  }
+}`,
+			wantErr: true,
+		},
+		{
+			name: "tf_source_constraint_ok",
+			hcl: `terraform {
+  required_providers {
+    random = { source = "hashicorp/random", version = "~> 4.0.0" }
+  }
+}`,
+		},
+		{
+			name: "pulumi_source_no_version_ok",
+			hcl: `terraform {
+  required_providers {
+    aws = { source = "pulumi/aws" }
+  }
+}`,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			_, diags := NewParser().ParseSource("test.hcl", []byte(tc.hcl))
+			if tc.wantErr {
+				require.True(t, diags.HasErrors(), "expected parse errors, got %v", diags)
+				require.Equal(t, "Invalid provider version", diags[0].Summary)
+			} else {
+				require.False(t, diags.HasErrors(), "unexpected parse errors: %v", diags)
+			}
+		})
 	}
 }
 

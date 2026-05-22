@@ -816,8 +816,8 @@ func (e *Engine) registerProviderInContext(
 		}
 	}
 	if version == "" && e.config.Terraform != nil {
-		if req, ok := e.config.Terraform.RequiredProviders[provider.Name]; ok && req.Version != "" {
-			version = ExtractSemverFromConstraint(req.Version)
+		if req, ok := e.config.Terraform.RequiredProviders[provider.Name]; ok && isPulumiProviderSource(req.Source) {
+			version = req.Version
 		}
 	}
 
@@ -1090,8 +1090,8 @@ func (e *Engine) registerResourceInstanceInContext(
 	if opts.Version == "" {
 		pkgName := packageNameFromResourceType(res.Type)
 		if e.config.Terraform != nil {
-			if req, ok := e.config.Terraform.RequiredProviders[pkgName]; ok && req.Version != "" {
-				opts.Version = ExtractSemverFromConstraint(req.Version)
+			if req, ok := e.config.Terraform.RequiredProviders[pkgName]; ok && isPulumiProviderSource(req.Source) {
+				opts.Version = req.Version
 			}
 		}
 	}
@@ -1606,36 +1606,11 @@ func (e *Engine) hasFailedDependency(res *ast.Resource) bool {
 	return false
 }
 
-func ExtractSemverFromConstraint(constraint string) string {
-	// Remove common constraint operators
-	constraint = strings.TrimSpace(constraint)
-	constraint = strings.TrimPrefix(constraint, ">=")
-	constraint = strings.TrimPrefix(constraint, "~>")
-	constraint = strings.TrimPrefix(constraint, ">")
-	constraint = strings.TrimPrefix(constraint, "=")
-	constraint = strings.TrimPrefix(constraint, "^")
-	constraint = strings.TrimSpace(constraint)
-
-	// Handle multiple constraints (comma-separated) - take the first one
-	if idx := strings.Index(constraint, ","); idx >= 0 {
-		constraint = strings.TrimSpace(constraint[:idx])
-	}
-
-	// Validate it looks like a semver (digits and dots)
-	if constraint == "" {
-		return ""
-	}
-
-	// Ensure it has at least major.minor.patch format
-	parts := strings.Split(constraint, ".")
-	switch len(parts) {
-	case 1:
-		return parts[0] + ".0.0"
-	case 2:
-		return constraint + ".0"
-	default:
-		return constraint
-	}
+// isPulumiProviderSource reports whether a required_providers source uses
+// Pulumi's native package system (empty or pulumi/-prefixed). Such sources
+// must declare a real semver version — validated at parse time.
+func isPulumiProviderSource(source string) bool {
+	return source == "" || strings.HasPrefix(source, "pulumi/")
 }
 
 // buildResourceName builds the Pulumi resource name from the logical name and instance key.

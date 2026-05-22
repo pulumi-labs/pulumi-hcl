@@ -110,6 +110,7 @@ func (host *LanguageHost) GetRequiredPackages(
 	}
 
 	var pkgs []*pulumirpc.PackageDependency
+	var specs []*pulumirpc.PackageSpec
 	if config.Terraform != nil {
 		for alias, provider := range config.Terraform.RequiredProviders {
 
@@ -140,12 +141,27 @@ func (host *LanguageHost) GetRequiredPackages(
 				})
 				continue
 			}
-			dep := &pulumirpc.PackageDependency{
-				Name: alias,
-				Kind: "resource",
+
+			// Non-pulumi-prefixed source addresses get emitted as PackageSpecs
+			// targeting terraform-provider with the raw source/version as
+			// parameters; `pulumi install` resolves them via the registry.
+			// We never pin a version of terraform-provider.
+			if provider.Source != "" && !strings.HasPrefix(provider.Source, "pulumi/") {
+				params := []string{provider.Source}
+				if provider.Version != "" {
+					params = append(params, provider.Version)
+				}
+				specs = append(specs, &pulumirpc.PackageSpec{
+					Source:     "terraform-provider",
+					Parameters: params,
+				})
+				continue
 			}
-			if provider.Version != "" {
-				dep.Version = run.ExtractSemverFromConstraint(provider.Version)
+
+			dep := &pulumirpc.PackageDependency{
+				Name:    alias,
+				Kind:    "resource",
+				Version: provider.Version,
 			}
 			if provider.Source != "" {
 				parts := strings.Split(provider.Source, "/")
@@ -157,7 +173,7 @@ func (host *LanguageHost) GetRequiredPackages(
 		}
 	}
 
-	return &pulumirpc.GetRequiredPackagesResponse{Packages: pkgs}, nil
+	return &pulumirpc.GetRequiredPackagesResponse{Packages: pkgs, Specs: specs}, nil
 }
 
 // readParameterizationInfos reads sdks/*/hcl.sdk.json files from dir and

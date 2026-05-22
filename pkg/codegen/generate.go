@@ -633,13 +633,14 @@ func (g *generator) genTerraformHeader(
 	if len(providers) > 0 {
 		reqProviders := block.Body().AppendNewBlock("required_providers", nil)
 		for _, ref := range providers {
-			namespace := ref.Namespace()
-			if namespace == "" {
-				namespace = "pulumi"
+			// All Pulumi packages emit under the `pulumi/` prefix so the HCL
+			// runtime can distinguish them from terraform-provider sources.
+			// Namespaced packages become a triple: pulumi/<ns>/<name>.
+			source := "pulumi/" + ref.Name()
+			if ns := ref.Namespace(); ns != "" {
+				source = "pulumi/" + ns + "/" + ref.Name()
 			}
-			attrs := map[string]cty.Value{
-				"source": cty.StringVal(namespace + "/" + ref.Name()),
-			}
+			attrs := map[string]cty.Value{"source": cty.StringVal(source)}
 			if v := ref.Version(); v != nil && !g.skipRequiredProvidersVersion {
 				attrs["version"] = cty.StringVal(v.String())
 			}

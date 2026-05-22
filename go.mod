@@ -13,8 +13,8 @@ require (
 	github.com/hashicorp/terraform-plugin-sdk/v2 v2.40.1
 	github.com/pulumi/providertest v0.7.0
 	github.com/pulumi/pulumi-terraform-bridge/v3 v3.129.2
-	github.com/pulumi/pulumi/pkg/v3 v3.242.1-0.20260520145437-e046a6fbe70d
-	github.com/pulumi/pulumi/sdk/v3 v3.242.1-0.20260520145437-e046a6fbe70d
+	github.com/pulumi/pulumi/pkg/v3 v3.242.1-0.20260522090831-62878b4ed028
+	github.com/pulumi/pulumi/sdk/v3 v3.242.1-0.20260522090831-62878b4ed028
 	github.com/stretchr/testify v1.11.1
 	github.com/zclconf/go-cty v1.18.1
 	golang.org/x/crypto v0.51.0

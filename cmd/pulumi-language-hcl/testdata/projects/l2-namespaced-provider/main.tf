@@ -5,7 +5,7 @@ terraform {
       version = "13.3.7"
     }
     namespaced = {
-      source  = "a-namespace/namespaced"
+      source  = "pulumi/a-namespace/namespaced"
       version = "16.0.0"
     }
   }
