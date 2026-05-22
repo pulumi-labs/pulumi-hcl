@@ -288,6 +288,12 @@ type Engine struct {
 	// resourceInheritableOpts maps resource keys to the options that children can inherit.
 	resourceInheritableOpts *util.SyncMap[string, inheritableOpts]
 
+	// defaultProviders maps a package name to the urn::id of its un-aliased
+	// `provider "<pkg>" {}` block. Resources whose package matches and that
+	// omit an explicit `provider` arg use this so the provider block's config
+	// flows through, instead of the engine spinning up an empty default.
+	defaultProviders *util.SyncMap[string, string]
+
 	// dataSourceDependencies maps data source keys to their resource dependencies (URNs).
 	dataSourceDependencies *util.SyncMap[string, []resource.URN]
 
@@ -391,6 +397,7 @@ func NewEngine(config *ast.Config, opts *EngineOptions) *Engine {
 		resmon:                  opts.ResourceMonitor,
 		resourceOutputs:         util.NewSyncMap[string, cty.Value](),
 		resourceInheritableOpts: util.NewSyncMap[string, inheritableOpts](),
+		defaultProviders:        util.NewSyncMap[string, string](),
 		dataSourceDependencies:  util.NewSyncMap[string, []resource.URN](),
 		stackOutputs:            make(map[string]property.Value),
 		projectName:             opts.ProjectName,
@@ -904,6 +911,12 @@ func (e *Engine) registerProviderInContext(
 
 	e.resourceOutputs.Set(node.Key, cty.ObjectVal(outputObj))
 
+	// Top-level un-aliased provider blocks become the default provider for
+	// resources of the same package that don't set `provider` explicitly.
+	if provider.Alias == "" && node.ModuleInfo == nil && providerID != "" {
+		e.defaultProviders.Set(provider.Name, resp.URN+"::"+providerID)
+	}
+
 	if node.ModuleInfo != nil {
 		// Strip prefix for module-internal references
 		bareKey := strings.TrimPrefix(node.Key, node.ModuleInfo.Prefix())
@@ -1255,6 +1268,10 @@ func (e *Engine) buildResourceOptionsInContext(
 			return nil, fmt.Errorf("resolving provider for %s.%s: %w", res.Type, res.Name, err)
 		}
 		opts.Provider = ref
+	} else if modInfo == nil {
+		if ref, ok := e.defaultProviders.Get(packageNameFromResourceType(res.Type)); ok {
+			opts.Provider = ref
+		}
 	}
 
 	for _, traversal := range res.Providers {
@@ -1957,6 +1974,10 @@ func (e *Engine) invokeDataSourceOnce(
 			return cty.NilVal, nil, fmt.Errorf("resolving provider for data %s.%s: %w", ds.Type, ds.Name, err)
 		}
 		invokeReq.Provider = ref
+	} else if node.ModuleInfo == nil {
+		if ref, ok := e.defaultProviders.Get(packageNameFromResourceType(ds.Type)); ok {
+			invokeReq.Provider = ref
+		}
 	}
 
 	if ds.Version != nil {

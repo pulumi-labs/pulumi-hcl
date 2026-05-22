@@ -17,6 +17,7 @@ package parser
 import (
 	"testing"
 
+	"github.com/hashicorp/hcl/v2"
 	"github.com/stretchr/testify/require"
 )
 
@@ -315,6 +316,110 @@ func TestRequiredProvidersVersionMustBeSemver(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestTerraformBlockCompat(t *testing.T) {
+	t.Parallel()
+
+	t.Run("multiple_terraform_blocks_merge", func(t *testing.T) {
+		t.Parallel()
+		src := `
+terraform {
+  backend "remote" {
+    organization = "pulumi"
+  }
+}
+
+terraform {
+  required_providers {
+    aws = { source = "hashicorp/aws", version = "6.19.0" }
+  }
+}`
+		cfg, diags := NewParser().ParseSource("test.hcl", []byte(src))
+		require.False(t, diags.HasErrors(), "unexpected errors: %v", diags)
+		require.NotNil(t, cfg.Terraform)
+		require.Contains(t, cfg.Terraform.RequiredProviders, "aws")
+	})
+
+	t.Run("backend_warns_continues", func(t *testing.T) {
+		t.Parallel()
+		src := `
+terraform {
+  backend "remote" {
+    organization = "pulumi"
+  }
+  required_providers {
+    aws = { source = "hashicorp/aws", version = "6.19.0" }
+  }
+}`
+		cfg, diags := NewParser().ParseSource("test.hcl", []byte(src))
+		require.False(t, diags.HasErrors(), "unexpected errors: %v", diags)
+		require.Contains(t, cfg.Terraform.RequiredProviders, "aws")
+		var found bool
+		for _, d := range diags {
+			if d.Severity == hcl.DiagWarning && d.Summary == "Ignoring terraform backend block" {
+				found = true
+				break
+			}
+		}
+		require.True(t, found, "expected warning for backend block, got %v", diags)
+	})
+
+	t.Run("duplicate_required_provider_across_blocks", func(t *testing.T) {
+		t.Parallel()
+		src := `
+terraform {
+  required_providers {
+    aws = { source = "hashicorp/aws", version = "6.19.0" }
+  }
+}
+
+terraform {
+  required_providers {
+    aws = { source = "hashicorp/aws", version = "7.0.0" }
+  }
+}`
+		_, diags := NewParser().ParseSource("test.hcl", []byte(src))
+		require.True(t, diags.HasErrors(), "expected duplicate-provider error, got %v", diags)
+		require.Equal(t, "Duplicate required_providers entry", diags[0].Summary)
+	})
+
+	t.Run("duplicate_required_version_range_across_blocks", func(t *testing.T) {
+		t.Parallel()
+		src := `
+terraform {
+  required_version_range = ">= 1.0.0"
+}
+
+terraform {
+  required_version_range = ">= 2.0.0"
+}`
+		_, diags := NewParser().ParseSource("test.hcl", []byte(src))
+		require.True(t, diags.HasErrors(), "expected duplicate-required_version_range error, got %v", diags)
+		require.Equal(t, "Duplicate required_version_range attribute", diags[0].Summary)
+	})
+
+	t.Run("required_version_warns_continues", func(t *testing.T) {
+		t.Parallel()
+		src := `
+terraform {
+  required_version = ">= 1.0.0"
+  required_providers {
+    aws = { source = "hashicorp/aws", version = "6.19.0" }
+  }
+}`
+		cfg, diags := NewParser().ParseSource("test.hcl", []byte(src))
+		require.False(t, diags.HasErrors(), "unexpected errors: %v", diags)
+		require.Contains(t, cfg.Terraform.RequiredProviders, "aws")
+		var found bool
+		for _, d := range diags {
+			if d.Severity == hcl.DiagWarning && d.Summary == "Unsupported attribute: required_version" {
+				found = true
+				break
+			}
+		}
+		require.True(t, found, "expected warning for required_version, got %v", diags)
+	})
 }
 
 func TestParseProvisionerInvalidWhen(t *testing.T) {

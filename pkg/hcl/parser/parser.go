@@ -126,19 +126,10 @@ func (p *Parser) parseBlock(config *ast.Config, block *hcl.Block) hcl.Diagnostic
 	}
 }
 
-// parseTerraformBlock parses a terraform block.
+// parseTerraformBlock parses a terraform block. Multiple terraform blocks
+// merge into a single configuration, matching Terraform's behavior.
 func (p *Parser) parseTerraformBlock(config *ast.Config, block *hcl.Block) hcl.Diagnostics {
 	var diags hcl.Diagnostics
-
-	if config.Terraform != nil {
-		diags = append(diags, &hcl.Diagnostic{
-			Severity: hcl.DiagError,
-			Summary:  "Duplicate terraform block",
-			Detail:   "Only one terraform block is allowed per configuration.",
-			Subject:  &block.DefRange,
-		})
-		return diags
-	}
 
 	content, contentDiags := block.Body.Content(terraformSchema)
 	diags = append(diags, contentDiags...)
@@ -153,13 +144,35 @@ func (p *Parser) parseTerraformBlock(config *ast.Config, block *hcl.Block) hcl.D
 		return diags
 	}
 
-	tf := &ast.Terraform{
-		RequiredProviders: make(map[string]*ast.RequiredProvider),
-		DeclRange:         block.DefRange,
+	tf := config.Terraform
+	if tf == nil {
+		tf = &ast.Terraform{
+			RequiredProviders: make(map[string]*ast.RequiredProvider),
+			DeclRange:         block.DefRange,
+		}
 	}
 
 	if attr, ok := content.Attributes["required_version_range"]; ok {
-		tf.RequiredVersionRange = attr.Expr
+		if tf.RequiredVersionRange != nil {
+			diags = append(diags, &hcl.Diagnostic{
+				Severity: hcl.DiagError,
+				Summary:  "Duplicate required_version_range attribute",
+				Detail:   "required_version_range is already set by a previous terraform block.",
+				Subject:  attr.Range.Ptr(),
+			})
+		} else {
+			tf.RequiredVersionRange = attr.Expr
+		}
+	}
+
+	if attr, ok := content.Attributes["required_version"]; ok {
+		diags = append(diags, &hcl.Diagnostic{
+			Severity: hcl.DiagWarning,
+			Summary:  "Unsupported attribute: required_version",
+			Detail: "Pulumi HCL does not enforce required_version. " +
+				"Use required_version_range to declare a supported Pulumi version range.",
+			Subject: attr.Range.Ptr(),
+		})
 	}
 
 	for _, subBlock := range content.Blocks {
@@ -193,6 +206,14 @@ func (p *Parser) parseTerraformBlock(config *ast.Config, block *hcl.Block) hcl.D
 			pkg, pkgDiags := p.parseTerraformPackageBlock(subBlock)
 			diags = append(diags, pkgDiags...)
 			tf.Package = pkg
+		case "backend":
+			diags = append(diags, &hcl.Diagnostic{
+				Severity: hcl.DiagWarning,
+				Summary:  "Ignoring terraform backend block",
+				Detail: "Pulumi manages state through its own backend; the terraform `backend` " +
+					"block is ignored. Configure the backend via `pulumi login`.",
+				Subject: &subBlock.DefRange,
+			})
 		}
 	}
 
@@ -296,6 +317,18 @@ func (p *Parser) parseRequiredProviders(tf *ast.Terraform, block *hcl.Block) hcl
 	diags = append(diags, attrDiags...)
 
 	for name, attr := range attrs {
+		if _, exists := tf.RequiredProviders[name]; exists {
+			diags = append(diags, &hcl.Diagnostic{
+				Severity: hcl.DiagError,
+				Summary:  "Duplicate required_providers entry",
+				Detail: fmt.Sprintf(
+					"required provider %q is already declared by a previous required_providers block.",
+					name),
+				Subject: attr.Range.Ptr(),
+			})
+			continue
+		}
+
 		provider := &ast.RequiredProvider{
 			Name:      name,
 			DeclRange: attr.Range,
