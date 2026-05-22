@@ -18,8 +18,10 @@ import (
 	"context"
 	"testing"
 
+	"github.com/hashicorp/hcl/v2"
 	"github.com/pulumi-labs/pulumi-hcl/pkg/hcl/parser"
 	"github.com/pulumi/pulumi/pkg/v3/util/pdag"
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/zclconf/go-cty/cty"
 )
@@ -97,6 +99,40 @@ func TestValidate(t *testing.T) {
 	if len(errors) != 1 {
 		t.Errorf("Expected 1 error, got %d", len(errors))
 	}
+}
+
+// TestValidateUnknownNodeReportsSourceLocation covers
+// https://github.com/pulumi-labs/pulumi-hcl/issues/153: a reference to a
+// node that does not exist must report the source location of the offending
+// traversal, not just the unknown key.
+func TestValidateUnknownNodeReportsSourceLocation(t *testing.T) {
+	src := []byte(`resource "aws_s2_bucket" "example" {
+  bucket = "${resource.fuzz.bucket}"
+}
+`)
+
+	p := parser.NewParser()
+	config, diags := p.ParseSource("test.hcl", src)
+	require.Empty(t, diags)
+
+	g, err := BuildFromConfig(config, nil, "")
+	require.NoError(t, err)
+
+	errs := g.Validate()
+	require.Len(t, errs, 1)
+
+	var diag *hcl.Diagnostic
+	require.ErrorAs(t, errs[0], &diag)
+	require.NotNil(t, diag.Subject, "diagnostic must include a source location")
+	assert.Equal(t, &hcl.Diagnostic{
+		Severity: hcl.DiagError,
+		Summary:  `unknown node "resource.fuzz"`,
+		Subject: &hcl.Range{
+			Filename: "test.hcl",
+			Start:    hcl.Pos{Line: 2, Column: 15, Byte: 51},
+			End:      hcl.Pos{Line: 2, Column: 35, Byte: 71},
+		},
+	}, diag)
 }
 
 func TestResourceExpander(t *testing.T) {
