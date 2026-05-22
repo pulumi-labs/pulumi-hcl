@@ -23,6 +23,7 @@ import (
 	"fmt"
 	"maps"
 	"slices"
+	"strings"
 
 	"github.com/hashicorp/hcl/v2"
 	"github.com/hashicorp/hcl/v2/hclsyntax"
@@ -311,6 +312,7 @@ func BuildFromConfig(config *ast.Config, moduleLoader ModuleLoader, workDir stri
 	// Add resource nodes
 	for key, resource := range config.Resources {
 		deps := g.resourceDeps(resource, "")
+		deps = append(deps, g.defaultProviderDeps(resource, config, "")...)
 		err := g.AddNode(&Node{
 			Key:      key,
 			Type:     NodeTypeResource,
@@ -324,6 +326,7 @@ func BuildFromConfig(config *ast.Config, moduleLoader ModuleLoader, workDir stri
 	// Add data source nodes
 	for key, dataSource := range config.DataSources {
 		deps := g.resourceDeps(dataSource, "")
+		deps = append(deps, g.defaultProviderDeps(dataSource, config, "")...)
 		err := g.AddNode(&Node{
 			Key:      "data." + key,
 			Type:     NodeTypeDataSource,
@@ -359,6 +362,34 @@ func BuildFromConfig(config *ast.Config, moduleLoader ModuleLoader, workDir stri
 	}
 
 	return g, nil
+}
+
+// defaultProviderDeps returns an implicit dependency on the un-aliased
+// `provider "<pkg>" {}` block, if one exists, for resources/data sources that
+// don't set `provider` explicitly. Without this the engine could process the
+// resource before the default provider finishes registering — the provider
+// block's config would then never make it into the resource.
+func (g *Graph) defaultProviderDeps(resource *ast.Resource, config *ast.Config, prefix string) []pdag.Node {
+	if resource.Provider != nil {
+		return nil
+	}
+	pkgName := packageNameFromResourceType(resource.Type)
+	if pkgName == "" {
+		return nil
+	}
+	if _, ok := config.Providers[pkgName]; !ok {
+		return nil
+	}
+	_, idx := g.newNode(prefix + pkgName)
+	return []pdag.Node{idx}
+}
+
+// packageNameFromResourceType mirrors run.packageNameFromResourceType: it
+// extracts the provider package from an HCL resource type (e.g.
+// "simple_resource" → "simple"). Duplicated here so graph stays free of run
+// imports.
+func packageNameFromResourceType(token string) string {
+	return strings.SplitN(token, "_", 2)[0]
 }
 
 // resourceDeps extracts all dependencies from a resource, applying prefix to resolved keys.

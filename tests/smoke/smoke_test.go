@@ -121,10 +121,10 @@ func copyFile(t *testing.T, src, dst string) {
 	t.Helper()
 	in, err := os.Open(src)
 	require.NoError(t, err)
-	defer in.Close()
+	defer func() { _ = in.Close() }()
 	out, err := os.Create(dst)
 	require.NoError(t, err)
-	defer out.Close()
+	defer func() { _ = out.Close() }()
 	_, err = io.Copy(out, in)
 	require.NoError(t, err)
 }
