@@ -9,11 +9,11 @@ pulumi {
 
 resource "pulumi_providers_component" "explicit" {
 }
-resource "component_componentcallable" "list" {
+resource "component_component_callable" "list" {
   providers = [pulumi_providers_component.explicit]
   value     = "value"
 }
-resource "component_componentcallable" "map" {
+resource "component_component_callable" "map" {
   providers = [pulumi_providers_component.explicit]
   value     = "value"
 }

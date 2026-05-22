@@ -7,19 +7,19 @@ pulumi {
   }
 }
 
-data "simple-invoke_myinvoke" "data" {
+data "simple-invoke_my_invoke" "data" {
   value      = "hello"
-  depends_on = [simple-invoke_stringresource.first]
+  depends_on = [simple-invoke_string_resource.first]
 }
 
 resource "pulumi_providers_simple-invoke" "explicitProvider" {
 }
-resource "simple-invoke_stringresource" "first" {
+resource "simple-invoke_string_resource" "first" {
   text = "first hello"
 }
-resource "simple-invoke_stringresource" "second" {
-  text = data.simple-invoke_myinvoke.data.result
+resource "simple-invoke_string_resource" "second" {
+  text = data.simple-invoke_my_invoke.data.result
 }
 output "hello" {
-  value = data.simple-invoke_myinvoke.data.result
+  value = data.simple-invoke_my_invoke.data.result
 }

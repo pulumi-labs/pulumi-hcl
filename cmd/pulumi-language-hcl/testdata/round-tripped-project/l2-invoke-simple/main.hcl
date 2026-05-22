@@ -7,16 +7,16 @@ pulumi {
   }
 }
 
-data "simple-invoke_myinvoke" "invoke_0" {
+data "simple-invoke_my_invoke" "invoke_0" {
   value = "hello"
 }
-data "simple-invoke_myinvoke" "invoke_1" {
+data "simple-invoke_my_invoke" "invoke_1" {
   value = "goodbye"
 }
 
 output "hello" {
-  value = data.simple-invoke_myinvoke.invoke_0.result
+  value = data.simple-invoke_my_invoke.invoke_0.result
 }
 output "goodbye" {
-  value = data.simple-invoke_myinvoke.invoke_1.result
+  value = data.simple-invoke_my_invoke.invoke_1.result
 }

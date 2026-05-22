@@ -181,7 +181,7 @@ func TestGetResourceName(t *testing.T) {
 	}{
 		{"aws:s3:Bucket", "aws_s3_bucket"},
 		{"aws:index:Provider", "aws_provider"},
-		{"pulumi:pulumi:StackReference", "pulumi_stackreference"},
+		{"pulumi:pulumi:StackReference", "pulumi_stack_reference"},
 	}
 	for _, c := range cases {
 		t.Run(c.token, func(t *testing.T) {
@@ -196,14 +196,14 @@ func TestGetFunctionName(t *testing.T) {
 	t.Parallel()
 
 	got := helper.GetFunctionName(&schema.Function{Token: "aws:s3:getBucket"})
-	assert.Equal(t, "aws_s3_getbucket", got)
+	assert.Equal(t, "aws_s3_get_bucket", got)
 }
 
 // TestTokenNormalization_ViaPackage verifies that names are normalized through
 // the package's TokenToModule mapping. Schemas that use a moduleFormat regex
 // (such as pulumi-random's "(.*)(?:/[^/]*)") emit tokens like
 // "random:index/randomString:RandomString" but expect the HCL form to collapse
-// to "random_randomstring" — matching what GenerateProgram actually emits.
+// to "random_random_string" — matching what GenerateProgram actually emits.
 func TestTokenNormalization_ViaPackage(t *testing.T) {
 	t.Parallel()
 
@@ -229,9 +229,9 @@ func TestTokenNormalization_ViaPackage(t *testing.T) {
 		r, ok, err := pkg.Resources().Get("random:index/randomString:RandomString")
 		require.NoError(t, err)
 		require.True(t, ok)
-		assert.Equal(t, "random_randomstring", helper.GetResourceName(r))
+		assert.Equal(t, "random_random_string", helper.GetResourceName(r))
 		typ := &schema.ResourceType{Token: r.Token, Resource: r}
-		assert.Equal(t, "random_randomstring", helper.GetTypeName(pkg, typ, false, ""))
+		assert.Equal(t, "random_random_string", helper.GetTypeName(pkg, typ, false, ""))
 	})
 
 	t.Run("function", func(t *testing.T) {
@@ -239,11 +239,11 @@ func TestTokenNormalization_ViaPackage(t *testing.T) {
 		f, ok, err := pkg.Functions().Get("random:index/getRandom:getRandom")
 		require.NoError(t, err)
 		require.True(t, ok)
-		assert.Equal(t, "random_getrandom", helper.GetFunctionName(f))
+		assert.Equal(t, "random_get_random", helper.GetFunctionName(f))
 	})
 }
 
-// TestGetTypeName_ResourceWithoutPackage falls back to the raw PulumiTokenToHCL
+// TestGetTypeName_ResourceWithoutPackage falls back to the raw PulumiResourceTokenToHCL
 // when no package is provided to resolve the module via TokenToModule.
 func TestGetTypeName_ResourceWithoutPackage(t *testing.T) {
 	t.Parallel()
@@ -251,7 +251,7 @@ func TestGetTypeName_ResourceWithoutPackage(t *testing.T) {
 	typ := &schema.ResourceType{Token: "random:index/randomString:RandomString"}
 	// Without a package to consult TokenToModule, the raw token's submodule is
 	// preserved.
-	assert.Equal(t, "random_index_randomstring_randomstring",
+	assert.Equal(t, "random_index_random_string_random_string",
 		helper.GetTypeName(nil, typ, false, ""))
 }
 

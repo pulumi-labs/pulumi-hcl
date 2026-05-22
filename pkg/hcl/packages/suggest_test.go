@@ -142,3 +142,59 @@ func TestLevenshtein(t *testing.T) {
 		require.Equal(t, tt.want, got, "levenshtein(%q, %q)", tt.a, tt.b)
 	}
 }
+
+func TestPulumiResourceTokenToHCL(t *testing.T) {
+	t.Parallel()
+
+	loader := schemaloader.New(t, schema.PackageSpec{
+		Name: "aws",
+		Meta: &schema.MetadataSpec{
+			ModuleFormat: `(.*)(?:/[^/]*)`,
+		},
+		Resources: map[string]schema.ResourceSpec{
+			"aws:s3/bucketWebsiteConfiguration:BucketWebsiteConfiguration": {},
+			"aws:lb/loadBalancer:LoadBalancer":                             {},
+			"aws:s3/bucket:Bucket":                                         {},
+		},
+		Functions: map[string]schema.FunctionSpec{
+			"aws:s3/getBucket:getBucket": {},
+		},
+	})
+	pkg, err := loader.LoadPackageReferenceV2(t.Context(), &schema.PackageDescriptor{Name: "aws"})
+	require.NoError(t, err)
+
+	t.Run("camelCase resource splits", func(t *testing.T) {
+		t.Parallel()
+		got, diags := PulumiResourceTokenToHCL(pkg, "aws:s3/bucketWebsiteConfiguration:BucketWebsiteConfiguration")
+		require.False(t, diags.HasErrors())
+		require.Equal(t, "aws_s3_bucket_website_configuration", got)
+	})
+
+	t.Run("function strips get prefix", func(t *testing.T) {
+		t.Parallel()
+		got, diags := PulumiFunctionTokenToHCL(pkg, "aws:s3/getBucket:getBucket")
+		require.False(t, diags.HasErrors())
+		require.Equal(t, "aws_s3_bucket", got)
+	})
+
+	t.Run("stack reference", func(t *testing.T) {
+		t.Parallel()
+		got, diags := PulumiResourceTokenToHCL(nil, "pulumi:pulumi:StackReference")
+		require.False(t, diags.HasErrors())
+		require.Equal(t, "pulumi_stack_reference", got)
+	})
+
+	t.Run("providers token preserves providers segment", func(t *testing.T) {
+		t.Parallel()
+		got, diags := PulumiResourceTokenToHCL(pkg, "pulumi:providers:aws")
+		require.False(t, diags.HasErrors())
+		require.Equal(t, "pulumi_providers_aws", got)
+	})
+
+	t.Run("nil package falls back to source-form module", func(t *testing.T) {
+		t.Parallel()
+		got, diags := PulumiResourceTokenToHCL(nil, "aws:s3/bucketWebsiteConfiguration:BucketWebsiteConfiguration")
+		require.False(t, diags.HasErrors())
+		require.Equal(t, "aws_s3_bucket_website_configuration_bucket_website_configuration", got)
+	})
+}

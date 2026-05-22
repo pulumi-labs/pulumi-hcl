@@ -7,12 +7,12 @@ pulumi {
   }
 }
 
-resource "component_componentcustomrefoutput" "component1" {
+resource "component_component_custom_ref_output" "component1" {
   value = "foo-bar-baz"
 }
 resource "component_custom" "custom1" {
-  value = component_componentcustomrefoutput.component1.value
+  value = component_component_custom_ref_output.component1.value
 }
 resource "component_custom" "custom2" {
-  value = component_componentcustomrefoutput.component1.ref.value
+  value = component_component_custom_ref_output.component1.ref.value
 }

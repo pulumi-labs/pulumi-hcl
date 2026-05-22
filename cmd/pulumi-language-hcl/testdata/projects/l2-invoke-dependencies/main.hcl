@@ -11,7 +11,7 @@ pulumi {
   }
 }
 
-data "simple-invoke_secretinvoke" "invoke_0" {
+data "simple-invoke_secret_invoke" "invoke_0" {
   value           = "hello"
   secret_response = simple_resource.first.value
 }
@@ -22,5 +22,5 @@ resource "simple_resource" "first" {
 // assert that resource second depends on resource first
 // because it uses .secret from the invoke which depends on first
 resource "simple_resource" "second" {
-  value = data.simple-invoke_secretinvoke.invoke_0.secret
+  value = data.simple-invoke_secret_invoke.invoke_0.secret
 }

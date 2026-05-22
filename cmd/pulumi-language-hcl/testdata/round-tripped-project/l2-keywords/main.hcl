@@ -7,17 +7,17 @@ pulumi {
   }
 }
 
-resource "keywords_someresource" "firstResource" {
+resource "keywords_some_resource" "firstResource" {
   builtins = "builtins"
   lambda   = "lambda"
   property = "property"
 }
-resource "keywords_someresource" "secondResource" {
-  builtins = keywords_someresource.firstResource.builtins
-  lambda   = keywords_someresource.firstResource.lambda
-  property = keywords_someresource.firstResource.property
+resource "keywords_some_resource" "secondResource" {
+  builtins = keywords_some_resource.firstResource.builtins
+  lambda   = keywords_some_resource.firstResource.lambda
+  property = keywords_some_resource.firstResource.property
 }
-resource "keywords_lambda_someresource" "lambdaModuleResource" {
+resource "keywords_lambda_some_resource" "lambdaModuleResource" {
   builtins = "builtins"
   lambda   = "lambda"
   property = "property"

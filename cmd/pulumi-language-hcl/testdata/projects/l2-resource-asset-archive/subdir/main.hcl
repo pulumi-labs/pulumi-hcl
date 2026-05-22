@@ -7,16 +7,16 @@ pulumi {
   }
 }
 
-resource "asset-archive_assetresource" "ass" {
+resource "asset-archive_asset_resource" "ass" {
   value = fileAsset("../test.txt")
 }
-resource "asset-archive_archiveresource" "arc" {
+resource "asset-archive_archive_resource" "arc" {
   value = fileArchive("../archive.tar")
 }
-resource "asset-archive_archiveresource" "dir" {
+resource "asset-archive_archive_resource" "dir" {
   value = fileArchive("../folder")
 }
-resource "asset-archive_archiveresource" "assarc" {
+resource "asset-archive_archive_resource" "assarc" {
   value = assetArchive({
     "string"  = stringAsset("file contents")
     "file"    = fileAsset("../test.txt")
@@ -24,10 +24,10 @@ resource "asset-archive_archiveresource" "assarc" {
     "archive" = fileArchive("../archive.tar")
   })
 }
-resource "asset-archive_assetresource" "remoteass" {
+resource "asset-archive_asset_resource" "remoteass" {
   value = remoteAsset("https://raw.githubusercontent.com/pulumi/pulumi/7b0eb7fb10694da2f31c0d15edf671df843e0d4c/cmd/pulumi-test-language/tests/testdata/l2-resource-asset-archive/test.txt")
 }
-resource "asset-archive_archiveresource" "remotearc" {
+resource "asset-archive_archive_resource" "remotearc" {
   value = remoteArchive("https://raw.githubusercontent.com/pulumi/pulumi/7b0eb7fb10694da2f31c0d15edf671df843e0d4c/cmd/pulumi-test-language/tests/testdata/l2-resource-asset-archive/archive.tar")
 }
 // Plain (non-nested) asset/archive outputs must round-trip through stack

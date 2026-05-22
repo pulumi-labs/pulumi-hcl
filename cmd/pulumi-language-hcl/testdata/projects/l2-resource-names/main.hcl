@@ -7,16 +7,16 @@ pulumi {
   }
 }
 
-resource "names_resmap" "res1" {
+resource "names_res_map" "res1" {
   value = true
 }
-resource "names_resarray" "res2" {
+resource "names_res_array" "res2" {
   value = true
 }
-resource "names_reslist" "res3" {
+resource "names_res_list" "res3" {
   value = true
 }
-resource "names_resresource" "res4" {
+resource "names_res_resource" "res4" {
   value = true
 }
 resource "names_mod_res" "res5" {

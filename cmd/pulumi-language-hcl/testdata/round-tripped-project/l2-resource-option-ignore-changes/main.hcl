@@ -16,7 +16,7 @@ resource "nestedobject_receiver" "receiverIgnore" {
     value = "b"
   }
 }
-resource "nestedobject_mapcontainer" "mapIgnore" {
+resource "nestedobject_map_container" "mapIgnore" {
   lifecycle {
     ignore_changes = [tags["env"], tags["with.dot"], tags["with escaped \""]]
   }

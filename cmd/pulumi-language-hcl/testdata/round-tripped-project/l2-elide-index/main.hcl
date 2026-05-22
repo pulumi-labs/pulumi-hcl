@@ -11,7 +11,7 @@ pulumi {
   }
 }
 
-data "simple-invoke_myinvoke" "invoke_0" {
+data "simple-invoke_my_invoke" "invoke_0" {
   value = "test"
 }
 
@@ -19,5 +19,5 @@ resource "simple_resource" "res" {
   value = true
 }
 output "inv" {
-  value = data.simple-invoke_myinvoke.invoke_0.result
+  value = data.simple-invoke_my_invoke.invoke_0.result
 }

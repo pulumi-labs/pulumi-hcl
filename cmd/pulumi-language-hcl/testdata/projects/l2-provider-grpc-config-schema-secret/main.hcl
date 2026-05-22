@@ -22,6 +22,6 @@ resource "pulumi_providers_config-grpc" "config_grpc_provider" {
     secret_x = "SECRET"
   }
 }
-resource "config-grpc_configfetcher" "config" {
+resource "config-grpc_config_fetcher" "config" {
   provider = pulumi_providers_config-grpc.config_grpc_provider
 }

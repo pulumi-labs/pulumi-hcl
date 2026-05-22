@@ -7,7 +7,7 @@ pulumi {
   }
 }
 
-data "test_blockinvoke" "invoke_0" {
+data "test_block_invoke" "invoke_0" {
   outer {
     inner {
       prop = true
@@ -25,19 +25,19 @@ data "test_blockinvoke" "invoke_0" {
     }
   }
 }
-data "test_blockinvoke" "invoke_1" {
+data "test_block_invoke" "invoke_1" {
 }
-data "test_blockinvoke" "invoke_2" {
+data "test_block_invoke" "invoke_2" {
   outer {
   }
 }
 
 output "result" {
-  value = data.test_blockinvoke.invoke_0.id
+  value = data.test_block_invoke.invoke_0.id
 }
 output "emptyOuter" {
-  value = data.test_blockinvoke.invoke_1.id
+  value = data.test_block_invoke.invoke_1.id
 }
 output "emptyInner" {
-  value = data.test_blockinvoke.invoke_2.id
+  value = data.test_block_invoke.invoke_2.id
 }
