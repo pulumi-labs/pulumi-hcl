@@ -414,8 +414,12 @@ func (g *Graph) resourceDeps(resource *ast.Resource, prefix string) []pdag.Node 
 			seen[idx] = true
 		}
 	}
-	for _, dep := range g.exprDeps(resource.ReplacementTrigger, prefix) {
-		seen[dep] = true
+	if resource.Lifecycle != nil {
+		for _, expr := range resource.Lifecycle.ReplaceTriggeredBy {
+			for _, dep := range g.exprDeps(expr, prefix) {
+				seen[dep] = true
+			}
+		}
 	}
 	for _, dep := range g.exprDeps(resource.AdditionalSecretOutputs, prefix) {
 		seen[dep] = true

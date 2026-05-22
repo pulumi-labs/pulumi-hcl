@@ -224,10 +224,10 @@ type fileTransformer struct {
 	// sources maps each contributing source filename to its raw bytes so that
 	// expression byte slicing (e.g. for notImplemented() fall-throughs) works
 	// correctly when expressions from one file are inlined into another.
-	sources         map[string][]byte
-	knownHCLTypes   map[string]bool // set of HCL type labels used in resource blocks
-	stackRefNames   map[string]bool // set of logical names of pulumi_stackreference resources
-	knownProviders  []string        // provider names from pulumi.required_providers
+	sources        map[string][]byte
+	knownHCLTypes  map[string]bool // set of HCL type labels used in resource blocks
+	stackRefNames  map[string]bool // set of logical names of pulumi_stackreference resources
+	knownProviders []string        // provider names from pulumi.required_providers
 	// providerAliases is the set of "<pkg>.<alias>" pairs declared by
 	// `provider` blocks; used to detect provider references in traversals.
 	providerAliases map[string]bool
@@ -528,7 +528,6 @@ var resourceOptionHCLToPCL = map[string]string{
 	"range":                     "range",
 	"replace_on_changes":        "replaceOnChanges",
 	"replace_with":              "replaceWith",
-	"replacement_trigger":       "replacementTrigger",
 	"retain_on_delete":          "retainOnDelete",
 	"version":                   "version",
 }
@@ -764,6 +763,11 @@ func (ft *fileTransformer) emitFile(
 								continue
 							}
 							opts = append(opts, optEntry{"deleteBeforeReplace", invertTokens(ft.transformExpr(attr.Expr))})
+						case "replace_triggered_by":
+							// PCL's `replacementTrigger` is a single expression. If the TF
+							// list has exactly one element, unwrap it; otherwise keep the
+							// tuple so all elements influence the trigger value.
+							opts = append(opts, optEntry{"replacementTrigger", ft.unwrapSingletonTupleExpr(attr.Expr)})
 						default:
 							resultDiags = append(resultDiags, &hcl.Diagnostic{
 								Severity: hcl.DiagError,
@@ -2038,6 +2042,17 @@ func (ft *fileTransformer) transformForExpr(e *hclsyntax.ForExpr) hclwrite.Token
 func (ft *fileTransformer) transformForEachExpr(expr hclsyntax.Expression) hclwrite.Tokens {
 	if forExpr, ok := expr.(*hclsyntax.ForExpr); ok && forExpr.KeyExpr != nil {
 		return ft.transformExpr(forExpr.CollExpr)
+	}
+	return ft.transformExpr(expr)
+}
+
+// unwrapSingletonTupleExpr returns the transformed expression for the single
+// element of a 1-element tuple, or the whole transformed tuple otherwise.
+// Used to convert TF's list-shaped `replace_triggered_by = [x]` into PCL's
+// scalar `replacementTrigger = x`.
+func (ft *fileTransformer) unwrapSingletonTupleExpr(expr hclsyntax.Expression) hclwrite.Tokens {
+	if tuple, ok := expr.(*hclsyntax.TupleConsExpr); ok && len(tuple.Exprs) == 1 {
+		return ft.transformExpr(tuple.Exprs[0])
 	}
 	return ft.transformExpr(expr)
 }

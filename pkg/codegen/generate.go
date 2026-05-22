@@ -1290,14 +1290,6 @@ func (g *generator) genResourceOptions(body *hclwrite.Body, r *pcl.Resource) hcl
 
 	g.genReplaceOnChanges(body, schemaReplaceOnChanges, opts.ReplaceOnChanges, &diags)
 
-	if opts.ReplacementTrigger != nil {
-		tokens, d := g.exprTokens(opts.ReplacementTrigger, schema.AnyType)
-		diags = append(diags, d...)
-		if !d.HasErrors() {
-			body.SetAttributeRaw("replacement_trigger", tokens)
-		}
-	}
-
 	g.genLifecycleBlock(body, opts, &diags)
 
 	if opts.CustomTimeouts != nil {
@@ -1632,6 +1624,16 @@ func (g *generator) genLifecycleBlock(body *hclwrite.Body, opts *pcl.ResourceOpt
 			*diags = append(*diags, d...)
 			if !d.HasErrors() {
 				attrs = append(attrs, attr{"ignore_changes", tokens})
+			}
+		}
+		if opts.ReplacementTrigger != nil {
+			tokens, d := g.exprTokens(opts.ReplacementTrigger, schema.AnyType)
+			*diags = append(*diags, d...)
+			if !d.HasErrors() {
+				// TF expects a list. PCL's `replacementTrigger` is a single
+				// expression, so wrap it in a 1-element list.
+				attrs = append(attrs, attr{"replace_triggered_by",
+					hclwrite.TokensForTuple([]hclwrite.Tokens{tokens})})
 			}
 		}
 	}

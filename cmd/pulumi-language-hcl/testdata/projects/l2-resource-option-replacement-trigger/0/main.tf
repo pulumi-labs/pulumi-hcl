@@ -12,8 +12,8 @@ terraform {
 }
 
 resource "simple_resource" "replacementTrigger" {
-  replacement_trigger = "test"
   lifecycle {
+    replace_triggered_by  = ["test"]
     create_before_destroy = true
   }
   value = true
@@ -25,8 +25,8 @@ resource "output_resource" "unknown" {
   value = 1
 }
 resource "simple_resource" "unknownReplacementTrigger" {
-  replacement_trigger = "hellohello"
   lifecycle {
+    replace_triggered_by  = ["hellohello"]
     create_before_destroy = true
   }
   value = true
@@ -38,8 +38,8 @@ resource "simple_resource" "notReplacementTrigger" {
   value = true
 }
 resource "simple_resource" "secretReplacementTrigger" {
-  replacement_trigger = sensitive([1, 2, 3])
   lifecycle {
+    replace_triggered_by  = [sensitive([1, 2, 3])]
     create_before_destroy = true
   }
   value = true

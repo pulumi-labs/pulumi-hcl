@@ -1188,10 +1188,6 @@ func (e *Engine) buildResourceOptionsInContext(
 		if res.Lifecycle.IgnoreAllChanges {
 			opts.IgnoreChanges = []string{"*"}
 		}
-		if len(res.Lifecycle.ReplaceTriggeredBy) > 0 {
-			return nil, fmt.Errorf("lifecycle \"replace_triggered_by\" on resource %q is not supported by Pulumi HCL",
-				res.Type+"."+res.Name)
-		}
 	}
 	// create_before_destroy controls replacement order, with TF semantics:
 	//   - true: create new, then delete old
@@ -1350,14 +1346,33 @@ func (e *Engine) buildResourceOptionsInContext(
 	// Handle replace_on_changes - property paths (already in camelCase)
 	opts.ReplaceOnChanges = append(opts.ReplaceOnChanges, res.ReplaceOnChanges...)
 
-	if res.ReplacementTrigger != nil {
-		val, diags := res.ReplacementTrigger.Value(hclCtx)
-		if !diags.HasErrors() {
-			pv, err := transform.CtyToPropertyValue(val)
-			if err == nil {
-				opts.ReplacementTrigger = pv
+	// `lifecycle { replace_triggered_by = [a, b, ...] }` evaluates each
+	// expression and feeds the result to RegisterResource as the
+	// ReplacementTrigger property value: any element flipping triggers a
+	// replacement. A single-element list is unwrapped to a scalar so the
+	// trigger value round-trips with Pulumi's scalar `replacementTrigger`.
+	if res.Lifecycle != nil && len(res.Lifecycle.ReplaceTriggeredBy) > 0 {
+		vals := make([]cty.Value, 0, len(res.Lifecycle.ReplaceTriggeredBy))
+		for _, expr := range res.Lifecycle.ReplaceTriggeredBy {
+			val, diags := expr.Value(hclCtx)
+			if diags.HasErrors() {
+				return nil, fmt.Errorf("evaluating replace_triggered_by on %q: %s",
+					res.Type+"."+res.Name, diags.Error())
 			}
+			vals = append(vals, val)
 		}
+		var triggerVal cty.Value
+		if len(vals) == 1 {
+			triggerVal = vals[0]
+		} else {
+			triggerVal = cty.TupleVal(vals)
+		}
+		pv, err := transform.CtyToPropertyValue(triggerVal)
+		if err != nil {
+			return nil, fmt.Errorf("converting replace_triggered_by on %q: %w",
+				res.Type+"."+res.Name, err)
+		}
+		opts.ReplacementTrigger = pv
 	}
 
 	// Handle inline import_id attribute

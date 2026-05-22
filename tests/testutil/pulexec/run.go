@@ -80,19 +80,20 @@ type Result struct {
 	Resources []apitype.ResourceV3
 }
 
-// Run writes a Pulumi.yaml and program files to a temp dir, starts the bridged
-// providers on gRPC, runs `pulumi up` via pulumitest, and returns stack outputs
-// and resource state. Config values are set on the stack before deployment.
-//
-// programFiles maps relative paths to file contents (e.g. {"main.tf": "..."}).
-func Run(
-	t *testing.T, provs []Provider, programFiles map[string]string,
-	config map[string]string,
-) Result {
+// Driver wraps a long-lived pulumitest project so callers can run multiple
+// `pulumi up` cycles against the same stack — required for tests that verify
+// behavior across changes (e.g. lifecycle.replace_triggered_by).
+type Driver struct {
+	pt  *pulumitest.PulumiTest
+	dir string
+}
+
+// NewDriver builds the project dir, attaches the bridged providers, and sets
+// any stack config. Call Driver.Apply once per stage.
+func NewDriver(t *testing.T, provs []Provider, config map[string]string) *Driver {
 	t.Helper()
 
 	binDir := ensureHCLLanguagePlugin(t)
-
 	dir := t.TempDir()
 
 	// The project name is used as the default namespace for user config. It
@@ -102,15 +103,7 @@ func Run(
 runtime: hcl
 backend:
   url: file://` + filepath.Join(dir, "state") + "\n"
-
-	err := os.WriteFile(filepath.Join(dir, "Pulumi.yaml"), []byte(pulumiYAML), 0o600)
-	require.NoError(t, err)
-
-	for path, content := range programFiles {
-		fullPath := filepath.Join(dir, path)
-		require.NoError(t, os.MkdirAll(filepath.Dir(fullPath), 0o755))
-		require.NoError(t, os.WriteFile(fullPath, []byte(content), 0o600))
-	}
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "Pulumi.yaml"), []byte(pulumiYAML), 0o600))
 
 	opts := append(make([]opttest.Option, 0, 5+len(provs)),
 		opttest.Env("PULUMI_DISABLE_AUTOMATIC_PLUGIN_ACQUISITION", "true"),
@@ -121,7 +114,6 @@ backend:
 		// discarded by t.TempDir anyway.
 		opttest.NewStackOptions(optnewstack.DisableAutoDestroy()),
 	)
-
 	for _, p := range provs {
 		info := p.Info
 		opts = append(opts, opttest.AttachProvider(
@@ -137,12 +129,29 @@ backend:
 	}
 
 	pt := pulumitest.NewPulumiTest(t, dir, opts...)
-
 	for k, v := range config {
 		pt.SetConfig(t, k, v)
 	}
+	return &Driver{pt: pt, dir: dir}
+}
 
-	upResult := pt.Up(t)
+// Apply writes programFiles into the project dir (replacing any prior .tf
+// program files) and runs `pulumi up`. Returns stack outputs and resource
+// state from the resulting deployment.
+func (d *Driver) Apply(t *testing.T, programFiles map[string]string) Result {
+	t.Helper()
+
+	// Wipe previous program files so a later stage that drops a file doesn't
+	// leave the old definition behind. Pulumi.yaml and the state dir are kept.
+	require.NoError(t, removeProgramFiles(d.dir))
+
+	for path, content := range programFiles {
+		fullPath := filepath.Join(d.dir, path)
+		require.NoError(t, os.MkdirAll(filepath.Dir(fullPath), 0o755))
+		require.NoError(t, os.WriteFile(fullPath, []byte(content), 0o600))
+	}
+
+	upResult := d.pt.Up(t)
 
 	outputs := make(map[string]string, len(upResult.Outputs))
 	for k, v := range upResult.Outputs {
@@ -155,7 +164,7 @@ backend:
 		}
 	}
 
-	exported := pt.ExportStack(t)
+	exported := d.pt.ExportStack(t)
 	var deployment apitype.DeploymentV3
 	require.NoError(t, json.Unmarshal(exported.Deployment, &deployment))
 
@@ -163,6 +172,25 @@ backend:
 		Outputs:   outputs,
 		Resources: deployment.Resources,
 	}
+}
+
+// removeProgramFiles deletes every regular file under dir except Pulumi.yaml
+// and entries inside the `state/` backend directory.
+func removeProgramFiles(dir string) error {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return err
+	}
+	for _, e := range entries {
+		name := e.Name()
+		if name == "Pulumi.yaml" || name == "state" {
+			continue
+		}
+		if err := os.RemoveAll(filepath.Join(dir, name)); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func startProvider(ctx context.Context, providerInfo tfbridge.ProviderInfo) (*rpcutil.ServeHandle, error) {

@@ -23,6 +23,11 @@
 //
 // Recordings are captured by wrapping each *schema.Provider with tfexec.Wrap
 // before either path sees it, so the comparisons are apples-to-apples.
+//
+// A case directory may either be flat (single apply) or contain numbered stage
+// subdirs (0/, 1/, ...) for tests that need to drive multiple applies against
+// the same stack — required when verifying behavior on subsequent changes
+// (e.g. lifecycle.replace_triggered_by).
 package tfcompat
 
 import (
@@ -30,6 +35,8 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"sort"
+	"strconv"
 	"sync"
 	"testing"
 
@@ -72,7 +79,7 @@ func RunCase(t *testing.T, caseName string, c Case) {
 func runCaseFromDir(t *testing.T, caseDir string, c Case) {
 	t.Helper()
 
-	files := loadCase(t, caseDir)
+	stages := loadStages(t, caseDir)
 
 	recA, recB := &tfexec.Recorder{}, &tfexec.Recorder{}
 
@@ -86,22 +93,27 @@ func runCaseFromDir(t *testing.T, caseDir string, c Case) {
 		}
 	}
 
+	tfDriver := tfexec.NewDriver(t, tfProvs)
+	pulDriver := pulexec.NewDriver(t, pulProvs, c.Config)
+
 	var outA map[string]string
 	var pulResult pulexec.Result
-	var wg sync.WaitGroup
-	wg.Add(2)
-	go func() {
-		defer wg.Done()
-		outA = tfexec.NewDriver(t, tfProvs).Apply(t, files, c.Config)
-	}()
-	go func() {
-		defer wg.Done()
-		pulResult = pulexec.Run(t, pulProvs, files, c.Config)
-	}()
-	wg.Wait()
-
-	if t.Failed() {
-		return
+	for i, files := range stages {
+		var wg sync.WaitGroup
+		wg.Add(2)
+		go func() {
+			defer wg.Done()
+			outA = tfDriver.Apply(t, files, c.Config)
+		}()
+		go func() {
+			defer wg.Done()
+			pulResult = pulDriver.Apply(t, files)
+		}()
+		wg.Wait()
+		if t.Failed() {
+			t.Logf("stage %d failed", i)
+			return
+		}
 	}
 
 	require.Equal(t, outA, pulResult.Outputs, "stack outputs differ between tofu apply and pulumi up")
@@ -112,13 +124,66 @@ func runCaseFromDir(t *testing.T, caseDir string, c Case) {
 	}
 }
 
-// loadCase walks caseDir and returns a map of relative-path → file contents
-// via loadCaseFS, failing the test on error.
-func loadCase(t *testing.T, caseDir string) map[string]string {
+// loadStages returns one entry per apply: a case directory containing only
+// numbered subdirs (0/, 1/, ...) becomes that many stages, in order; any other
+// shape is a single stage built from the whole directory.
+func loadStages(t *testing.T, caseDir string) []map[string]string {
 	t.Helper()
-	files, err := loadCaseFS(caseDir)
+	stages, err := loadStagesFS(caseDir)
 	require.NoError(t, err)
-	return files
+	return stages
+}
+
+func loadStagesFS(caseDir string) ([]map[string]string, error) {
+	info, err := os.Stat(caseDir)
+	if err != nil {
+		return nil, fmt.Errorf("case directory: %w", err)
+	}
+	if !info.IsDir() {
+		return nil, fmt.Errorf("case path %q is not a directory", caseDir)
+	}
+
+	entries, err := os.ReadDir(caseDir)
+	if err != nil {
+		return nil, err
+	}
+
+	stageDirs := make(map[int]string)
+	for _, e := range entries {
+		if !e.IsDir() {
+			stageDirs = nil
+			break
+		}
+		n, err := strconv.Atoi(e.Name())
+		if err != nil || n < 0 {
+			stageDirs = nil
+			break
+		}
+		stageDirs[n] = filepath.Join(caseDir, e.Name())
+	}
+
+	if len(stageDirs) == 0 {
+		files, err := loadCaseFS(caseDir)
+		if err != nil {
+			return nil, err
+		}
+		return []map[string]string{files}, nil
+	}
+
+	keys := make([]int, 0, len(stageDirs))
+	for k := range stageDirs {
+		keys = append(keys, k)
+	}
+	sort.Ints(keys)
+	stages := make([]map[string]string, 0, len(keys))
+	for _, k := range keys {
+		files, err := loadCaseFS(stageDirs[k])
+		if err != nil {
+			return nil, fmt.Errorf("stage %d: %w", k, err)
+		}
+		stages = append(stages, files)
+	}
+	return stages, nil
 }
 
 // loadCaseFS reads every regular file under caseDir and returns a map of

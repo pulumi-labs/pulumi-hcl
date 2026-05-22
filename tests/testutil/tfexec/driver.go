@@ -102,8 +102,15 @@ func NewDriver(t *testing.T, providers []Provider) *Driver {
 
 // Apply writes the input files, runs terraform init + apply, and returns all outputs.
 // Config values are passed as -var flags to terraform apply.
+//
+// Apply may be called multiple times against the same Driver to drive a stack
+// across stages; previous program files are removed before the new ones are
+// written so a stage that drops a file doesn't leave the old one behind. State
+// files (terraform.tfstate*, .terraform*) are kept across applies.
 func (d *Driver) Apply(t *testing.T, input map[string]string, config map[string]string) map[string]string {
 	t.Helper()
+
+	require.NoError(t, removeProgramFiles(d.cwd))
 
 	for path, content := range input {
 		fullPath := filepath.Join(d.cwd, path)
@@ -192,4 +199,27 @@ func getTFCommand() string {
 		return cmd
 	}
 	return "tofu"
+}
+
+// removeProgramFiles deletes program files (everything except state and the
+// .terraform plugin cache) from dir, so a subsequent Apply doesn't see leftover
+// files from a previous stage.
+func removeProgramFiles(dir string) error {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return err
+	}
+	for _, e := range entries {
+		name := e.Name()
+		switch {
+		case name == ".terraform", name == ".terraform.lock.hcl":
+		case len(name) >= len("terraform.tfstate") && name[:len("terraform.tfstate")] == "terraform.tfstate":
+		default:
+			if err := os.RemoveAll(filepath.Join(dir, name)); err != nil {
+				return err
+			}
+			continue
+		}
+	}
+	return nil
 }

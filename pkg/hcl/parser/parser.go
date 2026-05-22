@@ -656,10 +656,6 @@ func (p *Parser) parseResourceBlock(config *ast.Config, block *hcl.Block, isData
 		}
 	}
 
-	if attr, ok := content.Attributes["replacement_trigger"]; ok {
-		resource.ReplacementTrigger = attr.Expr
-	}
-
 	if attr, ok := content.Attributes["import_id"]; ok {
 		val, valDiags := attr.Expr.Value(nil)
 		diags = append(diags, valDiags...)

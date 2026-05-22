@@ -1951,7 +1951,7 @@ func hasRegisteredResource(mock *testutil.MockResourceMonitor, typ string) bool 
 	return false
 }
 
-func TestEngine_ReplaceTriggeredByErrors(t *testing.T) {
+func TestEngine_ReplaceTriggeredBy(t *testing.T) {
 	t.Parallel()
 
 	src := []byte(`
@@ -1959,7 +1959,7 @@ resource "test_resource" "res" {
   field = "value"
 
   lifecycle {
-    replace_triggered_by = [test_resource.res.field]
+    replace_triggered_by = ["sentinel-a", "sentinel-b"]
   }
 }
 `)
@@ -1980,9 +1980,12 @@ resource "test_resource" "res" {
 		SchemaLoader:    schemaloader.New(t, testSchema()),
 	})
 
-	err := engine.Run(t.Context())
-	require.ErrorContains(t, err, "replace_triggered_by")
-	require.ErrorContains(t, err, "not supported")
+	require.NoError(t, engine.Run(t.Context()))
+
+	require.Len(t, mock.RegisteredResources, 2) // stack + resource
+	req := mock.RegisteredResources[1]
+	require.False(t, req.ReplacementTrigger.IsNull(),
+		"expected replacement_trigger to be set from lifecycle.replace_triggered_by")
 }
 
 // TestEngine_HetListOutputRoundTrip drives the engine against a mock provider whose
