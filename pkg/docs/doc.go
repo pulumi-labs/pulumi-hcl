@@ -139,16 +139,7 @@ func (d DocLanguageHelper) GetResourceName(r *schema.Resource) string {
 // HCL emitter strips during program generation; routing through TokenToModule
 // matches that behavior so doc names line up with generated examples.
 func tokenToHCLName(pkg schema.PackageReference, token string) string {
-	if pkg != nil {
-		parts := strings.SplitN(token, ":", 3)
-		if len(parts) == 3 {
-			normalized := parts[0] + ":" + pkg.TokenToModule(token) + ":" + parts[2]
-			if hclName, diags := packages.PulumiTokenToHCL(normalized); !diags.HasErrors() {
-				return hclName
-			}
-		}
-	}
-	hclName, _ := packages.PulumiTokenToHCL(token)
+	hclName, _ := packages.PulumiResourceTokenToHCL(pkg, token)
 	return hclName
 }
 

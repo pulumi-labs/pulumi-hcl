@@ -7,7 +7,7 @@ pulumi {
   }
 }
 
-data "test_mod_getthing" "ubuntu" {
+data "test_mod_thing" "ubuntu" {
   object_blocks {
     value = true
   }
@@ -17,5 +17,5 @@ data "test_mod_getthing" "ubuntu" {
 }
 
 output "result" {
-  value = data.test_mod_getthing.ubuntu.id
+  value = data.test_mod_thing.ubuntu.id
 }

@@ -7,7 +7,7 @@ pulumi {
   }
 }
 
-data "test_getlen" "invoke_0" {
+data "test_len" "invoke_0" {
   items = var.items
 }
 
@@ -15,7 +15,7 @@ variable "items" {
   type = list(string)
 }
 locals {
-  itemLen = data.test_getlen.invoke_0.result
+  itemLen = data.test_len.invoke_0.result
 }
 output "result" {
   value = local.itemLen

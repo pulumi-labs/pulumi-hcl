@@ -7,15 +7,15 @@ pulumi {
   }
 }
 
-resource "component_componentcustomrefoutput" "component1" {
+resource "component_component_custom_ref_output" "component1" {
   value = "foo-bar-baz"
 }
-resource "component_componentcustomrefinputoutput" "component2" {
-  input_ref = component_componentcustomrefoutput.component1.ref
+resource "component_component_custom_ref_input_output" "component2" {
+  input_ref = component_component_custom_ref_output.component1.ref
 }
 resource "component_custom" "custom1" {
-  value = component_componentcustomrefinputoutput.component2.input_ref.value
+  value = component_component_custom_ref_input_output.component2.input_ref.value
 }
 resource "component_custom" "custom2" {
-  value = component_componentcustomrefinputoutput.component2.output_ref.value
+  value = component_component_custom_ref_input_output.component2.output_ref.value
 }

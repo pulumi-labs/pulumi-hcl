@@ -7,11 +7,11 @@ pulumi {
   }
 }
 
-data "subpackage_dohelloworld" "invoke_0" {
+data "subpackage_do_hello_world" "invoke_0" {
   input = "goodbye"
 }
 
 // The invoke name is based on the parameter value
 output "parameterValue" {
-  value = data.subpackage_dohelloworld.invoke_0.output
+  value = data.subpackage_do_hello_world.invoke_0.output
 }

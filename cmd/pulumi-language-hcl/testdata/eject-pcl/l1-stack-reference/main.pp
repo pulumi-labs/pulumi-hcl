@@ -3,14 +3,14 @@ resource "ref" "pulumi:pulumi:StackReference" {
 }
 
 output "plain" {
-  value = getOutput(ref, "plain")
+  value = ref.outputs["plain"]
 }
 
 output "secret" {
-  value = getOutput(ref, "secret")
+  value = ref.outputs["secret"]
 }
 
 output "secret_unsecret" {
-  value = unsecret(getOutput(ref, "secret"))
+  value = unsecret(ref.outputs["secret"])
 }
 

@@ -20,7 +20,7 @@ resource "output_resource" "unknown" {
   provider = pulumi_providers_output.prov
   value    = 1
 }
-resource "output_complexresource" "complex" {
+resource "output_complex_resource" "complex" {
   provider = pulumi_providers_output.prov
   value    = 1
 }
@@ -29,24 +29,24 @@ resource "simple_resource" "res" {
   value = output_resource.unknown.output == "hello"
 }
 resource "simple_resource" "resArray" {
-  value = output_complexresource.complex.output_array[0] == "hello"
+  value = output_complex_resource.complex.output_array[0] == "hello"
 }
 resource "simple_resource" "resMap" {
-  value = output_complexresource.complex.output_map["x"] == "hello"
+  value = output_complex_resource.complex.output_map["x"] == "hello"
 }
 resource "simple_resource" "resObject" {
-  value = output_complexresource.complex.output_object.output == "hello"
+  value = output_complex_resource.complex.output_object.output == "hello"
 }
 // And try to use it has an output
 output "out" {
   value = output_resource.unknown.output
 }
 output "outArray" {
-  value = output_complexresource.complex.output_array[0]
+  value = output_complex_resource.complex.output_array[0]
 }
 output "outMap" {
-  value = output_complexresource.complex.output_map["x"]
+  value = output_complex_resource.complex.output_map["x"]
 }
 output "outObject" {
-  value = output_complexresource.complex.output_object.output
+  value = output_complex_resource.complex.output_object.output
 }

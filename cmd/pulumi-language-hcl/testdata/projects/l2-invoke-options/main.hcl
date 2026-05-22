@@ -7,7 +7,7 @@ pulumi {
   }
 }
 
-data "simple-invoke_myinvoke" "data" {
+data "simple-invoke_my_invoke" "data" {
   value               = "hello"
   provider            = pulumi_providers_simple-invoke.explicitProvider
   parent              = pulumi_providers_simple-invoke.explicitProvider
@@ -18,5 +18,5 @@ data "simple-invoke_myinvoke" "data" {
 resource "pulumi_providers_simple-invoke" "explicitProvider" {
 }
 output "hello" {
-  value = data.simple-invoke_myinvoke.data.result
+  value = data.simple-invoke_my_invoke.data.result
 }

@@ -7,12 +7,12 @@ pulumi {
   }
 }
 
-data "test_getinfo" "info" {
+data "test_info" "info" {
 }
 
 resource "test_sink" "snakeSink" {
-  value = data.test_getinfo.info.snake_case_field
+  value = data.test_info.info.snake_case_field
 }
 resource "test_sink" "tagSink" {
-  value = data.test_getinfo.info.tags_map.UserKey
+  value = data.test_info.info.tags_map.UserKey
 }

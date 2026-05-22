@@ -813,6 +813,39 @@ func (g *generator) genCallBlock(body *hclwrite.Body, cb spilledCall) hcl.Diagno
 	return diags
 }
 
+func invokeSchemaPackage(f *schema.Function) schema.PackageReference {
+	if f == nil {
+		return nil
+	}
+	return f.PackageReference
+}
+
+// invokeSchemaToken returns the source-form token from the schema when available.
+// PCL canonicalizes tokens by applying ModuleFormat once during binding, which
+// strips the regex-matched suffix from the module component. Re-applying
+// TokenToModule on the canonicalized token would produce an incorrect (empty)
+// module, so codegen passes the schema's stored token instead.
+func invokeSchemaToken(f *schema.Function, fallback string) string {
+	if f == nil {
+		return fallback
+	}
+	return f.Token
+}
+
+func resourceSchemaPackage(r *schema.Resource) schema.PackageReference {
+	if r == nil {
+		return nil
+	}
+	return r.PackageReference
+}
+
+func resourceSchemaToken(r *schema.Resource, fallback string) string {
+	if r == nil {
+		return fallback
+	}
+	return r.Token
+}
+
 // lookupInvokeSchema resolves an invoke token against the program's loaded
 // package references and returns the function schema. It returns the
 // canonical token (with the module re-filled when PCL has stripped "index")
@@ -896,7 +929,7 @@ func (g *generator) genInvokeDataSource(body *hclwrite.Body, ds spilledDataSourc
 	}
 	token = schemaToken
 
-	dsType, diags := packages.PulumiTokenToHCL(token)
+	dsType, diags := packages.PulumiFunctionTokenToHCL(invokeSchemaPackage(invokeSchema), invokeSchemaToken(invokeSchema, token))
 	if diags.HasErrors() {
 		return diags
 	}
@@ -1006,7 +1039,7 @@ func (g *generator) genResource(body *hclwrite.Body, r *pcl.Resource) hcl.Diagno
 	defer func() { g.currentRangeKind = rangeKindNone }()
 
 	token, _ := r.GetToken()
-	hclType, d := packages.PulumiTokenToHCL(token)
+	hclType, d := packages.PulumiResourceTokenToHCL(resourceSchemaPackage(r.Schema), resourceSchemaToken(r.Schema, token))
 	if d.HasErrors() {
 		return d
 	}
@@ -1730,7 +1763,7 @@ func (g *generator) exprTokens(expr model.Expression, typ schema.Type) (hclwrite
 	case *model.TemplateExpression:
 		return g.templateTokens(e)
 	case *model.FunctionCallExpression:
-		// Check if this is an invoke that maps to a TF builtin — inline it.
+		// Check if this is an invoke or a TF builtin — inline it.
 		// Standalone use (not wrapped in .result) wraps the call in a single-
 		// field object so downstream .result access resolves correctly; the
 		// common .result wrapping is intercepted in relativeTraversalTokens
@@ -1763,7 +1796,8 @@ func (g *generator) exprTokens(expr model.Expression, typ schema.Type) (hclwrite
 						Detail:   "invoke token must be a string literal",
 					}}
 				}
-				dsType, diags := packages.PulumiTokenToHCL(token)
+				invokeSchema, schemaToken, _ := g.lookupInvokeSchema(token)
+				dsType, diags := packages.PulumiFunctionTokenToHCL(invokeSchemaPackage(invokeSchema), invokeSchemaToken(invokeSchema, schemaToken))
 				if diags.HasErrors() {
 					return nil, diags
 				}
@@ -2078,7 +2112,7 @@ func (g *generator) getOutputTokens(expr *model.FunctionCallExpression) (hclwrit
 
 	// Get the HCL resource type
 	token, _ := res.GetToken()
-	hclType, diags := packages.PulumiTokenToHCL(token)
+	hclType, diags := packages.PulumiResourceTokenToHCL(resourceSchemaPackage(res.Schema), resourceSchemaToken(res.Schema, token))
 	if diags.HasErrors() {
 		return nil, diags
 	}
@@ -2292,7 +2326,7 @@ func (g *generator) scopeTraversalTokens(expr *model.ScopeTraversalExpression) (
 					token, ok := extractStringLiteral(call.Args[0])
 					if ok {
 						invokeSchema, schemaToken, _ := g.lookupInvokeSchema(token)
-						dsType, d := packages.PulumiTokenToHCL(schemaToken)
+						dsType, d := packages.PulumiFunctionTokenToHCL(invokeSchemaPackage(invokeSchema), invokeSchemaToken(invokeSchema, schemaToken))
 						if !d.HasErrors() {
 							rewritten := hcl.Traversal{
 								hcl.TraverseRoot{Name: "data"},
@@ -2318,7 +2352,7 @@ func (g *generator) scopeTraversalTokens(expr *model.ScopeTraversalExpression) (
 		// [transform.SnakeCaseFromPulumiCase] on property values, and the invoke the standard ["<key>"]
 		// & [<idx>] operators otherwise.
 		token, _ := part.GetToken()
-		hclType, diags := packages.PulumiTokenToHCL(token)
+		hclType, diags := packages.PulumiResourceTokenToHCL(resourceSchemaPackage(part.Schema), resourceSchemaToken(part.Schema, token))
 		if diags.HasErrors() {
 			return nil, diags
 		}

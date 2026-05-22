@@ -7,7 +7,7 @@ pulumi {
   }
 }
 
-data "test_getfiltered" "invoke_0" {
+data "test_filtered" "invoke_0" {
   name = "my-filter"
   filters {
     key   = "tag:Name"
@@ -20,5 +20,5 @@ data "test_getfiltered" "invoke_0" {
 }
 
 output "filteredId" {
-  value = data.test_getfiltered.invoke_0.id
+  value = data.test_filtered.invoke_0.id
 }

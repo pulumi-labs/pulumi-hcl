@@ -7,10 +7,10 @@ pulumi {
   }
 }
 
-data "simple-invoke-with-scalar-return_myinvokescalar" "invoke_0" {
+data "simple-invoke-with-scalar-return_my_invoke_scalar" "invoke_0" {
   value = "goodbye"
 }
 
 output "scalar" {
-  value = data.simple-invoke-with-scalar-return_myinvokescalar.invoke_0
+  value = data.simple-invoke-with-scalar-return_my_invoke_scalar.invoke_0
 }

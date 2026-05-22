@@ -7,28 +7,28 @@ pulumi {
   }
 }
 
-data "scalar-returns_invokesecret" "invoke_0" {
+data "scalar-returns_invoke_secret" "invoke_0" {
   value = "goodbye"
 }
-data "scalar-returns_invokearray" "invoke_1" {
+data "scalar-returns_invoke_array" "invoke_1" {
   value = "the word"
 }
-data "scalar-returns_invokemap" "invoke_2" {
+data "scalar-returns_invoke_map" "invoke_2" {
   value = "hello"
 }
-data "scalar-returns_invokemap" "invoke_3" {
+data "scalar-returns_invoke_map" "invoke_3" {
   value = "secret"
 }
 
 output "secret" {
-  value = data.scalar-returns_invokesecret.invoke_0
+  value = data.scalar-returns_invoke_secret.invoke_0
 }
 output "array" {
-  value = data.scalar-returns_invokearray.invoke_1
+  value = data.scalar-returns_invoke_array.invoke_1
 }
 output "map" {
-  value = data.scalar-returns_invokemap.invoke_2
+  value = data.scalar-returns_invoke_map.invoke_2
 }
 output "secretMap" {
-  value = data.scalar-returns_invokemap.invoke_3
+  value = data.scalar-returns_invoke_map.invoke_3
 }

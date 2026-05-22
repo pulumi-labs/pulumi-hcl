@@ -11,10 +11,10 @@ pulumi {
   }
 }
 
-resource "component_componentcustomrefoutput" "componentRes" {
+resource "component_component_custom_ref_output" "componentRes" {
   value = "foo-bar-baz"
 }
 resource "namespaced_resource" "res" {
   value        = true
-  resource_ref = component_componentcustomrefoutput.componentRes.ref
+  resource_ref = component_component_custom_ref_output.componentRes.ref
 }

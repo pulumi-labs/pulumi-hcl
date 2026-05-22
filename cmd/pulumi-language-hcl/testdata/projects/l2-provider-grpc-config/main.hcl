@@ -39,6 +39,6 @@ resource "pulumi_providers_config-grpc" "config_grpc_provider" {
     x = 42
   }
 }
-resource "config-grpc_configfetcher" "config" {
+resource "config-grpc_config_fetcher" "config" {
   provider = pulumi_providers_config-grpc.config_grpc_provider
 }

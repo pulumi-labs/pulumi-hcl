@@ -10,7 +10,7 @@ pulumi {
 resource "nestedobject_container" "container" {
   inputs = ["alpha", "bravo"]
 }
-resource "nestedobject_mapcontainer" "mapContainer" {
+resource "nestedobject_map_container" "mapContainer" {
   tags = {
     "k1" = "charlie"
     "k2" = "delta"
@@ -23,6 +23,6 @@ resource "nestedobject_target" "listOutput" {
 }
 # A resource that ranges over a computed map
 resource "nestedobject_target" "mapOutput" {
-  for_each = nestedobject_mapcontainer.mapContainer.tags
+  for_each = nestedobject_map_container.mapContainer.tags
   name     ="${each.key}=>${each.value}"
 }

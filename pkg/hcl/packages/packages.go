@@ -67,19 +67,50 @@ func (err InvalidToken) Error() string {
 	return b.String()
 }
 
-func PulumiTokenToHCL(token string) (string, hcl.Diagnostics) {
+// PulumiResourceTokenToHCL converts a Pulumi resource token to its canonical HCL form.
+func PulumiResourceTokenToHCL(pkg schema.PackageReference, token string) (string, hcl.Diagnostics) {
+	return pulumiTokenToHCL(pkg, token, false)
+}
+
+// PulumiFunctionTokenToHCL converts a Pulumi function token to its canonical HCL form.
+func PulumiFunctionTokenToHCL(pkg schema.PackageReference, token string) (string, hcl.Diagnostics) {
+	return pulumiTokenToHCL(pkg, token, true)
+}
+
+// isPulumiProvidersToken matches the schema's own special case for
+// "pulumi:providers:*" tokens, where TokenToModule returns "" regardless of
+// any configured ModuleFormat. Callers that derive an HCL name from the module
+// need the "providers" segment preserved to round-trip through the resolver.
+func isPulumiProvidersToken(pkgName, mod string) bool {
+	return pkgName == "pulumi" && (mod == "providers" || mod == "pulumi")
+}
+
+func pulumiTokenToHCL(pkg schema.PackageReference, token string, isFunction bool) (string, hcl.Diagnostics) {
 	if token == "pulumi:pulumi:StackReference" {
-		return "pulumi_stackreference", nil
+		return "pulumi_stack_reference", nil
 	}
-	pkg, mod, name, diag := pcl.DecomposeToken(token, hcl.Range{})
+	pkgName, mod, name, diag := pcl.DecomposeToken(token, hcl.Range{})
 	if diag.HasErrors() {
 		return "", diag
 	}
-	hclToken := pkg
-	if mod != "index" && mod != "" {
-		hclToken += "_" + strings.ToLower(strings.ReplaceAll(mod, "/", "_"))
+	// Apply the schema's ModuleFormat regex when available. TokenToModule
+	// collapses [pulumi:providers:*] tokens to the empty string by special-case,
+	// but we want to preserve the "providers" segment so the resolver can route
+	// the token back to a provider resource.
+	if pkg != nil && !isPulumiProvidersToken(pkgName, mod) {
+		mod = pkg.TokenToModule(token)
 	}
-	return hclToken + "_" + strings.ToLower(strings.ReplaceAll(name, "/", "_")), nil
+	if isFunction && len(name) > 3 && strings.HasPrefix(name, "get") {
+		r := rune(name[3])
+		if r >= 'A' && r <= 'Z' {
+			name = name[3:]
+		}
+	}
+	hclToken := pkgName
+	if mod != "index" && mod != "" {
+		hclToken += "_" + camelToSnake(mod)
+	}
+	return hclToken + "_" + camelToSnake(name), nil
 }
 
 // packageFromToken determines the package name from an HCL token and the list of
@@ -120,8 +151,9 @@ func ResolveResource(ctx context.Context, loader schema.ReferenceLoader, knownPr
 		return pkg.Provider()
 	}
 
-	// Prevent users from needing to write pulumi_pulumi_stackreference
-	if token == "pulumi_stackreference" {
+	// Prevent users from needing to write pulumi_pulumi_stack_reference.
+	// Both the underscore-split form and the legacy collapsed form are accepted.
+	if token == "pulumi_stack_reference" || token == "pulumi_stackreference" {
 		pkg, err := resolvePackage(ctx, loader, &schema.PackageDescriptor{Name: "pulumi"})
 		if err != nil {
 			return nil, err

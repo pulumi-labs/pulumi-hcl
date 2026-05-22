@@ -13,7 +13,7 @@ call "component1" "prefixed" {
   prefix = "foo-"
 }
 
-resource "component_componentcallable" "component1" {
+resource "component_component_callable" "component1" {
   value = "bar"
 }
 output "from_identity" {
