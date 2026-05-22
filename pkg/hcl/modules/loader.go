@@ -32,11 +32,14 @@ import (
 	"strings"
 	"sync"
 
+	version "github.com/hashicorp/go-version"
 	"github.com/pulumi-labs/pulumi-hcl/pkg/hcl/ast"
 	"github.com/pulumi-labs/pulumi-hcl/pkg/hcl/parser"
 	"github.com/pulumi-labs/pulumi-hcl/vendored/getmodules"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/util/contract"
 )
+
+const defaultRegistryBaseURL = "https://registry.opentofu.org/v1/modules"
 
 // Loader loads and parses module configurations.
 type Loader struct {
@@ -48,6 +51,9 @@ type Loader struct {
 	cacheDir  string
 
 	fetcher *getmodules.PackageFetcher
+
+	// registryBaseURL is overridable so tests can use an httptest.Server.
+	registryBaseURL string
 }
 
 // LoadedModule represents a loaded and parsed module.
@@ -59,10 +65,11 @@ type LoadedModule struct {
 // NewLoader creates a new module loader.
 func NewLoader() *Loader {
 	return &Loader{
-		parser:   parser.NewParser(),
-		cache:    make(map[string]*LoadedModule),
-		cacheDir: defaultCacheDir(),
-		fetcher:  getmodules.NewPackageFetcher(context.Background(), nil),
+		parser:          parser.NewParser(),
+		cache:           make(map[string]*LoadedModule),
+		cacheDir:        defaultCacheDir(),
+		fetcher:         getmodules.NewPackageFetcher(context.Background(), nil),
+		registryBaseURL: defaultRegistryBaseURL,
 	}
 }
 
@@ -74,12 +81,14 @@ func defaultCacheDir() string {
 	return filepath.Join(home, ".pulumi", "modules")
 }
 
-// LoadModule loads a module from the given source, relative to the caller's directory.
-func (l *Loader) LoadModule(source string, callerDir string) (*LoadedModule, error) {
+// LoadModule loads a module from the given source. versionConstraint is a
+// Terraform-style constraint (`~> 4.0`, `>= 1.0.0`, `4.2.1`); ignored for
+// non-registry sources.
+func (l *Loader) LoadModule(source, versionConstraint, callerDir string) (*LoadedModule, error) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 
-	resolvedPath, err := l.resolveSource(source, callerDir)
+	resolvedPath, err := l.resolveSource(source, versionConstraint, callerDir)
 	if err != nil {
 		return nil, fmt.Errorf("resolving module source %q: %w", source, err)
 	}
@@ -109,9 +118,8 @@ func (l *Loader) LoadModule(source string, callerDir string) (*LoadedModule, err
 }
 
 // resolveSource resolves a module source to an absolute path on disk.
-// Local paths resolve in-place; remote sources are fetched via go-getter
-// (through the vendored getmodules.PackageFetcher) into ~/.pulumi/modules/.
-func (l *Loader) resolveSource(source string, callerDir string) (string, error) {
+// versionConstraint applies only to registry sources.
+func (l *Loader) resolveSource(source, versionConstraint, callerDir string) (string, error) {
 	source, subdir := splitSourceSubdir(source)
 
 	var resolvedPath string
@@ -122,7 +130,7 @@ func (l *Loader) resolveSource(source string, callerDir string) (string, error) 
 	case filepath.IsAbs(source):
 		resolvedPath, err = l.resolveAbsoluteSource(source)
 	case isRegistrySource(source):
-		resolvedPath, err = l.resolveRegistrySource(source)
+		resolvedPath, err = l.resolveRegistrySource(source, versionConstraint)
 	default:
 		// Anything else (git::, github.com/..., bitbucket.org/..., http(s)://,
 		// s3::, gcs::, hg::, etc.) goes through the package fetcher, which
@@ -186,16 +194,13 @@ func statDir(p string) (string, error) {
 	return p, nil
 }
 
-// fetchRemote runs the vendored getmodules detectors on `source` and then
-// downloads it (if not already cached) into a stable path under cacheDir/kind/.
-// The returned path is the populated cache directory.
+// fetchRemote normalizes source and downloads it (if not cached) into
+// cacheDir/kind/<hash>. Returns the populated cache directory.
 func (l *Loader) fetchRemote(source, kind string) (string, error) {
 	pkgAddr, detectedSubdir, err := getmodules.NormalizePackageAddress(source)
 	if err != nil {
 		return "", fmt.Errorf("normalizing module source %q: %w", source, err)
 	}
-	// We strip subdir before calling fetchRemote; the detector should not
-	// reintroduce one. If it does, the caller (resolveSource) lost it.
 	if detectedSubdir != "" {
 		return "", fmt.Errorf("module source %q resolved to package %q with unexpected subdir %q",
 			source, pkgAddr, detectedSubdir)
@@ -206,8 +211,8 @@ func (l *Loader) fetchRemote(source, kind string) (string, error) {
 		if dirHasFiles(cacheDir) {
 			return cacheDir, nil
 		}
-		// Empty dir from a prior failed fetch — wipe and retry. PackageFetcher
-		// won't reuse an empty cache and would error if the directory exists.
+		// Empty cache dir from a prior failed fetch — go-getter errors if
+		// the target already exists, so wipe before retrying.
 		if rmErr := os.RemoveAll(cacheDir); rmErr != nil {
 			return "", fmt.Errorf("clearing stale cache dir %s: %w", cacheDir, rmErr)
 		}
@@ -218,8 +223,6 @@ func (l *Loader) fetchRemote(source, kind string) (string, error) {
 	}
 
 	if err := l.fetcher.FetchPackage(context.Background(), cacheDir, pkgAddr); err != nil {
-		// On any failure, drop the partially-populated cache dir so the next
-		// attempt starts clean instead of seeing a stale empty/half-populated tree.
 		contract.IgnoreError(os.RemoveAll(cacheDir))
 		return "", fmt.Errorf("fetching module from %q: %w", pkgAddr, err)
 	}
@@ -235,22 +238,16 @@ func dirHasFiles(dir string) bool {
 	return len(entries) > 0
 }
 
-// resolveRegistrySource downloads a module from the Terraform Registry.
-// Format: namespace/name/provider (e.g., hashicorp/consul/aws), with an
-// optional ?version=… query.
-//
-// The registry's modules.v1 protocol returns the actual archive URL via the
-// X-Terraform-Get header. That URL frequently uses go-getter schemes like
-// `git::https://...?ref=<sha>`, so we feed it through PackageFetcher rather
-// than calling http.Get directly.
-func (l *Loader) resolveRegistrySource(source string) (string, error) {
-	version := ""
+// resolveRegistrySource downloads a module via modules.v1. source is
+// namespace/name/provider with an optional ?version=…; versionConstraint
+// takes precedence over the query string.
+func (l *Loader) resolveRegistrySource(source, versionConstraint string) (string, error) {
 	baseSource := source
 	if before, query, ok := strings.Cut(source, "?"); ok {
 		baseSource = before
 		for param := range strings.SplitSeq(query, "&") {
-			if after, ok := strings.CutPrefix(param, "version="); ok {
-				version = after
+			if after, ok := strings.CutPrefix(param, "version="); ok && versionConstraint == "" {
+				versionConstraint = after
 			}
 		}
 	}
@@ -261,14 +258,12 @@ func (l *Loader) resolveRegistrySource(source string) (string, error) {
 	}
 	namespace, name, provider := parts[0], parts[1], parts[2]
 
-	downloadURL, err := l.getRegistryDownloadURL(namespace, name, provider, version)
+	downloadURL, err := l.getRegistryDownloadURL(namespace, name, provider, versionConstraint)
 	if err != nil {
 		return "", err
 	}
 
-	// Cache by the *resolved* download URL: that pins the exact ref/version
-	// the registry handed us, so two calls with different ?version= settings
-	// don't collide even if the original source string looked similar.
+	// Cache by the resolved URL so different version constraints don't collide.
 	return l.fetchRemote(downloadURL, "registry")
 }
 
@@ -282,42 +277,29 @@ type registryModuleVersions struct {
 	} `json:"modules"`
 }
 
-func (l *Loader) getRegistryDownloadURL(namespace, name, provider, version string) (string, error) {
-	baseURL := "https://registry.terraform.io/v1/modules"
-
-	if version == "" {
-		versionsURL := fmt.Sprintf("%s/%s/%s/%s/versions", baseURL, namespace, name, provider)
-		resp, err := http.Get(versionsURL)
-		if err != nil {
-			return "", fmt.Errorf("querying registry versions: %w", err)
-		}
-		defer contract.IgnoreClose(resp.Body)
-
-		if resp.StatusCode == http.StatusNotFound {
-			return "", fmt.Errorf("module %s/%s/%s not found in registry", namespace, name, provider)
-		}
-		if resp.StatusCode != http.StatusOK {
-			return "", fmt.Errorf("querying registry versions: HTTP %d", resp.StatusCode)
-		}
-
-		var versions registryModuleVersions
-		if err := json.NewDecoder(resp.Body).Decode(&versions); err != nil {
-			return "", fmt.Errorf("parsing registry response: %w", err)
-		}
-
-		if len(versions.Modules) == 0 || len(versions.Modules[0].Versions) == 0 {
-			return "", fmt.Errorf("no versions available for module %s/%s/%s", namespace, name, provider)
-		}
-		version = versions.Modules[0].Versions[0].Version
+// getRegistryDownloadURL resolves a concrete download URL via the modules.v1
+// protocol. Empty versionConstraint means "highest published version".
+func (l *Loader) getRegistryDownloadURL(namespace, name, provider, versionConstraint string) (string, error) {
+	baseURL := l.registryBaseURL
+	if baseURL == "" {
+		baseURL = defaultRegistryBaseURL
 	}
 
-	downloadURL := fmt.Sprintf("%s/%s/%s/%s/%s/download", baseURL, namespace, name, provider, version)
+	chosen, err := l.selectRegistryVersion(baseURL, namespace, name, provider, versionConstraint)
+	if err != nil {
+		return "", err
+	}
+
+	downloadURL := fmt.Sprintf("%s/%s/%s/%s/%s/download", baseURL, namespace, name, provider, chosen)
 	resp, err := http.Get(downloadURL)
 	if err != nil {
 		return "", fmt.Errorf("getting download URL: %w", err)
 	}
 	defer contract.IgnoreClose(resp.Body)
 
+	// Terraform Registry: 204 + X-Terraform-Get header.
+	// OpenTofu Registry:  200 + JSON body {"location": "..."}.
+	// Some impls:         200 + raw URL body.
 	if resp.StatusCode == http.StatusNoContent {
 		actualURL := resp.Header.Get("X-Terraform-Get")
 		if actualURL == "" {
@@ -330,11 +312,84 @@ func (l *Loader) getRegistryDownloadURL(namespace, name, provider, version strin
 		return "", fmt.Errorf("getting download URL: HTTP %d", resp.StatusCode)
 	}
 
+	if hdr := resp.Header.Get("X-Terraform-Get"); hdr != "" {
+		return hdr, nil
+	}
+
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return "", fmt.Errorf("reading download URL: %w", err)
 	}
-	return string(body), nil
+	trimmed := strings.TrimSpace(string(body))
+	if strings.HasPrefix(trimmed, "{") {
+		var parsed struct {
+			Location string `json:"location"`
+		}
+		if err := json.Unmarshal([]byte(trimmed), &parsed); err != nil {
+			return "", fmt.Errorf("parsing registry download response: %w", err)
+		}
+		if parsed.Location == "" {
+			return "", fmt.Errorf("registry download response missing 'location'")
+		}
+		return parsed.Location, nil
+	}
+	return trimmed, nil
+}
+
+// selectRegistryVersion returns the highest published version satisfying
+// versionConstraint, or the highest overall when it's empty.
+func (l *Loader) selectRegistryVersion(baseURL, namespace, name, provider, versionConstraint string) (string, error) {
+	versionsURL := fmt.Sprintf("%s/%s/%s/%s/versions", baseURL, namespace, name, provider)
+	resp, err := http.Get(versionsURL)
+	if err != nil {
+		return "", fmt.Errorf("querying registry versions: %w", err)
+	}
+	defer contract.IgnoreClose(resp.Body)
+
+	if resp.StatusCode == http.StatusNotFound {
+		return "", fmt.Errorf("module %s/%s/%s not found in registry", namespace, name, provider)
+	}
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("querying registry versions: HTTP %d", resp.StatusCode)
+	}
+
+	var versions registryModuleVersions
+	if err := json.NewDecoder(resp.Body).Decode(&versions); err != nil {
+		return "", fmt.Errorf("parsing registry response: %w", err)
+	}
+	if len(versions.Modules) == 0 || len(versions.Modules[0].Versions) == 0 {
+		return "", fmt.Errorf("no versions available for module %s/%s/%s", namespace, name, provider)
+	}
+
+	var constraints version.Constraints
+	if versionConstraint != "" {
+		constraints, err = version.NewConstraint(versionConstraint)
+		if err != nil {
+			return "", fmt.Errorf("parsing version constraint %q: %w", versionConstraint, err)
+		}
+	}
+
+	candidates := make([]*version.Version, 0, len(versions.Modules[0].Versions))
+	for _, v := range versions.Modules[0].Versions {
+		parsed, parseErr := version.NewVersion(v.Version)
+		if parseErr != nil {
+			continue
+		}
+		if constraints != nil && !constraints.Check(parsed) {
+			continue
+		}
+		candidates = append(candidates, parsed)
+	}
+	if len(candidates) == 0 {
+		if versionConstraint != "" {
+			return "", fmt.Errorf(
+				"no published version of module %s/%s/%s satisfies constraint %q",
+				namespace, name, provider, versionConstraint)
+		}
+		return "", fmt.Errorf("no valid versions for module %s/%s/%s", namespace, name, provider)
+	}
+	slices.SortFunc(candidates, func(a, b *version.Version) int { return b.Compare(a) })
+	return candidates[0].Original(), nil
 }
 
 // isRegistrySource checks if a source looks like a Terraform Registry address

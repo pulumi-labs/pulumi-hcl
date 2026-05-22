@@ -73,7 +73,7 @@ func NewHCLProvider(modulePath, addr string) (*HCLProvider, error) {
 	}
 
 	// Load the module to generate schema
-	loaded, err := loader.LoadModule(modulePath, ".")
+	loaded, err := loader.LoadModule(modulePath, "", ".")
 	if err != nil {
 		return nil, fmt.Errorf("loading module: %w", err)
 	}
@@ -197,7 +197,7 @@ func (p *HCLProvider) Construct(ctx context.Context, req *pulumirpc.ConstructReq
 	monitor := pulumirpc.NewResourceMonitorClient(monitorConn)
 
 	// Load the module
-	loaded, err := p.moduleLoader.LoadModule(p.modulePath, ".")
+	loaded, err := p.moduleLoader.LoadModule(p.modulePath, "", ".")
 	if err != nil {
 		return nil, fmt.Errorf("loading module: %w", err)
 	}

@@ -74,9 +74,11 @@ type LoadedModule struct {
 	SourcePath string
 }
 
-// ModuleLoader loads module configurations from source paths.
+// ModuleLoader loads module configurations from source paths. version is
+// the `version` attribute on the module block (only meaningful for registry
+// sources); workDir is the directory the source is relative to.
 type ModuleLoader interface {
-	LoadModule(source string, workDir string) (*LoadedModule, error)
+	LoadModule(source, version, workDir string) (*LoadedModule, error)
 }
 
 // Node represents a node in the dependency graph.
@@ -688,7 +690,7 @@ func (g *Graph) inlineModule(
 	name string, mod *ast.Module, parentPath modulepath.Path,
 	moduleLoader ModuleLoader, workDir string,
 ) error {
-	loaded, err := moduleLoader.LoadModule(mod.Source, workDir)
+	loaded, err := moduleLoader.LoadModule(mod.Source, mod.Version, workDir)
 	if err != nil {
 		return fmt.Errorf("loading module %s: %w", name, err)
 	}

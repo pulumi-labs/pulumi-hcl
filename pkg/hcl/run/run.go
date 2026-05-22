@@ -2261,8 +2261,8 @@ type moduleLoaderAdapter struct {
 	loader *modules.Loader
 }
 
-func (a *moduleLoaderAdapter) LoadModule(source, workDir string) (*graph.LoadedModule, error) {
-	loaded, err := a.loader.LoadModule(source, workDir)
+func (a *moduleLoaderAdapter) LoadModule(source, version, workDir string) (*graph.LoadedModule, error) {
+	loaded, err := a.loader.LoadModule(source, version, workDir)
 	if err != nil {
 		return nil, err
 	}
@@ -2371,7 +2371,7 @@ func (e *Engine) processModuleInit(ctx context.Context, node *graph.Node) error 
 	}
 
 	// Load the child module to get variable type constraints for input coercion.
-	childMod, err := e.moduleLoader.LoadModule(mod.Source, e.workDir)
+	childMod, err := e.moduleLoader.LoadModule(mod.Source, mod.Version, e.workDir)
 	if err != nil {
 		return fmt.Errorf("loading module %s for input types: %w", mod.Source, err)
 	}
