@@ -374,6 +374,11 @@ type spilledDataSource struct {
 	// matching for_each over that comprehension's collection, and the
 	// reference is indexed by the comprehension's key variable.
 	enclosingForExpr *model.ForExpression
+	// outerForExprs are ancestors of enclosingForExpr whose iter vars its
+	// collection transitively references; the data block's for_each wraps
+	// the collection in nested fors over these (outermost first) and
+	// flattens, so the refs stay bound at top-level scope.
+	outerForExprs []*model.ForExpression
 	// sourceFile is the source PCL filename of the node that produced this
 	// invoke; the spilled data block is emitted in the corresponding output
 	// HCL file so file structure is preserved.
@@ -543,6 +548,51 @@ func invokeReferencesForVars(call *model.FunctionCallExpression, fe *model.ForEx
 	return found
 }
 
+func rootVariablesIn(expr model.Expression) map[*model.Variable]bool {
+	out := map[*model.Variable]bool{}
+	_, _ = model.VisitExpression(expr, nil, func(e model.Expression) (model.Expression, hcl.Diagnostics) {
+		st, ok := e.(*model.ScopeTraversalExpression)
+		if !ok || len(st.Parts) == 0 {
+			return e, nil
+		}
+		if v, ok := st.Parts[0].(*model.Variable); ok {
+			out[v] = true
+		}
+		return e, nil
+	})
+	return out
+}
+
+// outerForExprsNeededFor returns the subset of ancestors whose iter vars are
+// transitively referenced by chosen.Collection, ordered outermost first.
+func outerForExprsNeededFor(chosen *model.ForExpression, ancestors []*model.ForExpression) []*model.ForExpression {
+	needed := rootVariablesIn(chosen.Collection)
+	included := map[*model.ForExpression]bool{}
+	for changed := true; changed; {
+		changed = false
+		for i := len(ancestors) - 1; i >= 0; i-- {
+			outer := ancestors[i]
+			if included[outer] {
+				continue
+			}
+			if needed[outer.ValueVariable] || (outer.KeyVariable != nil && needed[outer.KeyVariable]) {
+				included[outer] = true
+				changed = true
+				for v := range rootVariablesIn(outer.Collection) {
+					needed[v] = true
+				}
+			}
+		}
+	}
+	var out []*model.ForExpression
+	for _, outer := range ancestors {
+		if included[outer] {
+			out = append(out, outer)
+		}
+	}
+	return out
+}
+
 type spilledCall struct {
 	expr         *model.FunctionCallExpression
 	resourceName string
@@ -671,6 +721,8 @@ func (g *generator) collectInvokesInExpr(expr model.Expression, parent *pcl.Reso
 				for i := len(forStack) - 1; i >= 0; i-- {
 					if invokeReferencesForVars(call, forStack[i]) {
 						ds.enclosingForExpr = forStack[i]
+						ds.outerForExprs = outerForExprsNeededFor(
+							forStack[i], forStack[:i])
 						break
 					}
 				}
@@ -954,6 +1006,20 @@ func (g *generator) genInvokeDataSource(body *hclwrite.Body, ds spilledDataSourc
 		diags = append(diags, d...)
 		if d.HasErrors() {
 			return diags
+		}
+		// Wrap innermost-outer last so its iter vars are in scope for the
+		// inner collection. flatten is recursive, so one call collapses all levels.
+		if len(ds.outerForExprs) > 0 {
+			for i := len(ds.outerForExprs) - 1; i >= 0; i-- {
+				outer := ds.outerForExprs[i]
+				outerCollTokens, od := g.exprTokens(outer.Collection, schema.AnyType)
+				diags = append(diags, od...)
+				if od.HasErrors() {
+					return diags
+				}
+				collTokens = forExprWrapperTokens(outer, outerCollTokens, collTokens)
+			}
+			collTokens = hclwrite.TokensForFunctionCall("flatten", collTokens)
 		}
 		// HCL for_each requires a map or set. When the PCL comprehension has no
 		// KeyVariable the collection is a list/tuple, so wrap it with toset() to
@@ -1874,6 +1940,37 @@ func (g *generator) exprTokens(expr model.Expression, typ schema.Type) (hclwrite
 			Detail:   fmt.Sprintf("expression type %T is not yet supported", expr),
 		}}
 	}
+}
+
+// forExprWrapperTokens emits `[for k, v in collTokens : valueTokens]` using
+// fe's iter-var names. Unlike forExprTokens it accepts pre-rendered tokens for
+// both the collection and body, so it can wrap an already-generated for_each.
+func forExprWrapperTokens(fe *model.ForExpression, collTokens, valueTokens hclwrite.Tokens) hclwrite.Tokens {
+	tokens := hclwrite.Tokens{
+		{Type: hclsyntax.TokenOBrack, Bytes: []byte("[")},
+		{Type: hclsyntax.TokenIdent, Bytes: []byte("for"), SpacesBefore: 0},
+	}
+	if fe.KeyVariable != nil {
+		tokens = append(tokens,
+			&hclwrite.Token{Type: hclsyntax.TokenIdent, Bytes: []byte(fe.KeyVariable.Name), SpacesBefore: 1},
+			&hclwrite.Token{Type: hclsyntax.TokenComma, Bytes: []byte(",")},
+		)
+	}
+	tokens = append(tokens,
+		&hclwrite.Token{Type: hclsyntax.TokenIdent, Bytes: []byte(fe.ValueVariable.Name), SpacesBefore: 1},
+		&hclwrite.Token{Type: hclsyntax.TokenIdent, Bytes: []byte("in"), SpacesBefore: 1},
+	)
+	if len(collTokens) > 0 {
+		collTokens[0].SpacesBefore = 1
+	}
+	tokens = append(tokens, collTokens...)
+	tokens = append(tokens, &hclwrite.Token{Type: hclsyntax.TokenColon, Bytes: []byte(":"), SpacesBefore: 1})
+	if len(valueTokens) > 0 {
+		valueTokens[0].SpacesBefore = 1
+	}
+	tokens = append(tokens, valueTokens...)
+	tokens = append(tokens, &hclwrite.Token{Type: hclsyntax.TokenCBrack, Bytes: []byte("]")})
+	return tokens
 }
 
 // forExprTokens generates HCL tokens for a PCL ForExpression.
