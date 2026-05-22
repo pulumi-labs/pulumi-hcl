@@ -142,6 +142,25 @@ func (d *Driver) TryApply(t *testing.T, input map[string]string, config map[stri
 	return d.parseOutputs(t), nil
 }
 
+// TF refuses to destroy a resource block whose destroy-time provisioner is
+// no longer in configuration, so callers must pass the same files they
+// applied.
+func (d *Driver) Destroy(t *testing.T, input map[string]string, config map[string]string) error {
+	t.Helper()
+	require.NoError(t, removeProgramFiles(d.cwd))
+	for path, content := range input {
+		fullPath := filepath.Join(d.cwd, path)
+		require.NoError(t, os.MkdirAll(filepath.Dir(fullPath), 0o755))
+		require.NoError(t, os.WriteFile(fullPath, []byte(content), 0o600))
+	}
+	args := append(make([]string, 0, 3+2*len(config)), "destroy", "-auto-approve", "-refresh=false")
+	for k, v := range config {
+		args = append(args, "-var", k+"="+v)
+	}
+	_, err := d.execTf(t, args...)
+	return err
+}
+
 // Plan writes input files and runs `tofu plan`. Returns the error from the plan
 // command — nil means the plan succeeded (deferred checks count as success).
 func (d *Driver) Plan(t *testing.T, input map[string]string, config map[string]string) error {

@@ -67,14 +67,12 @@ type Case struct {
 	Stages []Stage
 }
 
-// StageMode selects between apply and preview for a stage.
 type StageMode int
 
 const (
-	// StageApply runs `tofu apply` and `pulumi up`. This is the default.
-	StageApply StageMode = iota
-	// StagePreview runs `tofu plan` and `pulumi preview`.
-	StagePreview
+	StageApply StageMode = iota // `tofu apply` / `pulumi up`; default
+	StagePreview                // `tofu plan` / `pulumi preview`
+	StageDestroy                // `tofu destroy` / `pulumi destroy`
 )
 
 // Stage is one operation within a Case.
@@ -136,6 +134,8 @@ func runCaseStages(t *testing.T, c Case) {
 			switch stage.Mode {
 			case StagePreview:
 				tfErr = tfDriver.Plan(t, stage.Files, c.Config)
+			case StageDestroy:
+				tfErr = tfDriver.Destroy(t, stage.Files, c.Config)
 			default:
 				tfOut, tfErr = tfDriver.TryApply(t, stage.Files, c.Config)
 			}
@@ -145,6 +145,8 @@ func runCaseStages(t *testing.T, c Case) {
 			switch stage.Mode {
 			case StagePreview:
 				pulErr = pulDriver.Preview(t, stage.Files)
+			case StageDestroy:
+				pulErr = pulDriver.Destroy(t, stage.Files)
 			default:
 				pulRes, pulErr = pulDriver.TryApply(t, stage.Files)
 			}
@@ -152,8 +154,11 @@ func runCaseStages(t *testing.T, c Case) {
 		wg.Wait()
 
 		tfLabel, pulLabel := "tofu apply", "pulumi up"
-		if stage.Mode == StagePreview {
+		switch stage.Mode {
+		case StagePreview:
 			tfLabel, pulLabel = "tofu plan", "pulumi preview"
+		case StageDestroy:
+			tfLabel, pulLabel = "tofu destroy", "pulumi destroy"
 		}
 
 		if stage.ExpectErr != "" {

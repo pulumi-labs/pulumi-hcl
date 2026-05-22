@@ -28,6 +28,7 @@ import (
 	"github.com/pulumi/providertest/pulumitest"
 	"github.com/pulumi/providertest/pulumitest/optnewstack"
 	"github.com/pulumi/providertest/pulumitest/opttest"
+	"github.com/pulumi/pulumi/sdk/v3/go/auto/optdestroy"
 	"github.com/pulumi/pulumi-terraform-bridge/v3/pkg/tfbridge"
 	"github.com/pulumi/pulumi/sdk/v3/go/auto"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/apitype"
@@ -228,6 +229,27 @@ func (d *Driver) Preview(t *testing.T, programFiles map[string]string) error {
 	<-done
 	if cap.Failed() {
 		return fmt.Errorf("pulumi preview: %s", cap.Logs())
+	}
+	return nil
+}
+
+// --run-program re-runs the language host during destroy so BeforeDelete
+// hooks (destroy-time provisioners) can fire.
+func (d *Driver) Destroy(t *testing.T, programFiles map[string]string) error {
+	t.Helper()
+
+	require.NoError(t, removeProgramFiles(d.dir))
+	d.writeFiles(t, programFiles)
+
+	cap := newCaptureT(t)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		d.pt.Destroy(cap, optdestroy.RunProgram(true))
+	}()
+	<-done
+	if cap.Failed() {
+		return fmt.Errorf("pulumi destroy: %s", cap.Logs())
 	}
 	return nil
 }

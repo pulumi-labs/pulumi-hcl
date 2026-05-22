@@ -792,12 +792,16 @@ func (p *Parser) parseLifecycleBlock(block *hcl.Block) (*lifecycleResult, hcl.Di
 	return result, diags
 }
 
-// parseConnectionBlock parses a connection block.
+// parseConnectionBlock parses a connection block. The block body is stored
+// verbatim on the Connection so the runtime can re-evaluate every attribute
+// (including ones the parser inspected like `type`) against the live HCL
+// eval context — PartialContent strips recognized attrs from `remain`, so
+// using it here would hide `host`, `user`, etc. from the runtime.
 func (p *Parser) parseConnectionBlock(block *hcl.Block) (*ast.Connection, hcl.Diagnostics) {
-	content, remain, diags := block.Body.PartialContent(connectionSchema)
+	content, _, diags := block.Body.PartialContent(connectionSchema)
 
 	conn := &ast.Connection{
-		Config:    remain,
+		Config:    block.Body,
 		DeclRange: block.DefRange,
 	}
 
@@ -816,6 +820,23 @@ func (p *Parser) parseConnectionBlock(block *hcl.Block) (*ast.Connection, hcl.Di
 	return conn, diags
 }
 
+// exprAsKeywordOrString returns the value of expr if it's either a bare
+// keyword (e.g. `continue`) or a string literal (`"continue"`). TF accepts
+// both forms for `when` and `on_failure`; we match that.
+func exprAsKeywordOrString(expr hcl.Expression) string {
+	if kw := hcl.ExprAsKeyword(expr); kw != "" {
+		return kw
+	}
+	val, diags := expr.Value(nil)
+	if diags.HasErrors() || !val.IsKnown() || val.IsNull() {
+		return ""
+	}
+	if val.Type() != cty.String {
+		return ""
+	}
+	return val.AsString()
+}
+
 // parseProvisionerBlock parses a provisioner block.
 func (p *Parser) parseProvisionerBlock(block *hcl.Block) (*ast.Provisioner, hcl.Diagnostics) {
 	content, remain, diags := block.Body.PartialContent(provisionerSchema)
@@ -829,16 +850,32 @@ func (p *Parser) parseProvisionerBlock(block *hcl.Block) (*ast.Provisioner, hcl.
 	}
 
 	if attr, ok := content.Attributes["when"]; ok {
-		kw := hcl.ExprAsKeyword(attr.Expr)
-		if kw != "" {
-			provisioner.When = kw
+		if kw := exprAsKeywordOrString(attr.Expr); kw != "" {
+			if kw != "create" && kw != "destroy" {
+				diags = append(diags, &hcl.Diagnostic{
+					Severity: hcl.DiagError,
+					Summary:  "Invalid \"when\" value",
+					Detail:   fmt.Sprintf("Expected \"create\" or \"destroy\", got %q.", kw),
+					Subject:  attr.Expr.Range().Ptr(),
+				})
+			} else {
+				provisioner.When = kw
+			}
 		}
 	}
 
 	if attr, ok := content.Attributes["on_failure"]; ok {
-		kw := hcl.ExprAsKeyword(attr.Expr)
-		if kw != "" {
-			provisioner.OnFailure = kw
+		if kw := exprAsKeywordOrString(attr.Expr); kw != "" {
+			if kw != "fail" && kw != "continue" {
+				diags = append(diags, &hcl.Diagnostic{
+					Severity: hcl.DiagError,
+					Summary:  "Invalid \"on_failure\" value",
+					Detail:   fmt.Sprintf("Expected \"fail\" or \"continue\", got %q.", kw),
+					Subject:  attr.Expr.Range().Ptr(),
+				})
+			} else {
+				provisioner.OnFailure = kw
+			}
 		}
 	}
 

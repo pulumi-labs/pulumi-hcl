@@ -16,6 +16,8 @@ package parser
 
 import (
 	"testing"
+
+	"github.com/stretchr/testify/require"
 )
 
 func TestParseBasicConfig(t *testing.T) {
@@ -247,6 +249,36 @@ resource "aws_instance" "web" {
 	if r.Provisioners[2].Type != "file" {
 		t.Errorf("Expected third provisioner to be 'file', got %q", r.Provisioners[2].Type)
 	}
+}
+
+func TestParseProvisionerInvalidWhen(t *testing.T) {
+	src := []byte(`
+resource "aws_instance" "web" {
+  provisioner "local-exec" {
+    command = "true"
+    when    = "sometimes"
+  }
+}
+`)
+	p := NewParser()
+	_, diags := p.ParseSource("test.hcl", src)
+	require.True(t, diags.HasErrors())
+	require.Equal(t, "Invalid \"when\" value", diags[0].Summary)
+}
+
+func TestParseProvisionerInvalidOnFailure(t *testing.T) {
+	src := []byte(`
+resource "aws_instance" "web" {
+  provisioner "local-exec" {
+    command    = "true"
+    on_failure = "panic"
+  }
+}
+`)
+	p := NewParser()
+	_, diags := p.ParseSource("test.hcl", src)
+	require.True(t, diags.HasErrors())
+	require.Equal(t, "Invalid \"on_failure\" value", diags[0].Summary)
 }
 
 func TestParseMetaArguments(t *testing.T) {

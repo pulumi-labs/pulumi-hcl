@@ -30,3 +30,21 @@ jobs:
         with:
           files: coverage.out
           token: ${{ secrets.CODECOV_TOKEN }}
+
+  vendored-drift:
+    # Ensures the vendored/ tree matches what `go generate ./vendored`
+    # produces against the SHA pinned in vendored/doc.go. Catches both
+    # hand-edits of MPL files and forgotten regens after a SHA bump.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+      - run: go generate ./vendored
+      - name: Fail on drift
+        run: |
+          if ! git diff --exit-code -- vendored/; then
+            echo "::error::vendored/ tree drifted from regen output. Run 'go generate ./vendored' locally and commit the result."
+            exit 1
+          fi

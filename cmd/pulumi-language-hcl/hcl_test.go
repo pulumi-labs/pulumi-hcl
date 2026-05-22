@@ -1712,6 +1712,9 @@ func TestResourceModuleFormat(t *testing.T) {
 func TestLocalExecProvisioner(t *testing.T) {
 	t.Parallel()
 
+	tmpDir := t.TempDir()
+	marker := tmpDir + "/marker"
+
 	src := `terraform {
   required_providers {
     aws = {
@@ -1726,8 +1729,7 @@ resource "aws_instance" "web" {
   instance_type = "t2.micro"
 
   provisioner "local-exec" {
-    command     = "echo ${self.ami}"
-    working_dir = "/tmp"
+    command = "echo ${self.ami} > ` + marker + `"
   }
 }
 
@@ -1770,37 +1772,19 @@ output "instance_ami" {
 		SchemaLoader:    loader,
 	})
 
-	err := engine.Run(t.Context())
-	require.NoError(t, err)
+	require.NoError(t, engine.Run(t.Context()))
 
-	// Expect: stack + aws_instance + command:local:Command provisioner
-	require.Len(t, mock.RegisteredResources, 3)
-
+	// Hook-based provisioners run in-process and do NOT register a
+	// separate Pulumi resource. Expect only stack + aws_instance.
+	require.Len(t, mock.RegisteredResources, 2)
 	assert.Equal(t, "pulumi:pulumi:Stack", mock.RegisteredResources[0].Type)
 	assert.Equal(t, "aws:index:Instance", mock.RegisteredResources[1].Type)
 	assert.Equal(t, "web", mock.RegisteredResources[1].Name)
-	assert.Equal(t, "command:local:Command", mock.RegisteredResources[2].Type)
-	assert.Equal(t, "aws_instance.web-provisioner-0", mock.RegisteredResources[2].Name)
 
-	provInputs := mock.RegisteredResources[2].Inputs
-	create, ok := provInputs.GetOk("create")
-	require.True(t, ok, "expected 'create' input on provisioner")
-	assert.Equal(t, "echo ami-12345", create.AsString())
-
-	dir, ok := provInputs.GetOk("dir")
-	require.True(t, ok, "expected 'dir' input on provisioner")
-	assert.Equal(t, "/tmp", dir.AsString())
-
-	// Provisioner should depend on the parent resource.
-	assert.Equal(t, []string{
-		"urn:pulumi:test::project::aws:index:Instance::web",
-	}, mock.RegisteredResources[2].Dependencies)
-
-	// Provisioner should be parented to the resource.
-	assert.Equal(t,
-		"urn:pulumi:test::project::aws:index:Instance::web",
-		mock.RegisteredResources[2].Parent,
-	)
+	// The provisioner's local-exec wrote ami to the marker file via self.ami.
+	got, err := os.ReadFile(marker)
+	require.NoError(t, err, "local-exec did not create marker file")
+	assert.Equal(t, "ami-12345\n", string(got))
 
 	// Stack output should reflect the resource's ami.
 	ami, ok := mock.StackOutputs.GetOk("instance_ami")

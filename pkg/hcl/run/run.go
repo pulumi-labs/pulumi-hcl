@@ -1114,6 +1114,12 @@ func (e *Engine) registerResourceInstanceInContext(
 		}
 	}
 
+	if len(res.Provisioners) > 0 {
+		if err := e.bindProvisionerHooks(ctx, res, resSchema, instance, evalCtx, opts); err != nil {
+			return err
+		}
+	}
+
 	resourceName := e.extractModuleResourceName(res.Name, instance.Key, node.ModuleInfo, modInst)
 
 	urn, id, outputs, err := e.registerResource(ctx, resSchema.Token, resourceName, resourceInputs, opts)
@@ -1166,12 +1172,6 @@ func (e *Engine) registerResourceInstanceInContext(
 		evalCtx.SetResource(bareKey, cty.ObjectVal(outputObj))
 	} else {
 		evalCtx.SetResource(instance.Key, cty.ObjectVal(outputObj))
-	}
-
-	if len(res.Provisioners) > 0 {
-		if err := e.processProvisioners(ctx, res, urn, cty.ObjectVal(outputObj), instance.Key); err != nil {
-			return fmt.Errorf("processing provisioners: %w", err)
-		}
 	}
 
 	return nil

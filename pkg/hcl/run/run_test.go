@@ -1102,25 +1102,29 @@ resource "test_resource" "res" {
 	})
 }
 
+// Provisioners run in-process via Pulumi hooks: AfterCreate for default
+// (create-time), BeforeDelete for `when = destroy`. These tests assert
+// on the side effects of running local-exec, not on registered resources.
+
 func TestEngine_LocalExecProvisioner(t *testing.T) {
 	t.Parallel()
 
-	src := []byte(`
+	tmpDir := t.TempDir()
+	marker := tmpDir + "/marker"
+
+	src := fmt.Appendf(nil, `
 resource "aws_instance" "web" {
   ami = "ami-12345"
 
   provisioner "local-exec" {
-    command = "echo 'Hello World'"
-    working_dir = "/tmp"
+    command = "echo Hello > %s"
   }
 }
-`)
+`, marker)
 
 	p := parser.NewParser()
 	config, diags := p.ParseSource("test.hcl", src)
-	if diags.HasErrors() {
-		t.Fatalf("parse error: %s", diags.Error())
-	}
+	require.False(t, diags.HasErrors(), diags.Error())
 
 	mock := &testutil.MockResourceMonitor{}
 	engine := run.NewEngine(config, &run.EngineOptions{
@@ -1146,69 +1150,36 @@ resource "aws_instance" "web" {
 		}),
 	})
 
-	err := engine.Run(t.Context())
+	require.NoError(t, engine.Run(t.Context()))
 
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-
-	// Should have registered: stack + resource + provisioner
-	if len(mock.RegisteredResources) < 3 {
-		t.Fatalf("expected at least 3 registered resources, got %d", len(mock.RegisteredResources))
-	}
-
-	// Find the provisioner resource
-	var provisionerReq *run.RegisterResourceRequest
-	for i := range mock.RegisteredResources {
-		if mock.RegisteredResources[i].Type == "command:local:Command" {
-			provisionerReq = &mock.RegisteredResources[i]
-			break
-		}
-	}
-
-	require.NotNil(t, provisionerReq, "expected command:local:Command provisioner to be registered")
-
-	// Check that the command was mapped to create
-	if create, ok := provisionerReq.Inputs.GetOk("create"); ok {
-		if create.AsString() != "echo 'Hello World'" {
-			t.Errorf("expected create command 'echo 'Hello World'', got %s", create.AsString())
-		}
-	} else {
-		t.Error("expected 'create' input to be set")
-	}
-
-	// Check working_dir was mapped to dir
-	if dir, ok := provisionerReq.Inputs.GetOk("dir"); ok {
-		if dir.AsString() != "/tmp" {
-			t.Errorf("expected dir '/tmp', got %s", dir.AsString())
-		}
-	} else {
-		t.Error("expected 'dir' input to be set")
-	}
+	got, err := os.ReadFile(marker)
+	require.NoError(t, err, "local-exec did not create marker file")
+	assert.Equal(t, "Hello\n", string(got))
 }
 
 func TestEngine_MultipleProvisioners(t *testing.T) {
 	t.Parallel()
 
-	src := []byte(`
+	tmpDir := t.TempDir()
+	marker := tmpDir + "/marker"
+
+	src := fmt.Appendf(nil, `
 resource "aws_instance" "web" {
   ami = "ami-12345"
 
   provisioner "local-exec" {
-    command = "echo 'First'"
+    command = "echo First >> %s"
   }
 
   provisioner "local-exec" {
-    command = "echo 'Second'"
+    command = "echo Second >> %s"
   }
 }
-`)
+`, marker, marker)
 
 	p := parser.NewParser()
 	config, diags := p.ParseSource("test.hcl", src)
-	if diags.HasErrors() {
-		t.Fatalf("parse error: %s", diags.Error())
-	}
+	require.False(t, diags.HasErrors(), diags.Error())
 
 	mock := &testutil.MockResourceMonitor{}
 	engine := run.NewEngine(config, &run.EngineOptions{
@@ -1234,43 +1205,32 @@ resource "aws_instance" "web" {
 		}),
 	})
 
-	err := engine.Run(t.Context())
+	require.NoError(t, engine.Run(t.Context()))
 
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-
-	// Count provisioner resources
-	var provisionerCount int
-	for _, r := range mock.RegisteredResources {
-		if r.Type == "command:local:Command" {
-			provisionerCount++
-		}
-	}
-
-	if provisionerCount != 2 {
-		t.Fatalf("expected 2 provisioner resources, got %d", provisionerCount)
-	}
+	got, err := os.ReadFile(marker)
+	require.NoError(t, err)
+	assert.Equal(t, "First\nSecond\n", string(got))
 }
 
 func TestEngine_ProvisionerWithSelf(t *testing.T) {
 	t.Parallel()
 
-	src := []byte(`
+	tmpDir := t.TempDir()
+	marker := tmpDir + "/marker"
+
+	src := fmt.Appendf(nil, `
 resource "aws_instance" "web" {
   ami = "ami-12345"
 
   provisioner "local-exec" {
-    command = "echo ${self.id}"
+    command = "echo ${self.id} > %s"
   }
 }
-`)
+`, marker)
 
 	p := parser.NewParser()
 	config, diags := p.ParseSource("test.hcl", src)
-	if diags.HasErrors() {
-		t.Fatalf("parse error: %s", diags.Error())
-	}
+	require.False(t, diags.HasErrors(), diags.Error())
 
 	mock := &testutil.MockResourceMonitor{}
 	engine := run.NewEngine(config, &run.EngineOptions{
@@ -1296,32 +1256,11 @@ resource "aws_instance" "web" {
 		}),
 	})
 
-	err := engine.Run(t.Context())
+	require.NoError(t, engine.Run(t.Context()))
 
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-
-	// Find the provisioner resource
-	var provisionerReq *run.RegisterResourceRequest
-	for i := range mock.RegisteredResources {
-		if mock.RegisteredResources[i].Type == "command:local:Command" {
-			provisionerReq = &mock.RegisteredResources[i]
-			break
-		}
-	}
-
-	require.NotNil(t, provisionerReq, "expected command:local:Command provisioner to be registered")
-
-	// Check that self.id was resolved
-	if create, ok := provisionerReq.Inputs.GetOk("create"); ok {
-		// The id should be set to the resource name + "-id" by the mock
-		if !strings.Contains(create.AsString(), "web-id") {
-			t.Errorf("expected self.id to be resolved, got: %s", create.AsString())
-		}
-	} else {
-		t.Error("expected 'create' input to be set")
-	}
+	got, err := os.ReadFile(marker)
+	require.NoError(t, err)
+	assert.Equal(t, "web-id\n", string(got))
 }
 
 func TestEngine_SimpleModule(t *testing.T) {
