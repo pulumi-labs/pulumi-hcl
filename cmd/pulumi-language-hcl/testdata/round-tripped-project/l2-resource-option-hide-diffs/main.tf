@@ -9,8 +9,14 @@ terraform {
 
 resource "simple_resource" "hideDiffs" {
   hide_diffs = ["value"]
-  value      = true
+  lifecycle {
+    create_before_destroy = true
+  }
+  value = true
 }
 resource "simple_resource" "notHideDiffs" {
+  lifecycle {
+    create_before_destroy = true
+  }
   value = true
 }

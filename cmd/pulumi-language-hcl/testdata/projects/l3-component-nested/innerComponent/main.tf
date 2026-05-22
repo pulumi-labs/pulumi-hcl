@@ -8,6 +8,9 @@ terraform {
 }
 
 resource "simple_resource" "res" {
+  lifecycle {
+    create_before_destroy = true
+  }
   value = ! var.input
 }
 variable "input" {

@@ -24,6 +24,9 @@ data "primitive_invoke" "invokeResult" {
 }
 
 resource "primitive_resource" "res" {
+  lifecycle {
+    create_before_destroy = true
+  }
   boolean      = false
   float        = 2.17
   integer      = -12

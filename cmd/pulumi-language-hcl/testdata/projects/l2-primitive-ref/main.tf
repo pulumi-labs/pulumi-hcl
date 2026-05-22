@@ -8,6 +8,9 @@ terraform {
 }
 
 resource "primitive-ref_resource" "res" {
+  lifecycle {
+    create_before_destroy = true
+  }
   data = {
     boolean    = false
     float      = 2.17

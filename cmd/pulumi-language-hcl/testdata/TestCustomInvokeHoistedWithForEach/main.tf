@@ -20,5 +20,8 @@ resource "test_item" "inbound" {
     "a" = "alpha"
     "b" = "bravo"
   }
+  lifecycle {
+    create_before_destroy = true
+  }
   value = data.test_echo.invoke_0[each.key].result
 }

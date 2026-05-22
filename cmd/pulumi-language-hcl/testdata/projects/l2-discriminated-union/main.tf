@@ -8,6 +8,9 @@ terraform {
 }
 
 resource "discriminated-union_example" "example1" {
+  lifecycle {
+    create_before_destroy = true
+  }
   union_of = {
     discriminant_kind = "variant1"
     field1            = "v1 union"
@@ -18,6 +21,9 @@ resource "discriminated-union_example" "example1" {
   }]
 }
 resource "discriminated-union_example" "example2" {
+  lifecycle {
+    create_before_destroy = true
+  }
   union_of = {
     discriminant_kind = "variant2"
     field2            = "v2 union"

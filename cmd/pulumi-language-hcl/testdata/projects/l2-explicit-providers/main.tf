@@ -12,9 +12,15 @@ provider "component" {
 }
 resource "component_componentcallable" "list" {
   providers = [component.explicit]
-  value     = "value"
+  lifecycle {
+    create_before_destroy = true
+  }
+  value = "value"
 }
 resource "component_componentcallable" "map" {
   providers = [component.explicit]
-  value     = "value"
+  lifecycle {
+    create_before_destroy = true
+  }
+  value = "value"
 }

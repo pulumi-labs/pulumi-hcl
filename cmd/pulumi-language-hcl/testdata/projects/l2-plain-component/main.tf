@@ -8,6 +8,9 @@ terraform {
 }
 
 resource "plaincomponent_component" "myComponent" {
+  lifecycle {
+    create_before_destroy = true
+  }
   name = "my-resource"
   settings = {
     enabled = true

@@ -8,6 +8,9 @@ terraform {
 }
 
 resource "test_bucket" "bucket" {
+  lifecycle {
+    create_before_destroy = true
+  }
   name ="inner(${var.name})"
 }
 variable "name" {

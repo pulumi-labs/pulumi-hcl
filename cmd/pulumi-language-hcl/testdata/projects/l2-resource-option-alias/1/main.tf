@@ -8,14 +8,23 @@ terraform {
 }
 
 resource "simple_resource" "parent" {
+  lifecycle {
+    create_before_destroy = true
+  }
   value = true
 }
 resource "simple_resource" "aliasURN" {
-  parent  = simple_resource.parent
+  parent = simple_resource.parent
+  lifecycle {
+    create_before_destroy = true
+  }
   aliases = ["urn:pulumi:test::l2-resource-option-alias::simple:index:Resource::aliasURN"]
   value   = true
 }
 resource "simple_resource" "aliasNewName" {
+  lifecycle {
+    create_before_destroy = true
+  }
   aliases = [{
     name = "aliasName"
   }]
@@ -23,6 +32,9 @@ resource "simple_resource" "aliasNewName" {
 }
 resource "simple_resource" "aliasNoParent" {
   parent = simple_resource.parent
+  lifecycle {
+    create_before_destroy = true
+  }
   aliases = [{
     no_parent = true
   }]
@@ -30,12 +42,18 @@ resource "simple_resource" "aliasNoParent" {
 }
 resource "simple_resource" "aliasParent" {
   parent = simple_resource.parent
+  lifecycle {
+    create_before_destroy = true
+  }
   aliases = [{
     parent_urn = simple_resource.aliasURN.urn
   }]
   value = true
 }
 resource "simple_resource" "aliasType" {
+  lifecycle {
+    create_before_destroy = true
+  }
   aliases = [{
     type = "component:index:Custom"
   }]

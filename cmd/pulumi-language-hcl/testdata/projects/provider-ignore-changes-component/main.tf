@@ -13,14 +13,21 @@ terraform {
 
 resource "conformance-component_simple" "withIgnoreChanges" {
   lifecycle {
-    ignore_changes = [value]
+    ignore_changes        = [value]
+    create_before_destroy = true
   }
   value = true
 }
 resource "conformance-component_simple" "withoutIgnoreChanges" {
+  lifecycle {
+    create_before_destroy = true
+  }
   value = true
 }
 // Make a simple resource so that plugin detection works.
 resource "simple_resource" "simpleResource" {
+  lifecycle {
+    create_before_destroy = true
+  }
   value = false
 }

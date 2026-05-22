@@ -8,12 +8,21 @@ terraform {
 }
 
 resource "simple_resource" "targetOnly" {
+  lifecycle {
+    create_before_destroy = true
+  }
   value = true
 }
 resource "simple_resource" "unrelated" {
+  lifecycle {
+    create_before_destroy = true
+  }
   depends_on = [simple_resource.dep]
   value      = true
 }
 resource "simple_resource" "dep" {
+  lifecycle {
+    create_before_destroy = true
+  }
   value = true
 }

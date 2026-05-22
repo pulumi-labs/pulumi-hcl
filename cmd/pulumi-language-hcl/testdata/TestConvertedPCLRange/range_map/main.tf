@@ -12,5 +12,8 @@ resource "test_item" "myItem" {
     "a" = "alpha"
     "b" = "bravo"
   }
+  lifecycle {
+    create_before_destroy = true
+  }
   name = each.value
 }

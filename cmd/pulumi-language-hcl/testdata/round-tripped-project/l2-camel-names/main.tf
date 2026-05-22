@@ -7,13 +7,22 @@ terraform {
   }
 }
 
-resource "camelNames_cool_module_some_resource" "firstResource" {
+resource "camelNames_coolmodule_someresource" "firstResource" {
+  lifecycle {
+    create_before_destroy = true
+  }
   the_input = true
 }
-resource "camelNames_cool_module_some_resource" "secondResource" {
-  the_input = camelNames_cool_module_some_resource.firstResource.the_output
+resource "camelNames_coolmodule_someresource" "secondResource" {
+  lifecycle {
+    create_before_destroy = true
+  }
+  the_input = camelNames_coolmodule_someresource.firstResource.the_output
 }
-resource "camelNames_cool_module_some_resource" "thirdResource" {
+resource "camelNames_coolmodule_someresource" "thirdResource" {
+  lifecycle {
+    create_before_destroy = true
+  }
   the_input     = true
   resource_name = "my-cluster"
 }

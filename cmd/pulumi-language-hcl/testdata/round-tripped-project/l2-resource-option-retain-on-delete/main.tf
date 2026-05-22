@@ -9,12 +9,21 @@ terraform {
 
 resource "simple_resource" "retainOnDelete" {
   retain_on_delete = true
-  value            = true
+  lifecycle {
+    create_before_destroy = true
+  }
+  value = true
 }
 resource "simple_resource" "notRetainOnDelete" {
   retain_on_delete = false
-  value            = true
+  lifecycle {
+    create_before_destroy = true
+  }
+  value = true
 }
 resource "simple_resource" "defaulted" {
+  lifecycle {
+    create_before_destroy = true
+  }
   value = true
 }

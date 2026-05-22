@@ -12,8 +12,14 @@ resource "test_item" "source" {
     "x" = "alpha"
     "y" = "bravo"
   }
+  lifecycle {
+    create_before_destroy = true
+  }
   name = each.value
 }
 resource "test_item" "target" {
+  lifecycle {
+    create_before_destroy = true
+  }
   name ="${test_item.source["x"].name}-ref"
 }

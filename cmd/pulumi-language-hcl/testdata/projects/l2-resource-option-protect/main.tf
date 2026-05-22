@@ -9,16 +9,21 @@ terraform {
 
 resource "simple_resource" "protected" {
   lifecycle {
-    prevent_destroy = true
+    prevent_destroy       = true
+    create_before_destroy = true
   }
   value = true
 }
 resource "simple_resource" "unprotected" {
   lifecycle {
-    prevent_destroy = false
+    prevent_destroy       = false
+    create_before_destroy = true
   }
   value = true
 }
 resource "simple_resource" "defaulted" {
+  lifecycle {
+    create_before_destroy = true
+  }
   value = true
 }

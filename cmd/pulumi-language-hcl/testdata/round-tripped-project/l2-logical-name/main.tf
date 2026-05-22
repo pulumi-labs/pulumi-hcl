@@ -8,6 +8,9 @@ terraform {
 }
 
 resource "simple_resource" "aA-Alpha_alpha.🤯⁉️" {
+  lifecycle {
+    create_before_destroy = true
+  }
   value = var["cC-Charlie_charlie.😃⁉️"]
 }
 variable "cC-Charlie_charlie.😃⁉️" {

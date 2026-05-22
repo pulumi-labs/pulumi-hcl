@@ -14,5 +14,8 @@ data "test_echo" "invoke_0" {
 
 resource "test_item" "inbound" {
   count = 2
+  lifecycle {
+    create_before_destroy = true
+  }
   value = data.test_echo.invoke_0[count.index].result
 }

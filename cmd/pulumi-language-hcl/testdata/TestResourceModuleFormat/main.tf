@@ -8,6 +8,9 @@ terraform {
 }
 
 resource "test_mod_thing" "ubuntu" {
+  lifecycle {
+    create_before_destroy = true
+  }
   object_blocks {
     value = true
   }

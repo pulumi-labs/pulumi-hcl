@@ -16,6 +16,9 @@ data "simple-invoke_my_invoke" "invoke_0" {
 }
 
 resource "simple_resource" "res" {
+  lifecycle {
+    create_before_destroy = true
+  }
   value = true
 }
 output "inv" {

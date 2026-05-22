@@ -8,6 +8,9 @@ terraform {
 }
 
 resource "ref-ref_resource" "res" {
+  lifecycle {
+    create_before_destroy = true
+  }
   data = {
     inner_data = {
       boolean    = false

@@ -1219,13 +1219,11 @@ func (g *generator) genResourceOptions(body *hclwrite.Body, r *pcl.Resource) hcl
 			func(s string) string { return s })
 	}
 
-	if opts == nil && len(schemaReplaceOnChanges) == 0 {
-		return nil
-	}
-
 	if opts == nil {
-		// Only schema-based replaceOnChanges - generate it
-		g.genReplaceOnChanges(body, schemaReplaceOnChanges, nil, &diags)
+		if len(schemaReplaceOnChanges) > 0 {
+			g.genReplaceOnChanges(body, schemaReplaceOnChanges, nil, &diags)
+		}
+		g.genLifecycleBlock(body, nil, &diags)
 		return diags
 	}
 
@@ -1300,37 +1298,7 @@ func (g *generator) genResourceOptions(body *hclwrite.Body, r *pcl.Resource) hcl
 		}
 	}
 
-	if opts.IgnoreChanges != nil || opts.Protect != nil || opts.DeleteBeforeReplace != nil {
-		lifecycleBlock := body.AppendNewBlock("lifecycle", nil)
-		if opts.Protect != nil {
-			tokens, d := g.exprTokens(opts.Protect, schema.BoolType)
-			diags = append(diags, d...)
-			if !d.HasErrors() {
-				lifecycleBlock.Body().SetAttributeRaw("prevent_destroy", tokens)
-			}
-		}
-		if opts.IgnoreChanges != nil {
-			tokens, d := g.exprTokens(opts.IgnoreChanges, schema.AnyType)
-			diags = append(diags, d...)
-			if !d.HasErrors() {
-				lifecycleBlock.Body().SetAttributeRaw("ignore_changes", tokens)
-			}
-		}
-		if opts.DeleteBeforeReplace != nil {
-			// PCL deleteBeforeReplace=true means delete-then-create.
-			// HCL create_before_destroy=true means create-then-delete.
-			// So create_before_destroy = !deleteBeforeReplace.
-			// We generate the inverted expression.
-			tokens, d := g.exprTokens(opts.DeleteBeforeReplace, schema.BoolType)
-			diags = append(diags, d...)
-			if !d.HasErrors() {
-				invertedTokens := append(hclwrite.Tokens{
-					{Type: hclsyntax.TokenBang, Bytes: []byte("!")},
-				}, tokens...)
-				lifecycleBlock.Body().SetAttributeRaw("create_before_destroy", invertedTokens)
-			}
-		}
-	}
+	g.genLifecycleBlock(body, opts, &diags)
 
 	if opts.CustomTimeouts != nil {
 		timeoutsBlock := body.AppendNewBlock("timeouts", nil)
@@ -1632,6 +1600,77 @@ func makeStringListTokens(strs []string) hclwrite.Tokens {
 	}
 	tokens = append(tokens, &hclwrite.Token{Type: hclsyntax.TokenCBrack, Bytes: []byte("]")})
 	return tokens
+}
+
+// genLifecycleBlock writes the resource's `lifecycle { ... }` block.
+//
+// Pulumi defaults to create-then-delete; Terraform defaults to the opposite.
+// To make the Pulumi default explicit, we emit `create_before_destroy = true`
+// whenever `deleteBeforeReplace` is unset (or literal `false`). When it's
+// literal `true`, the TF default already matches the user's intent, so we omit
+// `create_before_destroy` entirely. Non-literal expressions fall through to
+// `create_before_destroy = !<expr>`.
+//
+// If the block ends up empty, it's not emitted.
+func (g *generator) genLifecycleBlock(body *hclwrite.Body, opts *pcl.ResourceOptions, diags *hcl.Diagnostics) {
+	type attr struct {
+		name   string
+		tokens hclwrite.Tokens
+	}
+	var attrs []attr
+
+	if opts != nil {
+		if opts.Protect != nil {
+			tokens, d := g.exprTokens(opts.Protect, schema.BoolType)
+			*diags = append(*diags, d...)
+			if !d.HasErrors() {
+				attrs = append(attrs, attr{"prevent_destroy", tokens})
+			}
+		}
+		if opts.IgnoreChanges != nil {
+			tokens, d := g.exprTokens(opts.IgnoreChanges, schema.AnyType)
+			*diags = append(*diags, d...)
+			if !d.HasErrors() {
+				attrs = append(attrs, attr{"ignore_changes", tokens})
+			}
+		}
+	}
+
+	cbdTokens := createBeforeDestroyTokens(g, opts, diags)
+	if cbdTokens != nil {
+		attrs = append(attrs, attr{"create_before_destroy", cbdTokens})
+	}
+
+	if len(attrs) == 0 {
+		return
+	}
+	block := body.AppendNewBlock("lifecycle", nil).Body()
+	for _, a := range attrs {
+		block.SetAttributeRaw(a.name, a.tokens)
+	}
+}
+
+// createBeforeDestroyTokens computes the value of `create_before_destroy` from
+// PCL's `deleteBeforeReplace`. Returns nil when the attribute should not be
+// emitted (TF default already matches the user's request).
+func createBeforeDestroyTokens(g *generator, opts *pcl.ResourceOptions, diags *hcl.Diagnostics) hclwrite.Tokens {
+	if opts == nil || opts.DeleteBeforeReplace == nil {
+		return hclwrite.Tokens{{Type: hclsyntax.TokenIdent, Bytes: []byte("true")}}
+	}
+	if lit, ok := opts.DeleteBeforeReplace.(*model.LiteralValueExpression); ok && lit.Value.Type() == cty.Bool {
+		if lit.Value.True() {
+			return nil
+		}
+		return hclwrite.Tokens{{Type: hclsyntax.TokenIdent, Bytes: []byte("true")}}
+	}
+	tokens, d := g.exprTokens(opts.DeleteBeforeReplace, schema.BoolType)
+	*diags = append(*diags, d...)
+	if d.HasErrors() {
+		return nil
+	}
+	return append(hclwrite.Tokens{
+		{Type: hclsyntax.TokenBang, Bytes: []byte("!")},
+	}, tokens...)
 }
 
 // genReplaceOnChanges generates the replace_on_changes attribute, merging schema-based and option-based paths.

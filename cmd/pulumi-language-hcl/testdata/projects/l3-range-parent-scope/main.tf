@@ -9,7 +9,10 @@ terraform {
 
 resource "nestedobject_target" "item" {
   count = 2
-  name  ="${var.prefix}-${count.index}"
+  lifecycle {
+    create_before_destroy = true
+  }
+  name ="${var.prefix}-${count.index}"
 }
 variable "prefix" {
   type = string

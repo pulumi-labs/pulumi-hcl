@@ -8,9 +8,15 @@ terraform {
 }
 
 resource "simple_resource" "second-untainted" {
+  lifecycle {
+    create_before_destroy = true
+  }
   value = true
 }
 resource "simple_resource" "second-tainted" {
+  lifecycle {
+    create_before_destroy = true
+  }
   value = ! var.input
 }
 variable "input" {

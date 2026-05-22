@@ -12,9 +12,15 @@ terraform {
 }
 
 resource "names_mod_res" "namesResource" {
+  lifecycle {
+    create_before_destroy = true
+  }
   value = var.names
 }
 resource "module-format_mod_resource" "modResource" {
+  lifecycle {
+    create_before_destroy = true
+  }
   text ="${var.mod}-${var.Mod}"
 }
 variable "names" {

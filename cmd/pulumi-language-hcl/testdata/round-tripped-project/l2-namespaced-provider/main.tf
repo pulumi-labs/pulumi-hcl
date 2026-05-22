@@ -11,10 +11,16 @@ terraform {
   }
 }
 
-resource "component_component_custom_ref_output" "componentRes" {
+resource "component_componentcustomrefoutput" "componentRes" {
+  lifecycle {
+    create_before_destroy = true
+  }
   value = "foo-bar-baz"
 }
 resource "namespaced_resource" "res" {
+  lifecycle {
+    create_before_destroy = true
+  }
   value        = true
-  resource_ref = component_component_custom_ref_output.componentRes.ref
+  resource_ref = component_componentcustomrefoutput.componentRes.ref
 }

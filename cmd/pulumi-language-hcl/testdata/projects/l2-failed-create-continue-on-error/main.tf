@@ -12,19 +12,34 @@ terraform {
 }
 
 resource "fail_on_create_resource" "failing" {
+  lifecycle {
+    create_before_destroy = true
+  }
   value = false
 }
 resource "simple_resource" "dependent" {
+  lifecycle {
+    create_before_destroy = true
+  }
   depends_on = [fail_on_create_resource.failing]
   value      = true
 }
 resource "simple_resource" "dependent_on_output" {
+  lifecycle {
+    create_before_destroy = true
+  }
   value = fail_on_create_resource.failing.value
 }
 resource "simple_resource" "independent" {
+  lifecycle {
+    create_before_destroy = true
+  }
   value = true
 }
 resource "simple_resource" "double_dependency" {
+  lifecycle {
+    create_before_destroy = true
+  }
   depends_on = [simple_resource.independent, simple_resource.dependent_on_output]
   value      = true
 }

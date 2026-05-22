@@ -9,7 +9,8 @@ terraform {
 
 resource "nestedobject_receiver" "receiverIgnore" {
   lifecycle {
-    ignore_changes = [details[0].key]
+    ignore_changes        = [details[0].key]
+    create_before_destroy = true
   }
   details {
     key   = "a"
@@ -18,12 +19,16 @@ resource "nestedobject_receiver" "receiverIgnore" {
 }
 resource "nestedobject_map_container" "mapIgnore" {
   lifecycle {
-    ignore_changes = [tags["env"], tags["with.dot"], tags["with escaped \""]]
+    ignore_changes        = [tags["env"], tags["with.dot"], tags["with escaped \""]]
+    create_before_destroy = true
   }
   tags = {
     "env" = "prod"
   }
 }
 resource "nestedobject_target" "noIgnore" {
+  lifecycle {
+    create_before_destroy = true
+  }
   name = "nothing"
 }

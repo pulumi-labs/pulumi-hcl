@@ -13,19 +13,34 @@ terraform {
 
 resource "simple_resource" "replacementTrigger" {
   replacement_trigger = "test2"
-  value               = true
+  lifecycle {
+    create_before_destroy = true
+  }
+  value = true
 }
 resource "output_resource" "unknown" {
+  lifecycle {
+    create_before_destroy = true
+  }
   value = 2
 }
 resource "simple_resource" "unknownReplacementTrigger" {
   replacement_trigger = output_resource.unknown.output
-  value               = true
+  lifecycle {
+    create_before_destroy = true
+  }
+  value = true
 }
 resource "simple_resource" "notReplacementTrigger" {
+  lifecycle {
+    create_before_destroy = true
+  }
   value = true
 }
 resource "simple_resource" "secretReplacementTrigger" {
   replacement_trigger = sensitive([3, 2, 1])
-  value               = true
+  lifecycle {
+    create_before_destroy = true
+  }
+  value = true
 }

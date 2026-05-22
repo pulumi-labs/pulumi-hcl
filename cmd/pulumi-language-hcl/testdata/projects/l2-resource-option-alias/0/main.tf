@@ -13,21 +13,39 @@ terraform {
 
 // Make a simple resource to use as a parent
 resource "simple_resource" "parent" {
+  lifecycle {
+    create_before_destroy = true
+  }
   value = true
 }
 resource "simple_resource" "aliasURN" {
+  lifecycle {
+    create_before_destroy = true
+  }
   value = true
 }
 resource "simple_resource" "aliasName" {
+  lifecycle {
+    create_before_destroy = true
+  }
   value = true
 }
 resource "simple_resource" "aliasNoParent" {
+  lifecycle {
+    create_before_destroy = true
+  }
   value = true
 }
 resource "simple_resource" "aliasParent" {
   parent = simple_resource.aliasURN
-  value  = true
+  lifecycle {
+    create_before_destroy = true
+  }
+  value = true
 }
 resource "component_custom" "aliasType" {
+  lifecycle {
+    create_before_destroy = true
+  }
   value = "true"
 }

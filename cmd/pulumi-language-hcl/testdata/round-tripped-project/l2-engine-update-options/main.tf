@@ -8,8 +8,14 @@ terraform {
 }
 
 resource "simple_resource" "target" {
+  lifecycle {
+    create_before_destroy = true
+  }
   value = true
 }
 resource "simple_resource" "other" {
+  lifecycle {
+    create_before_destroy = true
+  }
   value = true
 }

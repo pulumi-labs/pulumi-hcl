@@ -7,16 +7,28 @@ terraform {
   }
 }
 
-resource "asset-archive_asset_resource" "ass" {
+resource "asset-archive_assetresource" "ass" {
+  lifecycle {
+    create_before_destroy = true
+  }
   value = fileAsset("../test.txt")
 }
-resource "asset-archive_archive_resource" "arc" {
+resource "asset-archive_archiveresource" "arc" {
+  lifecycle {
+    create_before_destroy = true
+  }
   value = fileArchive("../archive.tar")
 }
-resource "asset-archive_archive_resource" "dir" {
+resource "asset-archive_archiveresource" "dir" {
+  lifecycle {
+    create_before_destroy = true
+  }
   value = fileArchive("../folder")
 }
-resource "asset-archive_archive_resource" "assarc" {
+resource "asset-archive_archiveresource" "assarc" {
+  lifecycle {
+    create_before_destroy = true
+  }
   value = assetArchive({
     "string"  = stringAsset("file contents")
     "file"    = fileAsset("../test.txt")
@@ -24,10 +36,16 @@ resource "asset-archive_archive_resource" "assarc" {
     "archive" = fileArchive("../archive.tar")
   })
 }
-resource "asset-archive_asset_resource" "remoteass" {
+resource "asset-archive_assetresource" "remoteass" {
+  lifecycle {
+    create_before_destroy = true
+  }
   value = remoteAsset("https://raw.githubusercontent.com/pulumi/pulumi/7b0eb7fb10694da2f31c0d15edf671df843e0d4c/cmd/pulumi-test-language/tests/testdata/l2-resource-asset-archive/test.txt")
 }
-resource "asset-archive_archive_resource" "remotearc" {
+resource "asset-archive_archiveresource" "remotearc" {
+  lifecycle {
+    create_before_destroy = true
+  }
   value = remoteArchive("https://raw.githubusercontent.com/pulumi/pulumi/7b0eb7fb10694da2f31c0d15edf671df843e0d4c/cmd/pulumi-test-language/tests/testdata/l2-resource-asset-archive/archive.tar")
 }
 // Plain (non-nested) asset/archive outputs must round-trip through stack

@@ -8,9 +8,15 @@ terraform {
 }
 
 resource "simple_resource" "res2" {
+  lifecycle {
+    create_before_destroy = true
+  }
   value = local.localVar
 }
 resource "simple_resource" "res1" {
+  lifecycle {
+    create_before_destroy = true
+  }
   value = true
 }
 // This test asserts that PCL declaration order does not need to match usage order. That is a resource can be declared

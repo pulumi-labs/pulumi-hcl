@@ -8,6 +8,9 @@ terraform {
 }
 
 resource "large_string" "res" {
+  lifecycle {
+    create_before_destroy = true
+  }
   value = "hello world"
 }
 output "output" {

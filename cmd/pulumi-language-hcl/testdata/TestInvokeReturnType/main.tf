@@ -7,12 +7,18 @@ terraform {
   }
 }
 
-data "test_info" "info" {
+data "test_getinfo" "info" {
 }
 
 resource "test_sink" "snakeSink" {
-  value = data.test_info.info[0].snake_case_field
+  lifecycle {
+    create_before_destroy = true
+  }
+  value = data.test_getinfo.info[0].snake_case_field
 }
 resource "test_sink" "tagSink" {
-  value = data.test_info.info[0].tags_map.UserKey
+  lifecycle {
+    create_before_destroy = true
+  }
+  value = data.test_getinfo.info[0].tags_map.UserKey
 }

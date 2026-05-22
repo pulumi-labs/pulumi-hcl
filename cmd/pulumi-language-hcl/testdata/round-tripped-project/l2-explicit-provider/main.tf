@@ -12,5 +12,8 @@ provider "simple" {
 }
 resource "simple_resource" "res" {
   provider = simple.prov
-  value    = true
+  lifecycle {
+    create_before_destroy = true
+  }
+  value = true
 }

@@ -14,6 +14,9 @@ provider "goodbye" {
 // The resource name is based on the parameter value
 resource "goodbye_goodbye" "res" {
   provider = goodbye.prov
+  lifecycle {
+    create_before_destroy = true
+  }
 }
 // The resource name is based on the parameter value and the provider config
 output "parameterValue" {

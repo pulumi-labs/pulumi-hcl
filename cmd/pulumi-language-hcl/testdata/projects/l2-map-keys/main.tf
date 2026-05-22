@@ -20,6 +20,9 @@ terraform {
 }
 
 resource "primitive_resource" "prim" {
+  lifecycle {
+    create_before_destroy = true
+  }
   boolean      = false
   float        = 2.17
   integer      = -12
@@ -35,6 +38,9 @@ resource "primitive_resource" "prim" {
   }
 }
 resource "primitive-ref_resource" "ref" {
+  lifecycle {
+    create_before_destroy = true
+  }
   data = {
     boolean    = false
     float      = 2.17
@@ -52,6 +58,9 @@ resource "primitive-ref_resource" "ref" {
   }
 }
 resource "ref-ref_resource" "rref" {
+  lifecycle {
+    create_before_destroy = true
+  }
   data = {
     inner_data = {
       boolean    = false
@@ -84,6 +93,9 @@ resource "ref-ref_resource" "rref" {
   }
 }
 resource "plain_resource" "plains" {
+  lifecycle {
+    create_before_destroy = true
+  }
   data = {
     inner_data = {
       boolean    = false

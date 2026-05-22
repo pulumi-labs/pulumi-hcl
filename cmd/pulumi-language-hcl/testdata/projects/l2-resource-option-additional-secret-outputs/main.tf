@@ -9,8 +9,14 @@ terraform {
 
 resource "simple_resource" "withSecret" {
   additional_secret_outputs = ["value"]
-  value                     = true
+  lifecycle {
+    create_before_destroy = true
+  }
+  value = true
 }
 resource "simple_resource" "withoutSecret" {
+  lifecycle {
+    create_before_destroy = true
+  }
   value = true
 }

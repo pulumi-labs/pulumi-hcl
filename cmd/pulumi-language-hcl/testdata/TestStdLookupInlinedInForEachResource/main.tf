@@ -20,5 +20,8 @@ resource "test_item" "inbound" {
       "thing" = "bravo"
     }
   }
+  lifecycle {
+    create_before_destroy = true
+  }
   value = lookup(each.value, "thing", "none")
 }

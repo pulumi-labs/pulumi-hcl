@@ -8,6 +8,9 @@ terraform {
 }
 
 resource "primitive_resource" "plain" {
+  lifecycle {
+    create_before_destroy = true
+  }
   boolean      = true
   float        = 3.5
   integer      = 3
@@ -16,6 +19,9 @@ resource "primitive_resource" "plain" {
   boolean_map  = var.plainBooleanMap
 }
 resource "primitive_resource" "secret" {
+  lifecycle {
+    create_before_destroy = true
+  }
   boolean      = true
   float        = 3.5
   integer      = 3

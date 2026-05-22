@@ -7,5 +7,8 @@ terraform {
   }
 }
 
-resource "builtin-info-component_builtin_info" "res" {
+resource "builtin-info-component_builtininfo" "res" {
+  lifecycle {
+    create_before_destroy = true
+  }
 }

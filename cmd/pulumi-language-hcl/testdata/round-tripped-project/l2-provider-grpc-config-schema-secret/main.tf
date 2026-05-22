@@ -25,4 +25,7 @@ provider "config-grpc" {
 }
 resource "config-grpc_configfetcher" "config" {
   provider = config-grpc.config_grpc_provider
+  lifecycle {
+    create_before_destroy = true
+  }
 }

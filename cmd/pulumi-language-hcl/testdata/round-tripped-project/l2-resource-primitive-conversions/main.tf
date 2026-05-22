@@ -75,6 +75,9 @@ data "primitive_invoke" "invoke_5" {
 }
 
 resource "primitive_resource" "plainValues" {
+  lifecycle {
+    create_before_destroy = true
+  }
   boolean      = var.plainString
   float        = var.plainInteger
   integer      = var.plainNumericString
@@ -86,6 +89,9 @@ resource "primitive_resource" "plainValues" {
   }
 }
 resource "primitive_resource" "secretValues" {
+  lifecycle {
+    create_before_destroy = true
+  }
   boolean      = var.secretString
   float        = var.secretInteger
   integer      = var.secretNumericString
@@ -97,6 +103,9 @@ resource "primitive_resource" "secretValues" {
   }
 }
 resource "primitive_resource" "invokeValues" {
+  lifecycle {
+    create_before_destroy = true
+  }
   boolean      = data.primitive_invoke.invoke_0.boolean
   float        = data.primitive_invoke.invoke_1.float
   integer      = data.primitive_invoke.invoke_2.integer

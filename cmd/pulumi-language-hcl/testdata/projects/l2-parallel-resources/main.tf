@@ -8,8 +8,17 @@ terraform {
 }
 
 resource "sync_block" "block-1" {
+  lifecycle {
+    create_before_destroy = true
+  }
 }
 resource "sync_block" "block-2" {
+  lifecycle {
+    create_before_destroy = true
+  }
 }
 resource "sync_block" "block-3" {
+  lifecycle {
+    create_before_destroy = true
+  }
 }

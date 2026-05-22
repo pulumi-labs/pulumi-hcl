@@ -9,5 +9,8 @@ terraform {
 
 resource "test_item" "myItem" {
   count = true
-  name  = "static-item"
+  lifecycle {
+    create_before_destroy = true
+  }
+  name = "static-item"
 }

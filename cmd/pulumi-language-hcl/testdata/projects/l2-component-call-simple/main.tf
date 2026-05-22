@@ -13,7 +13,10 @@ call "component1" "prefixed" {
   prefix = "foo-"
 }
 
-resource "component_component_callable" "component1" {
+resource "component_componentcallable" "component1" {
+  lifecycle {
+    create_before_destroy = true
+  }
   value = "bar"
 }
 output "from_identity" {

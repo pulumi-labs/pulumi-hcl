@@ -7,12 +7,21 @@ terraform {
   }
 }
 
-resource "component_component_custom_ref_output" "component1" {
+resource "component_componentcustomrefoutput" "component1" {
+  lifecycle {
+    create_before_destroy = true
+  }
   value = "foo-bar-baz"
 }
 resource "component_custom" "custom1" {
-  value = component_component_custom_ref_output.component1.value
+  lifecycle {
+    create_before_destroy = true
+  }
+  value = component_componentcustomrefoutput.component1.value
 }
 resource "component_custom" "custom2" {
-  value = component_component_custom_ref_output.component1.ref.value
+  lifecycle {
+    create_before_destroy = true
+  }
+  value = component_componentcustomrefoutput.component1.ref.value
 }

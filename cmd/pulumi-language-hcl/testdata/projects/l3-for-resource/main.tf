@@ -8,10 +8,16 @@ terraform {
 }
 
 resource "nestedobject_container" "source" {
+  lifecycle {
+    create_before_destroy = true
+  }
   inputs = ["a", "b", "c"]
 }
 # for over list<object> output
 resource "nestedobject_receiver" "receiver" {
+  lifecycle {
+    create_before_destroy = true
+  }
   dynamic "details" {
     for_each = nestedobject_container.source.details
     content {
@@ -22,9 +28,15 @@ resource "nestedobject_receiver" "receiver" {
 }
 # for over list<string> output
 resource "nestedobject_container" "fromSimple" {
+  lifecycle {
+    create_before_destroy = true
+  }
   inputs = [for _, detail in nestedobject_container.source.details : detail.value]
 }
 # for producing a map
-resource "nestedobject_map_container" "mapped" {
+resource "nestedobject_mapcontainer" "mapped" {
+  lifecycle {
+    create_before_destroy = true
+  }
   tags = {for _, detail in nestedobject_container.source.details : detail.key => detail.value}
 }

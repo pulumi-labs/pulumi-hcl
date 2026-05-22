@@ -19,23 +19,41 @@ provider "output" {
 }
 resource "output_resource" "unknown" {
   provider = output.prov
-  value    = 1
+  lifecycle {
+    create_before_destroy = true
+  }
+  value = 1
 }
 resource "output_complexresource" "complex" {
   provider = output.prov
-  value    = 1
+  lifecycle {
+    create_before_destroy = true
+  }
+  value = 1
 }
 // Try and use the unknown output as an input to another resource to check that it doesn't cause any issues.
 resource "simple_resource" "res" {
+  lifecycle {
+    create_before_destroy = true
+  }
   value = output_resource.unknown.output == "hello"
 }
 resource "simple_resource" "resArray" {
+  lifecycle {
+    create_before_destroy = true
+  }
   value = output_complexresource.complex.output_array[0] == "hello"
 }
 resource "simple_resource" "resMap" {
+  lifecycle {
+    create_before_destroy = true
+  }
   value = output_complexresource.complex.output_map["x"] == "hello"
 }
 resource "simple_resource" "resObject" {
+  lifecycle {
+    create_before_destroy = true
+  }
   value = output_complexresource.complex.output_object.output == "hello"
 }
 // And try to use it has an output

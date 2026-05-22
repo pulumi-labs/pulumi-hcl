@@ -1188,30 +1188,21 @@ func (e *Engine) buildResourceOptionsInContext(
 		if res.Lifecycle.IgnoreAllChanges {
 			opts.IgnoreChanges = []string{"*"}
 		}
-		// create_before_destroy controls replacement order:
-		// - true: create new, then delete old (Pulumi's default behavior)
-		// - false: delete old, then create new (Terraform's default behavior)
-		// - nil/unset: use Pulumi's default (create-then-delete)
-		//
-		// Pulumi's deleteBeforeReplace is the inverse:
-		// - true: delete old, then create new
-		// - false: create new, then delete old (default)
-		if res.Lifecycle.CreateBeforeDestroy != nil {
-			if *res.Lifecycle.CreateBeforeDestroy {
-				// Explicit true: create-then-delete (Pulumi default, but mark as explicitly set)
-				opts.DeleteBeforeReplace = false
-				opts.DeleteBeforeReplaceDef = true
-			} else {
-				// Explicit false: delete-then-create (Terraform default)
-				opts.DeleteBeforeReplace = true
-				opts.DeleteBeforeReplaceDef = true
-			}
-		}
 		if len(res.Lifecycle.ReplaceTriggeredBy) > 0 {
 			return nil, fmt.Errorf("lifecycle \"replace_triggered_by\" on resource %q is not supported by Pulumi HCL",
 				res.Type+"."+res.Name)
 		}
 	}
+	// create_before_destroy controls replacement order, with TF semantics:
+	//   - true: create new, then delete old
+	//   - false or absent: delete old, then create new (TF default)
+	//
+	// Mapped to Pulumi's inverse `deleteBeforeReplace`:
+	//   - cbd=true  -> DeleteBeforeReplace=false
+	//   - cbd=false -> DeleteBeforeReplace=true
+	//   - cbd unset -> DeleteBeforeReplace=true (TF default, opposite of Pulumi's)
+	opts.DeleteBeforeReplaceDef = true
+	opts.DeleteBeforeReplace = res.Lifecycle == nil || res.Lifecycle.CreateBeforeDestroy == nil || !*res.Lifecycle.CreateBeforeDestroy
 
 	if res.ResourceParent != nil {
 		depKey := graph.FormatTraversal(res.ResourceParent)
@@ -2755,7 +2746,6 @@ func providerRefFromCty(val cty.Value) (string, error) {
 	}
 	return "", errors.New("provider value is not a resource reference")
 }
-
 
 // RunFromDirectory parses and executes an HCL program from a directory.
 func RunFromDirectory(ctx context.Context, dir string, opts *EngineOptions) error {

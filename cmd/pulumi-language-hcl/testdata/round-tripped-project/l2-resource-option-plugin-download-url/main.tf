@@ -8,16 +8,28 @@ terraform {
 }
 
 resource "simple_resource" "withDefaultURL" {
+  lifecycle {
+    create_before_destroy = true
+  }
   value = true
 }
 resource "simple_resource" "withExplicitDefaultURL" {
+  lifecycle {
+    create_before_destroy = true
+  }
   value = true
 }
 resource "simple_resource" "withCustomURL1" {
+  lifecycle {
+    create_before_destroy = true
+  }
   plugin_download_url = "https://custom.pulumi.test/provider1"
   value               = true
 }
 resource "simple_resource" "withCustomURL2" {
+  lifecycle {
+    create_before_destroy = true
+  }
   plugin_download_url = "https://custom.pulumi.test/provider2"
   value               = false
 }

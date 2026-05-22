@@ -8,5 +8,8 @@ terraform {
 }
 
 resource "alpha_resource" "res" {
+  lifecycle {
+    create_before_destroy = true
+  }
   value = true
 }

@@ -13,8 +13,14 @@ terraform {
 
 resource "conformance-component_simple" "res" {
   replacement_trigger = "trigger-value"
-  value               = true
+  lifecycle {
+    create_before_destroy = true
+  }
+  value = true
 }
 resource "simple_resource" "simpleResource" {
+  lifecycle {
+    create_before_destroy = true
+  }
   value = false
 }

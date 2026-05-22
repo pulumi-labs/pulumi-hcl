@@ -16,14 +16,23 @@ provider "simple" {
 }
 resource "simple_resource" "parent1" {
   provider = simple.provider
-  value    = true
+  lifecycle {
+    create_before_destroy = true
+  }
+  value = true
 }
 // This should inherit the explicit provider from parent1
 resource "simple_resource" "child1" {
   parent = simple_resource.parent1
-  value  = true
+  lifecycle {
+    create_before_destroy = true
+  }
+  value = true
 }
 resource "primitive_resource" "parent2" {
+  lifecycle {
+    create_before_destroy = true
+  }
   boolean      = false
   float        = 0
   integer      = 0
@@ -34,11 +43,17 @@ resource "primitive_resource" "parent2" {
 // This _should not_ inherit the provider from parent2 as it is a default provider.
 resource "simple_resource" "child2" {
   parent = primitive_resource.parent2
-  value  = true
+  lifecycle {
+    create_before_destroy = true
+  }
+  value = true
 }
 // This _should not_ inherit the provider from parent1 as its from the wrong package.
 resource "primitive_resource" "child3" {
-  parent       = simple_resource.parent1
+  parent = simple_resource.parent1
+  lifecycle {
+    create_before_destroy = true
+  }
   boolean      = false
   float        = 0
   integer      = 0

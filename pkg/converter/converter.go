@@ -737,7 +737,12 @@ func (ft *fileTransformer) emitFile(
 			// Separate special sub-blocks (lifecycle, timeouts, dynamic) from
 			// property sub-blocks (e.g. details { ... }) that represent
 			// array-of-object input properties.
+			//
+			// Track whether `create_before_destroy` was found anywhere; if not, we
+			// emit `deleteBeforeReplace = true` so the PCL matches TF's default of
+			// delete-then-create (Pulumi's default is the opposite).
 			var propertyBlocks []*hclsyntax.Block
+			sawCreateBeforeDestroy := false
 			for _, subBlock := range block.Body.Blocks {
 				switch subBlock.Type {
 				case "dynamic":
@@ -751,8 +756,13 @@ func (ft *fileTransformer) emitFile(
 						case "ignore_changes":
 							opts = append(opts, optEntry{"ignoreChanges", ft.transformPropertyPathList(attr.Expr)})
 						case "create_before_destroy":
-							// The codegen writes create_before_destroy = !deleteBeforeReplace.
-							// Invert to recover deleteBeforeReplace.
+							sawCreateBeforeDestroy = true
+							// `create_before_destroy = true` matches Pulumi's default and
+							// converts to no PCL option; anything else inverts to recover
+							// `deleteBeforeReplace`.
+							if isBoolLiteral(attr.Expr, true) {
+								continue
+							}
 							opts = append(opts, optEntry{"deleteBeforeReplace", invertTokens(ft.transformExpr(attr.Expr))})
 						default:
 							resultDiags = append(resultDiags, &hcl.Diagnostic{
@@ -782,6 +792,12 @@ func (ft *fileTransformer) emitFile(
 			for _, objAttr := range ft.blocksToObjectAttrs(propertyBlocks, res.InputProperties) {
 				name := strings.TrimSpace(string(objAttr.Name.Bytes()))
 				blk.Body().SetAttributeRaw(name, objAttr.Value)
+			}
+			if !sawCreateBeforeDestroy {
+				opts = append(opts, optEntry{
+					"deleteBeforeReplace",
+					hclwrite.Tokens{{Type: hclsyntax.TokenIdent, Bytes: []byte("true")}},
+				})
 			}
 			if len(opts) > 0 {
 				optBlk := blk.Body().AppendNewBlock("options", nil)
@@ -2044,6 +2060,15 @@ func (ft *fileTransformer) transformPropertyPathList(expr hclsyntax.Expression) 
 		}
 	}
 	return hclwrite.TokensForTuple(elems)
+}
+
+// isBoolLiteral reports whether expr is the literal boolean want.
+func isBoolLiteral(expr hclsyntax.Expression, want bool) bool {
+	lit, ok := expr.(*hclsyntax.LiteralValueExpr)
+	if !ok || lit.Val.Type() != cty.Bool {
+		return false
+	}
+	return lit.Val.True() == want
 }
 
 // invertTokens inverts a boolean token expression: if tokens is "!<expr>",

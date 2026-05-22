@@ -373,6 +373,7 @@ resource "test_item" "inbound" {
       "a" = "alpha"
       "b" = "bravo"
     }
+    deleteBeforeReplace = true
   }
 }
 
@@ -622,6 +623,9 @@ func TestGenerateProgramMultiFile(t *testing.T) {
 
 	assert.Equal(t, map[string]string{
 		"main.tf": `resource "test_item" "thing" {
+  lifecycle {
+    create_before_destroy = true
+  }
   value = "hello"
 }
 `,
@@ -640,6 +644,92 @@ func TestGenerateProgramMultiFile(t *testing.T) {
 
 `,
 	}, files)
+}
+
+// TestCreateBeforeDestroyDefault locks in the PCL → HCL codegen rule for
+// `lifecycle.create_before_destroy`. Pulumi's default replace mode is
+// create-then-delete; Terraform's is the opposite. So:
+//
+//   - PCL with no `deleteBeforeReplace`: emit `create_before_destroy = true`
+//     (Pulumi default, the inverse of TF's, must be made explicit).
+//   - PCL `deleteBeforeReplace = true` (literal): emit no `create_before_destroy`
+//     — TF's default already matches Pulumi's request.
+//   - PCL `deleteBeforeReplace = false` (literal): equivalent to no option; emit
+//     `create_before_destroy = true`.
+func TestCreateBeforeDestroyDefault(t *testing.T) {
+	t.Parallel()
+
+	loader := schemaloader.New(t, multiFileTestSchema)
+
+	cases := []struct {
+		name string
+		pcl  string
+		want string
+	}{
+		{
+			name: "no options",
+			pcl: `resource "thing" "test:index:Item" {
+    value = "hello"
+}
+`,
+			want: `resource "test_item" "thing" {
+  lifecycle {
+    create_before_destroy = true
+  }
+  value = "hello"
+}
+`,
+		},
+		{
+			name: "deleteBeforeReplace = true",
+			pcl: `resource "thing" "test:index:Item" {
+    value = "hello"
+    options {
+        deleteBeforeReplace = true
+    }
+}
+`,
+			want: `resource "test_item" "thing" {
+  value = "hello"
+}
+`,
+		},
+		{
+			name: "deleteBeforeReplace = false",
+			pcl: `resource "thing" "test:index:Item" {
+    value = "hello"
+    options {
+        deleteBeforeReplace = false
+    }
+}
+`,
+			want: `resource "test_item" "thing" {
+  lifecycle {
+    create_before_destroy = true
+  }
+  value = "hello"
+}
+`,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			program := parseAndBindMultiFile(t, loader, map[string]string{
+				"main.pp": tc.pcl,
+				"providers.pp": `package "test" {
+    baseProviderName = "test"
+    baseProviderVersion = "1.0.0"
+}
+`,
+			})
+			filesB, diags, err := codegen.GenerateProgram(program)
+			require.NoError(t, err)
+			require.False(t, diags.HasErrors(), diags.Error())
+			assert.Equal(t, tc.want, string(filesB["main.tf"]))
+		})
+	}
 }
 
 // TestConvertProgramCrossFileReferences locks in the multi-file fix by
@@ -752,6 +842,9 @@ output "echoed" {
 		"providers.pp": "",
 		"main.pp": `resource "thing" "test:index:Item" {
   value = "hello"
+  options {
+    deleteBeforeReplace = true
+  }
 }
 
 `,
@@ -833,6 +926,9 @@ func TestEjectMultiFileHCL(t *testing.T) {
 	assert.Equal(t, map[string]string{
 		"main.pp": `resource "thing" "test:index:Item" {
   value = "hello"
+  options {
+    deleteBeforeReplace = true
+  }
 }
 
 `,

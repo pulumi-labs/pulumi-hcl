@@ -8,6 +8,9 @@ terraform {
 }
 
 resource "simple_resource" "res1" {
+  lifecycle {
+    create_before_destroy = true
+  }
   value = true
 }
 output "name" {

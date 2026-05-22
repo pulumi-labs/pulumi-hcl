@@ -25,6 +25,9 @@ data "simple-invoke_secret_invoke" "invoke_2" {
 }
 
 resource "simple_resource" "res" {
+  lifecycle {
+    create_before_destroy = true
+  }
   value = true
 }
 // inputs are plain and the invoke response is plain

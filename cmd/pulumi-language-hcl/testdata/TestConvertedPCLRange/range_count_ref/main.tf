@@ -9,8 +9,14 @@ terraform {
 
 resource "test_item" "source" {
   count = 2
-  name  ="src-${count.index}"
+  lifecycle {
+    create_before_destroy = true
+  }
+  name ="src-${count.index}"
 }
 resource "test_item" "target" {
+  lifecycle {
+    create_before_destroy = true
+  }
   name ="${test_item.source[0].name}-ref"
 }

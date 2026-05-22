@@ -7,15 +7,27 @@ terraform {
   }
 }
 
-resource "component_component_custom_ref_output" "component1" {
+resource "component_componentcustomrefoutput" "component1" {
+  lifecycle {
+    create_before_destroy = true
+  }
   value = "foo-bar-baz"
 }
-resource "component_component_custom_ref_input_output" "component2" {
-  input_ref = component_component_custom_ref_output.component1.ref
+resource "component_componentcustomrefinputoutput" "component2" {
+  lifecycle {
+    create_before_destroy = true
+  }
+  input_ref = component_componentcustomrefoutput.component1.ref
 }
 resource "component_custom" "custom1" {
-  value = component_component_custom_ref_input_output.component2.input_ref.value
+  lifecycle {
+    create_before_destroy = true
+  }
+  value = component_componentcustomrefinputoutput.component2.input_ref.value
 }
 resource "component_custom" "custom2" {
-  value = component_component_custom_ref_input_output.component2.output_ref.value
+  lifecycle {
+    create_before_destroy = true
+  }
+  value = component_componentcustomrefinputoutput.component2.output_ref.value
 }

@@ -11,6 +11,9 @@ call "defaultRes" "provider_value" {
 }
 
 resource "call_custom" "defaultRes" {
+  lifecycle {
+    create_before_destroy = true
+  }
   value = "defaultValue"
 }
 output "defaultProviderValue" {

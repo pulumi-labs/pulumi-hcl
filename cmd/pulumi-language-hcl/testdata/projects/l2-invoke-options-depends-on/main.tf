@@ -7,20 +7,26 @@ terraform {
   }
 }
 
-data "simple-invoke_my_invoke" "data" {
+data "simple-invoke_myinvoke" "data" {
   value      = "hello"
-  depends_on = [simple-invoke_string_resource.first]
+  depends_on = [simple-invoke_stringresource.first]
 }
 
 provider "simple-invoke" {
   alias = "explicitProvider"
 }
-resource "simple-invoke_string_resource" "first" {
+resource "simple-invoke_stringresource" "first" {
+  lifecycle {
+    create_before_destroy = true
+  }
   text = "first hello"
 }
-resource "simple-invoke_string_resource" "second" {
-  text = data.simple-invoke_my_invoke.data.result
+resource "simple-invoke_stringresource" "second" {
+  lifecycle {
+    create_before_destroy = true
+  }
+  text = data.simple-invoke_myinvoke.data.result
 }
 output "hello" {
-  value = data.simple-invoke_my_invoke.data.result
+  value = data.simple-invoke_myinvoke.data.result
 }

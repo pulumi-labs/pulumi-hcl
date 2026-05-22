@@ -1,4 +1,7 @@
 resource "pulumi_stash" "myStash" {
+  lifecycle {
+    create_before_destroy = true
+  }
   input = "ignored"
 }
 output "stashInput" {

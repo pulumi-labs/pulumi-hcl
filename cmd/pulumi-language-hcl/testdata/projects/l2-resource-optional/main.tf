@@ -12,8 +12,14 @@ terraform {
 }
 
 resource "optionalprimitive_resource" "unsetA" {
+  lifecycle {
+    create_before_destroy = true
+  }
 }
 resource "optionalprimitive_resource" "unsetB" {
+  lifecycle {
+    create_before_destroy = true
+  }
   boolean      = optionalprimitive_resource.unsetA.boolean
   float        = optionalprimitive_resource.unsetA.float
   integer      = optionalprimitive_resource.unsetA.integer
@@ -22,6 +28,9 @@ resource "optionalprimitive_resource" "unsetB" {
   boolean_map  = optionalprimitive_resource.unsetA.boolean_map
 }
 resource "optionalprimitive_resource" "setA" {
+  lifecycle {
+    create_before_destroy = true
+  }
   boolean      = true
   float        = 3.14
   integer      = 42
@@ -33,6 +42,9 @@ resource "optionalprimitive_resource" "setA" {
   }
 }
 resource "optionalprimitive_resource" "setB" {
+  lifecycle {
+    create_before_destroy = true
+  }
   boolean      = optionalprimitive_resource.setA.boolean
   float        = optionalprimitive_resource.setA.float
   integer      = optionalprimitive_resource.setA.integer
@@ -41,6 +53,9 @@ resource "optionalprimitive_resource" "setB" {
   boolean_map  = optionalprimitive_resource.setA.boolean_map
 }
 resource "primitive_resource" "sourcePrimitive" {
+  lifecycle {
+    create_before_destroy = true
+  }
   boolean      = true
   float        = 3.14
   integer      = 42
@@ -52,6 +67,9 @@ resource "primitive_resource" "sourcePrimitive" {
   }
 }
 resource "optionalprimitive_resource" "fromPrimitive" {
+  lifecycle {
+    create_before_destroy = true
+  }
   boolean      = primitive_resource.sourcePrimitive.boolean
   float        = primitive_resource.sourcePrimitive.float
   integer      = primitive_resource.sourcePrimitive.integer

@@ -1,12 +1,15 @@
-resource "pulumi_stack_reference" "ref" {
+resource "pulumi_stackreference" "ref" {
+  lifecycle {
+    create_before_destroy = true
+  }
   name = "organization/other/dev"
 }
 output "plain" {
-  value = pulumi_stack_reference.ref.outputs["plain"]
+  value = pulumi_stackreference.ref.outputs["plain"]
 }
 output "secret" {
-  value = pulumi_stack_reference.ref.outputs["secret"]
+  value = pulumi_stackreference.ref.outputs["secret"]
 }
 output "secret_unsecret" {
-  value = nonsensitive(pulumi_stack_reference.ref.outputs["secret"])
+  value = nonsensitive(pulumi_stackreference.ref.outputs["secret"])
 }

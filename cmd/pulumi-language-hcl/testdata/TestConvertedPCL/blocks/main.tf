@@ -8,6 +8,9 @@ terraform {
 }
 
 resource "test_server" "myServer" {
+  lifecycle {
+    create_before_destroy = true
+  }
   name = "my-server"
   network_rules {
     protocol = "tcp"

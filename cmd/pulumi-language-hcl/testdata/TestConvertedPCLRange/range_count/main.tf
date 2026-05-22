@@ -9,5 +9,8 @@ terraform {
 
 resource "test_item" "myItem" {
   count = 3
-  name  ="item-${count.index}"
+  lifecycle {
+    create_before_destroy = true
+  }
+  name ="item-${count.index}"
 }

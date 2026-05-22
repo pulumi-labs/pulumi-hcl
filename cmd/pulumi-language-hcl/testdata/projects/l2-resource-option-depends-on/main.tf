@@ -8,9 +8,15 @@ terraform {
 }
 
 resource "simple_resource" "noDependsOn" {
+  lifecycle {
+    create_before_destroy = true
+  }
   value = true
 }
 resource "simple_resource" "withDependsOn" {
+  lifecycle {
+    create_before_destroy = true
+  }
   depends_on = [simple_resource.noDependsOn]
   value      = false
 }

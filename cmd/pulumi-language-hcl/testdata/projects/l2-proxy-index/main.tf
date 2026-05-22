@@ -10,6 +10,9 @@ terraform {
 # Check we can index into properties of objects returned in outputs, this is similar to ref-ref but 
 # we index into the outputs
 resource "ref-ref_resource" "res" {
+  lifecycle {
+    create_before_destroy = true
+  }
   data = {
     inner_data = {
       boolean    = false

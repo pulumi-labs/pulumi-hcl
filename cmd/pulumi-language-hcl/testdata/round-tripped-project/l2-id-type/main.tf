@@ -10,6 +10,9 @@ terraform {
 // Test that the ID type is treated the same as a string type, despite being tracked as a distinct type. This 
 // includes directly passing it to string fields, but also for bool and numeric values being able to cast to it.
 resource "primitive_resource" "source1" {
+  lifecycle {
+    create_before_destroy = true
+  }
   boolean      = false
   float        = 1
   integer      = 2
@@ -20,6 +23,9 @@ resource "primitive_resource" "source1" {
   }
 }
 resource "primitive_resource" "source2" {
+  lifecycle {
+    create_before_destroy = true
+  }
   boolean      = false
   float        = 1
   integer      = 2
@@ -30,6 +36,9 @@ resource "primitive_resource" "source2" {
   }
 }
 resource "primitive_resource" "sink1" {
+  lifecycle {
+    create_before_destroy = true
+  }
   boolean      = false
   float        = local.idMap["source1Token"]
   integer      = local.idMap["source1Token"]
@@ -40,6 +49,9 @@ resource "primitive_resource" "sink1" {
   }
 }
 resource "primitive_resource" "sink2" {
+  lifecycle {
+    create_before_destroy = true
+  }
   boolean      = local.idMap["source2Token"]
   float        = 1
   integer      = 2

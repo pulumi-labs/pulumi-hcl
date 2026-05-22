@@ -11,13 +11,13 @@ terraform {
 // Resource with deleteBeforeReplace option - should delete before creating
 resource "simple_resource" "withOption" {
   replace_on_changes = ["value"]
-  lifecycle {
-    create_before_destroy = !true
-  }
-  value = false // Changed to trigger replacement
+  value              = false // Changed to trigger replacement
 }
 // Resource without deleteBeforeReplace - should create before deleting (default)
 resource "simple_resource" "withoutOption" {
   replace_on_changes = ["value"]
-  value              = false // Changed to trigger replacement
+  lifecycle {
+    create_before_destroy = true
+  }
+  value = false // Changed to trigger replacement
 }
