@@ -16,6 +16,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -2115,7 +2116,10 @@ resource "test_bucket" "bucket" {
 		})
 
 		err := engine.Run(t.Context())
-		assert.EqualError(t, err, `unknown node "module.mod.local.parentName"`)
+		assert.EqualError(t, err, fmt.Sprintf(
+			`%s:12,10-26: unknown node "module.mod.local.parentName"; `,
+			filepath.Join(dir, "mod", "main.hcl"),
+		))
 	})
 
 	t.Run("data_source", func(t *testing.T) {
@@ -2157,7 +2161,10 @@ data "test_getlen" "invoke_0" {
 		})
 
 		err := engine.Run(t.Context())
-		assert.EqualError(t, err, `unknown node "module.mod.local.parentName"`)
+		assert.EqualError(t, err, fmt.Sprintf(
+			`%s:12,12-28: unknown node "module.mod.local.parentName"; `,
+			filepath.Join(dir, "mod", "main.hcl"),
+		))
 	})
 }
 

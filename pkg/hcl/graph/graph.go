@@ -159,6 +159,11 @@ func (t NodeType) String() string {
 type Graph struct {
 	seen map[string]internedNode
 	dag  *pdag.DAG[dagNode]
+
+	// references records the source location(s) at which each node key was
+	// referenced from a user-written traversal. Used by Validate to anchor
+	// errors about unknown nodes back at the offending source.
+	references map[string][]hcl.Range
 }
 
 type dagNode struct {
@@ -174,9 +179,17 @@ type internedNode struct {
 // NewGraph creates a new empty graph.
 func NewGraph() *Graph {
 	return &Graph{
-		seen: make(map[string]internedNode),
-		dag:  pdag.New[dagNode](),
+		seen:       make(map[string]internedNode),
+		dag:        pdag.New[dagNode](),
+		references: make(map[string][]hcl.Range),
 	}
+}
+
+// recordRef records that key was referenced from the given source range.
+// Multiple references to the same key accumulate; this is used by Validate
+// to anchor errors about unknown nodes back to the offending source.
+func (g *Graph) recordRef(key string, rng hcl.Range) {
+	g.references[key] = append(g.references[key], rng)
 }
 
 func (g *Graph) Walk(ctx context.Context, apply func(context.Context, *Node) error, parallel int) error {
@@ -360,12 +373,14 @@ func (g *Graph) resourceDeps(resource *ast.Resource, prefix string) []pdag.Node 
 	}
 	for _, traversal := range resource.DependsOn {
 		if dep := formatTraversal(traversal); dep != "" {
+			g.recordRef(prefix+dep, traversal.SourceRange())
 			_, idx := g.newNode(prefix + dep)
 			seen[idx] = true
 		}
 	}
 	if resource.ResourceParent != nil {
 		if dep := formatTraversal(resource.ResourceParent); dep != "" {
+			g.recordRef(prefix+dep, resource.ResourceParent.SourceRange())
 			_, idx := g.newNode(prefix + dep)
 			seen[idx] = true
 		}
@@ -375,6 +390,7 @@ func (g *Graph) resourceDeps(resource *ast.Resource, prefix string) []pdag.Node 
 	}
 	for _, traversal := range resource.Providers {
 		if dep := formatTraversal(traversal); dep != "" {
+			g.recordRef(prefix+dep, traversal.SourceRange())
 			_, idx := g.newNode(prefix + dep)
 			seen[idx] = true
 		}
@@ -386,12 +402,14 @@ func (g *Graph) resourceDeps(resource *ast.Resource, prefix string) []pdag.Node 
 	}
 	if resource.DeletedWith != nil {
 		if dep := formatTraversal(resource.DeletedWith); dep != "" {
+			g.recordRef(prefix+dep, resource.DeletedWith.SourceRange())
 			_, idx := g.newNode(prefix + dep)
 			seen[idx] = true
 		}
 	}
 	for _, traversal := range resource.ReplaceWith {
 		if dep := formatTraversal(traversal); dep != "" {
+			g.recordRef(prefix+dep, traversal.SourceRange())
 			_, idx := g.newNode(prefix + dep)
 			seen[idx] = true
 		}
@@ -524,6 +542,7 @@ func (g *Graph) exprDepsExcluding(expr hcl.Expression, prefix string, exclude ma
 		}
 
 		if dep != "" {
+			g.recordRef(dep, traversal.SourceRange())
 			addToSortedListAsSet(&deps, dep)
 		}
 	}
@@ -584,16 +603,48 @@ func formatTraversal(traversal hcl.Traversal) string {
 
 // Validate checks the graph for common issues.
 func (g *Graph) Validate() []error {
-	var errors []error
+	var errs []error
 
-	// Check for missing dependencies
+	// Sort keys for deterministic error ordering.
+	keys := make([]string, 0, len(g.seen))
 	for key, node := range g.seen {
 		if node.n.Type == NodeTypeUnknown {
-			errors = append(errors, fmt.Errorf("unknown node %q", key))
+			keys = append(keys, key)
 		}
 	}
+	slices.Sort(keys)
 
-	return errors
+	for _, key := range keys {
+		diag := &hcl.Diagnostic{
+			Severity: hcl.DiagError,
+			Summary:  fmt.Sprintf("unknown node %q", key),
+		}
+		if refs := g.references[key]; len(refs) > 0 {
+			// Use the earliest reference (sorted by filename, then position)
+			// as the subject so the error points at a deterministic location.
+			subject := refs[0]
+			for _, r := range refs[1:] {
+				if rangeLess(r, subject) {
+					subject = r
+				}
+			}
+			diag.Subject = subject.Ptr()
+		}
+		errs = append(errs, diag)
+	}
+
+	return errs
+}
+
+// rangeLess orders ranges by filename, then start line, then start column.
+func rangeLess(a, b hcl.Range) bool {
+	if a.Filename != b.Filename {
+		return a.Filename < b.Filename
+	}
+	if a.Start.Line != b.Start.Line {
+		return a.Start.Line < b.Start.Line
+	}
+	return a.Start.Column < b.Start.Column
 }
 
 // inlineModule loads a module and inlines its contents into the graph
@@ -623,6 +674,7 @@ func (g *Graph) inlineModule(
 	initDeps = append(initDeps, g.exprDeps(mod.ForEach, parentPrefix)...)
 	for _, traversal := range mod.DependsOn {
 		if dep := formatTraversal(traversal); dep != "" {
+			g.recordRef(parentPrefix+dep, traversal.SourceRange())
 			_, idx := g.newNode(parentPrefix + dep)
 			initDeps = append(initDeps, idx)
 		}
