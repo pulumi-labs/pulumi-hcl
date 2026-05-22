@@ -57,25 +57,16 @@ func (m *MockResourceMonitor) RegisterResource(ctx context.Context, req run.Regi
 	hooks := m.hooks
 	m.mu.Unlock()
 
+	// The mock has no state, so every registration is treated as a create.
+	args := &run.ResourceHookArgs{
+		URN:       urn,
+		Name:      req.Name,
+		Type:      req.Type,
+		NewInputs: req.Inputs,
+	}
 	if req.Hooks != nil {
-		args := &run.ResourceHookArgs{
-			URN:       urn,
-			Name:      req.Name,
-			Type:      req.Type,
-			NewInputs: req.Inputs,
-		}
-		// The mock has no state, so every registration is treated as a create.
-		for _, name := range req.Hooks.BeforeCreate {
-			h, ok := hooks[name]
-			if !ok {
-				return nil, fmt.Errorf("hook %q not registered", name)
-			}
-			if m.DryRun && !h.opts.OnDryRun {
-				continue
-			}
-			if err := h.callback(ctx, args); err != nil {
-				return nil, fmt.Errorf("hook %q failed: %w", name, err)
-			}
+		if err := m.runHooks(ctx, hooks, req.Hooks.BeforeCreate, args); err != nil {
+			return nil, err
 		}
 	}
 
@@ -84,14 +75,48 @@ func (m *MockResourceMonitor) RegisterResource(ctx context.Context, req run.Regi
 	handler := m.RegisterResourceHandler
 	m.mu.Unlock()
 
+	var resp *run.RegisterResourceResponse
+	var err error
 	if req.Type != "pulumi:pulumi:Stack" && handler != nil {
-		return handler(ctx, req)
+		resp, err = handler(ctx, req)
+	} else {
+		resp = &run.RegisterResourceResponse{
+			URN:     urn,
+			ID:      req.Name + "-id",
+			Outputs: req.Inputs,
+		}
 	}
-	return &run.RegisterResourceResponse{
-		URN:     urn,
-		ID:      req.Name + "-id",
-		Outputs: req.Inputs,
-	}, nil
+	if err != nil {
+		return resp, err
+	}
+
+	if req.Hooks != nil {
+		args.NewOutputs = resp.Outputs
+		args.ID = resp.ID
+		if err := m.runHooks(ctx, hooks, req.Hooks.AfterCreate, args); err != nil {
+			return resp, err
+		}
+	}
+
+	return resp, nil
+}
+
+func (m *MockResourceMonitor) runHooks(
+	ctx context.Context, hooks map[string]registeredHook, names []string, args *run.ResourceHookArgs,
+) error {
+	for _, name := range names {
+		h, ok := hooks[name]
+		if !ok {
+			return fmt.Errorf("hook %q not registered", name)
+		}
+		if m.DryRun && !h.opts.OnDryRun {
+			continue
+		}
+		if err := h.callback(ctx, args); err != nil {
+			return fmt.Errorf("hook %q failed: %w", name, err)
+		}
+	}
+	return nil
 }
 
 func (m *MockResourceMonitor) Invoke(ctx context.Context, req run.InvokeRequest) (*run.InvokeResponse, error) {

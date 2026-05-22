@@ -1108,6 +1108,12 @@ func (e *Engine) registerResourceInstanceInContext(
 		}
 	}
 
+	if len(res.Postconditions) > 0 {
+		if err := e.bindPostconditionHooks(ctx, res, resSchema, instance, evalCtx, opts); err != nil {
+			return err
+		}
+	}
+
 	resourceName := e.extractModuleResourceName(res.Name, instance.Key, node.ModuleInfo, modInst)
 
 	urn, id, outputs, err := e.registerResource(ctx, resSchema.Token, resourceName, resourceInputs, opts)
@@ -1160,14 +1166,6 @@ func (e *Engine) registerResourceInstanceInContext(
 		evalCtx.SetResource(bareKey, cty.ObjectVal(outputObj))
 	} else {
 		evalCtx.SetResource(instance.Key, cty.ObjectVal(outputObj))
-	}
-
-	if len(res.Postconditions) > 0 {
-		evalCtx.SetSelf(cty.ObjectVal(outputObj))
-		defer evalCtx.ClearSelf()
-		if err := e.evaluateCheckRules(res.Postconditions, instance.Key, "postcondition"); err != nil {
-			return err
-		}
 	}
 
 	if len(res.Provisioners) > 0 {
@@ -2873,6 +2871,78 @@ func (e *Engine) bindPreconditionHooks(
 	return nil
 }
 
+// bindPostconditionHooks registers a hook per postcondition and binds it to
+// AfterCreate/AfterUpdate. The hook fires after the resource is created or
+// updated; the engine supplies the resource's new outputs as `self` in the
+// callback. Failed postconditions surface as deployment errors but do not
+// unwind the resource registration — same as TF.
+func (e *Engine) bindPostconditionHooks(
+	ctx context.Context,
+	res *ast.Resource,
+	resSchema *schema.Resource,
+	instance *graph.ExpandedResource,
+	evalCtx *eval.Context,
+	opts *ResourceOptions,
+) error {
+	if opts.Hooks == nil {
+		opts.Hooks = &ResourceHookBinding{}
+	}
+	hclSnapshot := evalCtx.HCLContext()
+	dryRun := e.dryRun
+	for i, rule := range res.Postconditions {
+		rule, index := rule, i+1
+		hookName := fmt.Sprintf("%s:postcondition:%d", instance.Key, i)
+		callback := func(_ context.Context, args *ResourceHookArgs) error {
+			return evaluatePostcondition(rule, hclSnapshot, args.NewOutputs, resSchema, dryRun, index, instance.Key)
+		}
+		if err := e.resmon.RegisterResourceHook(ctx, hookName, callback, ResourceHookOptions{
+			OnDryRun: true,
+		}); err != nil {
+			return fmt.Errorf("registering postcondition hook: %w", err)
+		}
+		opts.Hooks.AfterCreate = append(opts.Hooks.AfterCreate, hookName)
+		opts.Hooks.AfterUpdate = append(opts.Hooks.AfterUpdate, hookName)
+	}
+	return nil
+}
+
+// evaluatePostcondition evaluates a postcondition with `self` bound to the
+// engine-supplied NewOutputs.
+func evaluatePostcondition(
+	rule *ast.CheckRule, hclCtx *hcl.EvalContext, newOutputs property.Map,
+	resSchema *schema.Resource, dryRun bool, index int, resourceName string,
+) error {
+	outputObj, err := transform.ResourceOutputToCty(newOutputs, resSchema, dryRun)
+	if err != nil {
+		return fmt.Errorf("converting outputs for postcondition %d on %s: %w", index, resourceName, err)
+	}
+	selfCtx := hclCtx.NewChild()
+	selfCtx.Variables = map[string]cty.Value{"self": cty.ObjectVal(outputObj)}
+	condVal, diags := rule.Condition.Value(selfCtx)
+	if diags.HasErrors() {
+		return fmt.Errorf("evaluating postcondition %d for %s: %s", index, resourceName, diags.Error())
+	}
+	if !condVal.IsKnown() {
+		return nil
+	}
+	if condVal.Type() != cty.Bool {
+		return fmt.Errorf("postcondition %d for %s: condition must be a boolean", index, resourceName)
+	}
+	if condVal.True() {
+		return nil
+	}
+	msgVal, msgDiags := rule.ErrorMessage.Value(selfCtx)
+	if msgDiags.HasErrors() {
+		return fmt.Errorf("postcondition %d for %s failed (could not evaluate error message: %s)",
+			index, resourceName, msgDiags.Error())
+	}
+	msg := "postcondition check failed"
+	if msgVal.Type() == cty.String && msgVal.IsKnown() {
+		msg = msgVal.AsString()
+	}
+	return fmt.Errorf("postcondition for %s: %s", resourceName, msg)
+}
+
 // evaluatePrecondition returns nil when the rule holds or its condition is
 // unknown (deferred), or a formatted error when it fails.
 func evaluatePrecondition(rule *ast.CheckRule, hclCtx *hcl.EvalContext, index int, resourceName string) error {
@@ -2899,50 +2969,6 @@ func evaluatePrecondition(rule *ast.CheckRule, hclCtx *hcl.EvalContext, index in
 		msg = msgVal.AsString()
 	}
 	return fmt.Errorf("precondition for %s: %s", resourceName, msg)
-}
-
-// evaluateCheckRules evaluates a list of preconditions or postconditions.
-// Returns an error if any check fails, with the evaluated error message.
-func (e *Engine) evaluateCheckRules(
-	rules []*ast.CheckRule,
-	resourceName string,
-	phase string,
-) error {
-	for i, rule := range rules {
-		// Evaluate the condition
-		condVal, diags := e.evaluator.EvaluateExpression(rule.Condition)
-		if diags.HasErrors() {
-			return fmt.Errorf("evaluating %s %d for %s: %s", phase, i+1, resourceName, diags.Error())
-		}
-
-		// Check if condition is true
-		if condVal.Type() != cty.Bool {
-			return fmt.Errorf("%s %d for %s: condition must be a boolean", phase, i+1, resourceName)
-		}
-
-		if condVal.True() {
-			// Condition passed, continue to next rule
-			continue
-		}
-
-		// Condition failed - evaluate the error message
-		msgVal, msgDiags := e.evaluator.EvaluateExpression(rule.ErrorMessage)
-		if msgDiags.HasErrors() {
-			return fmt.Errorf("%s %d for %s failed (could not evaluate error message: %s)",
-				phase, i+1, resourceName, msgDiags.Error())
-		}
-
-		var errMsg string
-		if msgVal.Type() == cty.String {
-			errMsg = msgVal.AsString()
-		} else {
-			errMsg = fmt.Sprintf("%s check failed", phase)
-		}
-
-		return fmt.Errorf("%s for %s: %s", phase, resourceName, errMsg)
-	}
-
-	return nil
 }
 
 // checkPulumiVersion checks if the Pulumi CLI version satisfies the required version range.
