@@ -61,16 +61,131 @@ type Case struct {
 	// AssertState, if set, runs after `pulumi up`. Use for assertions on
 	// resource fields that aren't reachable via stack outputs (e.g. Protect).
 	AssertState func(t *testing.T, resources []apitype.ResourceV3)
+
+	// Stages, if non-nil, overrides disk-based stage loading. Use this when
+	// you need per-stage expected errors or have inline program content.
+	Stages []Stage
+}
+
+// StageMode selects between apply and preview for a stage.
+type StageMode int
+
+const (
+	// StageApply runs `tofu apply` and `pulumi up`. This is the default.
+	StageApply StageMode = iota
+	// StagePreview runs `tofu plan` and `pulumi preview`.
+	StagePreview
+)
+
+// Stage is one operation within a Case.
+type Stage struct {
+	Files map[string]string
+	Mode  StageMode
+	// ExpectErr, if non-empty, requires both runtimes to fail with an error
+	// containing this substring.
+	ExpectErr string
 }
 
 // RunCase resolves testdata/cases/<caseName>/ relative to the calling test
 // file, loads every regular file in that directory, and runs the comparison.
+// If c.Stages is set the disk path is bypassed in favor of inline stages.
 func RunCase(t *testing.T, caseName string, c Case) {
 	t.Helper()
+
+	if len(c.Stages) > 0 {
+		runCaseStages(t, c)
+		return
+	}
 
 	_, callerFile, _, _ := runtime.Caller(1)
 	caseDir := filepath.Join(filepath.Dir(callerFile), "testdata", "cases", caseName)
 	runCaseFromDir(t, caseDir, c)
+}
+
+// runCaseStages runs inline Case.Stages. Ops/outputs/AssertState are compared
+// against the last successful apply stage; preview stages produce no state.
+func runCaseStages(t *testing.T, c Case) {
+	t.Helper()
+
+	recA, recB := &tfexec.Recorder{}, &tfexec.Recorder{}
+	tfProvs := make([]tfexec.Provider, len(c.Providers))
+	pulProvs := make([]pulexec.Provider, len(c.Providers))
+	for i, p := range c.Providers {
+		tfProvs[i] = tfexec.Provider{Name: p.Name, Provider: tfexec.Wrap(p.Factory(), recA)}
+		pulProvs[i] = pulexec.Provider{
+			Name: p.Name,
+			Info: pulexec.BridgedProvider(t, p.Name, tfexec.Wrap(p.Factory(), recB)),
+		}
+	}
+
+	tfDriver := tfexec.NewDriver(t, tfProvs)
+	pulDriver := pulexec.NewDriver(t, pulProvs, c.Config)
+
+	var lastOK pulexec.Result
+	var lastOKTfOutputs map[string]string
+	for i, stage := range c.Stages {
+		var wg sync.WaitGroup
+		wg.Add(2)
+
+		var tfOut map[string]string
+		var tfErr error
+		var pulRes pulexec.Result
+		var pulErr error
+		go func() {
+			defer wg.Done()
+			switch stage.Mode {
+			case StagePreview:
+				tfErr = tfDriver.Plan(t, stage.Files, c.Config)
+			default:
+				tfOut, tfErr = tfDriver.TryApply(t, stage.Files, c.Config)
+			}
+		}()
+		go func() {
+			defer wg.Done()
+			switch stage.Mode {
+			case StagePreview:
+				pulErr = pulDriver.Preview(t, stage.Files)
+			default:
+				pulRes, pulErr = pulDriver.TryApply(t, stage.Files)
+			}
+		}()
+		wg.Wait()
+
+		tfLabel, pulLabel := "tofu apply", "pulumi up"
+		if stage.Mode == StagePreview {
+			tfLabel, pulLabel = "tofu plan", "pulumi preview"
+		}
+
+		if stage.ExpectErr != "" {
+			require.Errorf(t, tfErr,
+				"stage %d: %s was expected to fail with %q", i, tfLabel, stage.ExpectErr)
+			require.Errorf(t, pulErr,
+				"stage %d: %s was expected to fail with %q", i, pulLabel, stage.ExpectErr)
+			require.Containsf(t, tfErr.Error(), stage.ExpectErr,
+				"stage %d: %s error did not contain expected substring", i, tfLabel)
+			require.Containsf(t, pulErr.Error(), stage.ExpectErr,
+				"stage %d: %s error did not contain expected substring", i, pulLabel)
+			continue
+		}
+
+		require.NoErrorf(t, tfErr, "stage %d: %s failed unexpectedly", i, tfLabel)
+		require.NoErrorf(t, pulErr, "stage %d: %s failed unexpectedly", i, pulLabel)
+
+		if stage.Mode == StageApply {
+			lastOK = pulRes
+			lastOKTfOutputs = tfOut
+		}
+	}
+
+	if lastOKTfOutputs != nil {
+		require.Equal(t, lastOKTfOutputs, lastOK.Outputs,
+			"stack outputs differ between tofu apply and pulumi up")
+		require.Equal(t, recA.Ops(), recB.Ops(),
+			"provider operations differ between tofu apply and pulumi up")
+		if c.AssertState != nil {
+			c.AssertState(t, lastOK.Resources)
+		}
+	}
 }
 
 // runCaseFromDir runs a case whose program files live in caseDir. Exposed for

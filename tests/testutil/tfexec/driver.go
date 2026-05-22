@@ -109,6 +109,16 @@ func NewDriver(t *testing.T, providers []Provider) *Driver {
 // files (terraform.tfstate*, .terraform*) are kept across applies.
 func (d *Driver) Apply(t *testing.T, input map[string]string, config map[string]string) map[string]string {
 	t.Helper()
+	outputs, err := d.TryApply(t, input, config)
+	require.NoError(t, err)
+	return outputs
+}
+
+// TryApply is like Apply but returns the error from `tofu apply` instead of
+// failing the test. The outputs map is still parsed from terraform.tfstate when
+// the file exists, so callers can inspect post-failure state.
+func (d *Driver) TryApply(t *testing.T, input map[string]string, config map[string]string) (map[string]string, error) {
+	t.Helper()
 
 	require.NoError(t, removeProgramFiles(d.cwd))
 
@@ -118,17 +128,96 @@ func (d *Driver) Apply(t *testing.T, input map[string]string, config map[string]
 		require.NoError(t, os.WriteFile(fullPath, []byte(content), 0o600))
 	}
 
-	_, err := d.execTf(t, "init", "-backend=false")
-	require.NoError(t, err)
+	if _, err := d.execTf(t, "init", "-backend=false"); err != nil {
+		return nil, err
+	}
 
 	applyArgs := append(make([]string, 0, 4+2*len(config)), "apply", "-auto-approve", "-refresh=false")
 	for k, v := range config {
 		applyArgs = append(applyArgs, "-var", k+"="+v)
 	}
-	_, err = d.execTf(t, applyArgs...)
-	require.NoError(t, err)
+	if _, err := d.execTf(t, applyArgs...); err != nil {
+		return d.tryParseOutputs(), err
+	}
+	return d.parseOutputs(t), nil
+}
 
-	return d.parseOutputs(t)
+// Plan writes input files and runs `tofu plan`. Returns the error from the plan
+// command — nil means the plan succeeded (deferred checks count as success).
+func (d *Driver) Plan(t *testing.T, input map[string]string, config map[string]string) error {
+	t.Helper()
+
+	require.NoError(t, removeProgramFiles(d.cwd))
+
+	for path, content := range input {
+		fullPath := filepath.Join(d.cwd, path)
+		require.NoError(t, os.MkdirAll(filepath.Dir(fullPath), 0o755))
+		require.NoError(t, os.WriteFile(fullPath, []byte(content), 0o600))
+	}
+
+	if _, err := d.execTf(t, "init", "-backend=false"); err != nil {
+		return err
+	}
+	planArgs := append(make([]string, 0, 3+2*len(config)), "plan", "-refresh=false")
+	for k, v := range config {
+		planArgs = append(planArgs, "-var", k+"="+v)
+	}
+	_, err := d.execTf(t, planArgs...)
+	return err
+}
+
+// tryParseOutputs reads terraform.tfstate if it exists and returns its outputs.
+// Returns an empty map when the file is missing, so callers can use it on
+// failure paths without panicking.
+func (d *Driver) tryParseOutputs() map[string]string {
+	raw, err := os.ReadFile(filepath.Join(d.cwd, "terraform.tfstate"))
+	if err != nil {
+		return map[string]string{}
+	}
+	var state struct {
+		Outputs map[string]struct {
+			Value json.RawMessage `json:"value"`
+		} `json:"outputs"`
+	}
+	if err := json.Unmarshal(raw, &state); err != nil {
+		return map[string]string{}
+	}
+	result := make(map[string]string, len(state.Outputs))
+	for k, v := range state.Outputs {
+		var s string
+		if err := json.Unmarshal(v.Value, &s); err == nil {
+			result[k] = s
+		} else {
+			result[k] = string(v.Value)
+		}
+	}
+	return result
+}
+
+// StateResources reads terraform.tfstate and returns the list of resource
+// addresses present (e.g. "simple_resource.example"). Empty when the state
+// file is missing.
+func (d *Driver) StateResources(t *testing.T) []string {
+	t.Helper()
+	raw, err := os.ReadFile(filepath.Join(d.cwd, "terraform.tfstate"))
+	if err != nil {
+		return nil
+	}
+	var state struct {
+		Resources []struct {
+			Mode string `json:"mode"`
+			Type string `json:"type"`
+			Name string `json:"name"`
+		} `json:"resources"`
+	}
+	require.NoError(t, json.Unmarshal(raw, &state))
+	addrs := make([]string, 0, len(state.Resources))
+	for _, r := range state.Resources {
+		if r.Mode == "managed" {
+			addrs = append(addrs, r.Type+"."+r.Name)
+		}
+	}
+	return addrs
 }
 
 func (d *Driver) parseOutputs(t *testing.T) map[string]string {

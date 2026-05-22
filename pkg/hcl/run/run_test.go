@@ -940,6 +940,109 @@ resource "test_resource" "res" {
 	})
 }
 
+func TestEngine_Precondition_ReferencesOtherResource(t *testing.T) {
+	t.Parallel()
+
+	// The dependent resource's precondition references the upstream resource's
+	// output. The graph should add an implicit dep so the hook fires with known
+	// values, and the engine should register both resources.
+	src := []byte(`
+resource "test_resource" "dependent" {
+  field = "downstream"
+
+  lifecycle {
+    precondition {
+      condition     = test_resource.upstream.field == "known"
+      error_message = "upstream must be known"
+    }
+  }
+}
+
+resource "test_resource" "upstream" {
+  field = "known"
+}
+`)
+
+	p := parser.NewParser()
+	config, diags := p.ParseSource("test.hcl", src)
+	require.False(t, diags.HasErrors(), diags.Error())
+
+	mock := &testutil.MockResourceMonitor{}
+	engine := run.NewEngine(config, &run.EngineOptions{
+		ProjectName:     "test-project",
+		StackName:       "dev",
+		ResourceMonitor: mock,
+		WorkDir:         t.TempDir(),
+		RootDir:         t.TempDir(),
+		SchemaLoader:    schemaloader.New(t, testSchema()),
+	})
+	require.NoError(t, engine.Run(t.Context()))
+
+	var dependentReq *run.RegisterResourceRequest
+	for i := range mock.RegisteredResources {
+		if mock.RegisteredResources[i].Name == "dependent" {
+			dependentReq = &mock.RegisteredResources[i]
+		}
+	}
+	require.NotNil(t, dependentReq, "dependent resource should be registered")
+
+	require.NotNil(t, dependentReq.Hooks, "dependent resource should have hooks bound")
+	require.Len(t, dependentReq.Hooks.BeforeCreate, 1)
+	require.Len(t, dependentReq.Hooks.BeforeUpdate, 1)
+}
+
+func TestEngine_Precondition_UnknownDuringPreview(t *testing.T) {
+	t.Parallel()
+
+	// During preview the upstream's id is unknown. A precondition that depends
+	// on it must defer (no error) rather than fail, mirroring Terraform's
+	// "known after apply" behaviour.
+	src := []byte(`
+resource "test_resource" "upstream" {
+  field = "value"
+}
+
+resource "test_resource" "dependent" {
+  field = "downstream"
+
+  lifecycle {
+    precondition {
+      condition     = test_resource.upstream.id == "expected-id"
+      error_message = "id must be expected-id"
+    }
+  }
+}
+`)
+
+	p := parser.NewParser()
+	config, diags := p.ParseSource("test.hcl", src)
+	require.False(t, diags.HasErrors(), diags.Error())
+
+	mock := &testutil.MockResourceMonitor{
+		DryRun: true,
+		RegisterResourceHandler: func(ctx context.Context, req run.RegisterResourceRequest) (*run.RegisterResourceResponse, error) {
+			return &run.RegisterResourceResponse{
+				URN:     "urn:pulumi:test::project::" + req.Type + "::" + req.Name,
+				ID:      "",
+				Outputs: req.Inputs,
+			}, nil
+		},
+	}
+	engine := run.NewEngine(config, &run.EngineOptions{
+		ProjectName:     "test-project",
+		StackName:       "dev",
+		ResourceMonitor: mock,
+		WorkDir:         t.TempDir(),
+		RootDir:         t.TempDir(),
+		DryRun:          true,
+		SchemaLoader:    schemaloader.New(t, testSchema()),
+	})
+	require.NoError(t, engine.Run(t.Context()),
+		"engine should defer unknown precondition during preview rather than fail")
+	require.True(t, hasRegisteredResource(mock, "test:index:Resource"),
+		"dependent resource should still register when precondition is unknown")
+}
+
 func TestEngine_Postcondition(t *testing.T) {
 	t.Parallel()
 

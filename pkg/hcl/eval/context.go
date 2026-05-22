@@ -243,31 +243,43 @@ func (c *Context) SetProvider(name string, value cty.Value) {
 
 // SetCount sets the count context for count iteration.
 func (c *Context) SetCount(index int) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	c.count = &CountContext{Index: index}
 }
 
 // ClearCount clears the count context.
 func (c *Context) ClearCount() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	c.count = nil
 }
 
 // SetEach sets the each context for for_each iteration.
 func (c *Context) SetEach(key, value cty.Value) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	c.each = &EachContext{Key: key, Value: value}
 }
 
 // ClearEach clears the each context.
 func (c *Context) ClearEach() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	c.each = nil
 }
 
 // SetSelf sets the self reference (for provisioner expressions).
 func (c *Context) SetSelf(value cty.Value) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	c.self = value
 }
 
 // ClearSelf clears the self reference.
 func (c *Context) ClearSelf() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	c.self = cty.NilVal
 }
 

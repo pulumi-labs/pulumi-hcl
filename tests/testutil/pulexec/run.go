@@ -29,6 +29,7 @@ import (
 	"github.com/pulumi/providertest/pulumitest/optnewstack"
 	"github.com/pulumi/providertest/pulumitest/opttest"
 	"github.com/pulumi/pulumi-terraform-bridge/v3/pkg/tfbridge"
+	"github.com/pulumi/pulumi/sdk/v3/go/auto"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/apitype"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/util/rpcutil"
 	pulumirpc "github.com/pulumi/pulumi/sdk/v3/proto/go"
@@ -141,15 +142,8 @@ backend:
 func (d *Driver) Apply(t *testing.T, programFiles map[string]string) Result {
 	t.Helper()
 
-	// Wipe previous program files so a later stage that drops a file doesn't
-	// leave the old definition behind. Pulumi.yaml and the state dir are kept.
 	require.NoError(t, removeProgramFiles(d.dir))
-
-	for path, content := range programFiles {
-		fullPath := filepath.Join(d.dir, path)
-		require.NoError(t, os.MkdirAll(filepath.Dir(fullPath), 0o755))
-		require.NoError(t, os.WriteFile(fullPath, []byte(content), 0o600))
-	}
+	d.writeFiles(t, programFiles)
 
 	upResult := d.pt.Up(t)
 
@@ -171,6 +165,79 @@ func (d *Driver) Apply(t *testing.T, programFiles map[string]string) Result {
 	return Result{
 		Outputs:   outputs,
 		Resources: deployment.Resources,
+	}
+}
+
+// TryApply runs `pulumi up` and returns the error instead of fataling. State
+// is exported regardless of error so callers can inspect post-failure state.
+func (d *Driver) TryApply(t *testing.T, programFiles map[string]string) (Result, error) {
+	t.Helper()
+
+	require.NoError(t, removeProgramFiles(d.dir))
+	d.writeFiles(t, programFiles)
+
+	var upResult auto.UpResult
+	cap := newCaptureT(t)
+	done := make(chan struct{})
+	go func() {
+		// pt.Up's fatal calls runtime.Goexit; isolate it in this goroutine.
+		defer close(done)
+		upResult = d.pt.Up(cap)
+	}()
+	<-done
+	var upErr error
+	if cap.Failed() {
+		upErr = fmt.Errorf("pulumi up: %s", cap.Logs())
+	}
+
+	outputs := make(map[string]string, len(upResult.Outputs))
+	for k, v := range upResult.Outputs {
+		if s, ok := v.Value.(string); ok {
+			outputs[k] = s
+		} else {
+			raw, err := json.Marshal(v.Value)
+			require.NoError(t, err)
+			outputs[k] = string(raw)
+		}
+	}
+
+	exported := d.pt.ExportStack(t)
+	var deployment apitype.DeploymentV3
+	require.NoError(t, json.Unmarshal(exported.Deployment, &deployment))
+
+	return Result{
+		Outputs:   outputs,
+		Resources: deployment.Resources,
+	}, upErr
+}
+
+// Preview runs `pulumi preview` and returns the error (nil on success).
+// Same captureT indirection as TryApply.
+func (d *Driver) Preview(t *testing.T, programFiles map[string]string) error {
+	t.Helper()
+
+	require.NoError(t, removeProgramFiles(d.dir))
+	d.writeFiles(t, programFiles)
+
+	cap := newCaptureT(t)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		d.pt.Preview(cap)
+	}()
+	<-done
+	if cap.Failed() {
+		return fmt.Errorf("pulumi preview: %s", cap.Logs())
+	}
+	return nil
+}
+
+func (d *Driver) writeFiles(t *testing.T, programFiles map[string]string) {
+	t.Helper()
+	for path, content := range programFiles {
+		fullPath := filepath.Join(d.dir, path)
+		require.NoError(t, os.MkdirAll(filepath.Dir(fullPath), 0o755))
+		require.NoError(t, os.WriteFile(fullPath, []byte(content), 0o600))
 	}
 }
 

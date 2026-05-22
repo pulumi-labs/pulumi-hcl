@@ -559,6 +559,15 @@ func (m *constructResourceMonitor) RegisterPackage(
 	return "", nil
 }
 
+// RegisterResourceHook is not yet supported in Construct modules: the callback
+// server would need to be hosted on the provider (outliving any single
+// Construct call) rather than per-monitor.
+func (m *constructResourceMonitor) RegisterResourceHook(
+	ctx context.Context, name string, callback run.ResourceHookFunction, opts run.ResourceHookOptions,
+) error {
+	return fmt.Errorf("resource hooks are not supported within component constructions")
+}
+
 // buildStateDependencies builds the state dependencies map from outputs.
 func buildStateDependencies(outputs *structpb.Struct) map[string]*pulumirpc.ConstructResponse_PropertyDependencies {
 	deps := make(map[string]*pulumirpc.ConstructResponse_PropertyDependencies)

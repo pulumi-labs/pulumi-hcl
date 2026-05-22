@@ -26,6 +26,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/blang/semver"
@@ -758,6 +759,9 @@ type resourceMonitorAdapter struct {
 	monitorClient pulumirpc.ResourceMonitorClient
 	engineClient  pulumirpc.EngineClient
 	ctx           context.Context
+
+	hookMu  sync.Mutex
+	hookCBS *callbackServer
 }
 
 // RegisterPackage registers a parameterized package with the engine.
@@ -869,6 +873,18 @@ func (r *resourceMonitorAdapter) RegisterResource(
 			Create: formatTimeoutSeconds(req.CustomTimeouts.Create),
 			Update: formatTimeoutSeconds(req.CustomTimeouts.Update),
 			Delete: formatTimeoutSeconds(req.CustomTimeouts.Delete),
+		}
+	}
+
+	if req.Hooks != nil {
+		registerReq.Hooks = &pulumirpc.RegisterResourceRequest_ResourceHooksBinding{
+			BeforeCreate: req.Hooks.BeforeCreate,
+			BeforeUpdate: req.Hooks.BeforeUpdate,
+			AfterCreate:  req.Hooks.AfterCreate,
+			AfterUpdate:  req.Hooks.AfterUpdate,
+			BeforeDelete: req.Hooks.BeforeDelete,
+			AfterDelete:  req.Hooks.AfterDelete,
+			OnError:      req.Hooks.OnError,
 		}
 	}
 
@@ -1014,6 +1030,36 @@ func (r *resourceMonitorAdapter) Call(
 		Return:   resource.FromResourcePropertyMap(returnVal),
 		Failures: failures,
 	}, nil
+}
+
+func (r *resourceMonitorAdapter) RegisterResourceHook(
+	ctx context.Context, name string, callback run.ResourceHookFunction, opts run.ResourceHookOptions,
+) error {
+	r.hookMu.Lock()
+	if r.hookCBS == nil {
+		cbs, err := newCallbackServer()
+		if err != nil {
+			r.hookMu.Unlock()
+			return err
+		}
+		r.hookCBS = cbs
+	}
+	cbs := r.hookCBS
+	r.hookMu.Unlock()
+
+	cb, err := cbs.register(resourceHookCallback(callback))
+	if err != nil {
+		return fmt.Errorf("registering hook callback: %w", err)
+	}
+	_, err = r.monitorClient.RegisterResourceHook(ctx, &pulumirpc.RegisterResourceHookRequest{
+		Name:     name,
+		Callback: cb,
+		OnDryRun: opts.OnDryRun,
+	})
+	if err != nil {
+		return fmt.Errorf("registering hook %q: %w", name, err)
+	}
+	return nil
 }
 
 func (*resourceMonitorAdapter) pluginOptions() plugin.MarshalOptions {

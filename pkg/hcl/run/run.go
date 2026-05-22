@@ -72,6 +72,40 @@ type ResourceMonitor interface {
 
 	// CheckPulumiVersion checks if the Pulumi CLI version satisfies the given version range.
 	CheckPulumiVersion(ctx context.Context, versionRange string) error
+
+	// RegisterResourceHook registers a named callback. Must be called before any
+	// resource registration that binds the hook by name via Hooks.
+	RegisterResourceHook(ctx context.Context, name string, callback ResourceHookFunction, opts ResourceHookOptions) error
+}
+
+// ResourceHookFunction is the engine-invoked hook callback. A non-nil return
+// fails the operation; the error message is surfaced to the user.
+type ResourceHookFunction func(ctx context.Context, args *ResourceHookArgs) error
+
+type ResourceHookOptions struct {
+	// OnDryRun controls whether the hook runs during previews.
+	OnDryRun bool
+}
+
+type ResourceHookArgs struct {
+	URN        string
+	ID         string
+	Name       string
+	Type       string
+	NewInputs  property.Map
+	OldInputs  property.Map
+	NewOutputs property.Map
+	OldOutputs property.Map
+}
+
+type ResourceHookBinding struct {
+	BeforeCreate []string
+	BeforeUpdate []string
+	AfterCreate  []string
+	AfterUpdate  []string
+	BeforeDelete []string
+	AfterDelete  []string
+	OnError      []string
 }
 
 // CustomTimeouts contains custom timeout values for resource operations.
@@ -129,6 +163,7 @@ type RegisterResourceRequest struct {
 	Version                 string
 	PluginDownloadURL       string
 	PackageRef              PackageRef
+	Hooks                   *ResourceHookBinding
 }
 
 // RegisterResourceResponse contains the result of registering a resource.
@@ -1068,7 +1103,7 @@ func (e *Engine) registerResourceInstanceInContext(
 	opts.PackageRef = e.packageRefForType(res.Type)
 
 	if len(res.Preconditions) > 0 {
-		if err := e.evaluateCheckRules(res.Preconditions, instance.Key, "precondition"); err != nil {
+		if err := e.bindPreconditionHooks(ctx, res, instance, evalCtx, opts); err != nil {
 			return err
 		}
 	}
@@ -1702,6 +1737,7 @@ type ResourceOptions struct {
 	Version                 string
 	PluginDownloadURL       string
 	PackageRef              PackageRef
+	Hooks                   *ResourceHookBinding
 }
 
 // registerResource registers a resource with the Pulumi engine.
@@ -1742,6 +1778,7 @@ func (e *Engine) registerResource(
 		Version:                 opts.Version,
 		PluginDownloadURL:       opts.PluginDownloadURL,
 		PackageRef:              opts.PackageRef,
+		Hooks:                   opts.Hooks,
 	})
 	if err != nil {
 		return "", "", property.Map{}, err
@@ -2797,6 +2834,71 @@ func Validate(config *ast.Config) []error {
 	// TODO: Type checking, schema validation, etc.
 
 	return errs
+}
+
+// bindPreconditionHooks registers a hook per precondition and binds it to
+// BeforeCreate/BeforeUpdate so a false condition blocks the operation.
+//
+// The HCL eval context is snapshotted at registration so the async callback
+// sees the per-instance count/each/self that was in scope here — by the time
+// the callback fires, processing has moved on. Other resources' outputs are
+// pinned too; graph order guarantees all referenced resources are settled
+// by registration time. Unknown values defer (return nil) per TF's
+// "known after apply" semantics.
+func (e *Engine) bindPreconditionHooks(
+	ctx context.Context,
+	res *ast.Resource,
+	instance *graph.ExpandedResource,
+	evalCtx *eval.Context,
+	opts *ResourceOptions,
+) error {
+	if opts.Hooks == nil {
+		opts.Hooks = &ResourceHookBinding{}
+	}
+	hclSnapshot := evalCtx.HCLContext()
+	for i, rule := range res.Preconditions {
+		rule, index := rule, i+1
+		hookName := fmt.Sprintf("%s:precondition:%d", instance.Key, i)
+		callback := func(_ context.Context, _ *ResourceHookArgs) error {
+			return evaluatePrecondition(rule, hclSnapshot, index, instance.Key)
+		}
+		if err := e.resmon.RegisterResourceHook(ctx, hookName, callback, ResourceHookOptions{
+			OnDryRun: true,
+		}); err != nil {
+			return fmt.Errorf("registering precondition hook: %w", err)
+		}
+		opts.Hooks.BeforeCreate = append(opts.Hooks.BeforeCreate, hookName)
+		opts.Hooks.BeforeUpdate = append(opts.Hooks.BeforeUpdate, hookName)
+	}
+	return nil
+}
+
+// evaluatePrecondition returns nil when the rule holds or its condition is
+// unknown (deferred), or a formatted error when it fails.
+func evaluatePrecondition(rule *ast.CheckRule, hclCtx *hcl.EvalContext, index int, resourceName string) error {
+	condVal, diags := rule.Condition.Value(hclCtx)
+	if diags.HasErrors() {
+		return fmt.Errorf("evaluating precondition %d for %s: %s", index, resourceName, diags.Error())
+	}
+	if !condVal.IsKnown() {
+		return nil
+	}
+	if condVal.Type() != cty.Bool {
+		return fmt.Errorf("precondition %d for %s: condition must be a boolean", index, resourceName)
+	}
+	if condVal.True() {
+		return nil
+	}
+	msgVal, msgDiags := rule.ErrorMessage.Value(hclCtx)
+	if msgDiags.HasErrors() {
+		return fmt.Errorf("precondition %d for %s failed (could not evaluate error message: %s)",
+			index, resourceName, msgDiags.Error())
+	}
+	msg := "precondition check failed"
+	if msgVal.Type() == cty.String && msgVal.IsKnown() {
+		msg = msgVal.AsString()
+	}
+	return fmt.Errorf("precondition for %s: %s", resourceName, msg)
 }
 
 // evaluateCheckRules evaluates a list of preconditions or postconditions.
