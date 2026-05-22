@@ -128,7 +128,7 @@ func TestGeneratePackageAndRunUseSameSdksDir(t *testing.T) {
 	require.True(t, os.IsNotExist(err), "hcl.sdk.json must not be written under .hcl/sdks/")
 
 	// Write an HCL program that references the alias.
-	program := `pulumi {
+	program := `terraform {
   required_providers {
     myparam = {
       source  = "myparam"
@@ -137,7 +137,7 @@ func TestGeneratePackageAndRunUseSameSdksDir(t *testing.T) {
   }
 }
 `
-	require.NoError(t, os.WriteFile(filepath.Join(projectDir, "main.hcl"), []byte(program), 0o600))
+	require.NoError(t, os.WriteFile(filepath.Join(projectDir, "main.tf"), []byte(program), 0o600))
 
 	resp, err := host.GetRequiredPackages(t.Context(), &pulumirpc.GetRequiredPackagesRequest{
 		Info: &pulumirpc.ProgramInfo{
