@@ -1152,10 +1152,6 @@ func TestCustomInvokeHoistedInListComprehensionNoKey(t *testing.T) {
 func TestCustomInvokeHoistedReferencesOuterForCollection(t *testing.T) {
 	t.Parallel()
 
-	// We don't correctly convert nested for-each constucts where the inner
-	// construct needs to be hoisted into a `data` block.
-	t.Skip(`TODO[https://github.com/pulumi-labs/pulumi-hcl/issues/157]: unknown node "entry.filter"`)
-
 	testSchema := schema.PackageSpec{
 		Name:    "test",
 		Version: "1.0.0",
@@ -1184,6 +1180,139 @@ func TestCustomInvokeHoistedReferencesOuterForCollection(t *testing.T) {
 `
 
 	testConvertedPCL(t, pclSource, testSchema)
+}
+
+// TestCustomInvokeHoistedFourDeepNestedForCollections is the 4-deep analogue of
+// TestCustomInvokeHoistedReferencesOuterForCollection: each inner for's
+// collection references the iter var of its immediately-enclosing for, so the
+// hoisted data block's for_each must flatten through all three outer fors.
+func TestCustomInvokeHoistedFourDeepNestedForCollections(t *testing.T) {
+	t.Parallel()
+
+	testSchema := schema.PackageSpec{
+		Name:    "test",
+		Version: "1.0.0",
+		Functions: map[string]schema.FunctionSpec{
+			"test:index:echo": {
+				Inputs: &schema.ObjectTypeSpec{
+					Properties: map[string]schema.PropertySpec{
+						"input": {TypeSpec: schema.TypeSpec{Type: "string"}},
+					},
+				},
+				Outputs: &schema.ObjectTypeSpec{
+					Properties: map[string]schema.PropertySpec{
+						"result": {TypeSpec: schema.TypeSpec{Type: "string"}},
+					},
+				},
+			},
+		},
+	}
+
+	pclSource := `output results {
+    value = [for a in [{items = [{items = [{items = ["alpha", "bravo"]}]}]}, {items = [{items = [{items = ["charlie"]}]}]}] :
+        [for b in try(a.items, []) :
+            [for c in try(b.items, []) :
+                [for d in try(c.items, []) : invoke("test:index:echo", {
+                    input = d
+                }).result]]]]
+}
+`
+
+	monitor := &testutil.MockResourceMonitor{
+		InvokeHandler: func(_ context.Context, req hclrun.InvokeRequest) (*hclrun.InvokeResponse, error) {
+			input, _ := req.Args.GetOk("input")
+			return &hclrun.InvokeResponse{
+				Return: property.NewMap(map[string]property.Value{
+					"result": property.New(input.AsString() + "+"),
+				}),
+			}, nil
+		},
+	}
+
+	mock := testConvertedPCLWithComponent(t, pclSource, nil, monitor, testSchema)
+
+	results, ok := mock.StackOutputs.GetOk("results")
+	require.True(t, ok)
+	assert.Equal(t, property.New([]property.Value{
+		property.New([]property.Value{
+			property.New([]property.Value{
+				property.New([]property.Value{
+					property.New("alpha+"),
+					property.New("bravo+"),
+				}),
+			}),
+		}),
+		property.New([]property.Value{
+			property.New([]property.Value{
+				property.New([]property.Value{
+					property.New("charlie+"),
+				}),
+			}),
+		}),
+	}), results)
+}
+
+// TestCustomInvokeHoistedOuterForHasKeyVar exercises the branch of
+// forExprWrapperTokens that emits `[for k, v in coll : ...]` (rather than the
+// no-key form) — i.e. an outer for-comprehension with a KeyVariable that an
+// inner hoisted invoke's collection references.
+func TestCustomInvokeHoistedOuterForHasKeyVar(t *testing.T) {
+	t.Parallel()
+
+	testSchema := schema.PackageSpec{
+		Name:    "test",
+		Version: "1.0.0",
+		Functions: map[string]schema.FunctionSpec{
+			"test:index:echo": {
+				Inputs: &schema.ObjectTypeSpec{
+					Properties: map[string]schema.PropertySpec{
+						"input": {TypeSpec: schema.TypeSpec{Type: "string"}},
+					},
+				},
+				Outputs: &schema.ObjectTypeSpec{
+					Properties: map[string]schema.PropertySpec{
+						"result": {TypeSpec: schema.TypeSpec{Type: "string"}},
+					},
+				},
+			},
+		},
+	}
+
+	pclSource := `output results {
+    value = {for ko, vo in {
+        a = "alpha"
+        b = "bravo"
+    } : ko => [for v in [vo, "${ko}-x"] : invoke("test:index:echo", {
+        input = v
+    }).result]}
+}
+`
+
+	monitor := &testutil.MockResourceMonitor{
+		InvokeHandler: func(_ context.Context, req hclrun.InvokeRequest) (*hclrun.InvokeResponse, error) {
+			input, _ := req.Args.GetOk("input")
+			return &hclrun.InvokeResponse{
+				Return: property.NewMap(map[string]property.Value{
+					"result": property.New(input.AsString() + "+"),
+				}),
+			}, nil
+		},
+	}
+
+	mock := testConvertedPCLWithComponent(t, pclSource, nil, monitor, testSchema)
+
+	results, ok := mock.StackOutputs.GetOk("results")
+	require.True(t, ok)
+	assert.Equal(t, property.New(map[string]property.Value{
+		"a": property.New([]property.Value{
+			property.New("alpha+"),
+			property.New("a-x+"),
+		}),
+		"b": property.New([]property.Value{
+			property.New("bravo+"),
+			property.New("b-x+"),
+		}),
+	}), results)
 }
 
 func TestNotImplemented(t *testing.T) {
