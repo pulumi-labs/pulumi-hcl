@@ -11,7 +11,7 @@ terraform {
   }
 }
 
-data "simple-invoke_secretinvoke" "invoke_0" {
+data "simple-invoke_secret_invoke" "invoke_0" {
   value           = "hello"
   secret_response = simple_resource.first.value
 }
@@ -28,5 +28,5 @@ resource "simple_resource" "second" {
   lifecycle {
     create_before_destroy = true
   }
-  value = data.simple-invoke_secretinvoke.invoke_0.secret
+  value = data.simple-invoke_secret_invoke.invoke_0.secret
 }

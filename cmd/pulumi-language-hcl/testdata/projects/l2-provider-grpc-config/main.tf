@@ -40,7 +40,7 @@ provider "config-grpc" {
     x = 42
   }
 }
-resource "config-grpc_configfetcher" "config" {
+resource "config-grpc_config_fetcher" "config" {
   provider = config-grpc.config_grpc_provider
   lifecycle {
     create_before_destroy = true

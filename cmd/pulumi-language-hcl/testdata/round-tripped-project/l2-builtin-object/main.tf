@@ -7,27 +7,27 @@ terraform {
   }
 }
 
-resource "output_complexresource" "res" {
+resource "output_complex_resource" "res" {
   lifecycle {
     create_before_destroy = true
   }
   value = 1
 }
 output "entriesOutput" {
-  value = entries(output_complexresource.res.output_map)
+  value = entries(output_complex_resource.res.output_map)
 }
 output "lookupOutput" {
-  value = lookup(output_complexresource.res.output_map, "x", "default")
+  value = lookup(output_complex_resource.res.output_map, "x", "default")
 }
 output "lookupOutputDefault" {
-  value = lookup(output_complexresource.res.output_map, "y", "default")
+  value = lookup(output_complex_resource.res.output_map, "y", "default")
 }
 output "entriesObjectOutput" {
-  value = entries(output_complexresource.res.output_object)
+  value = entries(output_complex_resource.res.output_object)
 }
 output "lookupObjectOutput" {
-  value = lookup(output_complexresource.res.output_object, "output", "default")
+  value = lookup(output_complex_resource.res.output_object, "output", "default")
 }
 output "lookupObjectOutputDefault" {
-  value = lookup(output_complexresource.res.output_object, "missing", "default")
+  value = lookup(output_complex_resource.res.output_object, "missing", "default")
 }

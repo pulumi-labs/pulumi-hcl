@@ -10,14 +10,14 @@ terraform {
 provider "component" {
   alias = "explicit"
 }
-resource "component_componentcallable" "list" {
+resource "component_component_callable" "list" {
   providers = [component.explicit]
   lifecycle {
     create_before_destroy = true
   }
   value = "value"
 }
-resource "component_componentcallable" "map" {
+resource "component_component_callable" "map" {
   providers = [component.explicit]
   lifecycle {
     create_before_destroy = true

@@ -7,10 +7,10 @@ terraform {
   }
 }
 
-data "index-mod_indexmine_concatworld" "invoke_0" {
+data "index-mod_index_mine_concat_world" "invoke_0" {
   value = "hello"
 }
-data "index-mod_indexmine_nested_concatworld" "invoke_1" {
+data "index-mod_index_mine_nested_concat_world" "invoke_1" {
   value = "goodbye"
 }
 
@@ -21,17 +21,17 @@ call "res2" "call" {
   input = "xx"
 }
 
-resource "index-mod_indexmine_resource" "res1" {
+resource "index-mod_index_mine_resource" "res1" {
   lifecycle {
     create_before_destroy = true
   }
-  text = data.index-mod_indexmine_concatworld.invoke_0.result
+  text = data.index-mod_index_mine_concat_world.invoke_0.result
 }
-resource "index-mod_indexmine_nested_resource" "res2" {
+resource "index-mod_index_mine_nested_resource" "res2" {
   lifecycle {
     create_before_destroy = true
   }
-  text = data.index-mod_indexmine_nested_concatworld.invoke_1.result
+  text = data.index-mod_index_mine_nested_concat_world.invoke_1.result
 }
 output "out1" {
   value = call.res1.call.output

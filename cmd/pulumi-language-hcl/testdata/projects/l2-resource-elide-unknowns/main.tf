@@ -24,7 +24,7 @@ resource "output_resource" "unknown" {
   }
   value = 1
 }
-resource "output_complexresource" "complex" {
+resource "output_complex_resource" "complex" {
   provider = output.prov
   lifecycle {
     create_before_destroy = true
@@ -42,30 +42,30 @@ resource "simple_resource" "resArray" {
   lifecycle {
     create_before_destroy = true
   }
-  value = output_complexresource.complex.output_array[0] == "hello"
+  value = output_complex_resource.complex.output_array[0] == "hello"
 }
 resource "simple_resource" "resMap" {
   lifecycle {
     create_before_destroy = true
   }
-  value = output_complexresource.complex.output_map["x"] == "hello"
+  value = output_complex_resource.complex.output_map["x"] == "hello"
 }
 resource "simple_resource" "resObject" {
   lifecycle {
     create_before_destroy = true
   }
-  value = output_complexresource.complex.output_object.output == "hello"
+  value = output_complex_resource.complex.output_object.output == "hello"
 }
 // And try to use it has an output
 output "out" {
   value = output_resource.unknown.output
 }
 output "outArray" {
-  value = output_complexresource.complex.output_array[0]
+  value = output_complex_resource.complex.output_array[0]
 }
 output "outMap" {
-  value = output_complexresource.complex.output_map["x"]
+  value = output_complex_resource.complex.output_map["x"]
 }
 output "outObject" {
-  value = output_complexresource.complex.output_object.output
+  value = output_complex_resource.complex.output_object.output
 }

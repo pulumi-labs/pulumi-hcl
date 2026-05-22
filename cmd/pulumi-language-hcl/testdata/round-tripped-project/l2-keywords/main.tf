@@ -7,7 +7,7 @@ terraform {
   }
 }
 
-resource "keywords_someresource" "firstResource" {
+resource "keywords_some_resource" "firstResource" {
   lifecycle {
     create_before_destroy = true
   }
@@ -15,15 +15,15 @@ resource "keywords_someresource" "firstResource" {
   lambda   = "lambda"
   property = "property"
 }
-resource "keywords_someresource" "secondResource" {
+resource "keywords_some_resource" "secondResource" {
   lifecycle {
     create_before_destroy = true
   }
-  builtins = keywords_someresource.firstResource.builtins
-  lambda   = keywords_someresource.firstResource.lambda
-  property = keywords_someresource.firstResource.property
+  builtins = keywords_some_resource.firstResource.builtins
+  lambda   = keywords_some_resource.firstResource.lambda
+  property = keywords_some_resource.firstResource.property
 }
-resource "keywords_lambda_someresource" "lambdaModuleResource" {
+resource "keywords_lambda_some_resource" "lambdaModuleResource" {
   lifecycle {
     create_before_destroy = true
   }

@@ -34,7 +34,7 @@ resource "nestedobject_container" "fromSimple" {
   inputs = [for _, detail in nestedobject_container.source.details : detail.value]
 }
 # for producing a map
-resource "nestedobject_mapcontainer" "mapped" {
+resource "nestedobject_map_container" "mapped" {
   lifecycle {
     create_before_destroy = true
   }

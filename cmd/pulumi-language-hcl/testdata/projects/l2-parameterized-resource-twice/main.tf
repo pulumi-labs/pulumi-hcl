@@ -12,36 +12,36 @@ terraform {
 }
 
 // The resource name is based on the parameter value
-resource "hipackage_helloworld" "example1" {
+resource "hipackage_hello_world" "example1" {
   lifecycle {
     create_before_destroy = true
   }
 }
-resource "hipackage_helloworldcomponent" "exampleComponent1" {
+resource "hipackage_hello_world_component" "exampleComponent1" {
   lifecycle {
     create_before_destroy = true
   }
 }
 // The resource name is based on the parameter value
-resource "byepackage_goodbyeworld" "example2" {
+resource "byepackage_goodbye_world" "example2" {
   lifecycle {
     create_before_destroy = true
   }
 }
-resource "byepackage_goodbyeworldcomponent" "exampleComponent2" {
+resource "byepackage_goodbye_world_component" "exampleComponent2" {
   lifecycle {
     create_before_destroy = true
   }
 }
 output "parameterValue1" {
-  value = hipackage_helloworld.example1.parameter_value
+  value = hipackage_hello_world.example1.parameter_value
 }
 output "parameterValueFromComponent1" {
-  value = hipackage_helloworldcomponent.exampleComponent1.parameter_value
+  value = hipackage_hello_world_component.exampleComponent1.parameter_value
 }
 output "parameterValue2" {
-  value = byepackage_goodbyeworld.example2.parameter_value
+  value = byepackage_goodbye_world.example2.parameter_value
 }
 output "parameterValueFromComponent2" {
-  value = byepackage_goodbyeworldcomponent.exampleComponent2.parameter_value
+  value = byepackage_goodbye_world_component.exampleComponent2.parameter_value
 }

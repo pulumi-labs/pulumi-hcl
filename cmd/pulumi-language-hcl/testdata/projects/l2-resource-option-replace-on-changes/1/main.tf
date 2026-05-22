@@ -9,7 +9,7 @@ terraform {
 
 // Stage 1: Change properties to trigger replacements
 // Scenario 1: Change replaceProp → REPLACE (schema triggers)
-resource "replaceonchanges_resourcea" "schemaReplace" {
+resource "replaceonchanges_resource_a" "schemaReplace" {
   replace_on_changes = ["replaceProp"]
   lifecycle {
     create_before_destroy = true
@@ -18,7 +18,7 @@ resource "replaceonchanges_resourcea" "schemaReplace" {
   replace_prop = false // Changed from true
 }
 // Scenario 2: Change value → REPLACE (option triggers)
-resource "replaceonchanges_resourceb" "optionReplace" {
+resource "replaceonchanges_resource_b" "optionReplace" {
   replace_on_changes = ["value"]
   lifecycle {
     create_before_destroy = true
@@ -26,7 +26,7 @@ resource "replaceonchanges_resourceb" "optionReplace" {
   value = false // Changed from true
 }
 // Scenario 3: Change value → REPLACE (option on value triggers)
-resource "replaceonchanges_resourcea" "bothReplaceValue" {
+resource "replaceonchanges_resource_a" "bothReplaceValue" {
   replace_on_changes = ["replaceProp", "value"]
   lifecycle {
     create_before_destroy = true
@@ -35,7 +35,7 @@ resource "replaceonchanges_resourcea" "bothReplaceValue" {
   replace_prop = true // Unchanged
 }
 // Scenario 4: Change replaceProp → REPLACE (schema on replaceProp triggers)
-resource "replaceonchanges_resourcea" "bothReplaceProp" {
+resource "replaceonchanges_resource_a" "bothReplaceProp" {
   replace_on_changes = ["replaceProp", "value"]
   lifecycle {
     create_before_destroy = true
@@ -44,14 +44,14 @@ resource "replaceonchanges_resourcea" "bothReplaceProp" {
   replace_prop = false // Changed from true
 }
 // Scenario 5: Change value → UPDATE (no replaceOnChanges)
-resource "replaceonchanges_resourceb" "regularUpdate" {
+resource "replaceonchanges_resource_b" "regularUpdate" {
   lifecycle {
     create_before_destroy = true
   }
   value = false // Changed from true
 }
 // Scenario 6: No change → SAME (no operation)
-resource "replaceonchanges_resourceb" "noChange" {
+resource "replaceonchanges_resource_b" "noChange" {
   replace_on_changes = ["value"]
   lifecycle {
     create_before_destroy = true
@@ -59,7 +59,7 @@ resource "replaceonchanges_resourceb" "noChange" {
   value = true // Unchanged
 }
 // Scenario 7: Change replaceProp (not value) → UPDATE (marked property unchanged)
-resource "replaceonchanges_resourcea" "wrongPropChange" {
+resource "replaceonchanges_resource_a" "wrongPropChange" {
   replace_on_changes = ["replaceProp", "value"]
   lifecycle {
     create_before_destroy = true
@@ -68,7 +68,7 @@ resource "replaceonchanges_resourcea" "wrongPropChange" {
   replace_prop = false // Changed from true (this is NOT marked for replacement by option)
 }
 // Scenario 8: Change value → REPLACE (multiple properties marked)
-resource "replaceonchanges_resourcea" "multiplePropReplace" {
+resource "replaceonchanges_resource_a" "multiplePropReplace" {
   replace_on_changes = ["replaceProp", "value"]
   lifecycle {
     create_before_destroy = true

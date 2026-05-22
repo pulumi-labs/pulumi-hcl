@@ -44,7 +44,7 @@ resource "union_example" "safeEnumExample" {
   typed_enum_property = "Block"
 }
 // Output enum: output from another resource used as enum input
-resource "union_enumoutput" "enumOutputExample" {
+resource "union_enum_output" "enumOutputExample" {
   lifecycle {
     create_before_destroy = true
   }
@@ -54,7 +54,7 @@ resource "union_example" "outputEnumExample" {
   lifecycle {
     create_before_destroy = true
   }
-  typed_enum_property = union_enumoutput.enumOutputExample.type
+  typed_enum_property = union_enum_output.enumOutputExample.type
 }
 output "mapMapUnionOutput" {
   value = union_example.mapMapUnionExample.map_map_union_property

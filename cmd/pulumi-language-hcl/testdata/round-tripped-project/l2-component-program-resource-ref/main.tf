@@ -7,7 +7,7 @@ terraform {
   }
 }
 
-resource "component_componentcustomrefoutput" "component1" {
+resource "component_component_custom_ref_output" "component1" {
   lifecycle {
     create_before_destroy = true
   }
@@ -17,11 +17,11 @@ resource "component_custom" "custom1" {
   lifecycle {
     create_before_destroy = true
   }
-  value = component_componentcustomrefoutput.component1.value
+  value = component_component_custom_ref_output.component1.value
 }
 resource "component_custom" "custom2" {
   lifecycle {
     create_before_destroy = true
   }
-  value = component_componentcustomrefoutput.component1.ref.value
+  value = component_component_custom_ref_output.component1.ref.value
 }

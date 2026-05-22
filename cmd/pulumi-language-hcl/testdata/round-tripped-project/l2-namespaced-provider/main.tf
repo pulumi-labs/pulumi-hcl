@@ -11,7 +11,7 @@ terraform {
   }
 }
 
-resource "component_componentcustomrefoutput" "componentRes" {
+resource "component_component_custom_ref_output" "componentRes" {
   lifecycle {
     create_before_destroy = true
   }
@@ -22,5 +22,5 @@ resource "namespaced_resource" "res" {
     create_before_destroy = true
   }
   value        = true
-  resource_ref = component_componentcustomrefoutput.componentRes.ref
+  resource_ref = component_component_custom_ref_output.componentRes.ref
 }

@@ -7,25 +7,25 @@ terraform {
   }
 }
 
-resource "names_resmap" "res1" {
+resource "names_res_map" "res1" {
   lifecycle {
     create_before_destroy = true
   }
   value = true
 }
-resource "names_resarray" "res2" {
+resource "names_res_array" "res2" {
   lifecycle {
     create_before_destroy = true
   }
   value = true
 }
-resource "names_reslist" "res3" {
+resource "names_res_list" "res3" {
   lifecycle {
     create_before_destroy = true
   }
   value = true
 }
-resource "names_resresource" "res4" {
+resource "names_res_resource" "res4" {
   lifecycle {
     create_before_destroy = true
   }

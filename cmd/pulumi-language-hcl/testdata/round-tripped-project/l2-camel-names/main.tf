@@ -7,19 +7,19 @@ terraform {
   }
 }
 
-resource "camelNames_coolmodule_someresource" "firstResource" {
+resource "camelNames_cool_module_some_resource" "firstResource" {
   lifecycle {
     create_before_destroy = true
   }
   the_input = true
 }
-resource "camelNames_coolmodule_someresource" "secondResource" {
+resource "camelNames_cool_module_some_resource" "secondResource" {
   lifecycle {
     create_before_destroy = true
   }
-  the_input = camelNames_coolmodule_someresource.firstResource.the_output
+  the_input = camelNames_cool_module_some_resource.firstResource.the_output
 }
-resource "camelNames_coolmodule_someresource" "thirdResource" {
+resource "camelNames_cool_module_some_resource" "thirdResource" {
   lifecycle {
     create_before_destroy = true
   }

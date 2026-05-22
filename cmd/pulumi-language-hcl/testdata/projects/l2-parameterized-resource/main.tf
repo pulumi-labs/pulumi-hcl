@@ -8,19 +8,19 @@ terraform {
 }
 
 // The resource name is based on the parameter value
-resource "subpackage_helloworld" "example" {
+resource "subpackage_hello_world" "example" {
   lifecycle {
     create_before_destroy = true
   }
 }
-resource "subpackage_helloworldcomponent" "exampleComponent" {
+resource "subpackage_hello_world_component" "exampleComponent" {
   lifecycle {
     create_before_destroy = true
   }
 }
 output "parameterValue" {
-  value = subpackage_helloworld.example.parameter_value
+  value = subpackage_hello_world.example.parameter_value
 }
 output "parameterValueFromComponent" {
-  value = subpackage_helloworldcomponent.exampleComponent.parameter_value
+  value = subpackage_hello_world_component.exampleComponent.parameter_value
 }
