@@ -994,6 +994,17 @@ func (ft *fileTransformer) transformExpr(expr hclsyntax.Expression) hclwrite.Tok
 	case *hclsyntax.ScopeTraversalExpr:
 		return ft.transformTraversal(e)
 	case *hclsyntax.FunctionCallExpr:
+		// abspath(path.root) is the encoding generate.go emits for PCL's
+		// cwd() (program working directory); recognize it here so a
+		// round-trip restores the original PCL call.
+		if e.Name == "abspath" && len(e.Args) == 1 {
+			if trav, ok := e.Args[0].(*hclsyntax.ScopeTraversalExpr); ok &&
+				len(trav.Traversal) == 2 && trav.Traversal.RootName() == "path" {
+				if attr, ok := trav.Traversal[1].(hcl.TraverseAttr); ok && attr.Name == "root" {
+					return hclwrite.TokensForFunctionCall("cwd")
+				}
+			}
+		}
 		pclName := transformFunctionName(e.Name)
 		if !pclSupportedFunctions[pclName] {
 			r := e.Range()
@@ -1561,10 +1572,13 @@ func (ft *fileTransformer) transformTraversal(e *hclsyntax.ScopeTraversalExpr) h
 			if attr, ok := e.Traversal[1].(hcl.TraverseAttr); ok {
 				switch attr.Name {
 				case "cwd":
-					return hclwrite.TokensForFunctionCall("cwd")
-				case "root", "module":
+					// PCL's rootDirectory() generates to path.cwd; invert.
 					return hclwrite.TokensForFunctionCall("rootDirectory")
 				}
+				// Bare path.root / path.module follow Terraform semantics
+				// (path.root is "."), so leave them untouched. PCL's cwd()
+				// comes through as abspath(path.root) and is handled in
+				// the FunctionCallExpr branch.
 			}
 		}
 	}

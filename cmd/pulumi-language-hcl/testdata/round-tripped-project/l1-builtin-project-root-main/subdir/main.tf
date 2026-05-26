@@ -1,6 +1,6 @@
 output "rootDirectoryOutput" {
-  value = path.root
+  value = path.cwd
 }
 output "workingDirectoryOutput" {
-  value = path.cwd
+  value = abspath(path.root)
 }

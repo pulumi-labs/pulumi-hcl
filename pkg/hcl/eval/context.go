@@ -16,6 +16,7 @@ package eval
 
 import (
 	"maps"
+	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
@@ -131,8 +132,33 @@ type rangedInstance struct {
 	isEach  bool
 }
 
-// NewContext creates a new evaluation context.
+// NewContext creates a new evaluation context. baseDir is the source dir of
+// the module owning this context; rootDir is the root program dir. The two
+// determine the Terraform-compatible path.* triple:
+//
+//   - path.module: baseDir relative to rootDir (or "." when they're the same)
+//   - path.root:   always "." — the root module is the program dir
+//   - path.cwd:    rootDir as an absolute path. Terraform's path.cwd is the
+//     original working dir before any -chdir, which for `tofu apply` from
+//     a project dir is that same dir. The language host process's own
+//     cwd is irrelevant — it's wherever Pulumi launched the binary, not
+//     where the user invoked `pulumi`.
+//
+// We match Terraform's convention so .tf written against Terraform sees the
+// same values when run via Pulumi.
 func NewContext(baseDir, rootDir, stack, project, organization string) *Context {
+	modulePath := "."
+	if baseDir != rootDir {
+		if rel, err := filepath.Rel(rootDir, baseDir); err == nil {
+			modulePath = rel
+		} else {
+			modulePath = baseDir
+		}
+	}
+	cwd := rootDir
+	if abs, err := filepath.Abs(rootDir); err == nil {
+		cwd = abs
+	}
 	return &Context{
 		baseDir: baseDir,
 
@@ -146,9 +172,9 @@ func NewContext(baseDir, rootDir, stack, project, organization string) *Context 
 		providers:   make(map[string]cty.Value),
 		calls:       make(map[string]cty.Value),
 		path: PathContext{
-			Module: baseDir,
-			Root:   rootDir,
-			Cwd:    baseDir,
+			Module: modulePath,
+			Root:   ".",
+			Cwd:    cwd,
 		},
 		pulumi: PulumiContext{
 			Stack:        stack,
@@ -460,6 +486,31 @@ func (c *Context) HCLContext() *hcl.EvalContext {
 	return &hcl.EvalContext{
 		Variables: vars,
 		Functions: Functions(c.baseDir),
+	}
+}
+
+// HCLContextWithIteration returns an hcl.EvalContext like HCLContext, but with
+// count.index and/or each.key/each.value bound to the supplied iteration
+// values. Callers pass nil for either argument to leave that namespace unset.
+// Useful for evaluating an expression in a parent scope (e.g. a module input)
+// while binding it to a specific iteration of a counted / for_each call.
+func (c *Context) HCLContextWithIteration(countIndex *int, eachKey, eachValue *cty.Value) *hcl.EvalContext {
+	base := c.HCLContext()
+	vars := maps.Clone(base.Variables)
+	if countIndex != nil {
+		vars["count"] = cty.ObjectVal(map[string]cty.Value{
+			"index": cty.NumberIntVal(int64(*countIndex)),
+		})
+	}
+	if eachKey != nil && eachValue != nil {
+		vars["each"] = cty.ObjectVal(map[string]cty.Value{
+			"key":   *eachKey,
+			"value": *eachValue,
+		})
+	}
+	return &hcl.EvalContext{
+		Variables: vars,
+		Functions: base.Functions,
 	}
 }
 

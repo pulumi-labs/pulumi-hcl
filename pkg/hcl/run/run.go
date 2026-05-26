@@ -2325,7 +2325,8 @@ func (e *Engine) processModuleVariable(node *graph.Node) error {
 
 		if hasInput {
 			var diags hcl.Diagnostics
-			val, diags = inputAttr.Expr.Value(parentEvalCtx.HCLContext())
+			hclCtx := parentEvalCtx.HCLContextWithIteration(inst.Index, inst.EachKey, inst.EachVal)
+			val, diags = inputAttr.Expr.Value(hclCtx)
 			if diags.HasErrors() {
 				return fmt.Errorf("evaluating module input %s: %s", varName, diags.Error())
 			}
@@ -2390,7 +2391,11 @@ func (e *Engine) processModuleInit(ctx context.Context, node *graph.Node) error 
 	}
 
 	// Load the child module to get variable type constraints for input coercion.
-	childMod, err := e.moduleLoader.LoadModule(mod.Source, mod.Version, e.workDir)
+	loaderWorkDir := modInfo.ParentSourcePath
+	if loaderWorkDir == "" {
+		loaderWorkDir = e.workDir
+	}
+	childMod, err := e.moduleLoader.LoadModule(mod.Source, mod.Version, loaderWorkDir)
 	if err != nil {
 		return fmt.Errorf("loading module %s for input types: %w", mod.Source, err)
 	}
@@ -2473,7 +2478,7 @@ func (e *Engine) processModuleInit(ctx context.Context, node *graph.Node) error 
 				Outputs: make(map[string]cty.Value),
 			})
 		}
-		e.moduleInstances.Set(modInfo.Prefix(), instances)
+	e.moduleInstances.Set(modInfo.Prefix(), instances)
 		return nil
 	}
 

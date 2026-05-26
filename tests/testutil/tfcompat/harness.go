@@ -37,6 +37,7 @@ import (
 	"runtime"
 	"sort"
 	"strconv"
+	"strings"
 	"sync"
 	"testing"
 
@@ -189,7 +190,9 @@ func runCaseStages(t *testing.T, c Case) {
 	}
 
 	if lastOKTfOutputs != nil {
-		require.Equal(t, lastOKTfOutputs, lastOK.Outputs,
+		require.Equal(t,
+			scrubTmpDir(lastOKTfOutputs, tfDriver.Dir()),
+			scrubTmpDir(lastOK.Outputs, pulDriver.Dir()),
 			"stack outputs differ between tofu apply and pulumi up")
 		require.Equal(t, recA.Ops(), recB.Ops(),
 			"provider operations differ between tofu apply and pulumi up")
@@ -242,12 +245,38 @@ func runCaseFromDir(t *testing.T, caseDir string, c Case) {
 		}
 	}
 
-	require.Equal(t, outA, pulResult.Outputs, "stack outputs differ between tofu apply and pulumi up")
+	require.Equal(t,
+		scrubTmpDir(outA, tfDriver.Dir()),
+		scrubTmpDir(pulResult.Outputs, pulDriver.Dir()),
+		"stack outputs differ between tofu apply and pulumi up")
 	require.Equal(t, recA.Ops(), recB.Ops(), "provider operations differ between tofu apply and pulumi up")
 
 	if c.AssertState != nil {
 		c.AssertState(t, pulResult.Resources)
 	}
+}
+
+// scrubTmpDir replaces driver-specific temp paths in output values with the
+// sentinel "<TMPDIR>" so cross-driver comparison ignores the fact that tofu
+// and pulumi run from different temp directories. Symlink-resolved forms (on
+// macOS, /var/folders/... is a symlink to /private/var/folders/...) are also
+// scrubbed.
+func scrubTmpDir(outputs map[string]string, dir string) map[string]string {
+	if dir == "" {
+		return outputs
+	}
+	forms := []string{dir}
+	if resolved, err := filepath.EvalSymlinks(dir); err == nil && resolved != dir {
+		forms = append(forms, resolved)
+	}
+	out := make(map[string]string, len(outputs))
+	for k, v := range outputs {
+		for _, form := range forms {
+			v = strings.ReplaceAll(v, form, "<TMPDIR>")
+		}
+		out[k] = v
+	}
+	return out
 }
 
 // loadStages returns one entry per apply: a case directory containing only

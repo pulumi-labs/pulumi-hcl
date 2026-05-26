@@ -100,6 +100,11 @@ func NewDriver(t *testing.T, providers []Provider) *Driver {
 	}
 }
 
+// Dir returns the working directory where tofu runs and program files are
+// written. Tests use this to scrub the temp path out of values that bake it
+// in (e.g. path.cwd) before cross-driver comparison.
+func (d *Driver) Dir() string { return d.cwd }
+
 // Apply writes the input files, runs terraform init + apply, and returns all outputs.
 // Config values are passed as -var flags to terraform apply.
 //
@@ -203,12 +208,7 @@ func (d *Driver) tryParseOutputs() map[string]string {
 	}
 	result := make(map[string]string, len(state.Outputs))
 	for k, v := range state.Outputs {
-		var s string
-		if err := json.Unmarshal(v.Value, &s); err == nil {
-			result[k] = s
-		} else {
-			result[k] = string(v.Value)
-		}
+		result[k] = normalizeStateOutput(v.Value)
 	}
 	return result
 }
@@ -253,14 +253,29 @@ func (d *Driver) parseOutputs(t *testing.T) map[string]string {
 
 	result := make(map[string]string, len(state.Outputs))
 	for k, v := range state.Outputs {
-		var s string
-		if err := json.Unmarshal(v.Value, &s); err == nil {
-			result[k] = s
-		} else {
-			result[k] = string(v.Value)
-		}
+		result[k] = normalizeStateOutput(v.Value)
 	}
 	return result
+}
+
+// normalizeStateOutput converts a value from terraform.tfstate to the same
+// string form pulexec produces: bare string for string values, compact JSON
+// otherwise. The state file is indent-formatted, so re-marshaling drops the
+// whitespace baked into RawMessage so equality checks succeed.
+func normalizeStateOutput(raw json.RawMessage) string {
+	var s string
+	if err := json.Unmarshal(raw, &s); err == nil {
+		return s
+	}
+	var v any
+	if err := json.Unmarshal(raw, &v); err != nil {
+		return string(raw)
+	}
+	out, err := json.Marshal(v)
+	if err != nil {
+		return string(raw)
+	}
+	return string(out)
 }
 
 func (d *Driver) formatReattachEnvVar() string {

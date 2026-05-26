@@ -43,6 +43,12 @@ type ModuleInfo struct {
 
 	Module     *ast.Module // the module block from the parent config
 	SourcePath string      // resolved source path (for component type name)
+
+	// ParentSourcePath is the resolved source directory of the parent module
+	// (or the root program dir for top-level calls). It's the dir that
+	// Module.Source is relative to, so the runtime can re-resolve it when
+	// loading the child module on demand.
+	ParentSourcePath string
 }
 
 // ModuleName returns the block label of this module call (e.g. "first").
@@ -563,10 +569,12 @@ func (g *Graph) exprDepsExcluding(expr hcl.Expression, prefix string, exclude ma
 				dep = fmt.Sprintf("%sdata.%s.%s", prefix, parts[0], parts[1])
 			}
 		case "module":
-			if len(parts) >= 2 {
-				dep = fmt.Sprintf("%smodule.%s.output.%s", prefix, parts[0], parts[1])
-			} else if len(parts) >= 1 {
-				dep = fmt.Sprintf("%smodule.%s", prefix, parts[0])
+			if len(parts) >= 1 {
+				if out := moduleOutputName(traversal); out != "" {
+					dep = fmt.Sprintf("%smodule.%s.output.%s", prefix, parts[0], out)
+				} else {
+					dep = fmt.Sprintf("%smodule.%s", prefix, parts[0])
+				}
 			}
 		case "call":
 			if len(parts) >= 2 {
@@ -622,6 +630,9 @@ func formatTraversal(traversal hcl.Traversal) string {
 		}
 	case "module":
 		if len(parts) >= 1 {
+			if out := moduleOutputName(traversal); out != "" {
+				return fmt.Sprintf("module.%s.output.%s", parts[0], out)
+			}
 			return "module." + parts[0]
 		}
 	case "call":
@@ -635,6 +646,27 @@ func formatTraversal(traversal hcl.Traversal) string {
 		}
 	}
 
+	return ""
+}
+
+// moduleOutputName returns the output name from a `module.NAME[idx].OUTPUT`
+// traversal (the index step is optional). Returns "" if there's no attribute
+// step after the module name, meaning the reference is to the whole module.
+func moduleOutputName(traversal hcl.Traversal) string {
+	// traversal[0] is the root (`module`), traversal[1] is the module name.
+	// The next step is either the output attr, or an index followed by the
+	// output attr (for counted / for_each modules).
+	i := 2
+	if i < len(traversal) {
+		if _, ok := traversal[i].(hcl.TraverseIndex); ok {
+			i++
+		}
+	}
+	if i < len(traversal) {
+		if attr, ok := traversal[i].(hcl.TraverseAttr); ok {
+			return attr.Name
+		}
+	}
 	return ""
 }
 
@@ -699,14 +731,21 @@ func (g *Graph) inlineModule(
 	prefix := path.PrefixString()
 	parentPrefix := parentPath.PrefixString()
 	modInfo := &ModuleInfo{
-		Path:       path,
-		Module:     mod,
-		SourcePath: loaded.SourcePath,
+		Path:             path,
+		Module:           mod,
+		SourcePath:       loaded.SourcePath,
+		ParentSourcePath: workDir,
 	}
 
-	// Init node: depends on count/for_each/depends_on from parent scope.
+	// Init node: depends on count/for_each/depends_on from parent scope,
+	// plus the parent module's init (so a nested module never initializes
+	// before its enclosing module's instance/eval-context is registered).
 	initKey := prefix + "__init__"
 	var initDeps []pdag.Node
+	if !parentPath.IsRoot() {
+		_, parentInitIdx := g.newNode(parentPrefix + "__init__")
+		initDeps = append(initDeps, parentInitIdx)
+	}
 	initDeps = append(initDeps, g.exprDeps(mod.Count, parentPrefix)...)
 	initDeps = append(initDeps, g.exprDeps(mod.ForEach, parentPrefix)...)
 	for _, traversal := range mod.DependsOn {

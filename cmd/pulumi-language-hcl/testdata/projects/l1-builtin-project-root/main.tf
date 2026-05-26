@@ -1,3 +1,3 @@
 output "rootDirectoryOutput" {
-  value = path.root
+  value = path.cwd
 }

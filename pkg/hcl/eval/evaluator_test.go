@@ -316,18 +316,29 @@ func TestContextEach(t *testing.T) {
 }
 
 func TestContextPath(t *testing.T) {
-	ctx := NewContext("/project/module", "/project/module", "", "", "")
+	t.Run("root module yields '.'", func(t *testing.T) {
+		ctx := NewContext("/project/module", "/project/module", "", "", "")
+		eval := NewEvaluator(ctx)
+		result, diags := eval.EvaluateString(parseExpr(t, `path.module`))
+		assert.False(t, diags.HasErrors(), diags.Error())
+		assert.Equal(t, ".", result)
 
-	eval := NewEvaluator(ctx)
+		result, diags = eval.EvaluateString(parseExpr(t, `path.root`))
+		assert.False(t, diags.HasErrors(), diags.Error())
+		assert.Equal(t, ".", result)
+	})
 
-	expr := parseExpr(t, `path.module`)
-	result, diags := eval.EvaluateString(expr)
-	if diags.HasErrors() {
-		t.Errorf("Unexpected error: %s", diags.Error())
-	}
-	if result != "/project/module" {
-		t.Errorf("Expected '/project/module', got %q", result)
-	}
+	t.Run("nested module yields relative path from root", func(t *testing.T) {
+		ctx := NewContext("/project/modules/sub", "/project", "", "", "")
+		eval := NewEvaluator(ctx)
+		result, diags := eval.EvaluateString(parseExpr(t, `path.module`))
+		assert.False(t, diags.HasErrors(), diags.Error())
+		assert.Equal(t, "modules/sub", result)
+
+		result, diags = eval.EvaluateString(parseExpr(t, `path.root`))
+		assert.False(t, diags.HasErrors(), diags.Error())
+		assert.Equal(t, ".", result)
+	})
 }
 
 func TestContextTerraform(t *testing.T) {

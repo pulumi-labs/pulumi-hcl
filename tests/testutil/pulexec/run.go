@@ -146,6 +146,11 @@ backend:
 // Apply writes programFiles into the project dir (replacing any prior .tf
 // program files) and runs `pulumi up`. Returns stack outputs and resource
 // state from the resulting deployment.
+// Dir returns the program directory where pulumi runs and program files are
+// written. Tests use this to scrub the temp path out of values that bake it
+// in (e.g. path.cwd) before cross-driver comparison.
+func (d *Driver) Dir() string { return d.dir }
+
 func (d *Driver) Apply(t *testing.T, programFiles map[string]string) Result {
 	t.Helper()
 

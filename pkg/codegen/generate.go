@@ -2184,14 +2184,24 @@ func (g *generator) funcCallTokens(expr *model.FunctionCallExpression) (hclwrite
 		}
 		return g.passthroughFuncCallTokens(expr.Name, expr.Args)
 	case "cwd":
+		// PCL cwd() is the program working directory (the dir holding the
+		// .tf files, after any Pulumi -main). In Terraform-semantic HCL
+		// that's the absolute config root, which abspath(path.root)
+		// materializes (path.root is "."). The eject path inverts this
+		// exact pattern back to cwd().
+		return hclwrite.TokensForFunctionCall("abspath",
+			hclwrite.TokensForTraversal(hcl.Traversal{
+				hcl.TraverseRoot{Name: "path"},
+				hcl.TraverseAttr{Name: "root"},
+			})), nil
+	case "rootDirectory":
+		// PCL rootDirectory() is the project root (where Pulumi.yaml lives,
+		// the dir above any -main subdir). That matches Terraform's path.cwd
+		// — the original cwd before any -chdir — which our engine populates
+		// with the Pulumi RootDirectory.
 		return hclwrite.TokensForTraversal(hcl.Traversal{
 			hcl.TraverseRoot{Name: "path"},
 			hcl.TraverseAttr{Name: "cwd"},
-		}), nil
-	case "rootDirectory":
-		return hclwrite.TokensForTraversal(hcl.Traversal{
-			hcl.TraverseRoot{Name: "path"},
-			hcl.TraverseAttr{Name: "root"},
 		}), nil
 	case "stack":
 		return hclwrite.TokensForTraversal(hcl.Traversal{

@@ -1,3 +1,3 @@
 output "cwdOutput" {
-  value = path.cwd
+  value = abspath(path.root)
 }
