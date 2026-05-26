@@ -41,6 +41,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/apparentlymart/go-cidr/cidr"
 	"github.com/google/uuid"
 	"github.com/hashicorp/hcl/v2/ext/customdecode"
 	"github.com/hashicorp/hcl/v2/ext/tryfunc"
@@ -1462,48 +1463,26 @@ var cidrSubnetFunc = function.New(&function.Spec{
 	},
 	Type: function.StaticReturnType(cty.String),
 	Impl: func(args []cty.Value, retType cty.Type) (cty.Value, error) {
-		prefix := args[0].AsString()
 		newbits, _ := args[1].AsBigFloat().Int64()
-		netnum, _ := args[2].AsBigFloat().Int64()
+		netnum, _ := args[2].AsBigFloat().Int(nil)
 
-		_, network, err := net.ParseCIDR(prefix)
+		_, network, err := net.ParseCIDR(args[0].AsString())
 		if err != nil {
 			return cty.NilVal, fmt.Errorf("invalid CIDR: %s", err)
 		}
 
-		ones, bits := network.Mask.Size()
-		newOnes := ones + int(newbits)
-		if newOnes > bits {
-			return cty.NilVal, fmt.Errorf("newbits %d would create prefix length %d, exceeding %d", newbits, newOnes, bits)
+		newNetwork, err := cidr.SubnetBig(network, int(newbits), netnum)
+		if err != nil {
+			return cty.NilVal, err
 		}
-
-		// Calculate the new network address
-		// Convert IP to big-endian integer, add subnet offset, convert back
-		ip := make(net.IP, len(network.IP))
-		copy(ip, network.IP)
-
-		// Calculate offset to add based on netnum and new prefix length
-		// The offset is netnum * (size of new subnet in addresses)
-		// For an IP address, we shift netnum left by (bits - newOnes) positions
-		bitsToShift := uint(bits - newOnes)
-
-		// Convert netnum to bytes and add to IP
-		offset := netnum << bitsToShift
-		for i := len(ip) - 1; i >= 0 && offset > 0; i-- {
-			sum := int64(ip[i]) + (offset & 0xff)
-			ip[i] = byte(sum & 0xff)
-			offset >>= 8
-		}
-
-		newNet := &net.IPNet{
-			IP:   ip,
-			Mask: net.CIDRMask(newOnes, bits),
-		}
-
-		return cty.StringVal(newNet.String()), nil
+		return cty.StringVal(newNetwork.String()), nil
 	},
 })
 
+// cidrSubnetsFunc allocates a sequence of consecutive subnets of the given
+// prefix lengths (in additional bits) under a common base prefix. The
+// allocator advances by each subnet's actual size, so mixed prefix lengths
+// pack without overlap — matching Terraform's behaviour.
 var cidrSubnetsFunc = function.New(&function.Spec{
 	Params: []function.Parameter{
 		{Name: "prefix", Type: cty.String},
@@ -1514,53 +1493,50 @@ var cidrSubnetsFunc = function.New(&function.Spec{
 	},
 	Type: function.StaticReturnType(cty.List(cty.String)),
 	Impl: func(args []cty.Value, retType cty.Type) (cty.Value, error) {
-		prefix := args[0].AsString()
-
-		_, network, err := net.ParseCIDR(prefix)
+		_, network, err := net.ParseCIDR(args[0].AsString())
 		if err != nil {
-			return cty.NilVal, fmt.Errorf("invalid CIDR: %s", err)
+			return cty.NilVal, function.NewArgErrorf(0, "invalid CIDR expression: %s", err)
 		}
+		startPrefixLen, _ := network.Mask.Size()
 
-		ones, bits := network.Mask.Size()
-		var subnets []cty.Value
-
-		var netnum int64
-		for i := 1; i < len(args); i++ {
-			newbits, _ := args[i].AsBigFloat().Int64()
-			newOnes := ones + int(newbits)
-			if newOnes > bits {
-				return cty.NilVal, fmt.Errorf("newbits %d would create prefix length %d, exceeding %d", newbits, newOnes, bits)
-			}
-
-			ip := make(net.IP, len(network.IP))
-			copy(ip, network.IP)
-
-			// Add netnum to the IP
-			shift := uint(bits - newOnes)
-			n := netnum
-			for j := len(ip) - 1; j >= 0 && n > 0; j-- {
-				add := byte((n << shift) & 0xff)
-				ip[j] |= add
-				n >>= (8 - shift)
-				if shift >= 8 {
-					shift -= 8
-				} else {
-					shift = 0
-				}
-			}
-
-			newNet := &net.IPNet{
-				IP:   ip,
-				Mask: net.CIDRMask(newOnes, bits),
-			}
-			subnets = append(subnets, cty.StringVal(newNet.String()))
-			netnum++
-		}
-
-		if len(subnets) == 0 {
+		newbitsArgs := args[1:]
+		if len(newbitsArgs) == 0 {
 			return cty.ListValEmpty(cty.String), nil
 		}
-		return cty.ListVal(subnets), nil
+
+		firstNewbits, _ := newbitsArgs[0].AsBigFloat().Int64()
+		current, _ := cidr.PreviousSubnet(network, startPrefixLen+int(firstNewbits))
+
+		out := make([]cty.Value, len(newbitsArgs))
+		for i, arg := range newbitsArgs {
+			newbits, _ := arg.AsBigFloat().Int64()
+			if newbits < 1 {
+				return cty.NilVal, function.NewArgErrorf(i+1, "must extend prefix by at least one bit")
+			}
+			length := startPrefixLen + int(newbits)
+			if length > len(network.IP)*8 {
+				protocol := "IP"
+				switch len(network.IP) * 8 {
+				case 32:
+					protocol = "IPv4"
+				case 128:
+					protocol = "IPv6"
+				}
+				return cty.NilVal, function.NewArgErrorf(i+1,
+					"would extend prefix to %d bits, which is too long for an %s address",
+					length, protocol)
+			}
+
+			next, rollover := cidr.NextSubnet(current, length)
+			if rollover || !network.Contains(next.IP) {
+				return cty.NilVal, function.NewArgErrorf(i+1,
+					"not enough remaining address space for a subnet with a prefix of %d bits after %s",
+					length, current.String())
+			}
+			current = next
+			out[i] = cty.StringVal(current.String())
+		}
+		return cty.ListVal(out), nil
 	},
 })
 

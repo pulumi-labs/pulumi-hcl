@@ -738,8 +738,34 @@ func TestIPFunctions(t *testing.T) {
 	}{
 		{"cidrhost", `cidrhost("10.0.0.0/8", 5)`, cty.StringVal("10.0.0.5")},
 		{"cidrnetmask", `cidrnetmask("10.0.0.0/8")`, cty.StringVal("255.0.0.0")},
-		{"cidrsubnet", `cidrsubnet("10.0.0.0/8", 8, 2)`, cty.StringVal("10.2.0.0/16")},
+		{"cidrsubnet v4", `cidrsubnet("10.0.0.0/8", 8, 2)`, cty.StringVal("10.2.0.0/16")},
+		{"cidrsubnet v6", `cidrsubnet("2600:1f14:315a:f400::/56", 8, 2)`,
+			cty.StringVal("2600:1f14:315a:f402::/64")},
 		{"cidrsubnets count", `length(cidrsubnets("10.0.0.0/8", 8, 8, 8))`, cty.NumberIntVal(3)},
+		{"cidrsubnets v4 values", `cidrsubnets("10.0.0.0/8", 8, 8, 8)`,
+			cty.ListVal([]cty.Value{
+				cty.StringVal("10.0.0.0/16"),
+				cty.StringVal("10.1.0.0/16"),
+				cty.StringVal("10.2.0.0/16"),
+			})},
+		{"cidrsubnets v4 mixed bits", `cidrsubnets("10.0.0.0/8", 8, 4, 4)`,
+			cty.ListVal([]cty.Value{
+				cty.StringVal("10.0.0.0/16"),
+				cty.StringVal("10.16.0.0/12"),
+				cty.StringVal("10.32.0.0/12"),
+			})},
+		{"cidrsubnets v6 values", `cidrsubnets("2600:1f14:315a:f400::/56", 8, 8, 8)`,
+			cty.ListVal([]cty.Value{
+				cty.StringVal("2600:1f14:315a:f400::/64"),
+				cty.StringVal("2600:1f14:315a:f401::/64"),
+				cty.StringVal("2600:1f14:315a:f402::/64"),
+			})},
+		{"cidrsubnets v6 uneven bits", `cidrsubnets("2600:1f14:315a::/48", 16, 16, 16)`,
+			cty.ListVal([]cty.Value{
+				cty.StringVal("2600:1f14:315a::/64"),
+				cty.StringVal("2600:1f14:315a:1::/64"),
+				cty.StringVal("2600:1f14:315a:2::/64"),
+			})},
 	}
 
 	for _, tt := range tests {
