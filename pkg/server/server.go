@@ -34,6 +34,7 @@ import (
 	"github.com/pulumi-labs/pulumi-hcl/pkg/codegen"
 	"github.com/pulumi-labs/pulumi-hcl/pkg/hcl/ast"
 	"github.com/pulumi-labs/pulumi-hcl/pkg/hcl/bridge"
+	"github.com/pulumi-labs/pulumi-hcl/pkg/hcl/modules"
 	"github.com/pulumi-labs/pulumi-hcl/pkg/hcl/packages"
 	"github.com/pulumi-labs/pulumi-hcl/pkg/hcl/parser"
 	"github.com/pulumi-labs/pulumi-hcl/pkg/hcl/run"
@@ -127,7 +128,7 @@ func (host *LanguageHost) GetRequiredPackages(
 		required = config.Terraform.RequiredProviders
 	}
 
-	for _, alias := range usedProviders(config) {
+	for _, alias := range usedProviders(config, req.Info.ProgramDirectory) {
 		req := required[alias]
 
 		if req.IsPulumi() {
@@ -233,12 +234,13 @@ func readParameterizationInfos(dir string) (map[string]workspace.PackageDescript
 	return result, errors.Join(errs...)
 }
 
-// missingNonPulumiSDKs returns the sorted list of non-Pulumi provider aliases
-// used in config that lack a corresponding entry in sdks. Per
-// docs/providers.md, non-Pulumi providers must be materialized to
-// sdks/<alias>/hcl.sdk.json by `pulumi install` before Run.
-func missingNonPulumiSDKs(config *ast.Config, sdks map[string]workspace.PackageDescriptor) []string {
-	used := usedProviders(config)
+// missingNonPulumiSDKs returns the sorted non-Pulumi provider aliases used
+// by config (and its transitively-loaded modules) that lack an on-disk SDK.
+// Empty workDir skips module recursion.
+func missingNonPulumiSDKs(
+	config *ast.Config, sdks map[string]workspace.PackageDescriptor, workDir string,
+) []string {
+	used := usedProviders(config, workDir)
 	pulumiSourced := map[string]bool{}
 	if config != nil && config.Terraform != nil {
 		for alias, req := range config.Terraform.RequiredProviders {
@@ -260,14 +262,33 @@ func missingNonPulumiSDKs(config *ast.Config, sdks map[string]workspace.PackageD
 	return missing
 }
 
-// usedProviders returns the sorted set of provider local names referenced by
-// the program: explicit `required_providers` entries, `provider` blocks, and
-// the package prefix of every resource/data source type.
-func usedProviders(config *ast.Config) []string {
-	if config == nil {
-		return nil
-	}
+// usedProviders returns the sorted provider local names referenced by config
+// (required_providers, provider blocks, resource/data type prefixes). A
+// non-empty workDir enables recursion through `module` blocks.
+func usedProviders(config *ast.Config, workDir string) []string {
 	set := map[string]struct{}{}
+	var loader *modules.Loader
+	if workDir != "" && config != nil && len(config.Modules) > 0 {
+		loader = modules.NewLoader()
+	}
+	collectProviders(config, workDir, set, loader, map[string]struct{}{})
+	out := make([]string, 0, len(set))
+	for k := range set {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// collectProviders fills set with provider names from config; recurses via
+// loader when non-nil. visited dedupes shared child modules.
+func collectProviders(
+	config *ast.Config, workDir string,
+	set map[string]struct{}, loader *modules.Loader, visited map[string]struct{},
+) {
+	if config == nil {
+		return
+	}
 	if config.Terraform != nil {
 		for alias := range config.Terraform.RequiredProviders {
 			set[alias] = struct{}{}
@@ -286,12 +307,25 @@ func usedProviders(config *ast.Config) []string {
 			set[name] = struct{}{}
 		}
 	}
-	out := make([]string, 0, len(set))
-	for k := range set {
-		out = append(out, k)
+	if loader == nil {
+		return
 	}
-	sort.Strings(out)
-	return out
+	for _, mod := range config.Modules {
+		if mod.Source == "" {
+			continue
+		}
+		loaded, err := loader.LoadModule(mod.Source, mod.Version, workDir)
+		if err != nil {
+			// `pulumi install` surfaces a concrete error later; don't block on it here.
+			logging.V(5).Infof("usedProviders: loading module %q: %v", mod.Source, err)
+			continue
+		}
+		if _, seen := visited[loaded.SourcePath]; seen {
+			continue
+		}
+		visited[loaded.SourcePath] = struct{}{}
+		collectProviders(loaded.Config, loaded.SourcePath, set, loader, visited)
+	}
 }
 
 // providerNameFromType extracts the provider local name from a TF resource
@@ -360,7 +394,7 @@ func (host *LanguageHost) Run(
 		return nil, fmt.Errorf("unable to read parameterization: %w", err)
 	}
 
-	if missing := missingNonPulumiSDKs(config, paramDescriptors); len(missing) > 0 {
+	if missing := missingNonPulumiSDKs(config, paramDescriptors, req.Info.ProgramDirectory); len(missing) > 0 {
 		return &pulumirpc.RunResponse{
 			Error: fmt.Sprintf(
 				"missing local SDK for non-Pulumi provider(s) %v; run `pulumi install` to fetch them",

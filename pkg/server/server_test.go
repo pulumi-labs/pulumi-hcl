@@ -193,14 +193,14 @@ data "archive_file" "lambda" {}
 	// archive) must be reported missing.
 	assert.Equal(t,
 		[]string{"archive", "aws"},
-		missingNonPulumiSDKs(cfg, nil))
+		missingNonPulumiSDKs(cfg, nil, ""))
 
 	// Once both have SDKs, nothing is missing.
 	sdks := map[string]workspace.PackageDescriptor{
 		"aws":     {PluginDescriptor: workspace.PluginDescriptor{Name: "aws"}},
 		"archive": {PluginDescriptor: workspace.PluginDescriptor{Name: "archive"}},
 	}
-	assert.Empty(t, missingNonPulumiSDKs(cfg, sdks))
+	assert.Empty(t, missingNonPulumiSDKs(cfg, sdks, ""))
 
 	// A pulumi-source provider needs no SDK even when it's only referenced
 	// by a resource type prefix.
@@ -217,5 +217,64 @@ resource "aws_s3_bucket" "b" {}
 `
 	cfgPulumi, diags := parser.NewParser().ParseSource("main.tf", []byte(pulumiSrc))
 	require.False(t, diags.HasErrors(), "diags: %v", diags)
-	assert.Empty(t, missingNonPulumiSDKs(cfgPulumi, nil))
+	assert.Empty(t, missingNonPulumiSDKs(cfgPulumi, nil, ""))
+}
+
+// Implicit provider inside a child module must surface at the top — without
+// recursion the SDK check silently misses it (the aws-ia/label gap).
+func TestMissingNonPulumiSDKs_TransitiveModuleProvider(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "main.tf"), []byte(`
+module "child" {
+  source = "./child"
+}
+`), 0o600))
+
+	childDir := filepath.Join(dir, "child")
+	require.NoError(t, os.MkdirAll(childDir, 0o755))
+	// Only mention of "aws" is inside the module.
+	require.NoError(t, os.WriteFile(filepath.Join(childDir, "main.tf"), []byte(`
+resource "aws_s3_bucket" "b" {}
+`), 0o600))
+
+	cfg, diags := parser.NewParser().ParseDirectory(dir)
+	require.False(t, diags.HasErrors(), "diags: %v", diags)
+
+	assert.Equal(t,
+		[]string{"aws"},
+		missingNonPulumiSDKs(cfg, nil, dir))
+}
+
+// Same recursion via the module's `required_providers` block (no resources).
+func TestMissingNonPulumiSDKs_TransitiveModuleRequiredProviders(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "main.tf"), []byte(`
+module "child" {
+  source = "./child"
+}
+`), 0o600))
+
+	childDir := filepath.Join(dir, "child")
+	require.NoError(t, os.MkdirAll(childDir, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(childDir, "main.tf"), []byte(`
+terraform {
+  required_providers {
+    awscc = {
+      source  = "hashicorp/awscc"
+      version = ">= 1.0"
+    }
+  }
+}
+`), 0o600))
+
+	cfg, diags := parser.NewParser().ParseDirectory(dir)
+	require.False(t, diags.HasErrors(), "diags: %v", diags)
+
+	assert.Equal(t,
+		[]string{"awscc"},
+		missingNonPulumiSDKs(cfg, nil, dir))
 }
