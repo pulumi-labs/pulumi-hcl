@@ -1012,6 +1012,23 @@ func (e *Engine) processResourceInContext(
 		}
 	}
 
+	// Empty count/for_each still needs the resource address bound so downstream
+	// references (e.g. an unconditional module output that walks the resource)
+	// see an empty collection rather than "no such attribute".
+	if len(result.Instances) == 0 && (res.Count != nil || res.ForEach != nil) {
+		baseKey := node.Key
+		if node.ModuleInfo != nil {
+			baseKey = strings.TrimPrefix(baseKey, node.ModuleInfo.Prefix())
+		}
+		var empty cty.Value
+		if res.Count != nil {
+			empty = cty.EmptyTupleVal
+		} else {
+			empty = cty.EmptyObjectVal
+		}
+		evalCtx.SetResource(baseKey, empty)
+	}
+
 	return nil
 }
 

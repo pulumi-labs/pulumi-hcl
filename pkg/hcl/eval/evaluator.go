@@ -228,7 +228,9 @@ func (e *Evaluator) EvaluateForEach(expr hcl.Expression) (map[string]cty.Value, 
 			result[k.AsString()] = v
 		}
 	case ty.IsSetType():
-		if ty.ElementType() != cty.String {
+		// An empty set is always a no-op, even if its element type is
+		// `dynamic`.
+		if val.LengthInt() > 0 && ty.ElementType() != cty.String {
 			diags = append(diags, &hcl.Diagnostic{
 				Severity: hcl.DiagError,
 				Summary:  "Invalid for_each value",
