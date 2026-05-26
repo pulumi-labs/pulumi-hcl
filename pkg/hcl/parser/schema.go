@@ -136,7 +136,6 @@ var resourceSchema = &hcl.BodySchema{
 		{Name: "replace_on_changes"},
 		{Name: "import_id"},
 		{Name: "env_var_mappings"},
-		{Name: "version"},
 		{Name: "plugin_download_url"},
 		{Name: "aliases"},
 	},

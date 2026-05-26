@@ -44,6 +44,12 @@ func SimpleProvider() *schema.Provider {
 				Schema: map[string]*schema.Schema{
 					"input_one":     {Type: schema.TypeString, Optional: true},
 					"input_two":     {Type: schema.TypeBool, Optional: true},
+					// `version` is an upstream-style attribute name used by
+					// some real TF resources (e.g. aws_rds_engine_version).
+					// Kept here so tests can assert it survives the
+					// HCL→Pulumi translation and isn't stripped by any
+					// meta-attribute reservation.
+					"version":       {Type: schema.TypeString, Optional: true},
 					"result":        {Type: schema.TypeString, Computed: true},
 					"prefix_result": {Type: schema.TypeString, Computed: true},
 				},
@@ -51,7 +57,12 @@ func SimpleProvider() *schema.Provider {
 					d.SetId("simple-id")
 					one, _ := d.Get("input_one").(string)
 					two, _ := d.Get("input_two").(bool)
-					if err := d.Set("result", fmt.Sprintf("%s-%t", one, two)); err != nil {
+					ver, _ := d.Get("version").(string)
+					result := fmt.Sprintf("%s-%t", one, two)
+					if ver != "" {
+						result += "-" + ver
+					}
+					if err := d.Set("result", result); err != nil {
 						return diag.FromErr(err)
 					}
 					var prefix string

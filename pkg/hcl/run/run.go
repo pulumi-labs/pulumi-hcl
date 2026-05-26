@@ -1295,7 +1295,7 @@ func (e *Engine) buildResourceOptionsInContext(
 	}
 
 	if res.Provider != nil {
-		val, valDiags := e.evaluator.EvaluateExpression(res.Provider)
+		val, valDiags := eval.NewEvaluator(evalCtx).EvaluateExpression(res.Provider)
 		if valDiags.HasErrors() {
 			return nil, fmt.Errorf("evaluating provider for %s.%s: %s", res.Type, res.Name, valDiags.Error())
 		}
@@ -1995,7 +1995,7 @@ func (e *Engine) invokeDataSourceOnce(
 	}
 
 	if ds.Provider != nil {
-		val, valDiags := e.evaluator.EvaluateExpression(ds.Provider)
+		val, valDiags := eval.NewEvaluator(evalCtx).EvaluateExpression(ds.Provider)
 		if valDiags.HasErrors() {
 			return cty.NilVal, nil, fmt.Errorf("evaluating provider for data %s.%s: %s", ds.Type, ds.Name, valDiags.Error())
 		}
@@ -2007,13 +2007,6 @@ func (e *Engine) invokeDataSourceOnce(
 	} else if node.ModuleInfo == nil {
 		if ref, ok := e.defaultProviders.Get(packageNameFromResourceType(ds.Type)); ok {
 			invokeReq.Provider = ref
-		}
-	}
-
-	if ds.Version != nil {
-		val, valDiags := ds.Version.Value(hclCtx)
-		if !valDiags.HasErrors() && val.Type() == cty.String {
-			invokeReq.Version = val.AsString()
 		}
 	}
 
@@ -2398,13 +2391,19 @@ func (e *Engine) processModuleInit(ctx context.Context, node *graph.Node) error 
 	parentURN := e.stackURN
 	parentEvalCtx := e.evaluator.Context()
 
-	// If this is a nested module, look up the parent instance URN.
+	// If this is a nested module, look up the parent instance URN. When the
+	// parent has zero instances (count=0 / for_each empty) the entire inner
+	// subtree must be skipped — registering an empty instances slice lets
+	// downstream per-instance work (vars, locals, nested modules, resources)
+	// loop zero times instead of falling back to the root context.
 	if modInfo.ParentPrefix() != "" {
 		parentInstances, ok := e.moduleInstances.Get(modInfo.ParentPrefix())
-		if ok && len(parentInstances) > 0 {
-			parentURN = parentInstances[0].URN
-			parentEvalCtx = parentInstances[0].EvalCtx
+		if !ok || len(parentInstances) == 0 {
+			e.moduleInstances.Set(modInfo.Prefix(), nil)
+			return nil
 		}
+		parentURN = parentInstances[0].URN
+		parentEvalCtx = parentInstances[0].EvalCtx
 	}
 
 	// Load the child module to get variable type constraints for input coercion.

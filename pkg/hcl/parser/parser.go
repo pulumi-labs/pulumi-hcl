@@ -717,10 +717,6 @@ func (p *Parser) parseResourceBlock(config *ast.Config, block *hcl.Block, isData
 		resource.EnvVarMappings = attr.Expr
 	}
 
-	if attr, ok := content.Attributes["version"]; ok {
-		resource.Version = attr.Expr
-	}
-
 	if attr, ok := content.Attributes["plugin_download_url"]; ok {
 		resource.PluginDownloadURL = attr.Expr
 	}

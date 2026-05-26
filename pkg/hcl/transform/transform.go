@@ -330,14 +330,23 @@ func evalDynamicBlocks(
 		}
 
 		// Determine the iterator variable name (defaults to block label).
+		// `iterator = <ident>` takes a bare identifier as the new iterator
+		// name, not an expression to evaluate — extract it directly from
+		// the traversal instead of running it through eval.
 		iteratorName := propName
 		if iterAttr, ok := content.Attributes["iterator"]; ok {
-			iterVal, d := eval("", iterAttr.Expr, nil)
-			diags = diags.Extend(d)
-			if d.HasErrors() {
+			traversals := iterAttr.Expr.Variables()
+			if len(traversals) == 1 && len(traversals[0]) == 1 {
+				iteratorName = traversals[0].RootName()
+			} else {
+				diags = append(diags, &hcl.Diagnostic{
+					Severity: hcl.DiagError,
+					Summary:  "Invalid iterator value",
+					Detail:   "The iterator argument must be a single identifier.",
+					Subject:  iterAttr.Range.Ptr(),
+				})
 				return diags
 			}
-			iteratorName = iterVal.AsString()
 		}
 
 		// Find the content block.
