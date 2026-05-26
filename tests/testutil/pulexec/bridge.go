@@ -34,9 +34,15 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// BridgedProvider wraps a *schema.Provider into a tfbridge.ProviderInfo with auto-generated
-// tokens and no-op CRUD methods where missing.
-func BridgedProvider(t *testing.T, providerName string, tfp *schema.Provider) tfbridge.ProviderInfo {
+// BridgedProvider wraps a *schema.Provider into a tfbridge.ProviderInfo with
+// auto-generated tokens and no-op CRUD methods where missing. customize, if
+// non-nil, runs after token computation so tests can apply non-default
+// Pulumi-side renames (or any other ProviderInfo tweak) before the provider
+// is served.
+func BridgedProvider(
+	t *testing.T, providerName string, tfp *schema.Provider,
+	customize func(*testing.T, *tfbridge.ProviderInfo),
+) tfbridge.ProviderInfo {
 	t.Helper()
 
 	require.NoError(t, tfp.InternalValidate())
@@ -51,6 +57,10 @@ func BridgedProvider(t *testing.T, providerName string, tfp *schema.Provider) tf
 		EnableZeroDefaultSchemaVersion: true,
 	}
 	provider.MustComputeTokens(tokens.SingleModule(providerName, "index", tokens.MakeStandard(providerName)))
+
+	if customize != nil {
+		customize(t, &provider)
+	}
 
 	return provider
 }

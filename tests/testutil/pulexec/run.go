@@ -86,8 +86,9 @@ type Result struct {
 // `pulumi up` cycles against the same stack — required for tests that verify
 // behavior across changes (e.g. lifecycle.replace_triggered_by).
 type Driver struct {
-	pt  *pulumitest.PulumiTest
-	dir string
+	pt        *pulumitest.PulumiTest
+	dir       string
+	providers []string
 }
 
 // NewDriver builds the project dir, attaches the bridged providers, and sets
@@ -97,6 +98,11 @@ func NewDriver(t *testing.T, provs []Provider, config map[string]string) *Driver
 
 	binDir := ensureHCLLanguagePlugin(t)
 	dir := t.TempDir()
+
+	provNames := make([]string, len(provs))
+	for i, p := range provs {
+		provNames[i] = p.Name
+	}
 
 	// The project name is used as the default namespace for user config. It
 	// must not collide with any attached provider name, or user config like
@@ -134,7 +140,7 @@ backend:
 	for k, v := range config {
 		pt.SetConfig(t, k, v)
 	}
-	return &Driver{pt: pt, dir: dir}
+	return &Driver{pt: pt, dir: dir, providers: provNames}
 }
 
 // Apply writes programFiles into the project dir (replacing any prior .tf
@@ -260,6 +266,24 @@ func (d *Driver) writeFiles(t *testing.T, programFiles map[string]string) {
 		fullPath := filepath.Join(d.dir, path)
 		require.NoError(t, os.MkdirAll(filepath.Dir(fullPath), 0o755))
 		require.NoError(t, os.WriteFile(fullPath, []byte(content), 0o600))
+	}
+	d.writeStubSDKs(t)
+}
+
+// writeStubSDKs materializes a minimal sdks/<provider>/hcl.sdk.json for each
+// attached provider. In production this file is written by `pulumi install`
+// (via GeneratePackage), but the harness uses AttachProvider, so the
+// terraform-provider plugin that `pulumi install` would normally invoke is
+// never run. The descriptor is intentionally unparameterized — AttachProvider
+// short-circuits plugin lookup to the in-process gRPC server.
+func (d *Driver) writeStubSDKs(t *testing.T) {
+	t.Helper()
+	for _, name := range d.providers {
+		sdkDir := filepath.Join(d.dir, "sdks", name)
+		require.NoError(t, os.MkdirAll(sdkDir, 0o755))
+		desc := fmt.Sprintf(`{"name":%q,"kind":"resource"}`+"\n", name)
+		require.NoError(t, os.WriteFile(
+			filepath.Join(sdkDir, "hcl.sdk.json"), []byte(desc), 0o600))
 	}
 }
 

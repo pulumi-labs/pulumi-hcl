@@ -309,17 +309,27 @@ func (l *ParameterizationAwareLoader) enrich(descriptor *schema.PackageDescripto
 		return descriptor
 	}
 	desc, ok := l.aliases[descriptor.Name]
-	if !ok || desc.Parameterization == nil || desc.Version == nil {
+	if !ok || desc.Parameterization == nil {
 		return descriptor
 	}
-	paramVersion := desc.Parameterization.Version
-	baseVersion := *desc.Version
+	// Base version may be nil for auto-derived TF-style entries (we let the
+	// plugin loader pick the installed terraform-provider version); file-based
+	// descriptors from `pulumi package add` carry an explicit version.
+	var baseVersion *semver.Version
+	if desc.Version != nil {
+		v := *desc.Version
+		baseVersion = &v
+	}
+	pkgName := desc.Name
+	if pkgName == "" {
+		pkgName = descriptor.Name
+	}
 	return &schema.PackageDescriptor{
-		Name:    desc.Name,
-		Version: &baseVersion,
+		Name:    pkgName,
+		Version: baseVersion,
 		Parameterization: &schema.ParameterizationDescriptor{
 			Name:    desc.Parameterization.Name,
-			Version: paramVersion,
+			Version: desc.Parameterization.Version,
 			Value:   desc.Parameterization.Value,
 		},
 	}

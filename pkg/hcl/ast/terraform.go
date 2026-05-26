@@ -15,6 +15,8 @@
 package ast
 
 import (
+	"strings"
+
 	"github.com/hashicorp/hcl/v2"
 )
 
@@ -91,4 +93,12 @@ type RequiredProvider struct {
 
 	// DeclRange is the source range of this provider requirement.
 	DeclRange hcl.Range
+}
+
+// IsPulumi reports whether this provider is sourced from Pulumi's native
+// package system (Source begins with "pulumi/"). Non-Pulumi sources —
+// including the default empty source, which resolves to "hashicorp/<name>"
+// — are bridged via the terraform-provider plugin.
+func (p *RequiredProvider) IsPulumi() bool {
+	return p != nil && strings.HasPrefix(p.Source, "pulumi/")
 }

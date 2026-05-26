@@ -814,7 +814,7 @@ func TestResourceOutputToCtyDoesNotErrorOnValidValues(t *testing.T) {
 				continue
 			}
 			outputs := rapidresource.ResourceProperties(res).Draw(rt, "outputs:"+res.Token)
-			_, err := ResourceOutputToCty(outputs, res, false)
+			_, err := ResourceOutputToCty(outputs, res, nil, false)
 			require.NoError(t, err)
 		}
 	})
@@ -914,7 +914,7 @@ func TestResourceOutputToCtyUnionTypeCollapse(t *testing.T) {
 			}),
 		})
 
-		r, err := ResourceOutputToCty(outputs, res, false)
+		r, err := ResourceOutputToCty(outputs, res, nil, false)
 		require.NoError(t, err)
 		assert.Equal(t, map[string]cty.Value{
 			"p": cty.ObjectVal(map[string]cty.Value{
@@ -971,7 +971,7 @@ func TestResourceOutputToCtyUnionTypeCollapseNested(t *testing.T) {
 			}),
 		})
 
-		r, err := ResourceOutputToCty(outputs, res, false)
+		r, err := ResourceOutputToCty(outputs, res, nil, false)
 		require.NoError(t, err)
 		// Object{foo_bar:String} and Map<String> unify to Map<String>, so the
 		// outer array can stay as a clean cty.ListVal of cty.MapVal.
@@ -999,7 +999,7 @@ func TestResourceOutputToCtyUnionTypeCollapseNested(t *testing.T) {
 			}),
 		})
 
-		r, err := ResourceOutputToCty(outputs, res, false)
+		r, err := ResourceOutputToCty(outputs, res, nil, false)
 		require.NoError(t, err)
 		assert.Equal(t, map[string]cty.Value{
 			"lookup": cty.MapVal(map[string]cty.Value{
@@ -1032,7 +1032,7 @@ func TestResourceOutputToCtyUnionTypeCollapseNested(t *testing.T) {
 			}),
 		})
 
-		r, err := ResourceOutputToCty(outputs, res, false)
+		r, err := ResourceOutputToCty(outputs, res, nil, false)
 		require.NoError(t, err)
 		// After union resolution every leaf becomes Map<String>, so both the
 		// inner maps and the outer array can stay homogeneous.
@@ -1065,7 +1065,7 @@ func TestResourceOutputToCtyUnionTypeCollapseNested(t *testing.T) {
 			}),
 		})
 
-		r, err := ResourceOutputToCty(outputs, res, false)
+		r, err := ResourceOutputToCty(outputs, res, nil, false)
 		require.NoError(t, err)
 		// Object{foo_bar:String} and Map<String> unify to Map<String>, so the
 		// outer collection can stay as a clean cty.MapVal of cty.MapVal.
@@ -1107,7 +1107,7 @@ func TestResourceOutputToCtyUnionTypeCollapseNested(t *testing.T) {
 			outputs := property.NewMap(map[string]property.Value{
 				"v": property.New(map[string]property.Value{"p": property.New("hi")}),
 			})
-			r, err := ResourceOutputToCty(outputs, res, false)
+			r, err := ResourceOutputToCty(outputs, res, nil, false)
 			require.NoError(t, err)
 			assert.Equal(t, map[string]cty.Value{
 				"v": cty.ObjectVal(map[string]cty.Value{"p": cty.StringVal("hi")}),
@@ -1120,7 +1120,7 @@ func TestResourceOutputToCtyUnionTypeCollapseNested(t *testing.T) {
 			outputs := property.NewMap(map[string]property.Value{
 				"v": property.New(map[string]property.Value{"p": property.New(true)}),
 			})
-			r, err := ResourceOutputToCty(outputs, res, false)
+			r, err := ResourceOutputToCty(outputs, res, nil, false)
 			require.NoError(t, err)
 			assert.Equal(t, map[string]cty.Value{
 				"v": cty.ObjectVal(map[string]cty.Value{"p": cty.BoolVal(true)}),
@@ -1159,7 +1159,7 @@ func TestResourceOutputToCtyUnionTypeCollapseNested(t *testing.T) {
 			}),
 		})
 
-		r, err := ResourceOutputToCty(outputs, res, false)
+		r, err := ResourceOutputToCty(outputs, res, nil, false)
 		require.NoError(t, err)
 		assert.Equal(t, map[string]cty.Value{
 			"v": cty.MapVal(map[string]cty.Value{
@@ -1197,7 +1197,7 @@ func TestResourceOutputToCtyUnionTypeCollapseNested(t *testing.T) {
 			}),
 		})
 
-		r, err := ResourceOutputToCty(outputs, res, false)
+		r, err := ResourceOutputToCty(outputs, res, nil, false)
 		require.NoError(t, err)
 		assert.Equal(t, map[string]cty.Value{
 			"v": cty.MapVal(map[string]cty.Value{
@@ -1241,7 +1241,7 @@ func TestResourceOutputToCtyUnionTypeCollapseNested(t *testing.T) {
 			}),
 		})
 
-		r, err := ResourceOutputToCty(outputs, res, false)
+		r, err := ResourceOutputToCty(outputs, res, nil, false)
 		require.NoError(t, err)
 		assert.Equal(t, map[string]cty.Value{
 			"v": cty.ObjectVal(map[string]cty.Value{
@@ -1275,7 +1275,7 @@ func TestResourceOutputToCtyJSONType(t *testing.T) {
 		}),
 	})
 
-	r, err := ResourceOutputToCty(outputs, res, false)
+	r, err := ResourceOutputToCty(outputs, res, nil, false)
 	require.NoError(t, err)
 	assert.Equal(t, map[string]cty.Value{
 		"wrapper": cty.ObjectVal(map[string]cty.Value{

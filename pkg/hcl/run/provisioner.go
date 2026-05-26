@@ -24,6 +24,7 @@ import (
 	"github.com/zclconf/go-cty/cty"
 
 	"github.com/pulumi-labs/pulumi-hcl/pkg/hcl/ast"
+	"github.com/pulumi-labs/pulumi-hcl/pkg/hcl/bridge"
 	"github.com/pulumi-labs/pulumi-hcl/pkg/hcl/eval"
 	"github.com/pulumi-labs/pulumi-hcl/pkg/hcl/graph"
 	"github.com/pulumi-labs/pulumi-hcl/pkg/hcl/transform"
@@ -38,6 +39,7 @@ func (e *Engine) bindProvisionerHooks(
 	ctx context.Context,
 	res *ast.Resource,
 	resSchema *schema.Resource,
+	mapping *bridge.BodyMapping,
 	instance *graph.ExpandedResource,
 	evalCtx *eval.Context,
 	opts *ResourceOptions,
@@ -71,7 +73,7 @@ func (e *Engine) bindProvisionerHooks(
 			if useOldOutputs {
 				outputs = args.OldOutputs
 			}
-			selfCtx, err := selfBoundEvalCtx(hclSnapshot, outputs, args.ID, args.URN, resSchema, dryRun)
+			selfCtx, err := selfBoundEvalCtx(hclSnapshot, outputs, args.ID, args.URN, resSchema, mapping, dryRun)
 			if err != nil {
 				return fmt.Errorf("provisioner %d for %s: %w", index, instance.Key, err)
 			}
@@ -115,12 +117,12 @@ func effectiveConnectionBody(prov *ast.Provisioner, res *ast.Resource) hcl.Body 
 // the engine injects elsewhere (see registerResourceInstanceInContext).
 func selfBoundEvalCtx(
 	parent *hcl.EvalContext, outputs property.Map, id, urn string,
-	resSchema *schema.Resource, dryRun bool,
+	resSchema *schema.Resource, mapping *bridge.BodyMapping, dryRun bool,
 ) (*hcl.EvalContext, error) {
 	if outputs.Len() == 0 && id == "" && urn == "" {
 		return parent, nil
 	}
-	outputObj, err := transform.ResourceOutputToCty(outputs, resSchema, dryRun)
+	outputObj, err := transform.ResourceOutputToCty(outputs, resSchema, mapping, dryRun)
 	if err != nil {
 		return nil, fmt.Errorf("converting outputs: %w", err)
 	}

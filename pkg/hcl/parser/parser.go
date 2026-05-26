@@ -16,7 +16,6 @@ package parser
 
 import (
 	"fmt"
-	"strings"
 
 	"github.com/blang/semver"
 	"github.com/hashicorp/hcl/v2"
@@ -355,7 +354,7 @@ func (p *Parser) parseRequiredProviders(tf *ast.Terraform, block *hcl.Block) hcl
 
 		// Pulumi providers don't go through TF-style constraint resolution, so
 		// any version given must be a concrete semver.
-		if provider.Version != "" && isPulumiSource(provider.Source) {
+		if provider.Version != "" && provider.IsPulumi() {
 			if _, err := semver.ParseTolerant(provider.Version); err != nil {
 				diags = append(diags, &hcl.Diagnostic{
 					Severity: hcl.DiagError,
@@ -372,13 +371,6 @@ func (p *Parser) parseRequiredProviders(tf *ast.Terraform, block *hcl.Block) hcl
 	}
 
 	return diags
-}
-
-// isPulumiSource reports whether a required_providers source resolves through
-// Pulumi's package system (and so demands a real semver). Empty source defaults
-// to the alias as a Pulumi package name.
-func isPulumiSource(source string) bool {
-	return source == "" || strings.HasPrefix(source, "pulumi/")
 }
 
 // parseProviderBlock parses a provider block.

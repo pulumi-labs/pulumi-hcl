@@ -25,16 +25,20 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/blang/semver"
 	"github.com/pulumi-labs/pulumi-hcl/pkg/codegen"
+	"github.com/pulumi-labs/pulumi-hcl/pkg/hcl/ast"
+	"github.com/pulumi-labs/pulumi-hcl/pkg/hcl/bridge"
 	"github.com/pulumi-labs/pulumi-hcl/pkg/hcl/packages"
 	"github.com/pulumi-labs/pulumi-hcl/pkg/hcl/parser"
 	"github.com/pulumi-labs/pulumi-hcl/pkg/hcl/run"
 	"github.com/pulumi-labs/pulumi-hcl/pkg/version"
+	"github.com/pulumi/pulumi/pkg/v3/codegen/convert"
 	"github.com/pulumi/pulumi/pkg/v3/codegen/pcl"
 	"github.com/pulumi/pulumi/pkg/v3/codegen/schema"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/apitype"
@@ -90,8 +94,14 @@ func (host *LanguageHost) Close() error {
 	return errors.Join(errs...)
 }
 
-// GetRequiredPackages returns the packages required to run an HCL program,
-// including parameterization info for parameterized packages.
+// GetRequiredPackages returns the packages required to run an HCL program.
+// It enumerates every provider used in the program (required_providers,
+// provider blocks, resource/data source type prefixes). Pulumi-source
+// providers are emitted as plain PackageDependency entries. Non-Pulumi
+// providers with a local SDK on disk are emitted from that descriptor.
+// Non-Pulumi providers without a local SDK are emitted as PackageSpec
+// entries targeting `terraform-provider`, so `pulumi install` resolves
+// them (per docs/providers.md).
 func (host *LanguageHost) GetRequiredPackages(
 	ctx context.Context,
 	req *pulumirpc.GetRequiredPackagesRequest,
@@ -111,69 +121,84 @@ func (host *LanguageHost) GetRequiredPackages(
 
 	var pkgs []*pulumirpc.PackageDependency
 	var specs []*pulumirpc.PackageSpec
+
+	required := map[string]*ast.RequiredProvider{}
 	if config.Terraform != nil {
-		for alias, provider := range config.Terraform.RequiredProviders {
+		required = config.Terraform.RequiredProviders
+	}
 
-			version := func(v *semver.Version) string {
-				if v == nil {
-					return ""
-				}
-				return v.String()
-			}
+	for _, alias := range usedProviders(config) {
+		req := required[alias]
 
-			parameterization := func(p *workspace.Parameterization) *pulumirpc.PackageParameterization {
-				if p == nil {
-					return nil
-				}
-				return &pulumirpc.PackageParameterization{
-					Name:    p.Name,
-					Version: p.Version.String(),
-					Value:   p.Value,
-				}
-			}
-
-			if info, ok := paramInfos[alias]; ok {
-				pkgs = append(pkgs, &pulumirpc.PackageDependency{
-					Name:             info.Name,
-					Version:          version(info.Version),
-					Kind:             "resource",
-					Parameterization: parameterization(info.Parameterization),
-				})
-				continue
-			}
-
-			// Non-pulumi-prefixed source addresses get emitted as PackageSpecs
-			// targeting terraform-provider with the raw source/version as
-			// parameters; `pulumi install` resolves them via the registry.
-			// We never pin a version of terraform-provider.
-			if provider.Source != "" && !strings.HasPrefix(provider.Source, "pulumi/") {
-				params := []string{provider.Source}
-				if provider.Version != "" {
-					params = append(params, provider.Version)
-				}
-				specs = append(specs, &pulumirpc.PackageSpec{
-					Source:     "terraform-provider",
-					Parameters: params,
-				})
-				continue
-			}
-
-			dep := &pulumirpc.PackageDependency{
-				Name:    alias,
+		if req.IsPulumi() {
+			pkgs = append(pkgs, &pulumirpc.PackageDependency{
+				Name:    pulumiPackageName(alias, req.Source),
+				Version: req.Version,
 				Kind:    "resource",
-				Version: provider.Version,
-			}
-			if provider.Source != "" {
-				parts := strings.Split(provider.Source, "/")
-				if len(parts) >= 2 {
-					dep.Name = parts[len(parts)-1]
-				}
-			}
-			pkgs = append(pkgs, dep)
+			})
+			continue
 		}
+
+		if info, ok := paramInfos[alias]; ok {
+			pkgs = append(pkgs, &pulumirpc.PackageDependency{
+				Name:             info.Name,
+				Version:          versionString(info.Version),
+				Kind:             "resource",
+				Parameterization: parameterizationProto(info.Parameterization),
+			})
+			continue
+		}
+
+		params := []string{tfProviderSource(alias, req)}
+		if req != nil && req.Version != "" {
+			params = append(params, req.Version)
+		}
+		specs = append(specs, &pulumirpc.PackageSpec{
+			Source:     "terraform-provider",
+			Parameters: params,
+		})
 	}
 
 	return &pulumirpc.GetRequiredPackagesResponse{Packages: pkgs, Specs: specs}, nil
+}
+
+// tfProviderSource returns the source URL passed to the terraform-provider
+// plugin: req.Source when set, else the OpenTofu-registry default
+// "hashicorp/<alias>".
+func tfProviderSource(alias string, req *ast.RequiredProvider) string {
+	if req != nil && req.Source != "" {
+		return req.Source
+	}
+	return "hashicorp/" + alias
+}
+
+// pulumiPackageName returns the package name for a pulumi/-sourced
+// required_providers entry: the last segment of the source ("pulumi/aws" →
+// "aws"), or the alias when source is unset.
+func pulumiPackageName(alias, source string) string {
+	if source == "" {
+		return alias
+	}
+	parts := strings.Split(source, "/")
+	return parts[len(parts)-1]
+}
+
+func versionString(v *semver.Version) string {
+	if v == nil {
+		return ""
+	}
+	return v.String()
+}
+
+func parameterizationProto(p *workspace.Parameterization) *pulumirpc.PackageParameterization {
+	if p == nil {
+		return nil
+	}
+	return &pulumirpc.PackageParameterization{
+		Name:    p.Name,
+		Version: p.Version.String(),
+		Value:   p.Value,
+	}
 }
 
 // readParameterizationInfos reads sdks/*/hcl.sdk.json files from dir and
@@ -206,6 +231,78 @@ func readParameterizationInfos(dir string) (map[string]workspace.PackageDescript
 		}
 	}
 	return result, errors.Join(errs...)
+}
+
+// missingNonPulumiSDKs returns the sorted list of non-Pulumi provider aliases
+// used in config that lack a corresponding entry in sdks. Per
+// docs/providers.md, non-Pulumi providers must be materialized to
+// sdks/<alias>/hcl.sdk.json by `pulumi install` before Run.
+func missingNonPulumiSDKs(config *ast.Config, sdks map[string]workspace.PackageDescriptor) []string {
+	used := usedProviders(config)
+	pulumiSourced := map[string]bool{}
+	if config != nil && config.Terraform != nil {
+		for alias, req := range config.Terraform.RequiredProviders {
+			if req.IsPulumi() {
+				pulumiSourced[alias] = true
+			}
+		}
+	}
+	var missing []string
+	for _, alias := range used {
+		if pulumiSourced[alias] {
+			continue
+		}
+		if _, ok := sdks[alias]; !ok {
+			missing = append(missing, alias)
+		}
+	}
+	sort.Strings(missing)
+	return missing
+}
+
+// usedProviders returns the sorted set of provider local names referenced by
+// the program: explicit `required_providers` entries, `provider` blocks, and
+// the package prefix of every resource/data source type.
+func usedProviders(config *ast.Config) []string {
+	if config == nil {
+		return nil
+	}
+	set := map[string]struct{}{}
+	if config.Terraform != nil {
+		for alias := range config.Terraform.RequiredProviders {
+			set[alias] = struct{}{}
+		}
+	}
+	for _, p := range config.Providers {
+		set[p.Name] = struct{}{}
+	}
+	for _, r := range config.Resources {
+		if name := providerNameFromType(r.Type); name != "" {
+			set[name] = struct{}{}
+		}
+	}
+	for _, d := range config.DataSources {
+		if name := providerNameFromType(d.Type); name != "" {
+			set[name] = struct{}{}
+		}
+	}
+	out := make([]string, 0, len(set))
+	for k := range set {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// providerNameFromType extracts the provider local name from a TF resource
+// or data source type (e.g. "aws_s3_bucket" → "aws"). Returns "" for
+// malformed types.
+func providerNameFromType(tfType string) string {
+	idx := strings.IndexByte(tfType, '_')
+	if idx <= 0 {
+		return ""
+	}
+	return tfType[:idx]
 }
 
 // Run executes an HCL program.
@@ -258,16 +355,17 @@ func (host *LanguageHost) Run(
 		return nil, fmt.Errorf("unable to acquire gRPC schema loader: %w", err)
 	}
 
-	descriptors, err := readParameterizationInfos(req.Info.ProgramDirectory)
+	paramDescriptors, err := readParameterizationInfos(req.Info.ProgramDirectory)
 	if err != nil {
 		return nil, fmt.Errorf("unable to read parameterization: %w", err)
 	}
 
-	paramDescriptors := make(map[string]workspace.PackageDescriptor)
-	for alias, desc := range descriptors {
-		if desc.Parameterization != nil {
-			paramDescriptors[alias] = desc
-		}
+	if missing := missingNonPulumiSDKs(config, paramDescriptors); len(missing) > 0 {
+		return &pulumirpc.RunResponse{
+			Error: fmt.Sprintf(
+				"missing local SDK for non-Pulumi provider(s) %v; run `pulumi install` to fetch them",
+				missing),
+		}, nil
 	}
 
 	loader := schema.ReferenceLoader(schemaLoader)
@@ -277,20 +375,31 @@ func (host *LanguageHost) Run(
 
 	req.Parallel = max(req.Parallel, 1) // (req.Parallel <= 1) => serial
 
+	if req.MapperTarget == "" {
+		return nil, errors.New("Run: missing mapper_target; the Pulumi engine must supply a mapper server " +
+			"so HCL can resolve TF provider mappings (requires pulumi >= v3.243)")
+	}
+	mapperClient, err := convert.NewMapperClient(req.MapperTarget)
+	if err != nil {
+		return nil, fmt.Errorf("dial mapper at %s: %w", req.MapperTarget, err)
+	}
+	providerInfoSource := bridge.NewCache(bridge.NewMapperSource(mapperClient))
+
 	// Create and run the engine
 	engine := run.NewEngine(config, &run.EngineOptions{
-		ProjectName:      req.Project,
-		StackName:        req.Stack,
-		Organization:     req.Organization,
-		Config:           configMap,
-		ConfigSecretKeys: req.ConfigSecretKeys,
-		DryRun:           req.DryRun,
-		ResourceMonitor:  resmon,
-		SchemaLoader:     schema.NewCachedLoader(loader),
-		WorkDir:          req.Info.ProgramDirectory,
-		RootDir:          req.Info.RootDirectory,
-		Packages:         paramDescriptors,
-		Parallel:         int(req.Parallel),
+		ProjectName:        req.Project,
+		StackName:          req.Stack,
+		Organization:       req.Organization,
+		Config:             configMap,
+		ConfigSecretKeys:   req.ConfigSecretKeys,
+		DryRun:             req.DryRun,
+		ResourceMonitor:    resmon,
+		SchemaLoader:       schema.NewCachedLoader(loader),
+		ProviderInfoSource: providerInfoSource,
+		WorkDir:            req.Info.ProgramDirectory,
+		RootDir:            req.Info.RootDirectory,
+		Packages:           paramDescriptors,
+		Parallel:           int(req.Parallel),
 	})
 
 	if err := engine.Run(ctx); err != nil {

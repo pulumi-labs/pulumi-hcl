@@ -43,6 +43,7 @@ import (
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
 	"github.com/pulumi-labs/pulumi-hcl/tests/testutil/pulexec"
 	"github.com/pulumi-labs/pulumi-hcl/tests/testutil/tfexec"
+	"github.com/pulumi/pulumi-terraform-bridge/v3/pkg/tfbridge"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/apitype"
 	"github.com/stretchr/testify/require"
 )
@@ -51,6 +52,11 @@ import (
 type Provider struct {
 	Name    string
 	Factory func() *schema.Provider
+	// Customize, if non-nil, runs against the bridged ProviderInfo on the
+	// Pulumi path so tests can apply non-default Pulumi-side renames (or any
+	// other ProviderInfo tweak) to exercise the bridge mapping behaviour.
+	// The TF path is unaffected.
+	Customize func(*testing.T, *tfbridge.ProviderInfo)
 }
 
 // Case is the test description passed to RunCase.
@@ -112,7 +118,7 @@ func runCaseStages(t *testing.T, c Case) {
 		tfProvs[i] = tfexec.Provider{Name: p.Name, Provider: tfexec.Wrap(p.Factory(), recA)}
 		pulProvs[i] = pulexec.Provider{
 			Name: p.Name,
-			Info: pulexec.BridgedProvider(t, p.Name, tfexec.Wrap(p.Factory(), recB)),
+			Info: pulexec.BridgedProvider(t, p.Name, tfexec.Wrap(p.Factory(), recB), p.Customize),
 		}
 	}
 
@@ -209,7 +215,7 @@ func runCaseFromDir(t *testing.T, caseDir string, c Case) {
 		tfProvs[i] = tfexec.Provider{Name: p.Name, Provider: tfexec.Wrap(p.Factory(), recA)}
 		pulProvs[i] = pulexec.Provider{
 			Name: p.Name,
-			Info: pulexec.BridgedProvider(t, p.Name, tfexec.Wrap(p.Factory(), recB)),
+			Info: pulexec.BridgedProvider(t, p.Name, tfexec.Wrap(p.Factory(), recB), p.Customize),
 		}
 	}
 

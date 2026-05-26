@@ -28,6 +28,7 @@ import (
 
 	"github.com/hashicorp/hcl/v2"
 	"github.com/pulumi-labs/pulumi-hcl/pkg/hcl/ast"
+	"github.com/pulumi-labs/pulumi-hcl/pkg/hcl/bridge"
 	"github.com/pulumi-labs/pulumi-hcl/pkg/hcl/eval"
 	"github.com/pulumi-labs/pulumi-hcl/pkg/hcl/graph"
 	"github.com/pulumi-labs/pulumi-hcl/pkg/hcl/modulepath"
@@ -279,6 +280,12 @@ type Engine struct {
 	// pkgLoader loads Pulumi package schemas.
 	pkgLoader schema.ReferenceLoader
 
+	// providerInfoSource resolves TF provider mappings (bridge ProviderInfo)
+	// so HCL block/attribute names line up 1:1 with the TF source. May be nil
+	// when the host can't reach a mapper, in which case the convention-based
+	// transform path is used.
+	providerInfoSource bridge.ProviderInfoSource
+
 	// resmon is the resource monitor for registering resources.
 	resmon ResourceMonitor
 
@@ -374,6 +381,10 @@ type EngineOptions struct {
 
 	SchemaLoader schema.ReferenceLoader
 
+	// ProviderInfoSource is the bridge mapping resolver. Optional; when nil
+	// the engine falls back to convention-based name mapping.
+	ProviderInfoSource bridge.ProviderInfoSource
+
 	// Packages maps parameterized package alias to its descriptor.
 	// The engine calls RegisterPackage on the resource monitor for each entry before running the program.
 	Packages map[string]workspace.PackageDescriptor
@@ -394,6 +405,7 @@ func NewEngine(config *ast.Config, opts *EngineOptions) *Engine {
 		config:                  config,
 		evaluator:               eval.NewEvaluator(evalCtx),
 		pkgLoader:               opts.SchemaLoader,
+		providerInfoSource:      opts.ProviderInfoSource,
 		resmon:                  opts.ResourceMonitor,
 		resourceOutputs:         util.NewSyncMap[string, cty.Value](),
 		resourceInheritableOpts: util.NewSyncMap[string, inheritableOpts](),
@@ -783,7 +795,8 @@ func (e *Engine) registerProviderInContext(
 		return fmt.Errorf("resolving provider schema for %s: %w", provider.Name, perr)
 	}
 
-	inputsMap, diags := transform.EvalResourceWithSchema(provider.Config, resSchema,
+	providerMapping := e.providerConfigBodyMapping(ctx, provider.Name)
+	inputsMap, diags := transform.EvalResourceWithSchema(provider.Config, resSchema, providerMapping,
 		func(_ resource.PropertyKey, expr hcl.Expression, extraVars map[string]cty.Value) (cty.Value, hcl.Diagnostics) {
 			c := hclCtx
 			if len(extraVars) > 0 {
@@ -823,7 +836,7 @@ func (e *Engine) registerProviderInContext(
 		}
 	}
 	if version == "" && e.config.Terraform != nil {
-		if req, ok := e.config.Terraform.RequiredProviders[provider.Name]; ok && isPulumiProviderSource(req.Source) {
+		if req, ok := e.config.Terraform.RequiredProviders[provider.Name]; ok && req.IsPulumi() {
 			version = req.Version
 		}
 	}
@@ -898,7 +911,7 @@ func (e *Engine) registerProviderInContext(
 	providerID := resp.ID
 
 	// Use ResourceOutputToCty to match processResource's snake_case key emission.
-	outputObj, err := transform.ResourceOutputToCty(resp.Outputs, resSchema, e.dryRun)
+	outputObj, err := transform.ResourceOutputToCty(resp.Outputs, resSchema, providerMapping, e.dryRun)
 	if err != nil {
 		return fmt.Errorf("converting provider outputs to HCL types: %w", err)
 	}
@@ -948,7 +961,7 @@ func (e *Engine) processResourceInContext(
 	ctx context.Context, node *graph.Node, res *ast.Resource,
 	evalCtx *eval.Context, parentURN string, modInst *moduleInstance,
 ) error {
-	resSchema, err := packages.ResolveResource(ctx, e.pkgLoader, e.knownProviders(), res.Type)
+	resSchema, err := e.resolveResource(ctx, res.Type)
 	if err != nil {
 		if diag := unknownTokenDiag("resource", res.TypeRange, err); diag != err {
 			return diag
@@ -1033,7 +1046,8 @@ func (e *Engine) registerResourceInstanceInContext(
 		plainInputProps[p.Name] = p.Plain
 	}
 
-	resourceInputs, diags := transform.EvalResourceWithSchema(res.Config, resSchema,
+	resourceMapping := e.resourceBodyMapping(ctx, res.Type)
+	resourceInputs, diags := transform.EvalResourceWithSchema(res.Config, resSchema, resourceMapping,
 		func(propKey resource.PropertyKey, expr hcl.Expression, extraVars map[string]cty.Value) (cty.Value, hcl.Diagnostics) {
 			var val cty.Value
 			var diags hcl.Diagnostics
@@ -1103,7 +1117,7 @@ func (e *Engine) registerResourceInstanceInContext(
 	if opts.Version == "" {
 		pkgName := packageNameFromResourceType(res.Type)
 		if e.config.Terraform != nil {
-			if req, ok := e.config.Terraform.RequiredProviders[pkgName]; ok && isPulumiProviderSource(req.Source) {
+			if req, ok := e.config.Terraform.RequiredProviders[pkgName]; ok && req.IsPulumi() {
 				opts.Version = req.Version
 			}
 		}
@@ -1122,13 +1136,13 @@ func (e *Engine) registerResourceInstanceInContext(
 	}
 
 	if len(res.Postconditions) > 0 {
-		if err := e.bindPostconditionHooks(ctx, res, resSchema, instance, evalCtx, opts); err != nil {
+		if err := e.bindPostconditionHooks(ctx, res, resSchema, resourceMapping, instance, evalCtx, opts); err != nil {
 			return err
 		}
 	}
 
 	if len(res.Provisioners) > 0 {
-		if err := e.bindProvisionerHooks(ctx, res, resSchema, instance, evalCtx, opts); err != nil {
+		if err := e.bindProvisionerHooks(ctx, res, resSchema, resourceMapping, instance, evalCtx, opts); err != nil {
 			return err
 		}
 	}
@@ -1148,7 +1162,7 @@ func (e *Engine) registerResourceInstanceInContext(
 		return fmt.Errorf("resolving resource references in outputs: %w", err)
 	}
 
-	outputObj, err := transform.ResourceOutputToCty(outputs, resSchema, e.dryRun)
+	outputObj, err := transform.ResourceOutputToCty(outputs, resSchema, resourceMapping, e.dryRun)
 	if err != nil {
 		return fmt.Errorf("converting resource outputs to HCL types: %w", err)
 	}
@@ -1623,13 +1637,6 @@ func (e *Engine) hasFailedDependency(res *ast.Resource) bool {
 	return false
 }
 
-// isPulumiProviderSource reports whether a required_providers source uses
-// Pulumi's native package system (empty or pulumi/-prefixed). Such sources
-// must declare a real semver version — validated at parse time.
-func isPulumiProviderSource(source string) bool {
-	return source == "" || strings.HasPrefix(source, "pulumi/")
-}
-
 // buildResourceName builds the Pulumi resource name from the logical name and instance key.
 // Single instances use the logical name as-is. Count instances get a "-N" suffix.
 // ForEach instances get a "-key" suffix.
@@ -1796,7 +1803,7 @@ func (e *Engine) processDataSource(ctx context.Context, node *graph.Node) error 
 func (e *Engine) processDataSourceInContext(
 	ctx context.Context, node *graph.Node, ds *ast.Resource, evalCtx *eval.Context,
 ) error {
-	funcSchema, err := packages.ResolveFunction(ctx, e.pkgLoader, e.knownProviders(), ds.Type)
+	funcSchema, err := e.resolveFunction(ctx, ds.Type)
 	if err != nil {
 		if diag := unknownTokenDiag("data source", ds.TypeRange, err); diag != err {
 			return diag
@@ -1920,7 +1927,8 @@ func (e *Engine) invokeDataSourceOnce(
 
 	var allDeps []resource.URN
 
-	inputs, diags := transform.EvalFunctionWithSchema(ds.Config, funcSchema,
+	dataSourceMapping := e.dataSourceBodyMapping(ctx, ds.Type)
+	inputs, diags := transform.EvalFunctionWithSchema(ds.Config, funcSchema, dataSourceMapping,
 		func(propKey resource.PropertyKey, expr hcl.Expression, extraVars map[string]cty.Value) (cty.Value, hcl.Diagnostics) {
 			var val cty.Value
 			var diags hcl.Diagnostics
@@ -2016,7 +2024,7 @@ func (e *Engine) invokeDataSourceOnce(
 		return cty.NilVal, nil, fmt.Errorf("invoking data source: %w", err)
 	}
 
-	ctyOutputs, err := transform.FunctionOutputToCty(outputs, funcSchema, e.dryRun)
+	ctyOutputs, err := transform.FunctionOutputToCty(outputs, funcSchema, dataSourceMapping, e.dryRun)
 	if err != nil {
 		return cty.NilVal, nil, fmt.Errorf("converting function outputs to HCL types: %w", err)
 	}
@@ -2042,7 +2050,7 @@ func (e *Engine) processCall(ctx context.Context, node *graph.Node) error {
 			resKey = k
 			resType = res.Type
 			var err error
-			resSchema, err = packages.ResolveResource(ctx, e.pkgLoader, e.knownProviders(), res.Type)
+			resSchema, err = e.resolveResource(ctx, res.Type)
 			if err != nil {
 				if diag := unknownTokenDiag("resource", res.TypeRange, err); diag != err {
 					return diag
@@ -2138,7 +2146,7 @@ func (e *Engine) processCall(ctx context.Context, node *graph.Node) error {
 		filteredFunc.Inputs = &filteredInputs
 	}
 
-	userArgs, diags := transform.EvalFunctionWithSchema(call.Config, &filteredFunc,
+	userArgs, diags := transform.EvalFunctionWithSchema(call.Config, &filteredFunc, nil,
 		func(_ resource.PropertyKey, expr hcl.Expression, extraVars map[string]cty.Value) (cty.Value, hcl.Diagnostics) {
 			if len(extraVars) > 0 {
 				childCtx := e.evaluator.Context().HCLContext().NewChild()
@@ -2161,7 +2169,7 @@ func (e *Engine) processCall(ctx context.Context, node *graph.Node) error {
 	}
 
 	// Convert return values to cty
-	ctyOutputs, err := transform.FunctionOutputToCty(ret, method.Function, e.dryRun)
+	ctyOutputs, err := transform.FunctionOutputToCty(ret, method.Function, nil, e.dryRun)
 	if err != nil {
 		return fmt.Errorf("converting call outputs to HCL types: %w", err)
 	}
@@ -2876,6 +2884,7 @@ func (e *Engine) bindPostconditionHooks(
 	ctx context.Context,
 	res *ast.Resource,
 	resSchema *schema.Resource,
+	mapping *bridge.BodyMapping,
 	instance *graph.ExpandedResource,
 	evalCtx *eval.Context,
 	opts *ResourceOptions,
@@ -2889,7 +2898,7 @@ func (e *Engine) bindPostconditionHooks(
 		rule, index := rule, i+1
 		hookName := fmt.Sprintf("%s:postcondition:%d", instance.Key, i)
 		callback := func(_ context.Context, args *ResourceHookArgs) error {
-			return evaluatePostcondition(rule, hclSnapshot, args.NewOutputs, resSchema, dryRun, index, instance.Key)
+			return evaluatePostcondition(rule, hclSnapshot, args.NewOutputs, resSchema, mapping, dryRun, index, instance.Key)
 		}
 		if err := e.resmon.RegisterResourceHook(ctx, hookName, callback, ResourceHookOptions{
 			OnDryRun: true,
@@ -2906,9 +2915,9 @@ func (e *Engine) bindPostconditionHooks(
 // engine-supplied NewOutputs.
 func evaluatePostcondition(
 	rule *ast.CheckRule, hclCtx *hcl.EvalContext, newOutputs property.Map,
-	resSchema *schema.Resource, dryRun bool, index int, resourceName string,
+	resSchema *schema.Resource, mapping *bridge.BodyMapping, dryRun bool, index int, resourceName string,
 ) error {
-	outputObj, err := transform.ResourceOutputToCty(newOutputs, resSchema, dryRun)
+	outputObj, err := transform.ResourceOutputToCty(newOutputs, resSchema, mapping, dryRun)
 	if err != nil {
 		return fmt.Errorf("converting outputs for postcondition %d on %s: %w", index, resourceName, err)
 	}

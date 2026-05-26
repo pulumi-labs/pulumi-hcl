@@ -1,11 +1,14 @@
 package smoke_test
 
 import (
+	"bytes"
+	"encoding/json"
 	"fmt"
 	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"testing"
 
 	"github.com/pulumi/pulumi/pkg/v3/engine"
@@ -58,12 +61,13 @@ func TestSmoke(t *testing.T) {
 }
 
 // TestSmokeRandom proves required_providers entries pointing at a non-pulumi
-// source (here, hashicorp/random) are resolved through terraform-provider
-// parameterization end-to-end: `pulumi install` materializes a local SDK,
-// then `pulumi up` deploys against it. Hits the public Pulumi + TF registries.
+// source (here, hashicorp/random ~> 3.9) are resolved through
+// terraform-provider parameterization end-to-end: `pulumi install`
+// materializes a local SDK, then `pulumi up` deploys against it. Hits the
+// public Pulumi + TF registries.
 //
 // Requires a pulumi CLI that includes pulumi/pulumi#23330 (package-spec install
-// support). Set PULUMI_BIN to the path of such a binary to enable the test.
+// support).
 func TestSmokeRandom(t *testing.T) {
 	t.Parallel()
 
@@ -80,14 +84,16 @@ func TestSmokeRandom(t *testing.T) {
 		"PULUMI_CONFIG_PASSPHRASE=smoke",
 	)
 
-	runPulumi := func(args ...string) {
+	runPulumi := func(args ...string) []byte {
 		t.Helper()
+		var stdout bytes.Buffer
 		cmd := exec.Command(pulumiBin, args...)
 		cmd.Dir = projectDir
 		cmd.Env = env
-		cmd.Stdout = os.Stderr
+		cmd.Stdout = io.MultiWriter(&stdout, os.Stderr)
 		cmd.Stderr = os.Stderr
 		require.NoErrorf(t, cmd.Run(), "pulumi %v failed", args)
+		return stdout.Bytes()
 	}
 
 	runPulumi("stack", "init", "smoke-random")
@@ -99,8 +105,31 @@ func TestSmokeRandom(t *testing.T) {
 	})
 
 	runPulumi("install")
+
+	// Assert `pulumi install` wrote the SDK descriptor where Run will look
+	// for it (per docs/providers.md): sdks/random/hcl.sdk.json.
+	sdkPath := filepath.Join(projectDir, "sdks", "random", "hcl.sdk.json")
+	_, err := os.Stat(sdkPath)
+	require.NoErrorf(t, err, "pulumi install must write %s", sdkPath)
+
 	runPulumi("up", "--yes", "--skip-preview")
+
+	// `length = 2` produces "<word>-<word>" (lowercase letters only).
+	outputs := parseStackOutput(t, runPulumi("stack", "output", "--json"))
+	pet, ok := outputs["pet"].(string)
+	require.True(t, ok, "pet output must be a string, got %T (%v)", outputs["pet"], outputs["pet"])
+	require.Regexp(t, regexp.MustCompile(`^[a-z]+-[a-z]+$`), pet,
+		"pet output should match '<word>-<word>'")
+
 	runPulumi("destroy", "--yes", "--skip-preview")
+}
+
+// parseStackOutput parses `pulumi stack output --json` (a JSON object).
+func parseStackOutput(t *testing.T, raw []byte) map[string]any {
+	t.Helper()
+	var out map[string]any
+	require.NoError(t, json.Unmarshal(raw, &out), "parsing stack output: %s", raw)
+	return out
 }
 
 // copyDir copies src into a fresh t.TempDir() subdir and returns the new path.

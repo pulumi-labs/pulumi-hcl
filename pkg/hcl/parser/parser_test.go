@@ -18,6 +18,8 @@ import (
 	"testing"
 
 	"github.com/hashicorp/hcl/v2"
+	"github.com/pulumi-labs/pulumi-hcl/pkg/hcl/ast"
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
@@ -252,6 +254,55 @@ resource "aws_instance" "web" {
 	}
 }
 
+// TestRequiredProvidersShapes pins down how each documented required_providers
+// shape parses, and which of them route through the terraform-provider plugin.
+// Sources non-prefixed by "pulumi/" (including a missing source) are TF-style
+// and default to "hashicorp/<name>".
+func TestRequiredProvidersShapes(t *testing.T) {
+	t.Parallel()
+	const src = `terraform {
+  required_providers {
+    ex1 = "~> 4.0"
+    ex2 = { version = "~> 4.0" }
+    ex3 = { source = "example/abc" }
+    ex4 = { source = "example/def", version = "5.0.0" }
+    ex5 = { source = "pulumi/ghi", version = "6.7.8" }
+  }
+}`
+	cfg, diags := NewParser().ParseSource("test.hcl", []byte(src))
+	require.False(t, diags.HasErrors(), "diags: %v", diags)
+	require.NotNil(t, cfg.Terraform)
+
+	got := cfg.Terraform.RequiredProviders
+	for _, v := range got {
+		v.DeclRange = hcl.Range{}
+	}
+	assert.Equal(t, map[string]*ast.RequiredProvider{
+		"ex1": {
+			Name:    "ex1",
+			Version: "~> 4.0",
+		},
+		"ex2": {
+			Name:    "ex2",
+			Version: "~> 4.0",
+		},
+		"ex3": {
+			Name:   "ex3",
+			Source: "example/abc",
+		},
+		"ex4": {
+			Name:    "ex4",
+			Source:  "example/def",
+			Version: "5.0.0",
+		},
+		"ex5": {
+			Name:    "ex5",
+			Source:  "pulumi/ghi",
+			Version: "6.7.8",
+		},
+	}, got)
+}
+
 func TestRequiredProvidersVersionMustBeSemver(t *testing.T) {
 	t.Parallel()
 
@@ -278,13 +329,14 @@ func TestRequiredProvidersVersionMustBeSemver(t *testing.T) {
 			wantErr: true,
 		},
 		{
-			name: "no_source_constraint_rejected",
+			// Empty source now defaults to "hashicorp/<name>" (TF-style),
+			// so a constraint-form version is fine.
+			name: "no_source_constraint_ok",
 			hcl: `terraform {
   required_providers {
     aws = { version = "~> 6.0" }
   }
 }`,
-			wantErr: true,
 		},
 		{
 			name: "tf_source_constraint_ok",
@@ -531,7 +583,6 @@ resource "aws_instance" "app" {
 		t.Error("Expected ignore_changes = all")
 	}
 }
-
 
 func TestParseProviderCallReserved(t *testing.T) {
 	src := []byte(`
