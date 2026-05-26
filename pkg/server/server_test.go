@@ -19,7 +19,9 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/pulumi-labs/pulumi-hcl/pkg/hcl/parser"
 	pulumirpc "github.com/pulumi/pulumi/sdk/v3/proto/go"
+	"github.com/pulumi/pulumi/sdk/v3/go/common/workspace"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -159,4 +161,61 @@ func TestGeneratePackageAndRunUseSameSdksDir(t *testing.T) {
 			Value:   []byte("hello"),
 		},
 	}, resp.Packages[0])
+}
+
+// TestMissingNonPulumiSDKs_ImplicitProvider reproduces the tf_stack_test bug:
+// a program references `data "archive_file" ...` without declaring `archive`
+// in required_providers. The provider is *implicit* — its only mention is in
+// the data source's type prefix. The previous implementation only looked at
+// required_providers, so the missing SDK slipped through and Run sent the
+// engine a raw "registry.terraform.io/hashicorp/archive" provider request.
+// missingNonPulumiSDKs must catch the implicit provider too.
+func TestMissingNonPulumiSDKs_ImplicitProvider(t *testing.T) {
+	t.Parallel()
+
+	const src = `terraform {
+  required_providers {
+    aws = {
+      source  = "hashicorp/aws"
+      version = "6.19.0"
+    }
+  }
+}
+
+resource "aws_s3_bucket" "b" {}
+
+data "archive_file" "lambda" {}
+`
+	cfg, diags := parser.NewParser().ParseSource("main.tf", []byte(src))
+	require.False(t, diags.HasErrors(), "diags: %v", diags)
+
+	// No SDKs on disk: both non-Pulumi providers (explicit aws, implicit
+	// archive) must be reported missing.
+	assert.Equal(t,
+		[]string{"archive", "aws"},
+		missingNonPulumiSDKs(cfg, nil))
+
+	// Once both have SDKs, nothing is missing.
+	sdks := map[string]workspace.PackageDescriptor{
+		"aws":     {PluginDescriptor: workspace.PluginDescriptor{Name: "aws"}},
+		"archive": {PluginDescriptor: workspace.PluginDescriptor{Name: "archive"}},
+	}
+	assert.Empty(t, missingNonPulumiSDKs(cfg, sdks))
+
+	// A pulumi-source provider needs no SDK even when it's only referenced
+	// by a resource type prefix.
+	const pulumiSrc = `terraform {
+  required_providers {
+    aws = {
+      source  = "pulumi/aws"
+      version = "6.0.0"
+    }
+  }
+}
+
+resource "aws_s3_bucket" "b" {}
+`
+	cfgPulumi, diags := parser.NewParser().ParseSource("main.tf", []byte(pulumiSrc))
+	require.False(t, diags.HasErrors(), "diags: %v", diags)
+	assert.Empty(t, missingNonPulumiSDKs(cfgPulumi, nil))
 }
