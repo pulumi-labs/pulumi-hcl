@@ -459,10 +459,11 @@ func (p *Parser) parseVariableBlock(config *ast.Config, block *hcl.Block) hcl.Di
 
 	if attr, ok := content.Attributes["type"]; ok {
 		variable.Type = attr.Expr
-		ty, typeDiags := typeexpr.TypeConstraint(attr.Expr)
+		ty, defs, typeDiags := typeexpr.TypeConstraintWithDefaults(attr.Expr)
 		diags = append(diags, typeDiags...)
 		if !typeDiags.HasErrors() {
 			variable.TypeConstraint = ty
+			variable.TypeDefaults = defs
 		}
 	}
 

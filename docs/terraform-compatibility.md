@@ -1,109 +1,6 @@
 # Terraform HCL Compatibility
 
-Pulumi HCL supports the majority of [Terraform's HCL syntax](https://developer.hashicorp.com/terraform/language). Resources, data sources, variables, locals, outputs, modules, expressions, and functions broadly work as documented by HashiCorp.
-
-This document covers what's different and what's not supported.
-
-## Required Changes
-
-The top-level `terraform` block is not supported. Move provider requirements
-into the `pulumi` block, and use `pulumi/`-namespaced provider sources
-instead of `hashicorp/`:
-
-```hcl
-pulumi {
-  required_providers {
-    aws = {
-      source  = "pulumi/aws"  # not "hashicorp/aws"
-      version = ">= 6.0"
-    }
-  }
-}
-```
-
-Terraform's `backend`, `cloud`, and `required_version` are not modeled at
-all — Pulumi manages state independently and uses
-`pulumi { required_version_range = "..." }` for its own version
-constraints.
-
-## Behavioral Differences
-
-### Resource Replacement Order
-
-Terraform deletes a resource before creating its replacement. Pulumi does the opposite: it creates the new resource first, then deletes the old one. This minimizes downtime but can cause issues with unique constraints like DNS names or ports.
-
-To get Terraform's delete-first behavior:
-
-```hcl
-lifecycle {
-  create_before_destroy = false
-}
-```
-
-Setting `create_before_destroy = false` explicitly triggers Pulumi's `deleteBeforeReplace` option.
-
-### Sensitive Values
-
-Variables and outputs marked `sensitive = true` become Pulumi secrets, which are encrypted at rest in Pulumi's state. This provides stronger protection than Terraform's state handling.
-
-### Variable Configuration
-
-Variables support Pulumi's configuration system alongside Terraform's:
-
-1. Environment variables (`TF_VAR_name`) — highest priority
-2. Pulumi stack config (`pulumi config set projectName:varName value`)
-3. Default values in `variable` blocks — lowest priority
-
-## Feature Mappings
-
-These Terraform features map to Pulumi equivalents:
-
-| Terraform               | Pulumi                 | Notes                                 |
-|-------------------------|------------------------|---------------------------------------|
-| `prevent_destroy`       | `protect`              | Same behavior                         |
-| `ignore_changes`        | `ignoreChanges`        | Same behavior                         |
-| `create_before_destroy` | `deleteBeforeReplace`  | Inverted logic (see above)            |
-| `moved` blocks          | `aliases`              | Renames without recreation            |
-| `import` blocks         | Import resource option | Imports existing resources            |
-| `timeouts`              | `customTimeouts`       | Same duration format                  |
-| Modules                 | Component resources    | Full support including remote sources |
-| Provisioners            | Command provider       | `local-exec`, `remote-exec`, `file`   |
-
-### Modules
-
-All module sources work:
-
-- Local paths: `./modules/vpc`
-- Git: `git::https://github.com/org/repo.git//path?ref=v1.0.0`
-- GitHub shorthand: `github.com/org/repo`
-- Terraform Registry: `terraform-aws-modules/vpc/aws`
-- HTTP archives: `https://example.com/module.zip`
-
-Remote modules are cached in `~/.pulumi/modules/`.
-
-### Provisioners
-
-Provisioner blocks map to the [Command provider](https://www.pulumi.com/registry/packages/command/):
-
-| Terraform     | Pulumi                        |
-|---------------|-------------------------------|
-| `local-exec`  | `command:local:Command`       |
-| `remote-exec` | `command:remote:Command`      |
-| `file`        | `command:remote:CopyToRemote` |
-
-All provisioner features work: `self` references, `when = "destroy"`, `on_failure = "continue"`, and connection blocks. WinRM connections are not supported—SSH only.
-
-## Unsupported Features
-
-**Top-level `terraform` block** — Provider requirements live in `pulumi { required_providers { ... } }`. There is no equivalent for `backend`, `cloud`, or `required_version`; Pulumi manages state independently.
-
-**`replace_triggered_by`** — Terraform's lifecycle option cascades replacement when *other* resources change. Use Pulumi HCL's `replace_with` resource option (a top-level attribute on the `resource` block) for the same effect; the Terraform-syntax `replace_triggered_by` attribute on a `lifecycle` block produces an error.
-
-**`dynamic` blocks** — Dynamic block generation (`dynamic "tag" { for_each = ... content { ... } }`) is not implemented.
-
-**`List<Object>` empty vs null** — HCL's block syntax cannot distinguish between an empty list and a null `List<Object>`. Programs that rely on this distinction (e.g. passing `null` vs `[]` for a block-typed attribute) will not behave correctly.
-
-**WinRM connections** — `connection` blocks only support `type = "ssh"`. WinRM is not supported.
+Pulumi HCL should be able to run all valid Terraform config programs without changes.
 
 ## CLI Reference
 
@@ -129,7 +26,6 @@ Pulumi HCL supports nearly all of Terraform's built-in functions with identical 
 | `templatestring`  | String          | Renders an inline template string with a given context object.                |
 | `plantimestamp`   | Date and Time   | Returns the timestamp at the start of a plan, which has no Pulumi equivalent. |
 | `ephemeralasnull` | Type Conversion | Replaces ephemeral values with `null`; Pulumi has no ephemeral value concept. |
-| `issensitive`     | Type Conversion | Returns whether a value is marked sensitive.                                  |
 
 The `provider::terraform::*` provider functions and `terraform.applying` are Terraform-internal and have no equivalent here.
 

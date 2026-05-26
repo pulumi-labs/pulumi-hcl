@@ -16,6 +16,7 @@ package ast
 
 import (
 	"github.com/hashicorp/hcl/v2"
+	"github.com/hashicorp/hcl/v2/ext/typeexpr"
 	"github.com/zclconf/go-cty/cty"
 )
 
@@ -45,6 +46,11 @@ type Variable struct {
 
 	// TypeConstraint is the parsed type constraint, if Type was specified.
 	TypeConstraint cty.Type
+
+	// TypeDefaults holds the optional()-attribute defaults captured from
+	// Type (Terraform 1.3+). Apply to a value to fill in omitted optional
+	// attributes; nil when the type uses no optional() defaults.
+	TypeDefaults *typeexpr.Defaults
 
 	// Default is the default value expression, if specified.
 	Default hcl.Expression

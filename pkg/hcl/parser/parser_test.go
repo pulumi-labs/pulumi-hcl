@@ -601,6 +601,27 @@ provider "call" {
 	}
 }
 
+// TF 1.3+ allows `optional(<type>, <default>)` for object attributes.
+// HCL's typeexpr.TypeConstraint rejects the 2-arg form; we use the
+// TypeConstraintWithDefaults variant. aws-ia/vpc, aws-ia/ipam, and many
+// other registry modules use this idiom.
+func TestVariableTypeOptionalWithDefault(t *testing.T) {
+	t.Parallel()
+	src := []byte(`
+variable "subnets" {
+  type = object({
+    name    = string
+    cidr    = optional(string, "10.0.0.0/16")
+    enabled = optional(bool, true)
+  })
+}
+`)
+	_, diags := NewParser().ParseSource("test.tf", src)
+	if diags.HasErrors() {
+		t.Fatalf("unexpected errors: %v", diags.Errs())
+	}
+}
+
 func contains(s, sub string) bool {
 	for i := 0; i+len(sub) <= len(s); i++ {
 		if s[i:i+len(sub)] == sub {

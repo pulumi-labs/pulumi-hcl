@@ -641,6 +641,11 @@ func (e *Engine) processVariable(_ context.Context, node *graph.Node) error {
 		}
 	}
 
+	// Fill in optional()-attribute defaults before sensitive marking.
+	if v.TypeDefaults != nil && !val.IsNull() && val.IsKnown() {
+		val = v.TypeDefaults.Apply(val)
+	}
+
 	// Handle sensitive marking
 	if v.Sensitive || isSecret {
 		val = val.Mark(eval.SensitiveMark)
@@ -2338,6 +2343,12 @@ func (e *Engine) processModuleVariable(node *graph.Node) error {
 			} else {
 				return fmt.Errorf("variable %q is required but no value was provided", varName)
 			}
+		}
+
+		// Fill in optional()-attribute defaults before type conversion so
+		// the result satisfies the declared object shape.
+		if v.TypeDefaults != nil && !val.IsNull() && val.IsKnown() {
+			val = v.TypeDefaults.Apply(val)
 		}
 
 		// Coerce the value to match the variable's type constraint.
