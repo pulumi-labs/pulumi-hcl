@@ -348,6 +348,12 @@ type Engine struct {
 	// failedNodes tracks resource nodes that failed to register, keyed by instance key.
 	// Dependent nodes check this map and are skipped when a dependency failed.
 	failedNodes *util.SyncMap[string, error]
+
+	// graph is the resolved dependency graph for the current run. Stored on
+	// the engine so processNode handlers can consult its topology (e.g.
+	// processProvider checks whether anything depends on a provider node
+	// before registering it).
+	graph *graph.Graph
 }
 
 // EngineOptions configures the engine.
@@ -455,6 +461,7 @@ func (e *Engine) Run(ctx context.Context) error {
 	if errs := g.Validate(); len(errs) > 0 {
 		return errors.Join(errs...)
 	}
+	e.graph = g
 
 	// Process nodes in parallel where possible
 	if err := e.processGraph(ctx, g); err != nil {
@@ -773,6 +780,15 @@ func (e *Engine) processProvider(ctx context.Context, node *graph.Node) error {
 		return fmt.Errorf("provider node missing Provider field")
 	}
 
+	// TF/tofu only configures providers that something actually uses; an
+	// unused `provider` block is silently ignored even if its body would
+	// fail validate/configure. The graph already captures every real use
+	// as an in-edge to the provider node (explicit `provider = ...` refs
+	// and root implicit-default refs), so no dependents means no use.
+	if e.graph != nil && !e.graph.HasDependents(node.Key) {
+		return nil
+	}
+
 	if node.ModuleInfo != nil {
 		return e.forEachModuleInstance(node, func(inst *moduleInstance) error {
 			return e.registerProviderInContext(ctx, node, provider, inst.EvalCtx, inst.URN, inst)
@@ -780,6 +796,72 @@ func (e *Engine) processProvider(ctx context.Context, node *graph.Node) error {
 	}
 
 	return e.registerProviderInContext(ctx, node, provider, e.evaluator.Context(), e.stackURN, nil)
+}
+
+// resolvePassThroughProvider looks up a provider passed into a module via
+// `providers = { <localKey> = <parentExpr> }` and returns the resolved
+// URN::ID, or "" when the resource isn't in a module, there's no entry for
+// localKey, or the parent expression doesn't yield a provider reference.
+func (e *Engine) resolvePassThroughProvider(modInfo *graph.ModuleInfo, localKey string) string {
+	if modInfo == nil || modInfo.Module == nil || localKey == "" {
+		return ""
+	}
+	passExpr, ok := modInfo.Module.Providers[localKey]
+	if !ok {
+		return ""
+	}
+	parentCtx := e.parentEvalContext(modInfo)
+	if parentCtx == nil {
+		return ""
+	}
+	val, diags := eval.NewEvaluator(parentCtx).EvaluateExpression(passExpr)
+	if diags.HasErrors() {
+		return ""
+	}
+	ref, err := providerRefFromCty(val)
+	if err != nil {
+		return ""
+	}
+	return ref
+}
+
+// parentEvalContext returns the eval.Context of the enclosing module
+// instance (or the root context when modInfo's parent is root).
+func (e *Engine) parentEvalContext(modInfo *graph.ModuleInfo) *eval.Context {
+	if modInfo.ParentPrefix() == "" {
+		return e.evaluator.Context()
+	}
+	parentInsts, ok := e.moduleInstances.Get(modInfo.ParentPrefix())
+	if !ok || len(parentInsts) == 0 {
+		return nil
+	}
+	return parentInsts[0].EvalCtx
+}
+
+// providerExprKey returns "name" or "name.alias" from a provider-reference
+// expression. Returns "" for anything that isn't a single one-or-two-step
+// traversal. Mirrors graph.providerExprKey — duplicated to keep the run
+// package free of internal graph helpers.
+func providerExprKey(expr hcl.Expression) string {
+	if expr == nil {
+		return ""
+	}
+	traversals := expr.Variables()
+	if len(traversals) != 1 {
+		return ""
+	}
+	t := traversals[0]
+	if len(t) == 0 {
+		return ""
+	}
+	name := t.RootName()
+	if len(t) == 1 {
+		return name
+	}
+	if attr, ok := t[1].(hcl.TraverseAttr); ok {
+		return name + "." + attr.Name
+	}
+	return name
 }
 
 func (e *Engine) registerProviderInContext(
@@ -1295,16 +1377,40 @@ func (e *Engine) buildResourceOptionsInContext(
 	}
 
 	if res.Provider != nil {
-		val, valDiags := eval.NewEvaluator(evalCtx).EvaluateExpression(res.Provider)
-		if valDiags.HasErrors() {
-			return nil, fmt.Errorf("evaluating provider for %s.%s: %s", res.Type, res.Name, valDiags.Error())
+		// `provider = X.alias` (or `provider = X`). For an in-module
+		// resource, the parent module call may have mapped this local
+		// reference to a parent-scope provider via
+		// `providers = { X.alias = ... }` — that wins over any local
+		// definition. Fall back to evaluating the expression in the
+		// resource's own scope, which is what TF does when there is no
+		// pass-through.
+		if ref := e.resolvePassThroughProvider(modInfo, providerExprKey(res.Provider)); ref != "" {
+			opts.Provider = ref
+		} else {
+			val, valDiags := eval.NewEvaluator(evalCtx).EvaluateExpression(res.Provider)
+			if valDiags.HasErrors() {
+				return nil, fmt.Errorf("evaluating provider for %s.%s: %s", res.Type, res.Name, valDiags.Error())
+			}
+			ref, err := providerRefFromCty(val)
+			if err != nil {
+				return nil, fmt.Errorf("resolving provider for %s.%s: %w", res.Type, res.Name, err)
+			}
+			opts.Provider = ref
 		}
-		ref, err := providerRefFromCty(val)
-		if err != nil {
-			return nil, fmt.Errorf("resolving provider for %s.%s: %w", res.Type, res.Name, err)
+	} else if modInfo != nil {
+		// Implicit default in a module: try a pass-through entry, then
+		// the in-module `provider "<pkg>" {}` block (registered earlier
+		// at key resPrefix+pkg in resourceOutputs). If neither exists,
+		// fall through to Pulumi's engine default.
+		pkg := packageNameFromResourceType(res.Type)
+		if ref := e.resolvePassThroughProvider(modInfo, pkg); ref != "" {
+			opts.Provider = ref
+		} else if outputs, ok := e.resourceOutputs.Get(resPrefix + pkg); ok {
+			if ref, err := providerRefFromCty(outputs); err == nil {
+				opts.Provider = ref
+			}
 		}
-		opts.Provider = ref
-	} else if modInfo == nil {
+	} else {
 		if ref, ok := e.defaultProviders.Get(packageNameFromResourceType(res.Type)); ok {
 			opts.Provider = ref
 		}
@@ -1995,16 +2101,30 @@ func (e *Engine) invokeDataSourceOnce(
 	}
 
 	if ds.Provider != nil {
-		val, valDiags := eval.NewEvaluator(evalCtx).EvaluateExpression(ds.Provider)
-		if valDiags.HasErrors() {
-			return cty.NilVal, nil, fmt.Errorf("evaluating provider for data %s.%s: %s", ds.Type, ds.Name, valDiags.Error())
+		if ref := e.resolvePassThroughProvider(node.ModuleInfo, providerExprKey(ds.Provider)); ref != "" {
+			invokeReq.Provider = ref
+		} else {
+			val, valDiags := eval.NewEvaluator(evalCtx).EvaluateExpression(ds.Provider)
+			if valDiags.HasErrors() {
+				return cty.NilVal, nil, fmt.Errorf("evaluating provider for data %s.%s: %s", ds.Type, ds.Name, valDiags.Error())
+			}
+			ref, err := providerRefFromCty(val)
+			if err != nil {
+				return cty.NilVal, nil, fmt.Errorf("resolving provider for data %s.%s: %w", ds.Type, ds.Name, err)
+			}
+			invokeReq.Provider = ref
 		}
-		ref, err := providerRefFromCty(val)
-		if err != nil {
-			return cty.NilVal, nil, fmt.Errorf("resolving provider for data %s.%s: %w", ds.Type, ds.Name, err)
+	} else if node.ModuleInfo != nil {
+		pkg := packageNameFromResourceType(ds.Type)
+		resPrefix := node.ModuleInfo.Prefix()
+		if ref := e.resolvePassThroughProvider(node.ModuleInfo, pkg); ref != "" {
+			invokeReq.Provider = ref
+		} else if outputs, ok := e.resourceOutputs.Get(resPrefix + pkg); ok {
+			if ref, err := providerRefFromCty(outputs); err == nil {
+				invokeReq.Provider = ref
+			}
 		}
-		invokeReq.Provider = ref
-	} else if node.ModuleInfo == nil {
+	} else {
 		if ref, ok := e.defaultProviders.Get(packageNameFromResourceType(ds.Type)); ok {
 			invokeReq.Provider = ref
 		}

@@ -173,6 +173,15 @@ type Graph struct {
 	// referenced from a user-written traversal. Used by Validate to anchor
 	// errors about unknown nodes back at the offending source.
 	references map[string][]hcl.Range
+
+	// keyByDagNode lets AddNode resolve each dependency's key so we can
+	// track dependent counts. pdag only exposes node indices, not the
+	// metadata we attached at creation time.
+	keyByDagNode map[pdag.Node]string
+
+	// dependents counts how many other nodes list a given key in their
+	// dependency list. Read by HasDependents at Walk time.
+	dependents map[string]int
 }
 
 type dagNode struct {
@@ -188,9 +197,11 @@ type internedNode struct {
 // NewGraph creates a new empty graph.
 func NewGraph() *Graph {
 	return &Graph{
-		seen:       make(map[string]internedNode),
-		dag:        pdag.New[dagNode](),
-		references: make(map[string][]hcl.Range),
+		seen:         make(map[string]internedNode),
+		dag:          pdag.New[dagNode](),
+		references:   make(map[string][]hcl.Range),
+		keyByDagNode: make(map[pdag.Node]string),
+		dependents:   make(map[string]int),
 	}
 }
 
@@ -243,6 +254,7 @@ func (g *Graph) newNode(key string) (*Node, pdag.Node) {
 		i: i,
 		n: n,
 	}
+	g.keyByDagNode[i] = key
 	return n, i
 }
 
@@ -255,8 +267,18 @@ func (g *Graph) AddNode(node *Node, deps []pdag.Node) error {
 		if err != nil {
 			return err
 		}
+		if key, ok := g.keyByDagNode[dep]; ok {
+			g.dependents[key]++
+		}
 	}
 	return nil
+}
+
+// HasDependents reports whether any other node in the graph lists `key` in
+// its dependency list. Used by the engine to skip work for nodes whose
+// output nothing consumes (e.g. unused `provider` blocks).
+func (g *Graph) HasDependents(key string) bool {
+	return g.dependents[key] > 0
 }
 
 // BuildFromConfig builds a dependency graph from an HCL configuration.
@@ -390,6 +412,64 @@ func (g *Graph) defaultProviderDeps(resource *ast.Resource, config *ast.Config, 
 	}
 	_, idx := g.newNode(prefix + pkgName)
 	return []pdag.Node{idx}
+}
+
+// passThroughProviderDeps returns an edge from an in-module resource to the
+// parent-scope provider that the module call's `providers = { ... }` argument
+// passes in for the resource's package. mod is the module call in the parent
+// scope, parentPrefix is the parent scope's prefix. Returns nil when no
+// pass-through entry applies.
+func (g *Graph) passThroughProviderDeps(resource *ast.Resource, mod *ast.Module, parentPrefix string) []pdag.Node {
+	if mod == nil || len(mod.Providers) == 0 {
+		return nil
+	}
+	// Look up by the key the resource would use in the child scope:
+	//   explicit `provider = simple.foo` → "simple.foo"
+	//   implicit default                  → "simple"
+	var key string
+	if resource.Provider != nil {
+		key = providerExprKey(resource.Provider)
+	} else {
+		key = packageNameFromResourceType(resource.Type)
+	}
+	if key == "" {
+		return nil
+	}
+	passExpr, ok := mod.Providers[key]
+	if !ok {
+		return nil
+	}
+	parentKey := providerExprKey(passExpr)
+	if parentKey == "" {
+		return nil
+	}
+	_, idx := g.newNode(parentPrefix + parentKey)
+	return []pdag.Node{idx}
+}
+
+// providerExprKey returns "name" or "name.alias" from a provider-reference
+// expression. Returns "" for anything that isn't a single one-or-two-step
+// traversal.
+func providerExprKey(expr hcl.Expression) string {
+	if expr == nil {
+		return ""
+	}
+	traversals := expr.Variables()
+	if len(traversals) != 1 {
+		return ""
+	}
+	t := traversals[0]
+	if len(t) == 0 {
+		return ""
+	}
+	name := t.RootName()
+	if len(t) == 1 {
+		return name
+	}
+	if attr, ok := t[1].(hcl.TraverseAttr); ok {
+		return name + "." + attr.Name
+	}
+	return name
 }
 
 // packageNameFromResourceType mirrors run.packageNameFromResourceType: it
@@ -811,10 +891,32 @@ func (g *Graph) inlineModule(
 		}
 	}
 
+	// Pass-through aliases: `providers = { simple.foo = simple.from_parent }`
+	// creates a local name `simple.foo` in the child that has no in-module
+	// `provider` block of its own. In-module resources referencing it would
+	// otherwise leave behind an unresolved node and trip Validate. Register
+	// it as a no-op shadow so the local edge resolves; the real resolution
+	// (to the parent's provider) happens at runtime via mod.Providers.
+	for localKey := range mod.Providers {
+		shadowKey := prefix + localKey
+		if existing, ok := g.seen[shadowKey]; ok && existing.n.Type != NodeTypeUnknown {
+			continue
+		}
+		if err := g.AddNode(&Node{
+			Key:        shadowKey,
+			Type:       NodeTypeBuiltin,
+			ModuleInfo: modInfo,
+		}, nil); err != nil {
+			return err
+		}
+	}
+
 	// Resources
 	for key, resource := range loaded.Config.Resources {
 		deps := g.resourceDeps(resource, prefix)
 		deps = append(deps, initIdx)
+		deps = append(deps, g.defaultProviderDeps(resource, loaded.Config, prefix)...)
+		deps = append(deps, g.passThroughProviderDeps(resource, mod, parentPrefix)...)
 		if err := g.AddNode(&Node{
 			Key:        prefix + key,
 			Type:       NodeTypeResource,
@@ -829,6 +931,8 @@ func (g *Graph) inlineModule(
 	for key, ds := range loaded.Config.DataSources {
 		deps := g.resourceDeps(ds, prefix)
 		deps = append(deps, initIdx)
+		deps = append(deps, g.defaultProviderDeps(ds, loaded.Config, prefix)...)
+		deps = append(deps, g.passThroughProviderDeps(ds, mod, parentPrefix)...)
 		if err := g.AddNode(&Node{
 			Key:        prefix + "data." + key,
 			Type:       NodeTypeDataSource,

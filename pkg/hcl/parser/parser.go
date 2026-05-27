@@ -333,22 +333,39 @@ func (p *Parser) parseRequiredProviders(tf *ast.Terraform, block *hcl.Block) hcl
 			DeclRange: attr.Range,
 		}
 
-		// The value can be a string (version only) or an object
-		val, valDiags := attr.Expr.Value(nil)
-		diags = append(diags, valDiags...)
-
-		if val.Type() == cty.String {
-			provider.Version = val.AsString()
-		} else if val.Type().IsObjectType() {
-			if val.Type().HasAttribute("source") {
-				if sourceVal := val.GetAttr("source"); !sourceVal.IsNull() {
-					provider.Source = sourceVal.AsString()
+		// The value can be a string (version only) or an object with
+		// `source`, `version`, and/or `configuration_aliases`. We walk
+		// the object item-by-item rather than evaluating it whole because
+		// `configuration_aliases` holds traversals (e.g. `[simple.foo]`)
+		// that can't resolve in the empty parse-time context. pulumi-hcl
+		// doesn't act on `configuration_aliases` — the matching provider
+		// arrives via the caller's `providers = {...}` block at runtime
+		// — so we accept and discard it.
+		if pairs, mapDiags := hcl.ExprMap(attr.Expr); !mapDiags.HasErrors() {
+			for _, pair := range pairs {
+				kw := hcl.ExprAsKeyword(pair.Key)
+				switch kw {
+				case "source":
+					v, vd := pair.Value.Value(nil)
+					diags = append(diags, vd...)
+					if v.Type() == cty.String && !v.IsNull() {
+						provider.Source = v.AsString()
+					}
+				case "version":
+					v, vd := pair.Value.Value(nil)
+					diags = append(diags, vd...)
+					if v.Type() == cty.String && !v.IsNull() {
+						provider.Version = v.AsString()
+					}
+				case "configuration_aliases":
+					// Accept and ignore — see comment above.
 				}
 			}
-			if val.Type().HasAttribute("version") {
-				if versionVal := val.GetAttr("version"); !versionVal.IsNull() {
-					provider.Version = versionVal.AsString()
-				}
+		} else {
+			val, valDiags := attr.Expr.Value(nil)
+			diags = append(diags, valDiags...)
+			if val.Type() == cty.String {
+				provider.Version = val.AsString()
 			}
 		}
 
@@ -1109,24 +1126,62 @@ func (p *Parser) parseModuleBlock(config *ast.Config, block *hcl.Block) hcl.Diag
 		}
 	}
 
-	// Parse providers map
+	// Parse providers map. Keys may be bare provider names ("simple"),
+	// dotted local aliases ("simple.foo"), or quoted strings. HCL flags a
+	// bare dotted form as "Ambiguous attribute key" at Value() time, so
+	// resolve via AbsTraversalForExpr first (it goes through the
+	// ObjectConsKeyExpr wrapper without triggering that diagnostic).
 	if attr, ok := content.Attributes["providers"]; ok {
 		pairs, pairDiags := hcl.ExprMap(attr.Expr)
 		diags = append(diags, pairDiags...)
 		for _, pair := range pairs {
-			keyVal, keyDiags := pair.Key.Value(nil)
+			key, keyDiags := providersMapKey(pair.Key)
 			diags = append(diags, keyDiags...)
-			if keyVal.Type() != cty.String {
+			if key == "" {
 				continue
 			}
-			key := keyVal.AsString()
-
 			module.Providers[key] = pair.Value
 		}
 	}
 
 	config.Modules[name] = module
 	return diags
+}
+
+// providersMapKey resolves a key from a module-call's `providers = {...}`
+// map to its canonical "name" or "name.alias" string form. Reports a
+// diagnostic when the key isn't a traversal (bare or dotted) or a static
+// string.
+func providersMapKey(key hcl.Expression) (string, hcl.Diagnostics) {
+	if trav, td := hcl.AbsTraversalForExpr(key); !td.HasErrors() && len(trav) > 0 {
+		name := trav.RootName()
+		for i := 1; i < len(trav); i++ {
+			attr, ok := trav[i].(hcl.TraverseAttr)
+			if !ok {
+				return "", hcl.Diagnostics{&hcl.Diagnostic{
+					Severity: hcl.DiagError,
+					Summary:  "Invalid provider map key",
+					Detail:   "Each key in a module's `providers = {...}` map must be a local provider name, optionally followed by a single alias step (e.g. `simple` or `simple.foo`).",
+					Subject:  key.Range().Ptr(),
+				}}
+			}
+			name += "." + attr.Name
+		}
+		return name, nil
+	}
+	v, vd := key.Value(nil)
+	if vd.HasErrors() {
+		return "", vd
+	}
+	if v.Type() != cty.String || v.IsNull() {
+		return "", hcl.Diagnostics{&hcl.Diagnostic{
+			Severity: hcl.DiagError,
+			Summary:  "Invalid provider map key",
+			Detail:   "Each key in a module's `providers = {...}` map must be a local provider name, optionally followed by a single alias step (e.g. `simple` or `simple.foo`), or a string literal of that form.",
+			Subject:  key.Range().Ptr(),
+		}}
+	}
+	return v.AsString(), nil
 }
 
 // parseMovedBlock parses a moved block.

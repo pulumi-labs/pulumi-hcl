@@ -19,6 +19,7 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/hashicorp/go-cty/cty"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
 )
@@ -34,6 +35,20 @@ func SimpleProvider() *schema.Provider {
 	return &schema.Provider{
 		Schema: map[string]*schema.Schema{
 			"prefix": {Type: schema.TypeString, Optional: true},
+			// Any non-empty value fails ValidateDiagFunc. Lets tests assert
+			// that schema validation on a `provider` block is only run when
+			// something actually uses the provider (Terraform's lazy
+			// configure behaviour).
+			"fail_validate": {
+				Type:     schema.TypeString,
+				Optional: true,
+				ValidateDiagFunc: func(v any, _ cty.Path) diag.Diagnostics {
+					if s, _ := v.(string); s != "" {
+						return diag.Errorf("simple provider: fail_validate was %q", s)
+					}
+					return nil
+				},
+			},
 		},
 		ConfigureContextFunc: func(_ context.Context, d *schema.ResourceData) (any, diag.Diagnostics) {
 			prefix, _ := d.Get("prefix").(string)
@@ -42,8 +57,8 @@ func SimpleProvider() *schema.Provider {
 		ResourcesMap: map[string]*schema.Resource{
 			"simple_resource": {
 				Schema: map[string]*schema.Schema{
-					"input_one":     {Type: schema.TypeString, Optional: true},
-					"input_two":     {Type: schema.TypeBool, Optional: true},
+					"input_one": {Type: schema.TypeString, Optional: true},
+					"input_two": {Type: schema.TypeBool, Optional: true},
 					// `version` is an upstream-style attribute name used by
 					// some real TF resources (e.g. aws_rds_engine_version).
 					// Kept here so tests can assert it survives the
@@ -77,6 +92,30 @@ func SimpleProvider() *schema.Provider {
 				ReadContext:   func(_ context.Context, _ *schema.ResourceData, _ any) diag.Diagnostics { return nil },
 				UpdateContext: func(_ context.Context, _ *schema.ResourceData, _ any) diag.Diagnostics { return nil },
 				DeleteContext: func(_ context.Context, _ *schema.ResourceData, _ any) diag.Diagnostics { return nil },
+			},
+		},
+		DataSourcesMap: map[string]*schema.Resource{
+			// `simple_lookup` echoes provider config (`prefix`) into
+			// `prefix_result` so tests can assert that a `provider` block
+			// referenced only by a data source — not by any resource — is
+			// still configured.
+			"simple_lookup": {
+				Schema: map[string]*schema.Schema{
+					"query":         {Type: schema.TypeString, Required: true},
+					"prefix_result": {Type: schema.TypeString, Computed: true},
+				},
+				ReadContext: func(_ context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+					q, _ := d.Get("query").(string)
+					var prefix string
+					if m, ok := meta.(*simpleProviderMeta); ok && m != nil {
+						prefix = m.prefix
+					}
+					d.SetId(prefix + "-" + q)
+					if err := d.Set("prefix_result", prefix+"-"+q); err != nil {
+						return diag.FromErr(err)
+					}
+					return nil
+				},
 			},
 		},
 	}
