@@ -443,6 +443,19 @@ func schemaToCtyPrimitive(typ schema.Type) (cty.Type, bool) {
 }
 
 func conformCtyToType(val cty.Value, typ cty.Type) cty.Value {
+	// Strip any container-level marks (DepMark / SensitiveMark) before
+	// inspecting structure — cty.Value.LengthInt and friends panic on
+	// marked values — and re-apply them to the conformed result so deps
+	// keep propagating.
+	val, marks := val.Unmark()
+	out := conformUnmarkedCtyToType(val, typ)
+	if len(marks) > 0 {
+		out = out.WithMarks(marks)
+	}
+	return out
+}
+
+func conformUnmarkedCtyToType(val cty.Value, typ cty.Type) cty.Value {
 	if val.Type().Equals(typ) {
 		return val
 	}
@@ -732,6 +745,9 @@ func ctyToResourceProperty(path string, val cty.Value, prop schema.Type, expr hc
 			return property.Value{}, fmt.Errorf("expected object at %q for resource reference, found %#v", path, val.Type())
 		}
 		refAttr, hasRef := val.AsValueMap()["__ref"]
+		if hasRef {
+			refAttr, _ = refAttr.Unmark()
+		}
 		if !hasRef || !refAttr.IsKnown() {
 			return property.New(property.Computed), nil
 		}

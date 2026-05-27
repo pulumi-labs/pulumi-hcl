@@ -301,9 +301,6 @@ type Engine struct {
 	// flows through, instead of the engine spinning up an empty default.
 	defaultProviders *util.SyncMap[string, string]
 
-	// dataSourceDependencies maps data source keys to their resource dependencies (URNs).
-	dataSourceDependencies *util.SyncMap[string, []resource.URN]
-
 	// stackOutputs collects outputs to be registered on the stack.
 	stackOutputs map[string]property.Value
 
@@ -342,13 +339,6 @@ type Engine struct {
 
 	// moduleInstances maps module prefix → list of instances for inlined modules.
 	moduleInstances *util.SyncMap[string, []*moduleInstance]
-
-	// moduleVarDeps maps fully-qualified module-variable keys (e.g.
-	// "module.child.var.parent") to the set of resource URNs that the parent
-	// call-site expression depends on. Consulted when extracting dependencies
-	// for resources inside a child module so that a `var.X` traversal
-	// transitively reflects the URN(s) bound at the call site.
-	moduleVarDeps *util.SyncMap[string, []string]
 
 	parallel int
 
@@ -423,7 +413,6 @@ func NewEngine(config *ast.Config, opts *EngineOptions) *Engine {
 		resourceOutputs:         util.NewSyncMap[string, cty.Value](),
 		resourceInheritableOpts: util.NewSyncMap[string, inheritableOpts](),
 		defaultProviders:        util.NewSyncMap[string, string](),
-		dataSourceDependencies:  util.NewSyncMap[string, []resource.URN](),
 		stackOutputs:            make(map[string]property.Value),
 		projectName:             opts.ProjectName,
 		stackName:               opts.StackName,
@@ -436,7 +425,6 @@ func NewEngine(config *ast.Config, opts *EngineOptions) *Engine {
 		packageRefs:             make(map[string]PackageRef),
 		moduleLoader:            modules.NewLoader(),
 		moduleInstances:         util.NewSyncMap[string, []*moduleInstance](),
-		moduleVarDeps:           util.NewSyncMap[string, []string](),
 		parallel:                opts.Parallel,
 		failedNodes:             util.NewSyncMap[string, error](),
 	}
@@ -1017,7 +1005,10 @@ func (e *Engine) registerProviderInContext(
 	}
 	outputObj["urn"] = cty.StringVal(resp.URN)
 
-	e.resourceOutputs.Set(node.Key, cty.ObjectVal(outputObj))
+	// See markedOutputs comment in registerResourceInstanceInContext for
+	// the rationale: every leaf carries the resource's URN so deps flow
+	// naturally with values through later expression evaluation.
+	e.resourceOutputs.Set(node.Key, eval.MarkOutputLeaves(cty.ObjectVal(outputObj), eval.DepMark(resp.URN)))
 
 	// Top-level un-aliased provider blocks become the default provider for
 	// resources of the same package that don't set `provider` explicitly.
@@ -1025,12 +1016,13 @@ func (e *Engine) registerProviderInContext(
 		e.defaultProviders.Set(provider.Name, resp.URN+"::"+providerID)
 	}
 
+	markedProviderOutputs := eval.MarkOutputLeaves(cty.ObjectVal(outputObj), eval.DepMark(resp.URN))
 	if node.ModuleInfo != nil {
 		// Strip prefix for module-internal references
 		bareKey := strings.TrimPrefix(node.Key, node.ModuleInfo.Prefix())
-		evalCtx.SetResource(bareKey, cty.ObjectVal(outputObj))
+		evalCtx.SetResource(bareKey, markedProviderOutputs)
 	} else {
-		evalCtx.SetResource(node.Key, cty.ObjectVal(outputObj))
+		evalCtx.SetResource(node.Key, markedProviderOutputs)
 	}
 
 	return nil
@@ -1178,11 +1170,12 @@ func (e *Engine) registerResourceInstanceInContext(
 				return val, diags
 			}
 
-			prefix := ""
-			if node.ModuleInfo != nil {
-				prefix = node.ModuleInfo.Prefix()
-			}
-			for _, urn := range e.expressionDependencyURNs(expr, prefix) {
+			// Every URN this value transitively touched is encoded as a
+			// DepMark on the values that flowed into it. Walking the result
+			// for marks gives us the complete dep set for this property —
+			// covering interpolation, function calls, indexing, splats,
+			// merges, and var/local bindings through child modules.
+			for _, urn := range eval.CollectDepURNs(val) {
 				addToDependsOn(string(propKey), urn)
 			}
 
@@ -1274,7 +1267,15 @@ func (e *Engine) registerResourceInstanceInContext(
 	}
 	outputObj["urn"] = cty.StringVal(urn)
 
-	e.resourceOutputs.Set(instance.Key, cty.ObjectVal(outputObj))
+	// Mark every leaf of the output object with the resource's URN. Any
+	// subsequent expression that pulls a value from this object — through
+	// GetAttr, indexing, splat, function calls, interpolation — will carry
+	// the mark, which the engine reads back at property-conversion time to
+	// build PropertyDependencies. Containers stay unmarked so iteration
+	// and attribute access work without unwrapping.
+	markedOutputs := eval.MarkOutputLeaves(cty.ObjectVal(outputObj), eval.DepMark(urn))
+
+	e.resourceOutputs.Set(instance.Key, markedOutputs)
 
 	var iOpts inheritableOpts
 	if opts.Protect {
@@ -1288,18 +1289,18 @@ func (e *Engine) registerResourceInstanceInContext(
 		if node.ModuleInfo != nil {
 			baseKey = strings.TrimPrefix(baseKey, node.ModuleInfo.Prefix())
 		}
-		evalCtx.SetCountResource(baseKey, *instance.Index, cty.ObjectVal(outputObj))
+		evalCtx.SetCountResource(baseKey, *instance.Index, markedOutputs)
 	} else if instance.EachKey != nil {
 		baseKey := instance.OriginalKey
 		if node.ModuleInfo != nil {
 			baseKey = strings.TrimPrefix(baseKey, node.ModuleInfo.Prefix())
 		}
-		evalCtx.SetEachResource(baseKey, instance.EachKey.AsString(), cty.ObjectVal(outputObj))
+		evalCtx.SetEachResource(baseKey, instance.EachKey.AsString(), markedOutputs)
 	} else if node.ModuleInfo != nil {
 		bareKey := strings.TrimPrefix(instance.Key, node.ModuleInfo.Prefix())
-		evalCtx.SetResource(bareKey, cty.ObjectVal(outputObj))
+		evalCtx.SetResource(bareKey, markedOutputs)
 	} else {
-		evalCtx.SetResource(instance.Key, cty.ObjectVal(outputObj))
+		evalCtx.SetResource(instance.Key, markedOutputs)
 	}
 
 	return nil
@@ -1325,9 +1326,8 @@ func (e *Engine) buildResourceOptionsInContext(
 			continue
 		}
 		if outputs, ok := e.resourceOutputs.Get(resPrefix + depKey); ok {
-			urnVal := outputs.GetAttr("urn")
-			if urnVal.Type() == cty.String {
-				opts.DependsOn = append(opts.DependsOn, urnVal.AsString())
+			if urn := ctyAsString(outputs.GetAttr("urn")); urn != "" {
+				opts.DependsOn = append(opts.DependsOn, urn)
 			}
 		}
 	}
@@ -1365,9 +1365,8 @@ func (e *Engine) buildResourceOptionsInContext(
 		depKey := graph.FormatTraversal(res.ResourceParent)
 		if depKey != "" {
 			if outputs, ok := e.resourceOutputs.Get(resPrefix + depKey); ok {
-				urnVal := outputs.GetAttr("urn")
-				if urnVal.Type() == cty.String {
-					opts.Parent = urnVal.AsString()
+				if urn := ctyAsString(outputs.GetAttr("urn")); urn != "" {
+					opts.Parent = urn
 				}
 			}
 		}
@@ -1419,14 +1418,14 @@ func (e *Engine) buildResourceOptionsInContext(
 			continue
 		}
 		if providerOutputs, ok := e.resourceOutputs.Get(resPrefix + providerKey); ok {
-			urnVal := providerOutputs.GetAttr("urn")
-			idVal := providerOutputs.GetAttr("id")
-			if urnVal.Type() == cty.String && idVal.Type() == cty.String {
+			urn := ctyAsString(providerOutputs.GetAttr("urn"))
+			id := ctyAsString(providerOutputs.GetAttr("id"))
+			if urn != "" && id != "" {
 				pkgName := packageNameFromResourceType(strings.SplitN(providerKey, ".", 2)[0])
 				if opts.Providers == nil {
 					opts.Providers = make(map[string]string)
 				}
-				opts.Providers[pkgName] = urnVal.AsString() + "::" + idVal.AsString()
+				opts.Providers[pkgName] = urn + "::" + id
 			}
 		}
 	}
@@ -1508,9 +1507,8 @@ func (e *Engine) buildResourceOptionsInContext(
 		depKey := graph.FormatTraversal(res.DeletedWith)
 		if depKey != "" {
 			if outputs, ok := e.resourceOutputs.Get(resPrefix + depKey); ok {
-				urnVal := outputs.GetAttr("urn")
-				if urnVal.Type() == cty.String {
-					opts.DeletedWith = urnVal.AsString()
+				if urn := ctyAsString(outputs.GetAttr("urn")); urn != "" {
+					opts.DeletedWith = urn
 				}
 			}
 		}
@@ -1522,9 +1520,8 @@ func (e *Engine) buildResourceOptionsInContext(
 			continue
 		}
 		if outputs, ok := e.resourceOutputs.Get(resPrefix + depKey); ok {
-			urnVal := outputs.GetAttr("urn")
-			if urnVal.Type() == cty.String {
-				opts.ReplaceWith = append(opts.ReplaceWith, urnVal.AsString())
+			if urn := ctyAsString(outputs.GetAttr("urn")); urn != "" {
+				opts.ReplaceWith = append(opts.ReplaceWith, urn)
 			}
 		}
 	}
@@ -1670,37 +1667,27 @@ func (e *Engine) evaluateAliases(expr hcl.Expression) ([]Alias, error) {
 	for it.Next() {
 		_, elem := it.Element()
 		if elem.Type() == cty.String {
-			aliases = append(aliases, Alias{URN: elem.AsString()})
+			aliases = append(aliases, Alias{URN: ctyAsString(elem)})
 		} else if elem.Type().IsObjectType() {
 			spec := &AliasSpec{}
 			objType := elem.Type()
 			if objType.HasAttribute("name") {
-				if v := elem.GetAttr("name"); v.Type() == cty.String {
-					spec.Name = v.AsString()
-				}
+				spec.Name = ctyAsString(elem.GetAttr("name"))
 			}
 			if objType.HasAttribute("type") {
-				if v := elem.GetAttr("type"); v.Type() == cty.String {
-					spec.Type = v.AsString()
-				}
+				spec.Type = ctyAsString(elem.GetAttr("type"))
 			}
 			if objType.HasAttribute("stack") {
-				if v := elem.GetAttr("stack"); v.Type() == cty.String {
-					spec.Stack = v.AsString()
-				}
+				spec.Stack = ctyAsString(elem.GetAttr("stack"))
 			}
 			if objType.HasAttribute("project") {
-				if v := elem.GetAttr("project"); v.Type() == cty.String {
-					spec.Project = v.AsString()
-				}
+				spec.Project = ctyAsString(elem.GetAttr("project"))
 			}
 			if objType.HasAttribute("parent_urn") {
-				if v := elem.GetAttr("parent_urn"); v.Type() == cty.String {
-					spec.ParentURN = v.AsString()
-				}
+				spec.ParentURN = ctyAsString(elem.GetAttr("parent_urn"))
 			}
 			if objType.HasAttribute("no_parent") {
-				if v := elem.GetAttr("no_parent"); v.Type() == cty.Bool {
+				if v, _ := elem.GetAttr("no_parent").Unmark(); v.Type() == cty.Bool && !v.IsNull() && v.IsKnown() {
 					spec.NoParent = v.True()
 				}
 			}
@@ -1946,12 +1933,11 @@ func (e *Engine) processDataSourceInContext(
 		return e.processRangedDataSource(ctx, node, ds, funcSchema, evalCtx, dsKey)
 	}
 
-	ctyOutputs, allDeps, err := e.invokeDataSourceOnce(ctx, node, ds, funcSchema, evalCtx)
+	ctyOutputs, err := e.invokeDataSourceOnce(ctx, node, ds, funcSchema, evalCtx)
 	if err != nil {
 		return err
 	}
 	evalCtx.SetDataSource(dsKey, ctyOutputs)
-	e.dataSourceDependencies.Set(dsKey, allDeps)
 	return nil
 }
 
@@ -1988,7 +1974,6 @@ func (e *Engine) processRangedDataSource(
 
 	result := expander.Expand(node)
 
-	var allDeps []resource.URN
 	var tupleOutputs []cty.Value
 	eachOutputs := make(map[string]cty.Value)
 	isForEach := ds.ForEach != nil
@@ -2001,7 +1986,7 @@ func (e *Engine) processRangedDataSource(
 			evalCtx.SetEach(*instance.EachKey, *instance.EachValue)
 		}
 
-		ctyOut, deps, invokeErr := e.invokeDataSourceOnce(ctx, node, ds, funcSchema, evalCtx)
+		ctyOut, invokeErr := e.invokeDataSourceOnce(ctx, node, ds, funcSchema, evalCtx)
 
 		if instance.Index != nil {
 			evalCtx.ClearCount()
@@ -2013,7 +1998,8 @@ func (e *Engine) processRangedDataSource(
 		if invokeErr != nil {
 			return invokeErr
 		}
-		allDeps = append(allDeps, deps...)
+		// Per-instance ctyOut already carries DepMarks on its leaves;
+		// rebuilding the container preserves them on each element.
 		if isForEach {
 			eachOutputs[instance.EachKey.AsString()] = ctyOut
 		} else {
@@ -2037,20 +2023,30 @@ func (e *Engine) processRangedDataSource(
 	}
 
 	evalCtx.SetDataSource(dsKey, aggregated)
-	e.dataSourceDependencies.Set(dsKey, allDeps)
 	return nil
 }
 
 // invokeDataSourceOnce performs a single data-source invocation using the
 // current state of evalCtx (which may have each/count set by the caller).
-// It returns the converted outputs and the URNs this invocation depended on.
+// Returns the converted outputs with every leaf marked by the DepMarks of
+// the URNs this invocation transitively depended on (gathered from input
+// expressions and explicit depends_on URN resolutions). Downstream readers
+// pick the marks up through normal cty propagation.
 func (e *Engine) invokeDataSourceOnce(
 	ctx context.Context, node *graph.Node, ds *ast.Resource, funcSchema *schema.Function,
 	evalCtx *eval.Context,
-) (cty.Value, []resource.URN, error) {
+) (cty.Value, error) {
 	hclCtx := evalCtx.HCLContext()
 
-	var allDeps []resource.URN
+	var depMarks []interface{}
+	seen := make(map[string]bool)
+	addURN := func(urn string) {
+		if urn == "" || seen[urn] {
+			return
+		}
+		seen[urn] = true
+		depMarks = append(depMarks, eval.DepMark(urn))
+	}
 
 	dataSourceMapping := e.dataSourceBodyMapping(ctx, ds.Type)
 	inputs, diags := transform.EvalFunctionWithSchema(ds.Config, funcSchema, dataSourceMapping,
@@ -2068,18 +2064,14 @@ func (e *Engine) invokeDataSourceOnce(
 				return val, diags
 			}
 
-			prefix := ""
-			if node.ModuleInfo != nil {
-				prefix = node.ModuleInfo.Prefix()
-			}
-			for _, urn := range e.expressionDependencyURNs(expr, prefix) {
-				allDeps = append(allDeps, resource.URN(urn))
+			for _, urn := range eval.CollectDepURNs(val) {
+				addURN(urn)
 			}
 
 			return val, diags
 		})
 	if diags.HasErrors() {
-		return cty.NilVal, nil, diags
+		return cty.NilVal, diags
 	}
 
 	invokeReq := InvokeRequest{
@@ -2094,11 +2086,11 @@ func (e *Engine) invokeDataSourceOnce(
 		} else {
 			val, valDiags := eval.NewEvaluator(evalCtx).EvaluateExpression(ds.Provider)
 			if valDiags.HasErrors() {
-				return cty.NilVal, nil, fmt.Errorf("evaluating provider for data %s.%s: %s", ds.Type, ds.Name, valDiags.Error())
+				return cty.NilVal, fmt.Errorf("evaluating provider for data %s.%s: %s", ds.Type, ds.Name, valDiags.Error())
 			}
 			ref, err := providerRefFromCty(val)
 			if err != nil {
-				return cty.NilVal, nil, fmt.Errorf("resolving provider for data %s.%s: %w", ds.Type, ds.Name, err)
+				return cty.NilVal, fmt.Errorf("resolving provider for data %s.%s: %w", ds.Type, ds.Name, err)
 			}
 			invokeReq.Provider = ref
 		}
@@ -2121,7 +2113,7 @@ func (e *Engine) invokeDataSourceOnce(
 	if ds.PluginDownloadURL != nil {
 		val, valDiags := ds.PluginDownloadURL.Value(hclCtx)
 		if !valDiags.HasErrors() && val.Type() == cty.String {
-			invokeReq.PluginDownloadURL = val.AsString()
+			invokeReq.PluginDownloadURL = ctyAsString(val)
 		}
 	}
 
@@ -2135,24 +2127,25 @@ func (e *Engine) invokeDataSourceOnce(
 			fullDepKey = node.ModuleInfo.Prefix() + depKey
 		}
 		if outputs, ok := e.resourceOutputs.Get(fullDepKey); ok {
-			urnVal := outputs.GetAttr("urn")
-			if urnVal.Type() == cty.String {
-				allDeps = append(allDeps, resource.URN(urnVal.AsString()))
-			}
+			addURN(ctyAsString(outputs.GetAttr("urn")))
 		}
 	}
 
 	outputs, err := e.invokeFunction(ctx, invokeReq)
 	if err != nil {
-		return cty.NilVal, nil, fmt.Errorf("invoking data source: %w", err)
+		return cty.NilVal, fmt.Errorf("invoking data source: %w", err)
 	}
 
 	ctyOutputs, err := transform.FunctionOutputToCty(outputs, funcSchema, dataSourceMapping, e.dryRun)
 	if err != nil {
-		return cty.NilVal, nil, fmt.Errorf("converting function outputs to HCL types: %w", err)
+		return cty.NilVal, fmt.Errorf("converting function outputs to HCL types: %w", err)
 	}
 
-	return ctyOutputs, allDeps, nil
+	for _, m := range depMarks {
+		ctyOutputs = eval.MarkOutputLeaves(ctyOutputs, m)
+	}
+
+	return ctyOutputs, nil
 }
 
 // processCall processes a call block (method invocation on a resource).
@@ -2232,19 +2225,19 @@ func (e *Engine) processCall(ctx context.Context, node *graph.Node) error {
 		return fmt.Errorf("resource %q outputs not found", resKey)
 	}
 
-	urnVal := outputs.GetAttr("urn")
-	if urnVal.Type() != cty.String {
+	urnStr := ctyAsString(outputs.GetAttr("urn"))
+	if urnStr == "" {
 		return fmt.Errorf("resource %q missing URN", resKey)
 	}
-	urn := resource.URN(urnVal.AsString())
+	urn := resource.URN(urnStr)
 
 	// Build __self__ resource reference
 	var selfID property.Value
 	if resSchema.IsComponent && !isProviderResource {
 		selfID = property.New(property.Null)
 	} else {
-		idVal := outputs.GetAttr("id")
-		if idVal.Type() == cty.String && idVal.IsKnown() {
+		idVal, _ := outputs.GetAttr("id").Unmark()
+		if idVal.Type() == cty.String && idVal.IsKnown() && !idVal.IsNull() {
 			selfID = property.New(idVal.AsString())
 		} else if idVal.Type() == cty.String {
 			selfID = property.New(property.Computed)
@@ -2417,81 +2410,10 @@ func (e *Engine) forEachModuleInstance(node *graph.Node, fn func(inst *moduleIns
 	return nil
 }
 
-// expressionDependencyURNs returns the set of resource URNs that expr
-// references either directly (resource refs, data-source refs) or
-// transitively (a `var.X` traversal inside a child module is resolved
-// through moduleVarDeps to the URNs the call-site binding referenced).
-// prefix is the enclosing module prefix ("" at the root) used to qualify
-// bare HCL identifiers into the keyspace of resourceOutputs.
-func (e *Engine) expressionDependencyURNs(expr hcl.Expression, prefix string) []string {
-	var urns []string
-	seen := make(map[string]bool)
-	add := func(urn string) {
-		if urn == "" || seen[urn] {
-			return
-		}
-		seen[urn] = true
-		urns = append(urns, urn)
-	}
-
-	for _, dep := range eval.ExtractDependencies(expr) {
-		fullDep := prefix + dep
-		e.collectResourceDepURNs(fullDep, add)
-	}
-
-	if prefix != "" {
-		for _, traversal := range expr.Variables() {
-			namespace, parts := eval.ParseTraversal(traversal)
-			if namespace != "var" || len(parts) < 1 {
-				continue
-			}
-			varKey := prefix + "var." + parts[0]
-			if depURNs, ok := e.moduleVarDeps.Get(varKey); ok {
-				for _, urn := range depURNs {
-					add(urn)
-				}
-			}
-		}
-	}
-
-	return urns
-}
-
-// collectResourceDepURNs invokes add with each URN that the bare key
-// fullDep refers to. It checks for a direct hit, then for any
-// count/for_each-expanded instances (stored as "<fullDep>[<idx>]" or
-// "<fullDep>[\"<key>\"]"), and finally for data-source dependency lists.
-func (e *Engine) collectResourceDepURNs(fullDep string, add func(string)) {
-	if resOutputs, ok := e.resourceOutputs.Get(fullDep); ok {
-		if urnVal := resOutputs.GetAttr("urn"); urnVal.Type() == cty.String {
-			add(urnVal.AsString())
-		}
-	}
-	// A bare traversal `T.N` extracts to "T.N" even when the target is
-	// count/for_each-expanded and stored as "T.N[…]". Walk the map to
-	// pick up every instance under the same base name.
-	bracketPrefix := fullDep + "["
-	for key := range e.resourceOutputs.Keys() {
-		if !strings.HasPrefix(key, bracketPrefix) {
-			continue
-		}
-		if resOutputs, ok := e.resourceOutputs.Get(key); ok {
-			if urnVal := resOutputs.GetAttr("urn"); urnVal.Type() == cty.String {
-				add(urnVal.AsString())
-			}
-		}
-	}
-	if dsKey, ok := strings.CutPrefix(fullDep, "data."); ok {
-		if dsDeps, exists := e.dataSourceDependencies.Get(dsKey); exists {
-			for _, urn := range dsDeps {
-				add(string(urn))
-			}
-		}
-	}
-}
-
 // processModuleVariable evaluates a module variable's input expression in the parent context
-// and stores the result in each module instance's eval context.
+// and stores the result in each module instance's eval context. The call-site
+// expression is evaluated against marked resource outputs, so any URN deps
+// the binding picked up flow into the child module as part of var.X's value.
 func (e *Engine) processModuleVariable(node *graph.Node) error {
 	v := node.Variable
 	modInfo := node.ModuleInfo
@@ -2509,17 +2431,6 @@ func (e *Engine) processModuleVariable(node *graph.Node) error {
 		if ok && len(parentInstances) > 0 {
 			parentEvalCtx = parentInstances[0].EvalCtx
 		}
-	}
-
-	// Capture the URN dependencies of the call-site binding so that
-	// resources inside the module can see them when they reference var.X.
-	// The set is identical across module instances (the expression is the
-	// same; only its evaluated value differs), so compute it once here.
-	if hasInput {
-		e.moduleVarDeps.Set(
-			modInfo.Prefix()+"var."+varName,
-			e.expressionDependencyURNs(inputAttr.Expr, modInfo.ParentPrefix()),
-		)
 	}
 
 	return e.forEachModuleInstance(node, func(inst *moduleInstance) error {
@@ -2989,6 +2900,9 @@ func (e *Engine) processOutput(_ context.Context, name string, output *ast.Outpu
 //   - an object carrying an `__ref` ResourceReference capsule (e.g., the result
 //     of a `call.<resource>.<method>` that returns a provider).
 func providerRefFromCty(val cty.Value) (string, error) {
+	if val.IsMarked() {
+		val, _ = val.Unmark()
+	}
 	if !val.IsKnown() {
 		return "", errors.New("provider value is not yet known")
 	}
@@ -2999,7 +2913,7 @@ func providerRefFromCty(val cty.Value) (string, error) {
 		return "", fmt.Errorf("provider value must be an object, got %s", val.Type().FriendlyName())
 	}
 	if val.Type().HasAttribute("__ref") {
-		refVal := val.GetAttr("__ref")
+		refVal, _ := val.GetAttr("__ref").Unmark()
 		if refVal.Type() != eval.ResourceReferenceCapsuleType {
 			return "", fmt.Errorf("provider value has __ref of unexpected type %s", refVal.Type().FriendlyName())
 		}
@@ -3014,13 +2928,12 @@ func providerRefFromCty(val cty.Value) (string, error) {
 		return string(ref.URN) + "::" + id, nil
 	}
 	if val.Type().HasAttribute("urn") && val.Type().HasAttribute("id") {
-		urnVal := val.GetAttr("urn")
-		idVal := val.GetAttr("id")
-		if urnVal.Type() != cty.String || idVal.Type() != cty.String {
-			return "", fmt.Errorf("provider value urn/id must be strings, got urn=%s id=%s",
-				urnVal.Type().FriendlyName(), idVal.Type().FriendlyName())
+		urn := ctyAsString(val.GetAttr("urn"))
+		id := ctyAsString(val.GetAttr("id"))
+		if urn == "" || id == "" {
+			return "", fmt.Errorf("provider value urn/id must be non-empty strings, got urn=%q id=%q", urn, id)
 		}
-		return urnVal.AsString() + "::" + idVal.AsString(), nil
+		return urn + "::" + id, nil
 	}
 	return "", errors.New("provider value is not a resource reference")
 }
@@ -3151,6 +3064,7 @@ func evaluatePostcondition(
 	if diags.HasErrors() {
 		return fmt.Errorf("evaluating postcondition %d for %s: %s", index, resourceName, diags.Error())
 	}
+	condVal, _ = condVal.Unmark()
 	if !condVal.IsKnown() {
 		return nil
 	}
@@ -3166,8 +3080,8 @@ func evaluatePostcondition(
 			index, resourceName, msgDiags.Error())
 	}
 	msg := "postcondition check failed"
-	if msgVal.Type() == cty.String && msgVal.IsKnown() {
-		msg = msgVal.AsString()
+	if s := ctyAsString(msgVal); s != "" {
+		msg = s
 	}
 	return fmt.Errorf("postcondition for %s: %s", resourceName, msg)
 }
@@ -3179,6 +3093,7 @@ func evaluatePrecondition(rule *ast.CheckRule, hclCtx *hcl.EvalContext, index in
 	if diags.HasErrors() {
 		return fmt.Errorf("evaluating precondition %d for %s: %s", index, resourceName, diags.Error())
 	}
+	condVal, _ = condVal.Unmark()
 	if !condVal.IsKnown() {
 		return nil
 	}
@@ -3194,8 +3109,8 @@ func evaluatePrecondition(rule *ast.CheckRule, hclCtx *hcl.EvalContext, index in
 			index, resourceName, msgDiags.Error())
 	}
 	msg := "precondition check failed"
-	if msgVal.Type() == cty.String && msgVal.IsKnown() {
-		msg = msgVal.AsString()
+	if s := ctyAsString(msgVal); s != "" {
+		msg = s
 	}
 	return fmt.Errorf("precondition for %s: %s", resourceName, msg)
 }
@@ -3229,3 +3144,17 @@ func (e *Engine) checkPulumiVersion(ctx context.Context) error {
 }
 
 func ptr[T any](v T) *T { return &v }
+
+// ctyAsString reads a cty value as a string, tolerating any marks (e.g. the
+// DepMarks that resource outputs carry on every leaf). Returns "" for nulls,
+// unknowns, or non-string types — callers that need to distinguish those
+// cases should use the cty API directly.
+func ctyAsString(v cty.Value) string {
+	if v.IsMarked() {
+		v, _ = v.Unmark()
+	}
+	if v.IsNull() || !v.IsKnown() || v.Type() != cty.String {
+		return ""
+	}
+	return v.AsString()
+}

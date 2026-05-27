@@ -123,6 +123,141 @@ func (e *Evaluator) EvaluateBody(body hcl.Body) (map[string]cty.Value, hcl.Diagn
 // SensitiveMark is the cty value mark applied to sensitive values.
 const SensitiveMark = "sensitive"
 
+// DepMark records the URN of a Pulumi resource a value transitively depends
+// on. Marks ride along with values through cty expression evaluation, so the
+// per-property dep set is just the union of DepMarks on the converted value
+// — no parallel static analysis of expressions is needed.
+type DepMark string
+
+// MarkOutputLeaves attaches mark to every leaf (primitive, null, unknown,
+// capsule). Containers stay unmarked because cty's container ops
+// (ElementIterator, LengthInt, AsValueMap) panic on marked inputs;
+// per-leaf marks still propagate through GetAttr and indexing.
+func MarkOutputLeaves(val cty.Value, mark interface{}) cty.Value {
+	// Strip pre-existing marks before recursing — see the type comment
+	// above for why we can't iterate a marked container — then re-apply.
+	val, preMarks := val.Unmark()
+	out := markUnmarkedOutputLeaves(val, mark)
+	if len(preMarks) > 0 {
+		out = out.WithMarks(preMarks)
+	}
+	return out
+}
+
+func markUnmarkedOutputLeaves(val cty.Value, mark interface{}) cty.Value {
+	if val.IsNull() || !val.IsKnown() {
+		return val.Mark(mark)
+	}
+	ty := val.Type()
+	switch {
+	case ty.IsObjectType():
+		if val.LengthInt() == 0 {
+			return val
+		}
+		m := make(map[string]cty.Value, val.LengthInt())
+		for it := val.ElementIterator(); it.Next(); {
+			k, v := it.Element()
+			m[k.AsString()] = MarkOutputLeaves(v, mark)
+		}
+		return cty.ObjectVal(m)
+	case ty.IsMapType():
+		if val.LengthInt() == 0 {
+			return val
+		}
+		m := make(map[string]cty.Value, val.LengthInt())
+		for it := val.ElementIterator(); it.Next(); {
+			k, v := it.Element()
+			m[k.AsString()] = MarkOutputLeaves(v, mark)
+		}
+		return cty.MapVal(m)
+	case ty.IsListType():
+		if val.LengthInt() == 0 {
+			return val
+		}
+		vs := make([]cty.Value, 0, val.LengthInt())
+		for it := val.ElementIterator(); it.Next(); {
+			_, v := it.Element()
+			vs = append(vs, MarkOutputLeaves(v, mark))
+		}
+		return cty.ListVal(vs)
+	case ty.IsSetType():
+		if val.LengthInt() == 0 {
+			return val
+		}
+		vs := make([]cty.Value, 0, val.LengthInt())
+		for it := val.ElementIterator(); it.Next(); {
+			_, v := it.Element()
+			vs = append(vs, MarkOutputLeaves(v, mark))
+		}
+		return cty.SetVal(vs)
+	case ty.IsTupleType():
+		if val.LengthInt() == 0 {
+			return val
+		}
+		vs := make([]cty.Value, 0, val.LengthInt())
+		for it := val.ElementIterator(); it.Next(); {
+			_, v := it.Element()
+			vs = append(vs, MarkOutputLeaves(v, mark))
+		}
+		return cty.TupleVal(vs)
+	default:
+		return val.Mark(mark)
+	}
+}
+
+// CollectDepURNs returns every distinct URN carried by a DepMark anywhere
+// in val's value tree, in first-seen order.
+func CollectDepURNs(val cty.Value) []string {
+	var urns []string
+	seen := make(map[string]bool)
+	var walk func(cty.Value)
+	walk = func(v cty.Value) {
+		if v.IsMarked() {
+			inner, marks := v.Unmark()
+			for m := range marks {
+				dm, ok := m.(DepMark)
+				if !ok {
+					continue
+				}
+				s := string(dm)
+				if !seen[s] {
+					seen[s] = true
+					urns = append(urns, s)
+				}
+			}
+			v = inner
+		}
+		if v.IsNull() || !v.IsKnown() {
+			return
+		}
+		ty := v.Type()
+		if ty.IsObjectType() || ty.IsMapType() || ty.IsListType() || ty.IsTupleType() || ty.IsSetType() {
+			for it := v.ElementIterator(); it.Next(); {
+				_, elem := it.Element()
+				walk(elem)
+			}
+		}
+	}
+	walk(val)
+	return urns
+}
+
+// CollectDepMarks returns every distinct DepMark found in val. Useful when
+// you need to propagate marks from one value (e.g. a data source's inputs)
+// onto another (its outputs) — for that case MarkOutputLeaves can be called
+// once per returned mark.
+func CollectDepMarks(val cty.Value) []interface{} {
+	urns := CollectDepURNs(val)
+	if len(urns) == 0 {
+		return nil
+	}
+	marks := make([]interface{}, 0, len(urns))
+	for _, urn := range urns {
+		marks = append(marks, DepMark(urn))
+	}
+	return marks
+}
+
 // SensitiveArgumentDiagnostic returns the diagnostic Terraform emits when
 // a sensitive value is supplied as a meta-argument such as `count` or
 // `for_each`. argName is the meta-argument's name (e.g. "count" or
@@ -159,6 +294,11 @@ func (e *Evaluator) EvaluateCount(expr hcl.Expression) (int, bool, hcl.Diagnosti
 	if val.HasMark(SensitiveMark) {
 		return 0, false, hcl.Diagnostics{SensitiveArgumentDiagnostic("count", expr)}
 	}
+
+	// Strip DepMarks (and any other non-sensitive marks): count is a pure
+	// control-flow value with no downstream consumers that care about deps,
+	// and AsBigFloat / True both panic on marked values.
+	val, _ = val.Unmark()
 
 	if val.Type() == cty.Bool {
 		if val.True() {
@@ -208,6 +348,11 @@ func (e *Evaluator) EvaluateForEach(expr hcl.Expression) (map[string]cty.Value, 
 		return nil, hcl.Diagnostics{SensitiveArgumentDiagnostic("for_each", expr)}
 	}
 
+	// Unmark only the top-level container; per-element DepMarks (the leaf
+	// marks set by MarkOutputLeaves) survive on the values stored in
+	// result, so each.value carries deps into the resource body.
+	val, _ = val.Unmark()
+
 	if val.IsNull() {
 		diags = append(diags, &hcl.Diagnostic{
 			Severity: hcl.DiagError,
@@ -225,6 +370,7 @@ func (e *Evaluator) EvaluateForEach(expr hcl.Expression) (map[string]cty.Value, 
 	case ty.IsMapType() || ty.IsObjectType():
 		for it := val.ElementIterator(); it.Next(); {
 			k, v := it.Element()
+			k, _ = k.Unmark()
 			result[k.AsString()] = v
 		}
 	case ty.IsSetType():
@@ -241,8 +387,8 @@ func (e *Evaluator) EvaluateForEach(expr hcl.Expression) (map[string]cty.Value, 
 		}
 		for it := val.ElementIterator(); it.Next(); {
 			_, v := it.Element()
-			key := v.AsString()
-			result[key] = v
+			unmarkedV, _ := v.Unmark()
+			result[unmarkedV.AsString()] = v
 		}
 	default:
 		diags = append(diags, &hcl.Diagnostic{

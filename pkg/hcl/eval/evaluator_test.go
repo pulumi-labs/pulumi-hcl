@@ -590,3 +590,97 @@ func TestIsKnown(t *testing.T) {
 		})
 	}
 }
+
+func TestMarkOutputLeaves(t *testing.T) {
+	mark := DepMark("urn:test::a")
+
+	t.Run("primitive marks at top", func(t *testing.T) {
+		out := MarkOutputLeaves(cty.StringVal("hello"), mark)
+		assert.True(t, out.HasMark(mark))
+	})
+
+	t.Run("object marks each leaf but not container", func(t *testing.T) {
+		obj := cty.ObjectVal(map[string]cty.Value{
+			"id":   cty.StringVal("xyz"),
+			"name": cty.StringVal("foo"),
+		})
+		out := MarkOutputLeaves(obj, mark)
+		assert.False(t, out.IsMarked(), "container itself should be unmarked")
+		assert.True(t, out.GetAttr("id").HasMark(mark))
+		assert.True(t, out.GetAttr("name").HasMark(mark))
+	})
+
+	t.Run("list marks each element", func(t *testing.T) {
+		list := cty.ListVal([]cty.Value{cty.StringVal("a"), cty.StringVal("b")})
+		out := MarkOutputLeaves(list, mark)
+		assert.False(t, out.IsMarked())
+		for it := out.ElementIterator(); it.Next(); {
+			_, v := it.Element()
+			assert.True(t, v.HasMark(mark))
+		}
+	})
+
+	t.Run("nested objects mark every leaf", func(t *testing.T) {
+		nested := cty.ObjectVal(map[string]cty.Value{
+			"tags": cty.MapVal(map[string]cty.Value{
+				"Name": cty.StringVal("hi"),
+			}),
+		})
+		out := MarkOutputLeaves(nested, mark)
+		name := out.GetAttr("tags").Index(cty.StringVal("Name"))
+		assert.True(t, name.HasMark(mark))
+	})
+
+	t.Run("empty containers untouched", func(t *testing.T) {
+		empty := cty.MapValEmpty(cty.String)
+		out := MarkOutputLeaves(empty, mark)
+		assert.False(t, out.IsMarked())
+		assert.True(t, out.RawEquals(empty))
+	})
+
+	t.Run("null and unknown leaves get marked", func(t *testing.T) {
+		assert.True(t, MarkOutputLeaves(cty.NullVal(cty.String), mark).HasMark(mark))
+		assert.True(t, MarkOutputLeaves(cty.UnknownVal(cty.String), mark).HasMark(mark))
+	})
+}
+
+func TestCollectDepURNs(t *testing.T) {
+	a := DepMark("urn:test::a")
+	b := DepMark("urn:test::b")
+
+	t.Run("no marks", func(t *testing.T) {
+		assert.Empty(t, CollectDepURNs(cty.StringVal("hi")))
+	})
+
+	t.Run("single leaf mark", func(t *testing.T) {
+		assert.Equal(t, []string{"urn:test::a"},
+			CollectDepURNs(cty.StringVal("hi").Mark(a)))
+	})
+
+	t.Run("nested distinct marks deduplicated and ordered first-seen", func(t *testing.T) {
+		// {x: marked(a), y: [marked(b), marked(a)]}
+		v := cty.ObjectVal(map[string]cty.Value{
+			"x": cty.StringVal("v").Mark(a),
+			"y": cty.ListVal([]cty.Value{
+				cty.StringVal("p").Mark(b),
+				cty.StringVal("q").Mark(a),
+			}),
+		})
+		urns := CollectDepURNs(v)
+		assert.ElementsMatch(t, []string{"urn:test::a", "urn:test::b"}, urns)
+	})
+
+	t.Run("ignores non-DepMark marks like SensitiveMark", func(t *testing.T) {
+		v := cty.StringVal("secret").Mark(SensitiveMark)
+		assert.Empty(t, CollectDepURNs(v))
+	})
+
+	t.Run("propagates through MarkOutputLeaves-marked container", func(t *testing.T) {
+		obj := MarkOutputLeaves(cty.ObjectVal(map[string]cty.Value{
+			"id": cty.StringVal("xyz"),
+		}), a)
+		// User-facing read of the marked leaf:
+		idAttr := obj.GetAttr("id")
+		assert.Equal(t, []string{"urn:test::a"}, CollectDepURNs(idAttr))
+	})
+}
