@@ -1637,7 +1637,11 @@ var toListFunc = function.New(&function.Spec{
 			vals = append(vals, v)
 		}
 		if len(vals) == 0 {
-			return cty.ListValEmpty(cty.DynamicPseudoType), nil
+			elemTy := cty.DynamicPseudoType
+			if retType.IsListType() {
+				elemTy = retType.ElementType()
+			}
+			return cty.ListValEmpty(elemTy), nil
 		}
 		return cty.ListVal(vals), nil
 	},
@@ -1715,7 +1719,11 @@ var toSetFunc = function.New(&function.Spec{
 			vals = append(vals, v)
 		}
 		if len(vals) == 0 {
-			return cty.SetValEmpty(cty.DynamicPseudoType), nil
+			elemTy := cty.DynamicPseudoType
+			if retType.IsSetType() {
+				elemTy = retType.ElementType()
+			}
+			return cty.SetValEmpty(elemTy), nil
 		}
 		return cty.SetVal(vals), nil
 	},

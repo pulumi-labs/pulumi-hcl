@@ -560,6 +560,23 @@ func TestTypeFunctions(t *testing.T) {
 	}
 }
 
+// TestToSetToListPreserveEmptyElementType pins that `toset` / `tolist` over a
+// typed-but-empty collection preserves the element type rather than collapsing
+// to `dynamic`.
+func TestToSetToListPreserveEmptyElementType(t *testing.T) {
+	t.Run("toset of empty list(string)", func(t *testing.T) {
+		got, err := toSetFunc.Call([]cty.Value{cty.ListValEmpty(cty.String)})
+		require.NoError(t, err)
+		assert.Equal(t, cty.SetValEmpty(cty.String), got)
+	})
+
+	t.Run("tolist of empty set(string)", func(t *testing.T) {
+		got, err := toListFunc.Call([]cty.Value{cty.SetValEmpty(cty.String)})
+		require.NoError(t, err)
+		assert.Equal(t, cty.ListValEmpty(cty.String), got)
+	})
+}
+
 func TestDateTimeFunctions(t *testing.T) {
 	tests := []struct {
 		name  string
