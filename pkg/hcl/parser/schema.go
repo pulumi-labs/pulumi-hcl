@@ -38,8 +38,9 @@ var rootSchema = &hcl.BodySchema{
 
 // terraformSchema defines the structure of a terraform block.
 //
-// `required_version` and `backend` are accepted for Terraform compatibility:
-// the parser warns and ignores them rather than failing.
+// `required_version`, `backend`, and `provider_meta` are accepted for
+// Terraform compatibility: the parser warns and ignores them rather than
+// failing.
 var terraformSchema = &hcl.BodySchema{
 	Attributes: []hcl.AttributeSchema{
 		{Name: "required_version_range"},
@@ -50,6 +51,7 @@ var terraformSchema = &hcl.BodySchema{
 		{Type: "component"},
 		{Type: "package"},
 		{Type: "backend", LabelNames: []string{"type"}},
+		{Type: "provider_meta", LabelNames: []string{"provider"}},
 	},
 }
 

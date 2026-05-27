@@ -417,6 +417,30 @@ terraform {
 		require.True(t, found, "expected warning for backend block, got %v", diags)
 	})
 
+	t.Run("provider_meta_warns_continues", func(t *testing.T) {
+		t.Parallel()
+		src := `
+terraform {
+  required_providers {
+    aws = { source = "hashicorp/aws", version = ">= 6.0" }
+  }
+  provider_meta "aws" {
+    user_agent = ["github.com/terraform-aws-modules/terraform-aws-sqs"]
+  }
+}`
+		cfg, diags := NewParser().ParseSource("test.hcl", []byte(src))
+		require.False(t, diags.HasErrors(), "unexpected errors: %v", diags)
+		require.Contains(t, cfg.Terraform.RequiredProviders, "aws")
+		var found bool
+		for _, d := range diags {
+			if d.Severity == hcl.DiagWarning && d.Summary == "Ignoring terraform provider_meta block" {
+				found = true
+				break
+			}
+		}
+		require.True(t, found, "expected warning for provider_meta block, got %v", diags)
+	})
+
 	t.Run("duplicate_required_provider_across_blocks", func(t *testing.T) {
 		t.Parallel()
 		src := `

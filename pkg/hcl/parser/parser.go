@@ -213,6 +213,14 @@ func (p *Parser) parseTerraformBlock(config *ast.Config, block *hcl.Block) hcl.D
 					"block is ignored. Configure the backend via `pulumi login`.",
 				Subject: &subBlock.DefRange,
 			})
+		case "provider_meta":
+			diags = append(diags, &hcl.Diagnostic{
+				Severity: hcl.DiagWarning,
+				Summary:  "Ignoring terraform provider_meta block",
+				Detail: "Pulumi providers do not consume Terraform's `provider_meta` " +
+					"side channel; the block is ignored.",
+				Subject: &subBlock.DefRange,
+			})
 		}
 	}
 
