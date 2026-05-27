@@ -1667,6 +1667,59 @@ resource "aws_vpc" "v" {
 	assertSensitiveArgumentError(t, "count", err)
 }
 
+// A known count carrying a DepMark (here, from an unknown attribute mixed
+// into the count expression) must not panic AsBigFloat.
+func TestEngine_ModuleCountMarkedKnown(t *testing.T) {
+	t.Parallel()
+
+	tmpDir := t.TempDir()
+	moduleDir := tmpDir + "/modules/m"
+	require.NoError(t, os.MkdirAll(moduleDir, 0755))
+	require.NoError(t, os.WriteFile(moduleDir+"/main.tf", []byte(`
+output "name" { value = "leaf" }
+`), 0644))
+	require.NoError(t, os.WriteFile(tmpDir+"/main.tf", []byte(`
+variable "n" {
+  type    = number
+  default = 1
+}
+
+resource "test_resource" "upstream" {
+  field = var.n > 0 ? "v" : ""
+}
+
+module "m" {
+  source = "./modules/m"
+  count  = var.n + (test_resource.upstream.id != "" ? 0 : 0)
+}
+`), 0644))
+
+	p := parser.NewParser()
+	config, diags := p.ParseDirectory(tmpDir)
+	require.False(t, diags.HasErrors(), "parse error: %s", diags.Error())
+
+	mock := &testutil.MockResourceMonitor{
+		DryRun: true,
+		RegisterResourceHandler: func(ctx context.Context, req run.RegisterResourceRequest) (*run.RegisterResourceResponse, error) {
+			return &run.RegisterResourceResponse{
+				URN:     "urn:pulumi:test::project::" + req.Type + "::" + req.Name,
+				ID:      "",
+				Outputs: req.Inputs,
+			}, nil
+		},
+	}
+	engine := run.NewEngine(config, &run.EngineOptions{
+		ProjectName:     "test-project",
+		StackName:       "dev",
+		ResourceMonitor: mock,
+		WorkDir:         tmpDir,
+		RootDir:         tmpDir,
+		DryRun:          true,
+		SchemaLoader:    schemaloader.New(t, testSchema()),
+	})
+	require.NoError(t, engine.Run(t.Context()))
+}
+
 // TestEngine_ModuleOutputRace verifies that concurrent processing of multiple
 // module outputs does not trigger a data race on moduleInstance.Outputs.
 // This is a regression test for https://github.com/pulumi-labs/pulumi-hcl/issues/60.

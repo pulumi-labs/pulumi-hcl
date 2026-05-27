@@ -170,6 +170,37 @@ func TestEvaluateCount(t *testing.T) {
 	}
 }
 
+// AsBigFloat panics on marked values; a non-sensitive mark (e.g. DepMark)
+// must be stripped first.
+func TestEvaluateCount_MarkedKnownValue(t *testing.T) {
+	ctx := NewContext("/tmp", "/tmp", "", "", "")
+	ctx.SetVariable("n", cty.NumberIntVal(3).WithMarks(
+		cty.NewValueMarks(DepMark("urn:pulumi:dev::p::aws:ec2/vpc:Vpc::test")),
+	))
+	eval := NewEvaluator(ctx)
+
+	result, isBool, diags := eval.EvaluateCount(parseExpr(t, `var.n`))
+	require.False(t, diags.HasErrors(), "unexpected diags: %v", diags)
+	assert.Equal(t, 3, result)
+	assert.False(t, isBool)
+}
+
+// ElementIterator panics on marked containers; a non-sensitive mark must
+// be stripped first.
+func TestEvaluateForEach_MarkedContainer(t *testing.T) {
+	ctx := NewContext("/tmp", "/tmp", "", "", "")
+	ctx.SetVariable("m", cty.MapVal(map[string]cty.Value{
+		"primary": cty.StringVal("p"),
+	}).WithMarks(cty.NewValueMarks(DepMark("urn:pulumi:dev::p::aws:ec2/vpc:Vpc::test"))))
+	eval := NewEvaluator(ctx)
+
+	result, diags := eval.EvaluateForEach(parseExpr(t, `var.m`))
+	require.False(t, diags.HasErrors(), "unexpected diags: %v", diags)
+	assert.Equal(t, map[string]cty.Value{
+		"primary": cty.StringVal("p"),
+	}, result)
+}
+
 func TestEvaluateCountNil(t *testing.T) {
 	ctx := NewContext("/tmp", "/tmp", "", "", "")
 	eval := NewEvaluator(ctx)

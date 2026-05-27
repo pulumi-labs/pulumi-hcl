@@ -19,6 +19,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
 	"slices"
@@ -2543,22 +2544,13 @@ func (e *Engine) processModuleInit(ctx context.Context, node *graph.Node) error 
 		return nil
 	}
 
-	// Count expansion
 	if mod.Count != nil {
-		countVal, diags := mod.Count.Value(parentEvalCtx.HCLContext())
+		count, _, diags := eval.NewEvaluator(parentEvalCtx).EvaluateCount(mod.Count)
 		if diags.HasErrors() {
 			return fmt.Errorf("evaluating module count: %s", diags.Error())
 		}
-		if countVal.HasMark(eval.SensitiveMark) {
-			return hcl.Diagnostics{eval.SensitiveArgumentDiagnostic("count", mod.Count)}
-		}
-		if !countVal.Type().Equals(cty.Number) {
-			return fmt.Errorf("module count must be a number")
-		}
-		count, _ := countVal.AsBigFloat().Int64()
 		var instances []*moduleInstance
-		for i := range count {
-			idx := int(i)
+		for idx := range count {
 			instPath := instancePath(modInfo, &idx, nil)
 			componentOpts := &ResourceOptions{Parent: parentURN}
 			componentURN, _, _, err := e.registerComponentResource(ctx, componentType, instPath.LogicalName(), property.NewMap(inputs), componentOpts)
@@ -2578,25 +2570,19 @@ func (e *Engine) processModuleInit(ctx context.Context, node *graph.Node) error 
 				Outputs: make(map[string]cty.Value),
 			})
 		}
-	e.moduleInstances.Set(modInfo.Prefix(), instances)
+		e.moduleInstances.Set(modInfo.Prefix(), instances)
 		return nil
 	}
 
-	// ForEach expansion
-	forEachVal, diags := mod.ForEach.Value(parentEvalCtx.HCLContext())
+	forEach, diags := eval.NewEvaluator(parentEvalCtx).EvaluateForEach(mod.ForEach)
 	if diags.HasErrors() {
 		return fmt.Errorf("evaluating module for_each: %s", diags.Error())
 	}
-	if forEachVal.HasMark(eval.SensitiveMark) {
-		return hcl.Diagnostics{eval.SensitiveArgumentDiagnostic("for_each", mod.ForEach)}
-	}
-	if !forEachVal.CanIterateElements() {
-		return fmt.Errorf("module for_each must be a set or map")
-	}
+
 	var instances []*moduleInstance
-	it := forEachVal.ElementIterator()
-	for it.Next() {
-		k, v := it.Element()
+	for _, ks := range slices.Sorted(maps.Keys(forEach)) {
+		k := cty.StringVal(ks)
+		v := forEach[ks]
 		instPath := instancePath(modInfo, nil, &k)
 		componentOpts := &ResourceOptions{Parent: parentURN}
 		componentURN, _, _, err := e.registerComponentResource(ctx, componentType, instPath.LogicalName(), property.NewMap(inputs), componentOpts)

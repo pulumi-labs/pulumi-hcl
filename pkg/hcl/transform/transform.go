@@ -328,6 +328,11 @@ func evalDynamicBlocks(
 		if d.HasErrors() {
 			return diags
 		}
+		// ElementIterator panics on marked containers; per-element marks are
+		// re-applied below so collection-level sensitivity / DepMarks reach
+		// every attribute derived from each.value.
+		var forEachMarks cty.ValueMarks
+		forEachVal, forEachMarks = forEachVal.Unmark()
 
 		// Determine the iterator variable name (defaults to block label).
 		// `iterator = <ident>` takes a bare identifier as the new iterator
@@ -372,6 +377,10 @@ func evalDynamicBlocks(
 		it := forEachVal.ElementIterator()
 		for it.Next() {
 			key, value := it.Element()
+			if len(forEachMarks) > 0 {
+				key = key.WithMarks(forEachMarks)
+				value = value.WithMarks(forEachMarks)
+			}
 
 			iterVars := map[string]cty.Value{
 				iteratorName: cty.ObjectVal(map[string]cty.Value{
