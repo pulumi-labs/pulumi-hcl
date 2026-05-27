@@ -447,8 +447,11 @@ var lookupFunc = function.New(&function.Spec{
 		{Name: "key", Type: cty.String},
 	},
 	VarParam: &function.Parameter{
-		Name: "default",
-		Type: cty.DynamicPseudoType,
+		Name:             "default",
+		Type:             cty.DynamicPseudoType,
+		AllowNull:        true,
+		AllowUnknown:     true,
+		AllowDynamicType: true,
 	},
 	Type: function.StaticReturnType(cty.DynamicPseudoType),
 	Impl: func(args []cty.Value, retType cty.Type) (cty.Value, error) {

@@ -1,4 +1,4 @@
-.PHONY: all build install clean test lint fmt
+.PHONY: all build install clean test lint fmt generate
 
 # Version information
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo "0.0.0-dev")
@@ -63,6 +63,5 @@ dev: ~/.pulumi/bin/$(LANGUAGE_HOST) ~/.pulumi/bin/$(CONVERTER)
 ~/.pulumi/bin/$(CONVERTER): $(BIN_DIR)/$(CONVERTER)
 	cp $< $@
 
-.PHONY: generate
 generate:
 	go generate ./...
