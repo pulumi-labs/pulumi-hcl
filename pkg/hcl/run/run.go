@@ -2115,9 +2115,16 @@ func (e *Engine) invokeDataSourceOnce(
 		}
 	}
 
-	outputs, err := e.invokeFunction(ctx, invokeReq)
-	if err != nil {
-		return cty.NilVal, fmt.Errorf("invoking data source: %w", err)
+	// Match the Node.js / Python SDK behavior: during preview, if any input
+	// to the invoke is unknown, skip the provider call and synthesize an
+	// all-unknown result.
+	var outputs property.Map
+	if !(e.dryRun && property.New(inputs).HasComputed()) {
+		var err error
+		outputs, err = e.invokeFunction(ctx, invokeReq)
+		if err != nil {
+			return cty.NilVal, fmt.Errorf("invoking data source: %w", err)
+		}
 	}
 
 	ctyOutputs, err := transform.FunctionOutputToCty(outputs, funcSchema, dataSourceMapping, e.dryRun)
