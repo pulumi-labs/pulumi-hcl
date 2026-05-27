@@ -60,6 +60,7 @@ func BlockyProvider() *schema.Provider {
 							Schema: map[string]*schema.Schema{
 								"key":   {Type: schema.TypeString, Required: true},
 								"value": {Type: schema.TypeString, Required: true},
+								"note":  {Type: schema.TypeString, Optional: true},
 							},
 						},
 					},
@@ -102,7 +103,11 @@ func BlockyProvider() *schema.Provider {
 						var tags []string
 						for _, t := range list {
 							if m, ok := t.(map[string]any); ok {
-								tags = append(tags, fmt.Sprintf("%v=%v", m["key"], m["value"]))
+								tag := fmt.Sprintf("%v=%v", m["key"], m["value"])
+								if note, ok := m["note"].(string); ok && note != "" {
+									tag += "(" + note + ")"
+								}
+								tags = append(tags, tag)
 							}
 						}
 						sort.Strings(tags)

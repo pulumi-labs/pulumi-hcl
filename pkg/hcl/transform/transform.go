@@ -219,7 +219,7 @@ func evalBlockWithSchema(config hcl.Body, props []*schema.Property, mapping *bri
 		key := storageKey(name, prop)
 		switch {
 		case isList:
-			resourceInputs[key] = cty.ListVal(values)
+			resourceInputs[key] = unifyOrTuple(values)
 		case len(values) == 1:
 			// TF block flattened to a single Pulumi object (MaxItemsOne).
 			resourceInputs[key] = values[0]
@@ -412,7 +412,11 @@ func evalDynamicBlocks(
 						values = append(values, v)
 					}
 				}
-				resourceInputs[key] = cty.ListVal(values)
+				// Per-element object types can diverge when content sets
+				// disjoint subsets of optional fields (e.g. `lookup(v, "k",
+				// null)` produces null-of-Dynamic for absent keys). Unify
+				// before cty.ListVal, which would otherwise panic.
+				resourceInputs[key] = unifyOrTuple(values)
 			default:
 				// Singular block (MaxItemsOne): a dynamic expansion of length 1
 				// fills it; >1 is a user error the provider will validate.
