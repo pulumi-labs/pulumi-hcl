@@ -1005,9 +1005,6 @@ func (e *Engine) registerProviderInContext(
 	}
 	outputObj["urn"] = cty.StringVal(resp.URN)
 
-	// See markedOutputs comment in registerResourceInstanceInContext for
-	// the rationale: every leaf carries the resource's URN so deps flow
-	// naturally with values through later expression evaluation.
 	e.resourceOutputs.Set(node.Key, eval.MarkOutputLeaves(cty.ObjectVal(outputObj), eval.DepMark(resp.URN)))
 
 	// Top-level un-aliased provider blocks become the default provider for
@@ -1170,11 +1167,6 @@ func (e *Engine) registerResourceInstanceInContext(
 				return val, diags
 			}
 
-			// Every URN this value transitively touched is encoded as a
-			// DepMark on the values that flowed into it. Walking the result
-			// for marks gives us the complete dep set for this property —
-			// covering interpolation, function calls, indexing, splats,
-			// merges, and var/local bindings through child modules.
 			for _, urn := range eval.CollectDepURNs(val) {
 				addToDependsOn(string(propKey), urn)
 			}
@@ -1267,12 +1259,6 @@ func (e *Engine) registerResourceInstanceInContext(
 	}
 	outputObj["urn"] = cty.StringVal(urn)
 
-	// Mark every leaf of the output object with the resource's URN. Any
-	// subsequent expression that pulls a value from this object — through
-	// GetAttr, indexing, splat, function calls, interpolation — will carry
-	// the mark, which the engine reads back at property-conversion time to
-	// build PropertyDependencies. Containers stay unmarked so iteration
-	// and attribute access work without unwrapping.
 	markedOutputs := eval.MarkOutputLeaves(cty.ObjectVal(outputObj), eval.DepMark(urn))
 
 	e.resourceOutputs.Set(instance.Key, markedOutputs)
@@ -1998,8 +1984,6 @@ func (e *Engine) processRangedDataSource(
 		if invokeErr != nil {
 			return invokeErr
 		}
-		// Per-instance ctyOut already carries DepMarks on its leaves;
-		// rebuilding the container preserves them on each element.
 		if isForEach {
 			eachOutputs[instance.EachKey.AsString()] = ctyOut
 		} else {
@@ -2028,10 +2012,9 @@ func (e *Engine) processRangedDataSource(
 
 // invokeDataSourceOnce performs a single data-source invocation using the
 // current state of evalCtx (which may have each/count set by the caller).
-// Returns the converted outputs with every leaf marked by the DepMarks of
-// the URNs this invocation transitively depended on (gathered from input
-// expressions and explicit depends_on URN resolutions). Downstream readers
-// pick the marks up through normal cty propagation.
+// The returned outputs are marked with the URN deps gathered from inputs
+// and explicit depends_on, so downstream reads of data.X.Y carry them
+// without a separate dependency map.
 func (e *Engine) invokeDataSourceOnce(
 	ctx context.Context, node *graph.Node, ds *ast.Resource, funcSchema *schema.Function,
 	evalCtx *eval.Context,
@@ -2411,9 +2394,7 @@ func (e *Engine) forEachModuleInstance(node *graph.Node, fn func(inst *moduleIns
 }
 
 // processModuleVariable evaluates a module variable's input expression in the parent context
-// and stores the result in each module instance's eval context. The call-site
-// expression is evaluated against marked resource outputs, so any URN deps
-// the binding picked up flow into the child module as part of var.X's value.
+// and stores the result in each module instance's eval context.
 func (e *Engine) processModuleVariable(node *graph.Node) error {
 	v := node.Variable
 	modInfo := node.ModuleInfo
@@ -3145,10 +3126,9 @@ func (e *Engine) checkPulumiVersion(ctx context.Context) error {
 
 func ptr[T any](v T) *T { return &v }
 
-// ctyAsString reads a cty value as a string, tolerating any marks (e.g. the
-// DepMarks that resource outputs carry on every leaf). Returns "" for nulls,
-// unknowns, or non-string types — callers that need to distinguish those
-// cases should use the cty API directly.
+// ctyAsString reads a cty value as a string, tolerating marks (resource
+// output leaves carry DepMarks) and returning "" for null / unknown /
+// non-string. Use the cty API directly if you need to distinguish those.
 func ctyAsString(v cty.Value) string {
 	if v.IsMarked() {
 		v, _ = v.Unmark()

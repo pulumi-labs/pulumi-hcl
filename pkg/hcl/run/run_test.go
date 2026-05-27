@@ -2380,20 +2380,12 @@ data "aws_ec2_vpd" "example" {}
 		`test.hcl:11,6-19: unknown data source type "aws_ec2_vpd"; did you mean "aws_ec2_vpc"?`)
 }
 
-// TestEngine_ChildModuleResourceDependencies reproduces the dependency tracking
-// gap reported in REPORT.md: resources declared inside a `module "<name>" {}`
-// block were registered with empty Dependencies / PropertyDependencies even
-// when the HCL clearly referenced another resource. Two distinct cases:
-//
-//  1. cross-module: a child-module resource's attribute is bound via
-//     `parent_field = var.parent` to a call-site expression
-//     `parent = test_resource.upstream.id`. The URN of the root resource must
-//     propagate into the child resource's dependencies.
-//
-//  2. intra-module: a child-module resource directly references another
-//     child-module resource (`sibling_field = test_resource.first.id`).
-//     The URN of the in-module sibling must propagate into the second
-//     resource's dependencies.
+// TestEngine_ChildModuleResourceDependencies covers two cases that used to
+// register child-module resources with empty Dependencies:
+//   - cross-module: a child resource consuming var.X, where the parent bound
+//     X to test_resource.upstream.id.
+//   - intra-module: a child resource referencing a count-expanded sibling
+//     (test_resource.first[0].id) declared in the same module.
 func TestEngine_ChildModuleResourceDependencies(t *testing.T) {
 	t.Parallel()
 
@@ -2483,20 +2475,13 @@ module "child" {
 		return "urn:pulumi:test::project::" + r.Type + "::" + r.Name
 	}
 
-	// Cross-module: first.parentField is bound through var.parent, which the
-	// parent pins to test_resource.upstream.id. The dep must propagate.
 	assert.Equal(t,
 		map[string][]string{"parentField": {urnOf(upstream)}},
-		first.PropertyDependencies,
-		"first.PropertyDependencies should record upstream URN under parentField")
-	assert.Equal(t, []string{urnOf(upstream)}, first.Dependencies,
-		"first.Dependencies should include upstream URN")
+		first.PropertyDependencies)
+	assert.Equal(t, []string{urnOf(upstream)}, first.Dependencies)
 
-	// Intra-module: second references test_resource.first.id directly.
 	assert.Equal(t,
 		map[string][]string{"siblingField": {urnOf(first)}},
-		second.PropertyDependencies,
-		"second.PropertyDependencies should record first URN under siblingField")
-	assert.Equal(t, []string{urnOf(first)}, second.Dependencies,
-		"second.Dependencies should include first URN")
+		second.PropertyDependencies)
+	assert.Equal(t, []string{urnOf(first)}, second.Dependencies)
 }

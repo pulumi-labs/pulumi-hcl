@@ -443,10 +443,8 @@ func schemaToCtyPrimitive(typ schema.Type) (cty.Type, bool) {
 }
 
 func conformCtyToType(val cty.Value, typ cty.Type) cty.Value {
-	// Strip any container-level marks (DepMark / SensitiveMark) before
-	// inspecting structure — cty.Value.LengthInt and friends panic on
-	// marked values — and re-apply them to the conformed result so deps
-	// keep propagating.
+	// LengthInt and friends panic on marked values, so unmark for inspection
+	// and re-apply afterward to keep DepMarks propagating.
 	val, marks := val.Unmark()
 	out := conformUnmarkedCtyToType(val, typ)
 	if len(marks) > 0 {

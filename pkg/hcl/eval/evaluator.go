@@ -242,22 +242,6 @@ func CollectDepURNs(val cty.Value) []string {
 	return urns
 }
 
-// CollectDepMarks returns every distinct DepMark found in val. Useful when
-// you need to propagate marks from one value (e.g. a data source's inputs)
-// onto another (its outputs) — for that case MarkOutputLeaves can be called
-// once per returned mark.
-func CollectDepMarks(val cty.Value) []interface{} {
-	urns := CollectDepURNs(val)
-	if len(urns) == 0 {
-		return nil
-	}
-	marks := make([]interface{}, 0, len(urns))
-	for _, urn := range urns {
-		marks = append(marks, DepMark(urn))
-	}
-	return marks
-}
-
 // SensitiveArgumentDiagnostic returns the diagnostic Terraform emits when
 // a sensitive value is supplied as a meta-argument such as `count` or
 // `for_each`. argName is the meta-argument's name (e.g. "count" or
@@ -295,9 +279,7 @@ func (e *Evaluator) EvaluateCount(expr hcl.Expression) (int, bool, hcl.Diagnosti
 		return 0, false, hcl.Diagnostics{SensitiveArgumentDiagnostic("count", expr)}
 	}
 
-	// Strip DepMarks (and any other non-sensitive marks): count is a pure
-	// control-flow value with no downstream consumers that care about deps,
-	// and AsBigFloat / True both panic on marked values.
+	// Count never flows into deps, so drop marks; AsBigFloat / True panic on them.
 	val, _ = val.Unmark()
 
 	if val.Type() == cty.Bool {
@@ -348,9 +330,8 @@ func (e *Evaluator) EvaluateForEach(expr hcl.Expression) (map[string]cty.Value, 
 		return nil, hcl.Diagnostics{SensitiveArgumentDiagnostic("for_each", expr)}
 	}
 
-	// Unmark only the top-level container; per-element DepMarks (the leaf
-	// marks set by MarkOutputLeaves) survive on the values stored in
-	// result, so each.value carries deps into the resource body.
+	// Unmark only the container — per-element DepMarks must survive on the
+	// values stored in result so each.value carries deps into the body.
 	val, _ = val.Unmark()
 
 	if val.IsNull() {
