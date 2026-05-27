@@ -102,6 +102,18 @@ func TestResolveResource(t *testing.T) {
 				"bridged:iam/Role:Role": {},
 			},
 		},
+		// Single-segment provider: the type name is the same word as the
+		// provider, so HCL writes `resource "external" "x"` with no
+		// underscore in the token. Models hashicorp/external and friends.
+		schema.PackageSpec{
+			Name: "external",
+			Meta: &schema.MetadataSpec{
+				ModuleFormat: `(.*)(?:/[^/]*)`,
+			},
+			Resources: map[string]schema.ResourceSpec{
+				"external:index/external:External": {},
+			},
+		},
 	)
 
 	ctx := t.Context()
@@ -146,16 +158,22 @@ func TestResolveResource(t *testing.T) {
 			wantToken:      "gcp:storage:Bucket",
 		},
 		{
-			name:         "single part token",
-			token:        "aws",
-			errAsInvalid: true,
-			errContains:  "at least 2 parts",
+			name:           "single-segment token matches same-named provider",
+			knownProviders: []string{"external"},
+			token:          "external",
+			wantToken:      "external:index/external:External",
+		},
+		{
+			name:           "single-segment token with no same-named resource is not found",
+			knownProviders: []string{"aws"},
+			token:          "aws",
+			wantErr:        ErrNotFound,
 		},
 		{
 			name:         "empty token",
 			token:        "",
 			errAsInvalid: true,
-			errContains:  "at least 2 parts",
+			errContains:  "non-empty",
 		},
 		{
 			name:           "resource not found",
@@ -266,6 +284,18 @@ func TestResolveFunction(t *testing.T) {
 				"bridged:index/getAvailabilityZone:getAvailabilityZone": {},
 			},
 		},
+		// Single-segment data source: HCL `data "external" "x"` resolves to
+		// a function whose member name equals the provider name. Models
+		// hashicorp/external and hashicorp/http.
+		schema.PackageSpec{
+			Name: "external",
+			Meta: &schema.MetadataSpec{
+				ModuleFormat: `(.*)(?:/[^/]*)`,
+			},
+			Functions: map[string]schema.FunctionSpec{
+				"external:index/getExternal:getExternal": {},
+			},
+		},
 	)
 
 	ctx := t.Context()
@@ -316,16 +346,16 @@ func TestResolveFunction(t *testing.T) {
 			wantToken:      "aws:s3:listBuckets",
 		},
 		{
-			name:         "single part token",
-			token:        "aws",
-			errAsInvalid: true,
-			errContains:  "at least 2 parts",
+			name:           "single-segment data source matches same-named provider via implicit get",
+			knownProviders: []string{"external"},
+			token:          "external",
+			wantToken:      "external:index/getExternal:getExternal",
 		},
 		{
 			name:         "empty token",
 			token:        "",
 			errAsInvalid: true,
-			errContains:  "at least 2 parts",
+			errContains:  "non-empty",
 		},
 		{
 			name:           "non-standard module format",
