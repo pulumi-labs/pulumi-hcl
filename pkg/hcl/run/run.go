@@ -343,6 +343,13 @@ type Engine struct {
 	// moduleInstances maps module prefix → list of instances for inlined modules.
 	moduleInstances *util.SyncMap[string, []*moduleInstance]
 
+	// moduleVarDeps maps fully-qualified module-variable keys (e.g.
+	// "module.child.var.parent") to the set of resource URNs that the parent
+	// call-site expression depends on. Consulted when extracting dependencies
+	// for resources inside a child module so that a `var.X` traversal
+	// transitively reflects the URN(s) bound at the call site.
+	moduleVarDeps *util.SyncMap[string, []string]
+
 	parallel int
 
 	// failedNodes tracks resource nodes that failed to register, keyed by instance key.
@@ -429,6 +436,7 @@ func NewEngine(config *ast.Config, opts *EngineOptions) *Engine {
 		packageRefs:             make(map[string]PackageRef),
 		moduleLoader:            modules.NewLoader(),
 		moduleInstances:         util.NewSyncMap[string, []*moduleInstance](),
+		moduleVarDeps:           util.NewSyncMap[string, []string](),
 		parallel:                opts.Parallel,
 		failedNodes:             util.NewSyncMap[string, error](),
 	}
@@ -1170,23 +1178,12 @@ func (e *Engine) registerResourceInstanceInContext(
 				return val, diags
 			}
 
-			for _, dep := range eval.ExtractDependencies(expr) {
-				fullDep := dep
-				if node.ModuleInfo != nil {
-					fullDep = node.ModuleInfo.Prefix() + dep
-				}
-				if resOutputs, ok := e.resourceOutputs.Get(fullDep); ok {
-					if urnVal := resOutputs.GetAttr("urn"); urnVal.Type() == cty.String {
-						addToDependsOn(string(propKey), urnVal.AsString())
-					}
-				}
-				if dsKey, ok := strings.CutPrefix(fullDep, "data."); ok {
-					if dsDeps, exists := e.dataSourceDependencies.Get(dsKey); exists {
-						for _, urn := range dsDeps {
-							addToDependsOn(string(propKey), string(urn))
-						}
-					}
-				}
+			prefix := ""
+			if node.ModuleInfo != nil {
+				prefix = node.ModuleInfo.Prefix()
+			}
+			for _, urn := range e.expressionDependencyURNs(expr, prefix) {
+				addToDependsOn(string(propKey), urn)
 			}
 
 			return val, diags
@@ -2071,21 +2068,12 @@ func (e *Engine) invokeDataSourceOnce(
 				return val, diags
 			}
 
-			for _, dep := range eval.ExtractDependencies(expr) {
-				fullDep := dep
-				if node.ModuleInfo != nil {
-					fullDep = node.ModuleInfo.Prefix() + dep
-				}
-				if resOutputs, ok := e.resourceOutputs.Get(fullDep); ok {
-					if urnVal := resOutputs.GetAttr("urn"); urnVal.Type() == cty.String {
-						allDeps = append(allDeps, resource.URN(urnVal.AsString()))
-					}
-				}
-				if dsKey, ok := strings.CutPrefix(fullDep, "data."); ok {
-					if dsDeps, exists := e.dataSourceDependencies.Get(dsKey); exists {
-						allDeps = append(allDeps, dsDeps...)
-					}
-				}
+			prefix := ""
+			if node.ModuleInfo != nil {
+				prefix = node.ModuleInfo.Prefix()
+			}
+			for _, urn := range e.expressionDependencyURNs(expr, prefix) {
+				allDeps = append(allDeps, resource.URN(urn))
 			}
 
 			return val, diags
@@ -2429,6 +2417,79 @@ func (e *Engine) forEachModuleInstance(node *graph.Node, fn func(inst *moduleIns
 	return nil
 }
 
+// expressionDependencyURNs returns the set of resource URNs that expr
+// references either directly (resource refs, data-source refs) or
+// transitively (a `var.X` traversal inside a child module is resolved
+// through moduleVarDeps to the URNs the call-site binding referenced).
+// prefix is the enclosing module prefix ("" at the root) used to qualify
+// bare HCL identifiers into the keyspace of resourceOutputs.
+func (e *Engine) expressionDependencyURNs(expr hcl.Expression, prefix string) []string {
+	var urns []string
+	seen := make(map[string]bool)
+	add := func(urn string) {
+		if urn == "" || seen[urn] {
+			return
+		}
+		seen[urn] = true
+		urns = append(urns, urn)
+	}
+
+	for _, dep := range eval.ExtractDependencies(expr) {
+		fullDep := prefix + dep
+		e.collectResourceDepURNs(fullDep, add)
+	}
+
+	if prefix != "" {
+		for _, traversal := range expr.Variables() {
+			namespace, parts := eval.ParseTraversal(traversal)
+			if namespace != "var" || len(parts) < 1 {
+				continue
+			}
+			varKey := prefix + "var." + parts[0]
+			if depURNs, ok := e.moduleVarDeps.Get(varKey); ok {
+				for _, urn := range depURNs {
+					add(urn)
+				}
+			}
+		}
+	}
+
+	return urns
+}
+
+// collectResourceDepURNs invokes add with each URN that the bare key
+// fullDep refers to. It checks for a direct hit, then for any
+// count/for_each-expanded instances (stored as "<fullDep>[<idx>]" or
+// "<fullDep>[\"<key>\"]"), and finally for data-source dependency lists.
+func (e *Engine) collectResourceDepURNs(fullDep string, add func(string)) {
+	if resOutputs, ok := e.resourceOutputs.Get(fullDep); ok {
+		if urnVal := resOutputs.GetAttr("urn"); urnVal.Type() == cty.String {
+			add(urnVal.AsString())
+		}
+	}
+	// A bare traversal `T.N` extracts to "T.N" even when the target is
+	// count/for_each-expanded and stored as "T.N[…]". Walk the map to
+	// pick up every instance under the same base name.
+	bracketPrefix := fullDep + "["
+	for key := range e.resourceOutputs.Keys() {
+		if !strings.HasPrefix(key, bracketPrefix) {
+			continue
+		}
+		if resOutputs, ok := e.resourceOutputs.Get(key); ok {
+			if urnVal := resOutputs.GetAttr("urn"); urnVal.Type() == cty.String {
+				add(urnVal.AsString())
+			}
+		}
+	}
+	if dsKey, ok := strings.CutPrefix(fullDep, "data."); ok {
+		if dsDeps, exists := e.dataSourceDependencies.Get(dsKey); exists {
+			for _, urn := range dsDeps {
+				add(string(urn))
+			}
+		}
+	}
+}
+
 // processModuleVariable evaluates a module variable's input expression in the parent context
 // and stores the result in each module instance's eval context.
 func (e *Engine) processModuleVariable(node *graph.Node) error {
@@ -2448,6 +2509,17 @@ func (e *Engine) processModuleVariable(node *graph.Node) error {
 		if ok && len(parentInstances) > 0 {
 			parentEvalCtx = parentInstances[0].EvalCtx
 		}
+	}
+
+	// Capture the URN dependencies of the call-site binding so that
+	// resources inside the module can see them when they reference var.X.
+	// The set is identical across module instances (the expression is the
+	// same; only its evaluated value differs), so compute it once here.
+	if hasInput {
+		e.moduleVarDeps.Set(
+			modInfo.Prefix()+"var."+varName,
+			e.expressionDependencyURNs(inputAttr.Expr, modInfo.ParentPrefix()),
+		)
 	}
 
 	return e.forEachModuleInstance(node, func(inst *moduleInstance) error {
