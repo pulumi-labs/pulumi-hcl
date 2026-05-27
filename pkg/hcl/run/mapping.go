@@ -57,13 +57,18 @@ func (e *Engine) providerConfigBodyMapping(ctx context.Context, providerName str
 }
 
 // providerInfoForType resolves the TF provider that owns a resource or data
-// source token (split on first underscore) and fetches its bridge info.
+// source token (split on first underscore) and fetches its bridge info. For
+// single-segment tokens — providers like hashicorp/external or hashicorp/http
+// whose type name equals the provider name — the whole token is the provider
+// name, so the lookup falls through to that.
 func (e *Engine) providerInfoForType(ctx context.Context, tfType string) *tfbridge.ProviderInfo {
-	idx := strings.IndexByte(tfType, '_')
-	if idx <= 0 {
+	if idx := strings.IndexByte(tfType, '_'); idx > 0 {
+		return e.providerInfoFor(ctx, tfType[:idx])
+	}
+	if tfType == "" {
 		return nil
 	}
-	return e.providerInfoFor(ctx, tfType[:idx])
+	return e.providerInfoFor(ctx, tfType)
 }
 
 // resolveResource resolves a TF resource type to a Pulumi schema.Resource.

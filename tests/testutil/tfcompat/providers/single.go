@@ -25,17 +25,22 @@ import (
 // `hashicorp/external` and `hashicorp/http`, where the type name is the same
 // single word as the provider — so HCL writes `data "single" "x"` and
 // `resource "single" "y"` with no underscore in the type token.
+//
+// Each schema uses TF-style underscored attribute names (`input_value`,
+// `tag_value`) so the bridge auto-camelCases them on the Pulumi side. HCL
+// programs write the TF names, so the engine must route them through the
+// bridge body-mapping for the single-segment type to validate.
 func SingleSegmentProvider() *schema.Provider {
 	return &schema.Provider{
 		ResourcesMap: map[string]*schema.Resource{
 			"single": {
 				Schema: map[string]*schema.Schema{
-					"input":  {Type: schema.TypeString, Optional: true},
-					"result": {Type: schema.TypeString, Computed: true},
+					"input_value": {Type: schema.TypeString, Required: true},
+					"result":      {Type: schema.TypeString, Computed: true},
 				},
 				CreateContext: func(_ context.Context, d *schema.ResourceData, _ any) diag.Diagnostics {
 					d.SetId("single-id")
-					in, _ := d.Get("input").(string)
+					in, _ := d.Get("input_value").(string)
 					return diag.FromErr(d.Set("result", "r-"+in))
 				},
 				ReadContext:   func(_ context.Context, _ *schema.ResourceData, _ any) diag.Diagnostics { return nil },
@@ -46,13 +51,15 @@ func SingleSegmentProvider() *schema.Provider {
 		DataSourcesMap: map[string]*schema.Resource{
 			"single": {
 				Schema: map[string]*schema.Schema{
-					"query":  {Type: schema.TypeString, Required: true},
-					"answer": {Type: schema.TypeString, Computed: true},
+					"query":     {Type: schema.TypeString, Required: true},
+					"tag_value": {Type: schema.TypeString, Required: true},
+					"answer":    {Type: schema.TypeString, Computed: true},
 				},
 				ReadContext: func(_ context.Context, d *schema.ResourceData, _ any) diag.Diagnostics {
 					q, _ := d.Get("query").(string)
+					tv, _ := d.Get("tag_value").(string)
 					d.SetId("q-" + q)
-					return diag.FromErr(d.Set("answer", "a-"+q))
+					return diag.FromErr(d.Set("answer", "a-"+q+":"+tv))
 				},
 			},
 		},

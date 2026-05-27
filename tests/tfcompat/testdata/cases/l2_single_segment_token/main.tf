@@ -1,9 +1,10 @@
 data "single" "ds" {
-  query = "hi"
+  query     = "hi"
+  tag_value = "v"
 }
 
 resource "single" "r" {
-  input = "world"
+  input_value = "world"
 }
 
 output "data_answer" {
