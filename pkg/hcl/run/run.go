@@ -2022,7 +2022,7 @@ func (e *Engine) invokeDataSourceOnce(
 ) (cty.Value, error) {
 	hclCtx := evalCtx.HCLContext()
 
-	var depMarks []interface{}
+	var depMarks []any
 	seen := make(map[string]bool)
 	addURN := func(urn string) {
 		if urn == "" || seen[urn] {
@@ -2119,7 +2119,7 @@ func (e *Engine) invokeDataSourceOnce(
 	// to the invoke is unknown, skip the provider call and synthesize an
 	// all-unknown result.
 	var outputs property.Map
-	if !(e.dryRun && property.New(inputs).HasComputed()) {
+	if !e.dryRun || !property.New(inputs).HasComputed() {
 		var err error
 		outputs, err = e.invokeFunction(ctx, invokeReq)
 		if err != nil {

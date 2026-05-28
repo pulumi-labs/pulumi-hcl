@@ -16,6 +16,7 @@ package parser
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/blang/semver"
 	"github.com/hashicorp/hcl/v2"
@@ -1162,7 +1163,8 @@ func (p *Parser) parseModuleBlock(config *ast.Config, block *hcl.Block) hcl.Diag
 // string.
 func providersMapKey(key hcl.Expression) (string, hcl.Diagnostics) {
 	if trav, td := hcl.AbsTraversalForExpr(key); !td.HasErrors() && len(trav) > 0 {
-		name := trav.RootName()
+		var name strings.Builder
+		name.WriteString(trav.RootName())
 		for i := 1; i < len(trav); i++ {
 			attr, ok := trav[i].(hcl.TraverseAttr)
 			if !ok {
@@ -1173,9 +1175,9 @@ func providersMapKey(key hcl.Expression) (string, hcl.Diagnostics) {
 					Subject:  key.Range().Ptr(),
 				}}
 			}
-			name += "." + attr.Name
+			name.WriteString("." + attr.Name)
 		}
-		return name, nil
+		return name.String(), nil
 	}
 	v, vd := key.Value(nil)
 	if vd.HasErrors() {

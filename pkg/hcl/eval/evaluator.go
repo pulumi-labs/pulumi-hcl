@@ -133,7 +133,7 @@ type DepMark string
 // capsule). Containers stay unmarked because cty's container ops
 // (ElementIterator, LengthInt, AsValueMap) panic on marked inputs;
 // per-leaf marks still propagate through GetAttr and indexing.
-func MarkOutputLeaves(val cty.Value, mark interface{}) cty.Value {
+func MarkOutputLeaves(val cty.Value, mark any) cty.Value {
 	// Strip pre-existing marks before recursing — see the type comment
 	// above for why we can't iterate a marked container — then re-apply.
 	val, preMarks := val.Unmark()
@@ -144,7 +144,7 @@ func MarkOutputLeaves(val cty.Value, mark interface{}) cty.Value {
 	return out
 }
 
-func markUnmarkedOutputLeaves(val cty.Value, mark interface{}) cty.Value {
+func markUnmarkedOutputLeaves(val cty.Value, mark any) cty.Value {
 	if val.IsNull() || !val.IsKnown() {
 		return val.Mark(mark)
 	}

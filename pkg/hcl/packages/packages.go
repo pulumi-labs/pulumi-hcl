@@ -132,8 +132,8 @@ func packageFromToken(knownProviders []string, token string) (string, error) {
 	}
 	switch len(matches) {
 	case 0:
-		if i := strings.Index(token, "_"); i >= 0 {
-			return token[:i], nil
+		if before, _, ok := strings.Cut(token, "_"); ok {
+			return before, nil
 		}
 		return token, nil
 	case 1:
