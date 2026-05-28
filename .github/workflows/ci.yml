@@ -29,6 +29,8 @@ jobs:
         with:
           # TODO: Set to dev after #23330 merges
           pulumi-version: pr#23330
+        env:
+          GITHUB_TOKEN: ${ secrets.RELEASE_TOKEN }
       - uses: opentofu/setup-opentofu@v2
       - run: make test_cover
       - uses: codecov/codecov-action@v6
