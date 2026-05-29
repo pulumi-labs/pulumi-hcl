@@ -27,10 +27,7 @@ jobs:
           go-version-file: go.mod
       - uses: pulumi/actions@v7
         with:
-          # TODO: Set to dev after #23330 merges
-          pulumi-version: pr#23330
-        env:
-          GITHUB_TOKEN: ${ secrets.RELEASE_TOKEN }
+          pulumi-version: dev
       - uses: opentofu/setup-opentofu@v2
       - run: make test_cover
       - uses: codecov/codecov-action@v6

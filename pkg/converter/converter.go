@@ -54,7 +54,7 @@ func (*hclConverter) Close() error { return nil }
 func (*hclConverter) ConvertState(
 	_ context.Context, _ *plugin.ConvertStateRequest,
 ) (*plugin.ConvertStateResponse, error) {
-	return nil, errors.New("not implemented")
+	return nil, plugin.ErrNotYetImplemented
 }
 
 func (*hclConverter) ConvertProgram(
