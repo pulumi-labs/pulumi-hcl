@@ -20,8 +20,8 @@ import (
 	"testing"
 
 	"github.com/pulumi-labs/pulumi-hcl/pkg/hcl/parser"
-	pulumirpc "github.com/pulumi/pulumi/sdk/v3/proto/go"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/workspace"
+	pulumirpc "github.com/pulumi/pulumi/sdk/v3/proto/go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -218,6 +218,19 @@ resource "aws_s3_bucket" "b" {}
 	cfgPulumi, diags := parser.NewParser().ParseSource("main.tf", []byte(pulumiSrc))
 	require.False(t, diags.HasErrors(), "diags: %v", diags)
 	assert.Empty(t, missingNonPulumiSDKs(cfgPulumi, nil, ""))
+}
+
+func TestMissingNonPulumiSDKs_BuiltinProvider(t *testing.T) {
+	t.Parallel()
+
+	const src = `resource "pulumi_stash" "myStash" {
+  input = "test"
+}
+`
+	cfg, diags := parser.NewParser().ParseSource("main.tf", []byte(src))
+	require.False(t, diags.HasErrors(), "diags: %v", diags)
+
+	assert.Empty(t, missingNonPulumiSDKs(cfg, nil, ""))
 }
 
 // Implicit provider inside a child module must surface at the top — without

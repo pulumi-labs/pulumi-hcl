@@ -129,6 +129,9 @@ func (host *LanguageHost) GetRequiredPackages(
 	}
 
 	for _, alias := range usedProviders(config, req.Info.ProgramDirectory) {
+		if isBuiltinProvider(alias) {
+			continue
+		}
 		req := required[alias]
 
 		if req.IsPulumi() {
@@ -251,7 +254,7 @@ func missingNonPulumiSDKs(
 	}
 	var missing []string
 	for _, alias := range used {
-		if pulumiSourced[alias] {
+		if isBuiltinProvider(alias) || pulumiSourced[alias] {
 			continue
 		}
 		if _, ok := sdks[alias]; !ok {
@@ -261,6 +264,8 @@ func missingNonPulumiSDKs(
 	sort.Strings(missing)
 	return missing
 }
+
+func isBuiltinProvider(alias string) bool { return alias == "pulumi" }
 
 // usedProviders returns the sorted provider local names referenced by config
 // (required_providers, provider blocks, resource/data type prefixes). A

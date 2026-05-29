@@ -1,6 +1,9 @@
 # Pulumi HCL Language Plugin
 
-A Pulumi language plugin that enables writing infrastructure as code using Terraform-compatible HCL syntax, powered by the Pulumi engine.
+A Pulumi language plugin that enables running Pulumi against a Terraform HCL IaC program.
+
+> [!WARNING]
+> This language is in active development and not yet suitable for production use.
 
 ## Overview
 
