@@ -2466,6 +2466,20 @@ func (e *Engine) processModuleVariable(node *graph.Node) error {
 			}
 		}
 
+		// A `nullable = false` variable rejects an explicit null argument: the
+		// default is substituted when one is declared, otherwise it is an
+		// error. Matches Terraform/OpenTofu.
+		if val.IsNull() && !v.Nullable {
+			if v.Default == nil {
+				return fmt.Errorf("variable %q must not be set to null: it is declared with nullable = false and has no default", varName)
+			}
+			var diags hcl.Diagnostics
+			val, diags = v.Default.Value(inst.EvalCtx.HCLContext())
+			if diags.HasErrors() {
+				return fmt.Errorf("evaluating variable default for %s: %s", varName, diags.Error())
+			}
+		}
+
 		// Fill in optional()-attribute defaults before type conversion so
 		// the result satisfies the declared object shape.
 		if v.TypeDefaults != nil && !val.IsNull() && val.IsKnown() {
