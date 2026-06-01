@@ -940,6 +940,109 @@ resource "test_resource" "res" {
 	})
 }
 
+func TestEngine_Precondition_ReferencesOtherResource(t *testing.T) {
+	t.Parallel()
+
+	// The dependent resource's precondition references the upstream resource's
+	// output. The graph should add an implicit dep so the hook fires with known
+	// values, and the engine should register both resources.
+	src := []byte(`
+resource "test_resource" "dependent" {
+  field = "downstream"
+
+  lifecycle {
+    precondition {
+      condition     = test_resource.upstream.field == "known"
+      error_message = "upstream must be known"
+    }
+  }
+}
+
+resource "test_resource" "upstream" {
+  field = "known"
+}
+`)
+
+	p := parser.NewParser()
+	config, diags := p.ParseSource("test.hcl", src)
+	require.False(t, diags.HasErrors(), diags.Error())
+
+	mock := &testutil.MockResourceMonitor{}
+	engine := run.NewEngine(config, &run.EngineOptions{
+		ProjectName:     "test-project",
+		StackName:       "dev",
+		ResourceMonitor: mock,
+		WorkDir:         t.TempDir(),
+		RootDir:         t.TempDir(),
+		SchemaLoader:    schemaloader.New(t, testSchema()),
+	})
+	require.NoError(t, engine.Run(t.Context()))
+
+	var dependentReq *run.RegisterResourceRequest
+	for i := range mock.RegisteredResources {
+		if mock.RegisteredResources[i].Name == "dependent" {
+			dependentReq = &mock.RegisteredResources[i]
+		}
+	}
+	require.NotNil(t, dependentReq, "dependent resource should be registered")
+
+	require.NotNil(t, dependentReq.Hooks, "dependent resource should have hooks bound")
+	require.Len(t, dependentReq.Hooks.BeforeCreate, 1)
+	require.Len(t, dependentReq.Hooks.BeforeUpdate, 1)
+}
+
+func TestEngine_Precondition_UnknownDuringPreview(t *testing.T) {
+	t.Parallel()
+
+	// During preview the upstream's id is unknown. A precondition that depends
+	// on it must defer (no error) rather than fail, mirroring Terraform's
+	// "known after apply" behaviour.
+	src := []byte(`
+resource "test_resource" "upstream" {
+  field = "value"
+}
+
+resource "test_resource" "dependent" {
+  field = "downstream"
+
+  lifecycle {
+    precondition {
+      condition     = test_resource.upstream.id == "expected-id"
+      error_message = "id must be expected-id"
+    }
+  }
+}
+`)
+
+	p := parser.NewParser()
+	config, diags := p.ParseSource("test.hcl", src)
+	require.False(t, diags.HasErrors(), diags.Error())
+
+	mock := &testutil.MockResourceMonitor{
+		DryRun: true,
+		RegisterResourceHandler: func(ctx context.Context, req run.RegisterResourceRequest) (*run.RegisterResourceResponse, error) {
+			return &run.RegisterResourceResponse{
+				URN:     "urn:pulumi:test::project::" + req.Type + "::" + req.Name,
+				ID:      "",
+				Outputs: req.Inputs,
+			}, nil
+		},
+	}
+	engine := run.NewEngine(config, &run.EngineOptions{
+		ProjectName:     "test-project",
+		StackName:       "dev",
+		ResourceMonitor: mock,
+		WorkDir:         t.TempDir(),
+		RootDir:         t.TempDir(),
+		DryRun:          true,
+		SchemaLoader:    schemaloader.New(t, testSchema()),
+	})
+	require.NoError(t, engine.Run(t.Context()),
+		"engine should defer unknown precondition during preview rather than fail")
+	require.True(t, hasRegisteredResource(mock, "test:index:Resource"),
+		"dependent resource should still register when precondition is unknown")
+}
+
 func TestEngine_Postcondition(t *testing.T) {
 	t.Parallel()
 
@@ -999,25 +1102,29 @@ resource "test_resource" "res" {
 	})
 }
 
+// Provisioners run in-process via Pulumi hooks: AfterCreate for default
+// (create-time), BeforeDelete for `when = destroy`. These tests assert
+// on the side effects of running local-exec, not on registered resources.
+
 func TestEngine_LocalExecProvisioner(t *testing.T) {
 	t.Parallel()
 
-	src := []byte(`
+	tmpDir := t.TempDir()
+	marker := tmpDir + "/marker"
+
+	src := fmt.Appendf(nil, `
 resource "aws_instance" "web" {
   ami = "ami-12345"
 
   provisioner "local-exec" {
-    command = "echo 'Hello World'"
-    working_dir = "/tmp"
+    command = "echo Hello > %s"
   }
 }
-`)
+`, marker)
 
 	p := parser.NewParser()
 	config, diags := p.ParseSource("test.hcl", src)
-	if diags.HasErrors() {
-		t.Fatalf("parse error: %s", diags.Error())
-	}
+	require.False(t, diags.HasErrors(), diags.Error())
 
 	mock := &testutil.MockResourceMonitor{}
 	engine := run.NewEngine(config, &run.EngineOptions{
@@ -1043,69 +1150,36 @@ resource "aws_instance" "web" {
 		}),
 	})
 
-	err := engine.Run(t.Context())
+	require.NoError(t, engine.Run(t.Context()))
 
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-
-	// Should have registered: stack + resource + provisioner
-	if len(mock.RegisteredResources) < 3 {
-		t.Fatalf("expected at least 3 registered resources, got %d", len(mock.RegisteredResources))
-	}
-
-	// Find the provisioner resource
-	var provisionerReq *run.RegisterResourceRequest
-	for i := range mock.RegisteredResources {
-		if mock.RegisteredResources[i].Type == "command:local:Command" {
-			provisionerReq = &mock.RegisteredResources[i]
-			break
-		}
-	}
-
-	require.NotNil(t, provisionerReq, "expected command:local:Command provisioner to be registered")
-
-	// Check that the command was mapped to create
-	if create, ok := provisionerReq.Inputs.GetOk("create"); ok {
-		if create.AsString() != "echo 'Hello World'" {
-			t.Errorf("expected create command 'echo 'Hello World'', got %s", create.AsString())
-		}
-	} else {
-		t.Error("expected 'create' input to be set")
-	}
-
-	// Check working_dir was mapped to dir
-	if dir, ok := provisionerReq.Inputs.GetOk("dir"); ok {
-		if dir.AsString() != "/tmp" {
-			t.Errorf("expected dir '/tmp', got %s", dir.AsString())
-		}
-	} else {
-		t.Error("expected 'dir' input to be set")
-	}
+	got, err := os.ReadFile(marker)
+	require.NoError(t, err, "local-exec did not create marker file")
+	assert.Equal(t, "Hello\n", string(got))
 }
 
 func TestEngine_MultipleProvisioners(t *testing.T) {
 	t.Parallel()
 
-	src := []byte(`
+	tmpDir := t.TempDir()
+	marker := tmpDir + "/marker"
+
+	src := fmt.Appendf(nil, `
 resource "aws_instance" "web" {
   ami = "ami-12345"
 
   provisioner "local-exec" {
-    command = "echo 'First'"
+    command = "echo First >> %s"
   }
 
   provisioner "local-exec" {
-    command = "echo 'Second'"
+    command = "echo Second >> %s"
   }
 }
-`)
+`, marker, marker)
 
 	p := parser.NewParser()
 	config, diags := p.ParseSource("test.hcl", src)
-	if diags.HasErrors() {
-		t.Fatalf("parse error: %s", diags.Error())
-	}
+	require.False(t, diags.HasErrors(), diags.Error())
 
 	mock := &testutil.MockResourceMonitor{}
 	engine := run.NewEngine(config, &run.EngineOptions{
@@ -1131,43 +1205,32 @@ resource "aws_instance" "web" {
 		}),
 	})
 
-	err := engine.Run(t.Context())
+	require.NoError(t, engine.Run(t.Context()))
 
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-
-	// Count provisioner resources
-	var provisionerCount int
-	for _, r := range mock.RegisteredResources {
-		if r.Type == "command:local:Command" {
-			provisionerCount++
-		}
-	}
-
-	if provisionerCount != 2 {
-		t.Fatalf("expected 2 provisioner resources, got %d", provisionerCount)
-	}
+	got, err := os.ReadFile(marker)
+	require.NoError(t, err)
+	assert.Equal(t, "First\nSecond\n", string(got))
 }
 
 func TestEngine_ProvisionerWithSelf(t *testing.T) {
 	t.Parallel()
 
-	src := []byte(`
+	tmpDir := t.TempDir()
+	marker := tmpDir + "/marker"
+
+	src := fmt.Appendf(nil, `
 resource "aws_instance" "web" {
   ami = "ami-12345"
 
   provisioner "local-exec" {
-    command = "echo ${self.id}"
+    command = "echo ${self.id} > %s"
   }
 }
-`)
+`, marker)
 
 	p := parser.NewParser()
 	config, diags := p.ParseSource("test.hcl", src)
-	if diags.HasErrors() {
-		t.Fatalf("parse error: %s", diags.Error())
-	}
+	require.False(t, diags.HasErrors(), diags.Error())
 
 	mock := &testutil.MockResourceMonitor{}
 	engine := run.NewEngine(config, &run.EngineOptions{
@@ -1193,32 +1256,11 @@ resource "aws_instance" "web" {
 		}),
 	})
 
-	err := engine.Run(t.Context())
+	require.NoError(t, engine.Run(t.Context()))
 
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-
-	// Find the provisioner resource
-	var provisionerReq *run.RegisterResourceRequest
-	for i := range mock.RegisteredResources {
-		if mock.RegisteredResources[i].Type == "command:local:Command" {
-			provisionerReq = &mock.RegisteredResources[i]
-			break
-		}
-	}
-
-	require.NotNil(t, provisionerReq, "expected command:local:Command provisioner to be registered")
-
-	// Check that self.id was resolved
-	if create, ok := provisionerReq.Inputs.GetOk("create"); ok {
-		// The id should be set to the resource name + "-id" by the mock
-		if !strings.Contains(create.AsString(), "web-id") {
-			t.Errorf("expected self.id to be resolved, got: %s", create.AsString())
-		}
-	} else {
-		t.Error("expected 'create' input to be set")
-	}
+	got, err := os.ReadFile(marker)
+	require.NoError(t, err)
+	assert.Equal(t, "web-id\n", string(got))
 }
 
 func TestEngine_SimpleModule(t *testing.T) {
@@ -1258,7 +1300,7 @@ output "cidr_block" {
   value = var.cidr
 }
 `
-	if err := os.WriteFile(moduleDir+"/main.hcl", []byte(moduleMain), 0644); err != nil {
+	if err := os.WriteFile(moduleDir+"/main.tf", []byte(moduleMain), 0644); err != nil {
 		t.Fatalf("writing module file: %v", err)
 	}
 
@@ -1273,7 +1315,7 @@ output "vpc_id" {
   value = module.vpc.vpc_id
 }
 `
-	if err := os.WriteFile(tmpDir+"/main.hcl", []byte(rootMain), 0644); err != nil {
+	if err := os.WriteFile(tmpDir+"/main.tf", []byte(rootMain), 0644); err != nil {
 		t.Fatalf("writing root file: %v", err)
 	}
 
@@ -1383,14 +1425,14 @@ resource "aws_vpc" "main" {
   cidr_block = "10.0.0.0/16"
 }
 `
-	require.NoError(t, os.WriteFile(moduleDir+"/main.hcl", []byte(moduleMain), 0644))
+	require.NoError(t, os.WriteFile(moduleDir+"/main.tf", []byte(moduleMain), 0644))
 
 	rootMain := `
 module "vpc.primary" {
   source = "./modules/vpc"
 }
 `
-	require.NoError(t, os.WriteFile(tmpDir+"/main.hcl", []byte(rootMain), 0644))
+	require.NoError(t, os.WriteFile(tmpDir+"/main.tf", []byte(rootMain), 0644))
 
 	p := parser.NewParser()
 	config, diags := p.ParseDirectory(tmpDir)
@@ -1520,10 +1562,10 @@ func runSensitiveMetaArgTest(t *testing.T, rootMain string) error {
 
 	moduleDir := tmpDir + "/modules/m"
 	require.NoError(t, os.MkdirAll(moduleDir, 0755))
-	require.NoError(t, os.WriteFile(moduleDir+"/main.hcl", []byte(`
+	require.NoError(t, os.WriteFile(moduleDir+"/main.tf", []byte(`
 output "name" { value = "leaf" }
 `), 0644))
-	require.NoError(t, os.WriteFile(tmpDir+"/main.hcl", []byte(rootMain), 0644))
+	require.NoError(t, os.WriteFile(tmpDir+"/main.tf", []byte(rootMain), 0644))
 
 	p := parser.NewParser()
 	config, diags := p.ParseDirectory(tmpDir)
@@ -1625,6 +1667,59 @@ resource "aws_vpc" "v" {
 	assertSensitiveArgumentError(t, "count", err)
 }
 
+// A known count carrying a DepMark (here, from an unknown attribute mixed
+// into the count expression) must not panic AsBigFloat.
+func TestEngine_ModuleCountMarkedKnown(t *testing.T) {
+	t.Parallel()
+
+	tmpDir := t.TempDir()
+	moduleDir := tmpDir + "/modules/m"
+	require.NoError(t, os.MkdirAll(moduleDir, 0755))
+	require.NoError(t, os.WriteFile(moduleDir+"/main.tf", []byte(`
+output "name" { value = "leaf" }
+`), 0644))
+	require.NoError(t, os.WriteFile(tmpDir+"/main.tf", []byte(`
+variable "n" {
+  type    = number
+  default = 1
+}
+
+resource "test_resource" "upstream" {
+  field = var.n > 0 ? "v" : ""
+}
+
+module "m" {
+  source = "./modules/m"
+  count  = var.n + (test_resource.upstream.id != "" ? 0 : 0)
+}
+`), 0644))
+
+	p := parser.NewParser()
+	config, diags := p.ParseDirectory(tmpDir)
+	require.False(t, diags.HasErrors(), "parse error: %s", diags.Error())
+
+	mock := &testutil.MockResourceMonitor{
+		DryRun: true,
+		RegisterResourceHandler: func(ctx context.Context, req run.RegisterResourceRequest) (*run.RegisterResourceResponse, error) {
+			return &run.RegisterResourceResponse{
+				URN:     "urn:pulumi:test::project::" + req.Type + "::" + req.Name,
+				ID:      "",
+				Outputs: req.Inputs,
+			}, nil
+		},
+	}
+	engine := run.NewEngine(config, &run.EngineOptions{
+		ProjectName:     "test-project",
+		StackName:       "dev",
+		ResourceMonitor: mock,
+		WorkDir:         tmpDir,
+		RootDir:         tmpDir,
+		DryRun:          true,
+		SchemaLoader:    schemaloader.New(t, testSchema()),
+	})
+	require.NoError(t, engine.Run(t.Context()))
+}
+
 // TestEngine_ModuleOutputRace verifies that concurrent processing of multiple
 // module outputs does not trigger a data race on moduleInstance.Outputs.
 // This is a regression test for https://github.com/pulumi-labs/pulumi-hcl/issues/60.
@@ -1653,7 +1748,7 @@ output "out_f" { value = var.input }
 output "out_g" { value = var.input }
 output "out_h" { value = var.input }
 `
-	if err := os.WriteFile(moduleDir+"/main.hcl", []byte(moduleMain), 0644); err != nil {
+	if err := os.WriteFile(moduleDir+"/main.tf", []byte(moduleMain), 0644); err != nil {
 		t.Fatalf("writing module file: %v", err)
 	}
 
@@ -1663,7 +1758,7 @@ module "multi" {
   input  = "hello"
 }
 `
-	if err := os.WriteFile(tmpDir+"/main.hcl", []byte(rootMain), 0644); err != nil {
+	if err := os.WriteFile(tmpDir+"/main.tf", []byte(rootMain), 0644); err != nil {
 		t.Fatalf("writing root file: %v", err)
 	}
 
@@ -1951,7 +2046,7 @@ func hasRegisteredResource(mock *testutil.MockResourceMonitor, typ string) bool 
 	return false
 }
 
-func TestEngine_ReplaceTriggeredByErrors(t *testing.T) {
+func TestEngine_ReplaceTriggeredBy(t *testing.T) {
 	t.Parallel()
 
 	src := []byte(`
@@ -1959,7 +2054,7 @@ resource "test_resource" "res" {
   field = "value"
 
   lifecycle {
-    replace_triggered_by = [test_resource.res.field]
+    replace_triggered_by = ["sentinel-a", "sentinel-b"]
   }
 }
 `)
@@ -1980,9 +2075,12 @@ resource "test_resource" "res" {
 		SchemaLoader:    schemaloader.New(t, testSchema()),
 	})
 
-	err := engine.Run(t.Context())
-	require.ErrorContains(t, err, "replace_triggered_by")
-	require.ErrorContains(t, err, "not supported")
+	require.NoError(t, engine.Run(t.Context()))
+
+	require.Len(t, mock.RegisteredResources, 2) // stack + resource
+	req := mock.RegisteredResources[1]
+	require.False(t, req.ReplacementTrigger.IsNull(),
+		"expected replacement_trigger to be set from lifecycle.replace_triggered_by")
 }
 
 // TestEngine_HetListOutputRoundTrip drives the engine against a mock provider whose
@@ -2251,7 +2349,7 @@ func TestEngine_UnknownResourceSuggestsAlternative(t *testing.T) {
 	t.Parallel()
 
 	src := []byte(`
-pulumi {
+terraform {
   required_providers {
     aws = {
       source  = "pulumi/aws"
@@ -2295,7 +2393,7 @@ func TestEngine_UnknownDataSourceSuggestsAlternative(t *testing.T) {
 	t.Parallel()
 
 	src := []byte(`
-pulumi {
+terraform {
   required_providers {
     aws = {
       source  = "pulumi/aws"
@@ -2333,4 +2431,110 @@ data "aws_ec2_vpd" "example" {}
 	require.Error(t, err)
 	assert.EqualError(t, err,
 		`test.hcl:11,6-19: unknown data source type "aws_ec2_vpd"; did you mean "aws_ec2_vpc"?`)
+}
+
+// TestEngine_ChildModuleResourceDependencies covers two cases that used to
+// register child-module resources with empty Dependencies:
+//   - cross-module: a child resource consuming var.X, where the parent bound
+//     X to test_resource.upstream.id.
+//   - intra-module: a child resource referencing a count-expanded sibling
+//     (test_resource.first[0].id) declared in the same module.
+func TestEngine_ChildModuleResourceDependencies(t *testing.T) {
+	t.Parallel()
+
+	tmpDir := t.TempDir()
+
+	moduleDir := tmpDir + "/modules/child"
+	require.NoError(t, os.MkdirAll(moduleDir, 0755))
+
+	moduleMain := `
+variable "parent" { type = string }
+
+resource "test_resource" "first" {
+  count        = 1
+  parent_field = var.parent
+}
+
+resource "test_resource" "second" {
+  sibling_field = test_resource.first[0].id
+}
+`
+	require.NoError(t, os.WriteFile(moduleDir+"/main.tf", []byte(moduleMain), 0644))
+
+	rootMain := `
+resource "test_resource" "upstream" {
+  field = "root-value"
+}
+
+module "child" {
+  source = "./modules/child"
+  parent = test_resource.upstream.id
+}
+`
+	require.NoError(t, os.WriteFile(tmpDir+"/main.tf", []byte(rootMain), 0644))
+
+	p := parser.NewParser()
+	config, diags := p.ParseDirectory(tmpDir)
+	require.False(t, diags.HasErrors(), diags.Error())
+
+	mock := &testutil.MockResourceMonitor{}
+	engine := run.NewEngine(config, &run.EngineOptions{
+		ProjectName:     "test-project",
+		StackName:       "dev",
+		ResourceMonitor: mock,
+		WorkDir:         tmpDir,
+		RootDir:         tmpDir,
+		SchemaLoader: schemaloader.New(t, schema.PackageSpec{
+			Name: "test",
+			Resources: map[string]schema.ResourceSpec{
+				"test:index:Resource": {
+					InputProperties: map[string]schema.PropertySpec{
+						"field":        {TypeSpec: schema.TypeSpec{Type: "string"}},
+						"parentField":  {TypeSpec: schema.TypeSpec{Type: "string"}},
+						"siblingField": {TypeSpec: schema.TypeSpec{Type: "string"}},
+					},
+					ObjectTypeSpec: schema.ObjectTypeSpec{
+						Properties: map[string]schema.PropertySpec{
+							"field":        {TypeSpec: schema.TypeSpec{Type: "string"}},
+							"parentField":  {TypeSpec: schema.TypeSpec{Type: "string"}},
+							"siblingField": {TypeSpec: schema.TypeSpec{Type: "string"}},
+						},
+					},
+				},
+			},
+		}),
+	})
+
+	require.NoError(t, engine.Run(t.Context()))
+
+	find := func(name string) *run.RegisterResourceRequest {
+		for i := range mock.RegisteredResources {
+			r := &mock.RegisteredResources[i]
+			if r.Type == "test:index:Resource" && r.Name == name {
+				return r
+			}
+		}
+		return nil
+	}
+
+	upstream := find("upstream")
+	first := find("child-first-0")
+	second := find("child-second")
+	require.NotNil(t, upstream, "upstream resource should be registered")
+	require.NotNil(t, first, "child-first resource should be registered")
+	require.NotNil(t, second, "child-second resource should be registered")
+
+	urnOf := func(r *run.RegisterResourceRequest) string {
+		return "urn:pulumi:test::project::" + r.Type + "::" + r.Name
+	}
+
+	assert.Equal(t,
+		map[string][]string{"parentField": {urnOf(upstream)}},
+		first.PropertyDependencies)
+	assert.Equal(t, []string{urnOf(upstream)}, first.Dependencies)
+
+	assert.Equal(t,
+		map[string][]string{"siblingField": {urnOf(first)}},
+		second.PropertyDependencies)
+	assert.Equal(t, []string{urnOf(first)}, second.Dependencies)
 }

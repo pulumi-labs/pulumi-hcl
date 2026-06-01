@@ -118,6 +118,54 @@ func TestStringFunctions(t *testing.T) {
 	}
 }
 
+func TestTemplateStringFunction(t *testing.T) {
+	tests := []struct {
+		name     string
+		expr     string
+		expected cty.Value
+	}{
+		{
+			"substitution",
+			`templatestring("Hello, $${name}!", { name = "Ada" })`,
+			cty.StringVal("Hello, Ada!"),
+		},
+		{
+			"number coerced to string",
+			`templatestring("count=$${n}", { n = 3 })`,
+			cty.StringVal("count=3"),
+		},
+		{
+			"function call inside template",
+			`templatestring("$${upper(who)}", { who = "bob" })`,
+			cty.StringVal("BOB"),
+		},
+		{
+			"for directive",
+			`templatestring("items:%%{ for n in names } $${n}%%{ endfor }", { names = ["a", "b", "c"] })`,
+			cty.StringVal("items: a b c"),
+		},
+		{
+			"if directive",
+			`templatestring("$${name}%%{ if admin } (admin)%%{ endif }", { name = "Ada", admin = true })`,
+			cty.StringVal("Ada (admin)"),
+		},
+		{
+			"empty vars",
+			`templatestring("static", {})`,
+			cty.StringVal("static"),
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := evalExpr(t, "/tmp", tt.expr)
+			if !result.RawEquals(tt.expected) {
+				t.Errorf("Expected %s, got %s", tt.expected.GoString(), result.GoString())
+			}
+		})
+	}
+}
+
 func TestCollectionFunctions(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -560,6 +608,23 @@ func TestTypeFunctions(t *testing.T) {
 	}
 }
 
+// TestToSetToListPreserveEmptyElementType pins that `toset` / `tolist` over a
+// typed-but-empty collection preserves the element type rather than collapsing
+// to `dynamic`.
+func TestToSetToListPreserveEmptyElementType(t *testing.T) {
+	t.Run("toset of empty list(string)", func(t *testing.T) {
+		got, err := toSetFunc.Call([]cty.Value{cty.ListValEmpty(cty.String)})
+		require.NoError(t, err)
+		assert.Equal(t, cty.SetValEmpty(cty.String), got)
+	})
+
+	t.Run("tolist of empty set(string)", func(t *testing.T) {
+		got, err := toListFunc.Call([]cty.Value{cty.SetValEmpty(cty.String)})
+		require.NoError(t, err)
+		assert.Equal(t, cty.ListValEmpty(cty.String), got)
+	})
+}
+
 func TestDateTimeFunctions(t *testing.T) {
 	tests := []struct {
 		name  string
@@ -738,8 +803,34 @@ func TestIPFunctions(t *testing.T) {
 	}{
 		{"cidrhost", `cidrhost("10.0.0.0/8", 5)`, cty.StringVal("10.0.0.5")},
 		{"cidrnetmask", `cidrnetmask("10.0.0.0/8")`, cty.StringVal("255.0.0.0")},
-		{"cidrsubnet", `cidrsubnet("10.0.0.0/8", 8, 2)`, cty.StringVal("10.2.0.0/16")},
+		{"cidrsubnet v4", `cidrsubnet("10.0.0.0/8", 8, 2)`, cty.StringVal("10.2.0.0/16")},
+		{"cidrsubnet v6", `cidrsubnet("2600:1f14:315a:f400::/56", 8, 2)`,
+			cty.StringVal("2600:1f14:315a:f402::/64")},
 		{"cidrsubnets count", `length(cidrsubnets("10.0.0.0/8", 8, 8, 8))`, cty.NumberIntVal(3)},
+		{"cidrsubnets v4 values", `cidrsubnets("10.0.0.0/8", 8, 8, 8)`,
+			cty.ListVal([]cty.Value{
+				cty.StringVal("10.0.0.0/16"),
+				cty.StringVal("10.1.0.0/16"),
+				cty.StringVal("10.2.0.0/16"),
+			})},
+		{"cidrsubnets v4 mixed bits", `cidrsubnets("10.0.0.0/8", 8, 4, 4)`,
+			cty.ListVal([]cty.Value{
+				cty.StringVal("10.0.0.0/16"),
+				cty.StringVal("10.16.0.0/12"),
+				cty.StringVal("10.32.0.0/12"),
+			})},
+		{"cidrsubnets v6 values", `cidrsubnets("2600:1f14:315a:f400::/56", 8, 8, 8)`,
+			cty.ListVal([]cty.Value{
+				cty.StringVal("2600:1f14:315a:f400::/64"),
+				cty.StringVal("2600:1f14:315a:f401::/64"),
+				cty.StringVal("2600:1f14:315a:f402::/64"),
+			})},
+		{"cidrsubnets v6 uneven bits", `cidrsubnets("2600:1f14:315a::/48", 16, 16, 16)`,
+			cty.ListVal([]cty.Value{
+				cty.StringVal("2600:1f14:315a::/64"),
+				cty.StringVal("2600:1f14:315a:1::/64"),
+				cty.StringVal("2600:1f14:315a:2::/64"),
+			})},
 	}
 
 	for _, tt := range tests {

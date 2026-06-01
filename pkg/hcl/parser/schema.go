@@ -22,7 +22,7 @@ import (
 // rootSchema defines the top-level blocks allowed in an HCL configuration file.
 var rootSchema = &hcl.BodySchema{
 	Blocks: []hcl.BlockHeaderSchema{
-		{Type: "pulumi"},
+		{Type: "terraform"},
 		{Type: "provider", LabelNames: []string{"name"}},
 		{Type: "variable", LabelNames: []string{"name"}},
 		{Type: "locals"},
@@ -36,38 +36,62 @@ var rootSchema = &hcl.BodySchema{
 	},
 }
 
-// pulumiSchema defines the structure of a pulumi block.
-var pulumiSchema = &hcl.BodySchema{
+// terraformSchema defines the structure of a terraform block.
+//
+// `required_version`, `backend`, and `provider_meta` are accepted for
+// Terraform compatibility: the parser warns and ignores them rather than
+// failing.
+var terraformSchema = &hcl.BodySchema{
 	Attributes: []hcl.AttributeSchema{
 		{Name: "required_version_range"},
+		{Name: "required_version"},
 	},
 	Blocks: []hcl.BlockHeaderSchema{
 		{Type: "required_providers"},
 		{Type: "component"},
 		{Type: "package"},
+		{Type: "backend", LabelNames: []string{"type"}},
+		{Type: "provider_meta", LabelNames: []string{"provider"}},
 	},
 }
 
-// pulumiComponentSchema defines the structure of a component sub-block.
-var pulumiComponentSchema = &hcl.BodySchema{
+// terraformComponentSchema defines the structure of a component sub-block.
+var terraformComponentSchema = &hcl.BodySchema{
 	Attributes: []hcl.AttributeSchema{
 		{Name: "name", Required: true},
 		{Name: "module"},
 	},
 }
 
-// pulumiPackageSchema defines the structure of a package sub-block.
-var pulumiPackageSchema = &hcl.BodySchema{
+// terraformPackageSchema defines the structure of a package sub-block.
+var terraformPackageSchema = &hcl.BodySchema{
 	Attributes: []hcl.AttributeSchema{
 		{Name: "name"},
 		{Name: "version"},
 	},
 }
 
-// providerSchema defines the structure of a provider block.
+// providerSchema defines the structure of a provider block. Only `alias` (a
+// Terraform-standard meta-argument) lives at the top level; Pulumi-specific
+// options go in the nested `pulumi` block so they cannot collide with a
+// provider's own configuration attributes.
 var providerSchema = &hcl.BodySchema{
 	Attributes: []hcl.AttributeSchema{
 		{Name: "alias"},
+	},
+	Blocks: []hcl.BlockHeaderSchema{
+		{Type: "pulumi"},
+	},
+}
+
+// pulumiProviderOptionsSchema defines the Pulumi-specific options allowed
+// inside a provider block's nested `pulumi` block.
+var pulumiProviderOptionsSchema = &hcl.BodySchema{
+	Attributes: []hcl.AttributeSchema{
+		{Name: "env_var_mappings"},
+		{Name: "plugin_download_url"},
+		{Name: "additional_secret_outputs"},
+		{Name: "version"},
 	},
 }
 
@@ -106,7 +130,12 @@ var outputSchema = &hcl.BodySchema{
 	},
 }
 
-// resourceSchema defines the structure of a resource/data block.
+// resourceSchema defines the structure of a resource/data block. Only the
+// Terraform-standard meta-arguments live at the top level; Pulumi-specific
+// options go in the nested `pulumi` block so they cannot collide with a
+// resource's own provider-specific attributes (which may be named e.g.
+// "version" or "parent").
+//
 // Note: The actual resource attributes are provider-specific and not validated here.
 var resourceSchema = &hcl.BodySchema{
 	Attributes: []hcl.AttributeSchema{
@@ -115,26 +144,32 @@ var resourceSchema = &hcl.BodySchema{
 		{Name: "depends_on"},
 		{Name: "provider"},
 		{Name: "providers"},
+	},
+	Blocks: []hcl.BlockHeaderSchema{
+		{Type: "pulumi"},
+		{Type: "lifecycle"},
+		{Type: "connection"},
+		{Type: "provisioner", LabelNames: []string{"type"}},
+		{Type: "timeouts"},
+	},
+}
+
+// pulumiResourceOptionsSchema defines the Pulumi-specific options allowed
+// inside a resource or data block's nested `pulumi` block.
+var pulumiResourceOptionsSchema = &hcl.BodySchema{
+	Attributes: []hcl.AttributeSchema{
 		{Name: "additional_secret_outputs"},
-		// Pulumi-specific resource options
 		{Name: "parent"},
 		{Name: "retain_on_delete"},
 		{Name: "deleted_with"},
 		{Name: "replace_with"},
 		{Name: "hide_diffs"},
 		{Name: "replace_on_changes"},
-		{Name: "replacement_trigger"},
 		{Name: "import_id"},
 		{Name: "env_var_mappings"},
 		{Name: "version"},
 		{Name: "plugin_download_url"},
 		{Name: "aliases"},
-	},
-	Blocks: []hcl.BlockHeaderSchema{
-		{Type: "lifecycle"},
-		{Type: "connection"},
-		{Type: "provisioner", LabelNames: []string{"type"}},
-		{Type: "timeouts"},
 	},
 }
 

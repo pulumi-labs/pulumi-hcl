@@ -41,14 +41,18 @@ import (
 	"strings"
 	"time"
 
+	"github.com/apparentlymart/go-cidr/cidr"
 	"github.com/google/uuid"
+	"github.com/hashicorp/hcl/v2"
 	"github.com/hashicorp/hcl/v2/ext/customdecode"
 	"github.com/hashicorp/hcl/v2/ext/tryfunc"
+	"github.com/hashicorp/hcl/v2/hclsyntax"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/resource/archive"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/resource/asset"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/resource/urn"
 	"github.com/pulumi/pulumi/sdk/v3/go/property"
 	"github.com/zclconf/go-cty/cty"
+	"github.com/zclconf/go-cty/cty/convert"
 	"github.com/zclconf/go-cty/cty/function"
 	"github.com/zclconf/go-cty/cty/function/stdlib"
 	"golang.org/x/crypto/bcrypt"
@@ -218,6 +222,19 @@ func Functions(baseDir string) map[string]function.Function {
 		"remoteAsset":   remoteAssetFunc(),
 		"remoteArchive": remoteArchiveFunc(),
 	}
+
+	// templatestring renders an arbitrary string as a template. The functions
+	// available inside that template are every function except the template
+	// functions themselves, which keeps a template from invoking itself
+	// recursively without bound.
+	nestedTemplateFuncs := make(map[string]function.Function, len(funcs))
+	for name, fn := range funcs {
+		if name == "templatefile" || name == "templatestring" {
+			continue
+		}
+		nestedTemplateFuncs[name] = fn
+	}
+	funcs["templatestring"] = templateStringFunc(nestedTemplateFuncs)
 
 	return funcs
 }
@@ -446,8 +463,11 @@ var lookupFunc = function.New(&function.Spec{
 		{Name: "key", Type: cty.String},
 	},
 	VarParam: &function.Parameter{
-		Name: "default",
-		Type: cty.DynamicPseudoType,
+		Name:             "default",
+		Type:             cty.DynamicPseudoType,
+		AllowNull:        true,
+		AllowUnknown:     true,
+		AllowDynamicType: true,
 	},
 	Type: function.StaticReturnType(cty.DynamicPseudoType),
 	Impl: func(args []cty.Value, retType cty.Type) (cty.Value, error) {
@@ -986,6 +1006,60 @@ func templateFileFunc(baseDir string) function.Function {
 	})
 }
 
+// templateStringFunc renders its first argument as an HCL template using the
+// variables in its second argument. nestedFuncs is the function table made
+// available inside the template.
+func templateStringFunc(nestedFuncs map[string]function.Function) function.Function {
+	return function.New(&function.Spec{
+		Params: []function.Parameter{
+			{Name: "template", Type: cty.String},
+			{Name: "vars", Type: cty.DynamicPseudoType},
+		},
+		Type: function.StaticReturnType(cty.String),
+		Impl: func(args []cty.Value, retType cty.Type) (cty.Value, error) {
+			return renderTemplate(args[0], args[1], nestedFuncs)
+		},
+	})
+}
+
+// renderTemplate parses templateVal as an HCL template and evaluates it with
+// varsVal's entries in scope plus the supplied functions, returning the
+// rendered string. Marks on the inputs propagate to the result.
+func renderTemplate(
+	templateVal, varsVal cty.Value, funcs map[string]function.Function,
+) (cty.Value, error) {
+	templateVal, tmplMarks := templateVal.Unmark()
+
+	expr, diags := hclsyntax.ParseTemplate(
+		[]byte(templateVal.AsString()), "<templatestring>", hcl.InitialPos)
+	if diags.HasErrors() {
+		return cty.NilVal, diags
+	}
+
+	vars := map[string]cty.Value{}
+	if !varsVal.IsNull() {
+		if ty := varsVal.Type(); !ty.IsObjectType() && !ty.IsMapType() {
+			return cty.NilVal, fmt.Errorf(
+				"vars argument must be an object, got %s", ty.FriendlyName())
+		}
+		for it := varsVal.ElementIterator(); it.Next(); {
+			k, v := it.Element()
+			vars[k.AsString()] = v
+		}
+	}
+
+	val, diags := expr.Value(&hcl.EvalContext{Variables: vars, Functions: funcs})
+	if diags.HasErrors() {
+		return cty.NilVal, diags
+	}
+
+	val, err := convert.Convert(val, cty.String)
+	if err != nil {
+		return cty.NilVal, err
+	}
+	return val.WithMarks(tmplMarks), nil
+}
+
 // Date and time functions
 
 var formatDateFunc = function.New(&function.Spec{
@@ -1462,48 +1536,26 @@ var cidrSubnetFunc = function.New(&function.Spec{
 	},
 	Type: function.StaticReturnType(cty.String),
 	Impl: func(args []cty.Value, retType cty.Type) (cty.Value, error) {
-		prefix := args[0].AsString()
 		newbits, _ := args[1].AsBigFloat().Int64()
-		netnum, _ := args[2].AsBigFloat().Int64()
+		netnum, _ := args[2].AsBigFloat().Int(nil)
 
-		_, network, err := net.ParseCIDR(prefix)
+		_, network, err := net.ParseCIDR(args[0].AsString())
 		if err != nil {
 			return cty.NilVal, fmt.Errorf("invalid CIDR: %s", err)
 		}
 
-		ones, bits := network.Mask.Size()
-		newOnes := ones + int(newbits)
-		if newOnes > bits {
-			return cty.NilVal, fmt.Errorf("newbits %d would create prefix length %d, exceeding %d", newbits, newOnes, bits)
+		newNetwork, err := cidr.SubnetBig(network, int(newbits), netnum)
+		if err != nil {
+			return cty.NilVal, err
 		}
-
-		// Calculate the new network address
-		// Convert IP to big-endian integer, add subnet offset, convert back
-		ip := make(net.IP, len(network.IP))
-		copy(ip, network.IP)
-
-		// Calculate offset to add based on netnum and new prefix length
-		// The offset is netnum * (size of new subnet in addresses)
-		// For an IP address, we shift netnum left by (bits - newOnes) positions
-		bitsToShift := uint(bits - newOnes)
-
-		// Convert netnum to bytes and add to IP
-		offset := netnum << bitsToShift
-		for i := len(ip) - 1; i >= 0 && offset > 0; i-- {
-			sum := int64(ip[i]) + (offset & 0xff)
-			ip[i] = byte(sum & 0xff)
-			offset >>= 8
-		}
-
-		newNet := &net.IPNet{
-			IP:   ip,
-			Mask: net.CIDRMask(newOnes, bits),
-		}
-
-		return cty.StringVal(newNet.String()), nil
+		return cty.StringVal(newNetwork.String()), nil
 	},
 })
 
+// cidrSubnetsFunc allocates a sequence of consecutive subnets of the given
+// prefix lengths (in additional bits) under a common base prefix. The
+// allocator advances by each subnet's actual size, so mixed prefix lengths
+// pack without overlap — matching Terraform's behaviour.
 var cidrSubnetsFunc = function.New(&function.Spec{
 	Params: []function.Parameter{
 		{Name: "prefix", Type: cty.String},
@@ -1514,53 +1566,50 @@ var cidrSubnetsFunc = function.New(&function.Spec{
 	},
 	Type: function.StaticReturnType(cty.List(cty.String)),
 	Impl: func(args []cty.Value, retType cty.Type) (cty.Value, error) {
-		prefix := args[0].AsString()
-
-		_, network, err := net.ParseCIDR(prefix)
+		_, network, err := net.ParseCIDR(args[0].AsString())
 		if err != nil {
-			return cty.NilVal, fmt.Errorf("invalid CIDR: %s", err)
+			return cty.NilVal, function.NewArgErrorf(0, "invalid CIDR expression: %s", err)
 		}
+		startPrefixLen, _ := network.Mask.Size()
 
-		ones, bits := network.Mask.Size()
-		var subnets []cty.Value
-
-		var netnum int64
-		for i := 1; i < len(args); i++ {
-			newbits, _ := args[i].AsBigFloat().Int64()
-			newOnes := ones + int(newbits)
-			if newOnes > bits {
-				return cty.NilVal, fmt.Errorf("newbits %d would create prefix length %d, exceeding %d", newbits, newOnes, bits)
-			}
-
-			ip := make(net.IP, len(network.IP))
-			copy(ip, network.IP)
-
-			// Add netnum to the IP
-			shift := uint(bits - newOnes)
-			n := netnum
-			for j := len(ip) - 1; j >= 0 && n > 0; j-- {
-				add := byte((n << shift) & 0xff)
-				ip[j] |= add
-				n >>= (8 - shift)
-				if shift >= 8 {
-					shift -= 8
-				} else {
-					shift = 0
-				}
-			}
-
-			newNet := &net.IPNet{
-				IP:   ip,
-				Mask: net.CIDRMask(newOnes, bits),
-			}
-			subnets = append(subnets, cty.StringVal(newNet.String()))
-			netnum++
-		}
-
-		if len(subnets) == 0 {
+		newbitsArgs := args[1:]
+		if len(newbitsArgs) == 0 {
 			return cty.ListValEmpty(cty.String), nil
 		}
-		return cty.ListVal(subnets), nil
+
+		firstNewbits, _ := newbitsArgs[0].AsBigFloat().Int64()
+		current, _ := cidr.PreviousSubnet(network, startPrefixLen+int(firstNewbits))
+
+		out := make([]cty.Value, len(newbitsArgs))
+		for i, arg := range newbitsArgs {
+			newbits, _ := arg.AsBigFloat().Int64()
+			if newbits < 1 {
+				return cty.NilVal, function.NewArgErrorf(i+1, "must extend prefix by at least one bit")
+			}
+			length := startPrefixLen + int(newbits)
+			if length > len(network.IP)*8 {
+				protocol := "IP"
+				switch len(network.IP) * 8 {
+				case 32:
+					protocol = "IPv4"
+				case 128:
+					protocol = "IPv6"
+				}
+				return cty.NilVal, function.NewArgErrorf(i+1,
+					"would extend prefix to %d bits, which is too long for an %s address",
+					length, protocol)
+			}
+
+			next, rollover := cidr.NextSubnet(current, length)
+			if rollover || !network.Contains(next.IP) {
+				return cty.NilVal, function.NewArgErrorf(i+1,
+					"not enough remaining address space for a subnet with a prefix of %d bits after %s",
+					length, current.String())
+			}
+			current = next
+			out[i] = cty.StringVal(current.String())
+		}
+		return cty.ListVal(out), nil
 	},
 })
 
@@ -1658,7 +1707,11 @@ var toListFunc = function.New(&function.Spec{
 			vals = append(vals, v)
 		}
 		if len(vals) == 0 {
-			return cty.ListValEmpty(cty.DynamicPseudoType), nil
+			elemTy := cty.DynamicPseudoType
+			if retType.IsListType() {
+				elemTy = retType.ElementType()
+			}
+			return cty.ListValEmpty(elemTy), nil
 		}
 		return cty.ListVal(vals), nil
 	},
@@ -1736,7 +1789,11 @@ var toSetFunc = function.New(&function.Spec{
 			vals = append(vals, v)
 		}
 		if len(vals) == 0 {
-			return cty.SetValEmpty(cty.DynamicPseudoType), nil
+			elemTy := cty.DynamicPseudoType
+			if retType.IsSetType() {
+				elemTy = retType.ElementType()
+			}
+			return cty.SetValEmpty(elemTy), nil
 		}
 		return cty.SetVal(vals), nil
 	},

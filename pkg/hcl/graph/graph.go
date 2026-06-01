@@ -23,6 +23,7 @@ import (
 	"fmt"
 	"maps"
 	"slices"
+	"strings"
 
 	"github.com/hashicorp/hcl/v2"
 	"github.com/hashicorp/hcl/v2/hclsyntax"
@@ -42,6 +43,12 @@ type ModuleInfo struct {
 
 	Module     *ast.Module // the module block from the parent config
 	SourcePath string      // resolved source path (for component type name)
+
+	// ParentSourcePath is the resolved source directory of the parent module
+	// (or the root program dir for top-level calls). It's the dir that
+	// Module.Source is relative to, so the runtime can re-resolve it when
+	// loading the child module on demand.
+	ParentSourcePath string
 }
 
 // ModuleName returns the block label of this module call (e.g. "first").
@@ -73,9 +80,11 @@ type LoadedModule struct {
 	SourcePath string
 }
 
-// ModuleLoader loads module configurations from source paths.
+// ModuleLoader loads module configurations from source paths. version is
+// the `version` attribute on the module block (only meaningful for registry
+// sources); workDir is the directory the source is relative to.
 type ModuleLoader interface {
-	LoadModule(source string, workDir string) (*LoadedModule, error)
+	LoadModule(source, version, workDir string) (*LoadedModule, error)
 }
 
 // Node represents a node in the dependency graph.
@@ -164,6 +173,15 @@ type Graph struct {
 	// referenced from a user-written traversal. Used by Validate to anchor
 	// errors about unknown nodes back at the offending source.
 	references map[string][]hcl.Range
+
+	// keyByDagNode lets AddNode resolve each dependency's key so we can
+	// track dependent counts. pdag only exposes node indices, not the
+	// metadata we attached at creation time.
+	keyByDagNode map[pdag.Node]string
+
+	// dependents counts how many other nodes list a given key in their
+	// dependency list. Read by HasDependents at Walk time.
+	dependents map[string]int
 }
 
 type dagNode struct {
@@ -179,9 +197,11 @@ type internedNode struct {
 // NewGraph creates a new empty graph.
 func NewGraph() *Graph {
 	return &Graph{
-		seen:       make(map[string]internedNode),
-		dag:        pdag.New[dagNode](),
-		references: make(map[string][]hcl.Range),
+		seen:         make(map[string]internedNode),
+		dag:          pdag.New[dagNode](),
+		references:   make(map[string][]hcl.Range),
+		keyByDagNode: make(map[pdag.Node]string),
+		dependents:   make(map[string]int),
 	}
 }
 
@@ -234,6 +254,7 @@ func (g *Graph) newNode(key string) (*Node, pdag.Node) {
 		i: i,
 		n: n,
 	}
+	g.keyByDagNode[i] = key
 	return n, i
 }
 
@@ -246,8 +267,18 @@ func (g *Graph) AddNode(node *Node, deps []pdag.Node) error {
 		if err != nil {
 			return err
 		}
+		if key, ok := g.keyByDagNode[dep]; ok {
+			g.dependents[key]++
+		}
 	}
 	return nil
+}
+
+// HasDependents reports whether any other node in the graph lists `key` in
+// its dependency list. Used by the engine to skip work for nodes whose
+// output nothing consumes (e.g. unused `provider` blocks).
+func (g *Graph) HasDependents(key string) bool {
+	return g.dependents[key] > 0
 }
 
 // BuildFromConfig builds a dependency graph from an HCL configuration.
@@ -311,6 +342,7 @@ func BuildFromConfig(config *ast.Config, moduleLoader ModuleLoader, workDir stri
 	// Add resource nodes
 	for key, resource := range config.Resources {
 		deps := g.resourceDeps(resource, "")
+		deps = append(deps, g.defaultProviderDeps(resource, config, "")...)
 		err := g.AddNode(&Node{
 			Key:      key,
 			Type:     NodeTypeResource,
@@ -324,6 +356,7 @@ func BuildFromConfig(config *ast.Config, moduleLoader ModuleLoader, workDir stri
 	// Add data source nodes
 	for key, dataSource := range config.DataSources {
 		deps := g.resourceDeps(dataSource, "")
+		deps = append(deps, g.defaultProviderDeps(dataSource, config, "")...)
 		err := g.AddNode(&Node{
 			Key:      "data." + key,
 			Type:     NodeTypeDataSource,
@@ -359,6 +392,92 @@ func BuildFromConfig(config *ast.Config, moduleLoader ModuleLoader, workDir stri
 	}
 
 	return g, nil
+}
+
+// defaultProviderDeps returns an implicit dependency on the un-aliased
+// `provider "<pkg>" {}` block, if one exists, for resources/data sources that
+// don't set `provider` explicitly. Without this the engine could process the
+// resource before the default provider finishes registering — the provider
+// block's config would then never make it into the resource.
+func (g *Graph) defaultProviderDeps(resource *ast.Resource, config *ast.Config, prefix string) []pdag.Node {
+	if resource.Provider != nil {
+		return nil
+	}
+	pkgName := packageNameFromResourceType(resource.Type)
+	if pkgName == "" {
+		return nil
+	}
+	if _, ok := config.Providers[pkgName]; !ok {
+		return nil
+	}
+	_, idx := g.newNode(prefix + pkgName)
+	return []pdag.Node{idx}
+}
+
+// passThroughProviderDeps returns an edge from an in-module resource to the
+// parent-scope provider that the module call's `providers = { ... }` argument
+// passes in for the resource's package. mod is the module call in the parent
+// scope, parentPrefix is the parent scope's prefix. Returns nil when no
+// pass-through entry applies.
+func (g *Graph) passThroughProviderDeps(resource *ast.Resource, mod *ast.Module, parentPrefix string) []pdag.Node {
+	if mod == nil || len(mod.Providers) == 0 {
+		return nil
+	}
+	// Look up by the key the resource would use in the child scope:
+	//   explicit `provider = simple.foo` → "simple.foo"
+	//   implicit default                  → "simple"
+	var key string
+	if resource.Provider != nil {
+		key = providerExprKey(resource.Provider)
+	} else {
+		key = packageNameFromResourceType(resource.Type)
+	}
+	if key == "" {
+		return nil
+	}
+	passExpr, ok := mod.Providers[key]
+	if !ok {
+		return nil
+	}
+	parentKey := providerExprKey(passExpr)
+	if parentKey == "" {
+		return nil
+	}
+	_, idx := g.newNode(parentPrefix + parentKey)
+	return []pdag.Node{idx}
+}
+
+// providerExprKey returns "name" or "name.alias" from a provider-reference
+// expression. Returns "" for anything that isn't a single one-or-two-step
+// traversal.
+func providerExprKey(expr hcl.Expression) string {
+	if expr == nil {
+		return ""
+	}
+	traversals := expr.Variables()
+	if len(traversals) != 1 {
+		return ""
+	}
+	t := traversals[0]
+	if len(t) == 0 {
+		return ""
+	}
+	name := t.RootName()
+	if len(t) == 1 {
+		return name
+	}
+	if attr, ok := t[1].(hcl.TraverseAttr); ok {
+		return name + "." + attr.Name
+	}
+	return name
+}
+
+// packageNameFromResourceType mirrors run.packageNameFromResourceType: it
+// extracts the provider package from an HCL resource type (e.g.
+// "simple_resource" → "simple"). Duplicated here so graph stays free of run
+// imports.
+func packageNameFromResourceType(token string) string {
+	return strings.SplitN(token, "_", 2)[0]
 }
 
 // resourceDeps extracts all dependencies from a resource, applying prefix to resolved keys.
@@ -414,8 +533,12 @@ func (g *Graph) resourceDeps(resource *ast.Resource, prefix string) []pdag.Node 
 			seen[idx] = true
 		}
 	}
-	for _, dep := range g.exprDeps(resource.ReplacementTrigger, prefix) {
-		seen[dep] = true
+	if resource.Lifecycle != nil {
+		for _, expr := range resource.Lifecycle.ReplaceTriggeredBy {
+			for _, dep := range g.exprDeps(expr, prefix) {
+				seen[dep] = true
+			}
+		}
 	}
 	for _, dep := range g.exprDeps(resource.AdditionalSecretOutputs, prefix) {
 		seen[dep] = true
@@ -526,10 +649,12 @@ func (g *Graph) exprDepsExcluding(expr hcl.Expression, prefix string, exclude ma
 				dep = fmt.Sprintf("%sdata.%s.%s", prefix, parts[0], parts[1])
 			}
 		case "module":
-			if len(parts) >= 2 {
-				dep = fmt.Sprintf("%smodule.%s.output.%s", prefix, parts[0], parts[1])
-			} else if len(parts) >= 1 {
-				dep = fmt.Sprintf("%smodule.%s", prefix, parts[0])
+			if len(parts) >= 1 {
+				if out := moduleOutputName(traversal); out != "" {
+					dep = fmt.Sprintf("%smodule.%s.output.%s", prefix, parts[0], out)
+				} else {
+					dep = fmt.Sprintf("%smodule.%s", prefix, parts[0])
+				}
 			}
 		case "call":
 			if len(parts) >= 2 {
@@ -585,6 +710,9 @@ func formatTraversal(traversal hcl.Traversal) string {
 		}
 	case "module":
 		if len(parts) >= 1 {
+			if out := moduleOutputName(traversal); out != "" {
+				return fmt.Sprintf("module.%s.output.%s", parts[0], out)
+			}
 			return "module." + parts[0]
 		}
 	case "call":
@@ -598,6 +726,27 @@ func formatTraversal(traversal hcl.Traversal) string {
 		}
 	}
 
+	return ""
+}
+
+// moduleOutputName returns the output name from a `module.NAME[idx].OUTPUT`
+// traversal (the index step is optional). Returns "" if there's no attribute
+// step after the module name, meaning the reference is to the whole module.
+func moduleOutputName(traversal hcl.Traversal) string {
+	// traversal[0] is the root (`module`), traversal[1] is the module name.
+	// The next step is either the output attr, or an index followed by the
+	// output attr (for counted / for_each modules).
+	i := 2
+	if i < len(traversal) {
+		if _, ok := traversal[i].(hcl.TraverseIndex); ok {
+			i++
+		}
+	}
+	if i < len(traversal) {
+		if attr, ok := traversal[i].(hcl.TraverseAttr); ok {
+			return attr.Name
+		}
+	}
 	return ""
 }
 
@@ -653,7 +802,7 @@ func (g *Graph) inlineModule(
 	name string, mod *ast.Module, parentPath modulepath.Path,
 	moduleLoader ModuleLoader, workDir string,
 ) error {
-	loaded, err := moduleLoader.LoadModule(mod.Source, workDir)
+	loaded, err := moduleLoader.LoadModule(mod.Source, mod.Version, workDir)
 	if err != nil {
 		return fmt.Errorf("loading module %s: %w", name, err)
 	}
@@ -662,14 +811,21 @@ func (g *Graph) inlineModule(
 	prefix := path.PrefixString()
 	parentPrefix := parentPath.PrefixString()
 	modInfo := &ModuleInfo{
-		Path:       path,
-		Module:     mod,
-		SourcePath: loaded.SourcePath,
+		Path:             path,
+		Module:           mod,
+		SourcePath:       loaded.SourcePath,
+		ParentSourcePath: workDir,
 	}
 
-	// Init node: depends on count/for_each/depends_on from parent scope.
+	// Init node: depends on count/for_each/depends_on from parent scope,
+	// plus the parent module's init (so a nested module never initializes
+	// before its enclosing module's instance/eval-context is registered).
 	initKey := prefix + "__init__"
 	var initDeps []pdag.Node
+	if !parentPath.IsRoot() {
+		_, parentInitIdx := g.newNode(parentPrefix + "__init__")
+		initDeps = append(initDeps, parentInitIdx)
+	}
 	initDeps = append(initDeps, g.exprDeps(mod.Count, parentPrefix)...)
 	initDeps = append(initDeps, g.exprDeps(mod.ForEach, parentPrefix)...)
 	for _, traversal := range mod.DependsOn {
@@ -735,10 +891,32 @@ func (g *Graph) inlineModule(
 		}
 	}
 
+	// Pass-through aliases: `providers = { simple.foo = simple.from_parent }`
+	// creates a local name `simple.foo` in the child that has no in-module
+	// `provider` block of its own. In-module resources referencing it would
+	// otherwise leave behind an unresolved node and trip Validate. Register
+	// it as a no-op shadow so the local edge resolves; the real resolution
+	// (to the parent's provider) happens at runtime via mod.Providers.
+	for localKey := range mod.Providers {
+		shadowKey := prefix + localKey
+		if existing, ok := g.seen[shadowKey]; ok && existing.n.Type != NodeTypeUnknown {
+			continue
+		}
+		if err := g.AddNode(&Node{
+			Key:        shadowKey,
+			Type:       NodeTypeBuiltin,
+			ModuleInfo: modInfo,
+		}, nil); err != nil {
+			return err
+		}
+	}
+
 	// Resources
 	for key, resource := range loaded.Config.Resources {
 		deps := g.resourceDeps(resource, prefix)
 		deps = append(deps, initIdx)
+		deps = append(deps, g.defaultProviderDeps(resource, loaded.Config, prefix)...)
+		deps = append(deps, g.passThroughProviderDeps(resource, mod, parentPrefix)...)
 		if err := g.AddNode(&Node{
 			Key:        prefix + key,
 			Type:       NodeTypeResource,
@@ -753,6 +931,8 @@ func (g *Graph) inlineModule(
 	for key, ds := range loaded.Config.DataSources {
 		deps := g.resourceDeps(ds, prefix)
 		deps = append(deps, initIdx)
+		deps = append(deps, g.defaultProviderDeps(ds, loaded.Config, prefix)...)
+		deps = append(deps, g.passThroughProviderDeps(ds, mod, parentPrefix)...)
 		if err := g.AddNode(&Node{
 			Key:        prefix + "data." + key,
 			Type:       NodeTypeDataSource,

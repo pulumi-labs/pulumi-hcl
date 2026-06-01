@@ -19,6 +19,8 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/pulumi-labs/pulumi-hcl/pkg/hcl/parser"
+	"github.com/pulumi/pulumi/sdk/v3/go/common/workspace"
 	pulumirpc "github.com/pulumi/pulumi/sdk/v3/proto/go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -128,7 +130,7 @@ func TestGeneratePackageAndRunUseSameSdksDir(t *testing.T) {
 	require.True(t, os.IsNotExist(err), "hcl.sdk.json must not be written under .hcl/sdks/")
 
 	// Write an HCL program that references the alias.
-	program := `pulumi {
+	program := `terraform {
   required_providers {
     myparam = {
       source  = "myparam"
@@ -137,7 +139,7 @@ func TestGeneratePackageAndRunUseSameSdksDir(t *testing.T) {
   }
 }
 `
-	require.NoError(t, os.WriteFile(filepath.Join(projectDir, "main.hcl"), []byte(program), 0o600))
+	require.NoError(t, os.WriteFile(filepath.Join(projectDir, "main.tf"), []byte(program), 0o600))
 
 	resp, err := host.GetRequiredPackages(t.Context(), &pulumirpc.GetRequiredPackagesRequest{
 		Info: &pulumirpc.ProgramInfo{
@@ -159,4 +161,218 @@ func TestGeneratePackageAndRunUseSameSdksDir(t *testing.T) {
 			Value:   []byte("hello"),
 		},
 	}, resp.Packages[0])
+}
+
+// A parameterized package whose required_providers source is `pulumi/<name>`
+// must still be reported via its local SDK descriptor (base provider + para-
+// meterization), not as a plain pulumi dependency. The descriptor is the
+// authoritative source and must win over the pulumi-source classification.
+func TestGetRequiredPackages_ParameterizedPulumiSource(t *testing.T) {
+	t.Parallel()
+
+	projectDir := t.TempDir()
+
+	const alias = "subpackage"
+	sdkDir := filepath.Join(projectDir, "sdks", alias)
+	require.NoError(t, os.MkdirAll(sdkDir, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(sdkDir, "hcl.sdk.json"), []byte(`{
+		"Name": "parameterized",
+		"Kind": "resource",
+		"Version": "1.2.3",
+		"Parameterization": {
+			"Name": "subpackage",
+			"Version": "2.0.0",
+			"Value": "SGVsbG9Xb3JsZA=="
+		}
+	}`), 0o600))
+
+	program := `terraform {
+  required_providers {
+    subpackage = {
+      source  = "pulumi/subpackage"
+      version = "2.0.0"
+    }
+  }
+}
+
+resource "subpackage_hello_world" "example" {}
+`
+	require.NoError(t, os.WriteFile(filepath.Join(projectDir, "main.tf"), []byte(program), 0o600))
+
+	host := &LanguageHost{}
+	resp, err := host.GetRequiredPackages(t.Context(), &pulumirpc.GetRequiredPackagesRequest{
+		Info: &pulumirpc.ProgramInfo{
+			ProgramDirectory: projectDir,
+			RootDirectory:    projectDir,
+			EntryPoint:       ".",
+		},
+	})
+	require.NoError(t, err)
+
+	require.Len(t, resp.Packages, 1)
+	assert.Equal(t, &pulumirpc.PackageDependency{
+		Name:    "parameterized",
+		Version: "1.2.3",
+		Kind:    "resource",
+		Parameterization: &pulumirpc.PackageParameterization{
+			Name:    "subpackage",
+			Version: "2.0.0",
+			Value:   []byte("HelloWorld"),
+		},
+	}, resp.Packages[0])
+}
+
+// TestMissingNonPulumiSDKs_ImplicitProvider reproduces the tf_stack_test bug:
+// a program references `data "archive_file" ...` without declaring `archive`
+// in required_providers. The provider is *implicit* — its only mention is in
+// the data source's type prefix. The previous implementation only looked at
+// required_providers, so the missing SDK slipped through and Run sent the
+// engine a raw "registry.terraform.io/hashicorp/archive" provider request.
+// missingNonPulumiSDKs must catch the implicit provider too.
+func TestMissingNonPulumiSDKs_ImplicitProvider(t *testing.T) {
+	t.Parallel()
+
+	const src = `terraform {
+  required_providers {
+    aws = {
+      source  = "hashicorp/aws"
+      version = "6.19.0"
+    }
+  }
+}
+
+resource "aws_s3_bucket" "b" {}
+
+data "archive_file" "lambda" {}
+`
+	cfg, diags := parser.NewParser().ParseSource("main.tf", []byte(src))
+	require.False(t, diags.HasErrors(), "diags: %v", diags)
+
+	// No SDKs on disk: both non-Pulumi providers (explicit aws, implicit
+	// archive) must be reported missing.
+	assert.Equal(t,
+		[]string{"archive", "aws"},
+		missingNonPulumiSDKs(cfg, nil, ""))
+
+	// Once both have SDKs, nothing is missing.
+	sdks := map[string]workspace.PackageDescriptor{
+		"aws":     {PluginDescriptor: workspace.PluginDescriptor{Name: "aws"}},
+		"archive": {PluginDescriptor: workspace.PluginDescriptor{Name: "archive"}},
+	}
+	assert.Empty(t, missingNonPulumiSDKs(cfg, sdks, ""))
+
+	// A pulumi-source provider needs no SDK even when it's only referenced
+	// by a resource type prefix.
+	const pulumiSrc = `terraform {
+  required_providers {
+    aws = {
+      source  = "pulumi/aws"
+      version = "6.0.0"
+    }
+  }
+}
+
+resource "aws_s3_bucket" "b" {}
+`
+	cfgPulumi, diags := parser.NewParser().ParseSource("main.tf", []byte(pulumiSrc))
+	require.False(t, diags.HasErrors(), "diags: %v", diags)
+	assert.Empty(t, missingNonPulumiSDKs(cfgPulumi, nil, ""))
+}
+
+func TestMissingNonPulumiSDKs_BuiltinProvider(t *testing.T) {
+	t.Parallel()
+
+	const src = `resource "pulumi_stash" "myStash" {
+  input = "test"
+}
+`
+	cfg, diags := parser.NewParser().ParseSource("main.tf", []byte(src))
+	require.False(t, diags.HasErrors(), "diags: %v", diags)
+
+	assert.Empty(t, missingNonPulumiSDKs(cfg, nil, ""))
+}
+
+// A provider local name that contains underscores (e.g. "snake_names") must
+// be resolved against the declared providers, not split at the first
+// underscore. The naive split yielded a spurious "snake" provider that was
+// then reported missing even though "snake_names" is pulumi-sourced.
+func TestMissingNonPulumiSDKs_UnderscoreProviderName(t *testing.T) {
+	t.Parallel()
+
+	const src = `terraform {
+  required_providers {
+    snake_names = {
+      source  = "pulumi/snake_names"
+      version = "33.0.0"
+    }
+  }
+}
+
+resource "snake_names_cool_module_some_resource" "first" {
+  the_input = true
+}
+`
+	cfg, diags := parser.NewParser().ParseSource("main.tf", []byte(src))
+	require.False(t, diags.HasErrors(), "diags: %v", diags)
+
+	assert.Empty(t, missingNonPulumiSDKs(cfg, nil, ""))
+}
+
+// Implicit provider inside a child module must surface at the top — without
+// recursion the SDK check silently misses it (the aws-ia/label gap).
+func TestMissingNonPulumiSDKs_TransitiveModuleProvider(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "main.tf"), []byte(`
+module "child" {
+  source = "./child"
+}
+`), 0o600))
+
+	childDir := filepath.Join(dir, "child")
+	require.NoError(t, os.MkdirAll(childDir, 0o755))
+	// Only mention of "aws" is inside the module.
+	require.NoError(t, os.WriteFile(filepath.Join(childDir, "main.tf"), []byte(`
+resource "aws_s3_bucket" "b" {}
+`), 0o600))
+
+	cfg, diags := parser.NewParser().ParseDirectory(dir)
+	require.False(t, diags.HasErrors(), "diags: %v", diags)
+
+	assert.Equal(t,
+		[]string{"aws"},
+		missingNonPulumiSDKs(cfg, nil, dir))
+}
+
+// Same recursion via the module's `required_providers` block (no resources).
+func TestMissingNonPulumiSDKs_TransitiveModuleRequiredProviders(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "main.tf"), []byte(`
+module "child" {
+  source = "./child"
+}
+`), 0o600))
+
+	childDir := filepath.Join(dir, "child")
+	require.NoError(t, os.MkdirAll(childDir, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(childDir, "main.tf"), []byte(`
+terraform {
+  required_providers {
+    awscc = {
+      source  = "hashicorp/awscc"
+      version = ">= 1.0"
+    }
+  }
+}
+`), 0o600))
+
+	cfg, diags := parser.NewParser().ParseDirectory(dir)
+	require.False(t, diags.HasErrors(), "diags: %v", diags)
+
+	assert.Equal(t,
+		[]string{"awscc"},
+		missingNonPulumiSDKs(cfg, nil, dir))
 }

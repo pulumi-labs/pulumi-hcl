@@ -45,7 +45,7 @@ type generateProgramOptions struct {
 }
 
 // SkipRequiredProvidersVersion omits the `version` attribute from each entry
-// of an emitted `pulumi { required_providers { ... } }` block. The `source`
+// of an emitted `terraform { required_providers { ... } }` block. The `source`
 // attribute is still emitted so symbol resolution remains unambiguous. Use
 // for snippets embedded in SDK documentation, where pinning a version would
 // bake the SDK's in-development version into every regenerated docstring.
@@ -53,13 +53,13 @@ func SkipRequiredProvidersVersion() GenerateProgramOption {
 	return func(o *generateProgramOptions) { o.skipRequiredProvidersVersion = true }
 }
 
-// GenerateProgram generates HCL source code from a bound PCL program.
+// GenerateProgram generates Terraform HCL source code from a bound PCL program.
 //
 // The output preserves the program's source-file structure: each PCL file
-// produces a corresponding ".hcl" file containing the nodes that were declared
+// produces a corresponding ".tf" file containing the nodes that were declared
 // in it. Required-providers entries are placed in the first source file that
 // declared each package via a `package` block; references with no declaring
-// file are placed in main.hcl (or, if no main.pp exists, the first file in
+// file are placed in main.tf (or, if no main.pp exists, the first file in
 // alphabetical order).
 func GenerateProgram(program *pcl.Program, opts ...GenerateProgramOption) (map[string][]byte, hcl.Diagnostics, error) {
 	var o generateProgramOptions
@@ -122,7 +122,7 @@ func GenerateProgram(program *pcl.Program, opts ...GenerateProgramOption) (map[s
 		f := hclwrite.NewEmptyFile()
 		body := f.Body()
 
-		d := gen.genPulumiHeader(body, providersByFile[srcName], pulumiBlocksByFile[srcName])
+		d := gen.genTerraformHeader(body, providersByFile[srcName], pulumiBlocksByFile[srcName])
 		diags = append(diags, d...)
 
 		for _, ds := range invokesByFile[srcName] {
@@ -158,7 +158,7 @@ func GenerateProgram(program *pcl.Program, opts ...GenerateProgramOption) (map[s
 				d := gen.genLocalVariable(body, n)
 				diags = append(diags, d...)
 			case *pcl.PulumiBlock:
-				// Emitted by genPulumiHeader above.
+				// Emitted by genTerraformHeader above.
 			case *pcl.Component:
 				d := gen.genModule(body, n)
 				diags = append(diags, d...)
@@ -180,8 +180,8 @@ func GenerateProgram(program *pcl.Program, opts ...GenerateProgramOption) (map[s
 
 	if len(files) == 0 {
 		// A program with no source content still needs at least one file so the
-		// runtime can locate a module. Emit an empty main.hcl.
-		files["main.hcl"] = nil
+		// runtime can locate a module. Emit an empty main.tf.
+		files["main.tf"] = nil
 	}
 
 	for componentDir, component := range program.CollectComponents() {
@@ -283,10 +283,10 @@ func nodeSourceFile(node pcl.Node) string {
 	return "main.pp"
 }
 
-// outputFileName converts a PCL source filename to its HCL output counterpart
-// by replacing the ".pp" extension with ".hcl".
+// outputFileName converts a PCL source filename to its Terraform output counterpart
+// by replacing the ".pp" extension with ".tf".
 func outputFileName(srcName string) string {
-	return strings.TrimSuffix(srcName, ".pp") + ".hcl"
+	return strings.TrimSuffix(srcName, ".pp") + ".tf"
 }
 
 type rangeKind int
@@ -600,14 +600,14 @@ type spilledCall struct {
 	sourceFile   string
 }
 
-// genPulumiHeader emits the per-file `pulumi { ... }` block, combining
+// genTerraformHeader emits the per-file `terraform { ... }` block, combining
 // required-provider entries (sourced from the program's PackageReferences)
-// with a PCL `pulumi { requiredVersionRange = ... }` node when present in
-// this file. Returns no diags except those produced by genPulumiBlockBody.
+// with a PCL `pulumi { requiredVersionRange = ... }` node (PCL syntax) when present in
+// this file. Returns no diags except those produced by genTerraformBlockBody.
 //
 // When neither providers nor a PulumiBlock node are present, no block is
 // emitted (and no trailing newline is added).
-func (g *generator) genPulumiHeader(
+func (g *generator) genTerraformHeader(
 	body *hclwrite.Body, pkgRefs []schema.PackageReference, pb *pcl.PulumiBlock,
 ) hcl.Diagnostics {
 	providers := make([]schema.PackageReference, 0, len(pkgRefs))
@@ -624,7 +624,7 @@ func (g *generator) genPulumiHeader(
 		return nil
 	}
 
-	block := body.AppendNewBlock("pulumi", nil)
+	block := body.AppendNewBlock("terraform", nil)
 	var diags hcl.Diagnostics
 	if hasVersion {
 		d := g.genExpression(block.Body(), "required_version_range", pb.RequiredVersion, schema.StringType)
@@ -633,13 +633,14 @@ func (g *generator) genPulumiHeader(
 	if len(providers) > 0 {
 		reqProviders := block.Body().AppendNewBlock("required_providers", nil)
 		for _, ref := range providers {
-			namespace := ref.Namespace()
-			if namespace == "" {
-				namespace = "pulumi"
+			// All Pulumi packages emit under the `pulumi/` prefix so the HCL
+			// runtime can distinguish them from terraform-provider sources.
+			// Namespaced packages become a triple: pulumi/<ns>/<name>.
+			source := "pulumi/" + ref.Name()
+			if ns := ref.Namespace(); ns != "" {
+				source = "pulumi/" + ns + "/" + ref.Name()
 			}
-			attrs := map[string]cty.Value{
-				"source": cty.StringVal(namespace + "/" + ref.Name()),
-			}
+			attrs := map[string]cty.Value{"source": cty.StringVal(source)}
 			if v := ref.Version(); v != nil && !g.skipRequiredProvidersVersion {
 				attrs["version"] = cty.StringVal(v.String())
 			}
@@ -1060,38 +1061,53 @@ func (g *generator) genInvokeDataSource(body *hclwrite.Body, ds spilledDataSourc
 		}
 	}
 
-	// Third arg is the invoke options object
+	// Third arg is the invoke options object. Terraform-standard options
+	// (provider, depends_on) stay on the data block; Pulumi-specific options
+	// (parent, version, plugin_download_url) go in a nested `pulumi { }` block.
 	if len(invoke.Args) >= 3 {
 		if optsExpr, ok := invoke.Args[2].(*model.ObjectConsExpression); ok {
+			var pulumiBlockBody *hclwrite.Body
+			pulumiBody := func() *hclwrite.Body {
+				if pulumiBlockBody == nil {
+					pulumiBlockBody = block.Body().AppendNewBlock("pulumi", nil).Body()
+				}
+				return pulumiBlockBody
+			}
 			for _, item := range optsExpr.Items {
 				keyLit, ok := item.Key.(*model.LiteralValueExpression)
 				if !ok {
 					continue
 				}
 				switch keyLit.Value.AsString() {
-				case "provider", "parent":
+				case "provider":
 					tokens, d := g.exprTokens(item.Value, schema.AnyType)
 					diags = append(diags, d...)
 					if !d.HasErrors() {
-						block.Body().SetAttributeRaw(keyLit.Value.AsString(), tokens)
-					}
-				case "version":
-					tokens, d := g.exprTokens(item.Value, schema.StringType)
-					diags = append(diags, d...)
-					if !d.HasErrors() {
-						block.Body().SetAttributeRaw("version", tokens)
-					}
-				case "pluginDownloadUrl":
-					tokens, d := g.exprTokens(item.Value, schema.StringType)
-					diags = append(diags, d...)
-					if !d.HasErrors() {
-						block.Body().SetAttributeRaw("plugin_download_url", tokens)
+						block.Body().SetAttributeRaw("provider", tokens)
 					}
 				case "dependsOn":
 					tokens, d := g.exprTokens(item.Value, schema.AnyType)
 					diags = append(diags, d...)
 					if !d.HasErrors() {
 						block.Body().SetAttributeRaw("depends_on", tokens)
+					}
+				case "parent":
+					tokens, d := g.exprTokens(item.Value, schema.AnyType)
+					diags = append(diags, d...)
+					if !d.HasErrors() {
+						pulumiBody().SetAttributeRaw("parent", tokens)
+					}
+				case "version":
+					tokens, d := g.exprTokens(item.Value, schema.StringType)
+					diags = append(diags, d...)
+					if !d.HasErrors() {
+						pulumiBody().SetAttributeRaw("version", tokens)
+					}
+				case "pluginDownloadUrl":
+					tokens, d := g.exprTokens(item.Value, schema.StringType)
+					diags = append(diags, d...)
+					if !d.HasErrors() {
+						pulumiBody().SetAttributeRaw("plugin_download_url", tokens)
 					}
 				}
 			}
@@ -1105,6 +1121,11 @@ func (g *generator) genResource(body *hclwrite.Body, r *pcl.Resource) hcl.Diagno
 	defer func() { g.currentRangeKind = rangeKindNone }()
 
 	token, _ := r.GetToken()
+
+	if r.Schema != nil && r.Schema.IsProvider {
+		return g.genProvider(body, r)
+	}
+
 	hclType, d := packages.PulumiResourceTokenToHCL(resourceSchemaPackage(r.Schema), resourceSchemaToken(r.Schema, token))
 	if d.HasErrors() {
 		return d
@@ -1135,6 +1156,79 @@ func (g *generator) genResource(body *hclwrite.Body, r *pcl.Resource) hcl.Diagno
 	return diags
 }
 
+// genProvider emits a `provider "<pkg>" { ... }` block for a PCL provider
+// resource (token "pulumi:providers:<pkg>").
+func (g *generator) genProvider(body *hclwrite.Body, r *pcl.Resource) hcl.Diagnostics {
+	contract.Assertf(r.Schema == nil || r.Schema.IsProvider, "genProvider not given provider")
+	token, _ := r.GetToken()
+	pkgName := token
+	if i := strings.LastIndex(token, ":"); i >= 0 {
+		pkgName = token[i+1:]
+	}
+	block := body.AppendNewBlock("provider", []string{pkgName})
+	if r.LogicalName() != "" && r.LogicalName() != pkgName {
+		block.Body().SetAttributeValue("alias", cty.StringVal(r.LogicalName()))
+	}
+
+	var diags hcl.Diagnostics
+
+	// Pulumi-specific options go in a nested `pulumi { }` block so they cannot
+	// collide with the provider's own configuration attributes. `alias` is a
+	// Terraform-standard meta-argument and stays at the top level.
+	opts := r.Options
+	if opts != nil {
+		var pulumiBlockBody *hclwrite.Body
+		pulumiBody := func() *hclwrite.Body {
+			if pulumiBlockBody == nil {
+				pulumiBlockBody = block.Body().AppendNewBlock("pulumi", nil).Body()
+			}
+			return pulumiBlockBody
+		}
+		if opts.PluginDownloadURL != nil {
+			tokens, d := g.exprTokens(opts.PluginDownloadURL, schema.StringType)
+			diags = append(diags, d...)
+			if !d.HasErrors() {
+				pulumiBody().SetAttributeRaw("plugin_download_url", tokens)
+			}
+		}
+		if opts.Version != nil {
+			tokens, d := g.exprTokens(opts.Version, schema.StringType)
+			diags = append(diags, d...)
+			if !d.HasErrors() {
+				pulumiBody().SetAttributeRaw("version", tokens)
+			}
+		}
+		if opts.AdditionalSecretOutputs != nil {
+			g.genPropertyPathList(pulumiBody(), "additional_secret_outputs", opts.AdditionalSecretOutputs, &diags)
+		}
+		if opts.EnvVarMappings != nil {
+			tokens, d := g.exprTokens(opts.EnvVarMappings, schema.AnyType)
+			diags = append(diags, d...)
+			if !d.HasErrors() {
+				pulumiBody().SetAttributeRaw("env_var_mappings", tokens)
+			}
+		}
+	}
+
+	var inputs []*schema.Property
+	if r.Schema != nil {
+		inputs = r.Schema.InputProperties
+	}
+	for _, attr := range r.Inputs {
+		inputType := findPropertyType(inputs, attr.Name)
+		hclName := transform.SnakeCaseFromPulumiCase(attr.Name)
+		g.emitLeadingComments(block.Body(), attr.SyntaxNode())
+		if objType, ok := transform.AsHCLBlockType(inputType); ok {
+			d := g.genBlocks(block.Body(), hclName, attr.Value, objType)
+			diags = append(diags, d...)
+		} else {
+			d := g.genAttributeWithTrailing(block.Body(), hclName, attr.Value, inputType, attr.SyntaxNode())
+			diags = append(diags, d...)
+		}
+	}
+	return diags
+}
+
 // genResourceOptions generates HCL meta-arguments for a resource's options.
 func (g *generator) genResourceOptions(body *hclwrite.Body, r *pcl.Resource) hcl.Diagnostics {
 	var diags hcl.Diagnostics
@@ -1149,27 +1243,36 @@ func (g *generator) genResourceOptions(body *hclwrite.Body, r *pcl.Resource) hcl
 			func(s string) string { return s })
 	}
 
-	if opts == nil && len(schemaReplaceOnChanges) == 0 {
-		return nil
+	// pulumiBody lazily appends the `pulumi { }` block on first use so it is
+	// omitted entirely when there are no Pulumi-specific options.
+	var pulumiBlockBody *hclwrite.Body
+	pulumiBody := func() *hclwrite.Body {
+		if pulumiBlockBody == nil {
+			pulumiBlockBody = body.AppendNewBlock("pulumi", nil).Body()
+		}
+		return pulumiBlockBody
+	}
+
+	var optReplaceOnChanges model.Expression
+	if opts != nil {
+		optReplaceOnChanges = opts.ReplaceOnChanges
+	}
+	emitReplaceOnChanges := func() {
+		if len(schemaReplaceOnChanges) > 0 || len(extractPropertyNames(optReplaceOnChanges)) > 0 {
+			g.genReplaceOnChanges(pulumiBody(), schemaReplaceOnChanges, optReplaceOnChanges, &diags)
+		}
 	}
 
 	if opts == nil {
-		// Only schema-based replaceOnChanges - generate it
-		g.genReplaceOnChanges(body, schemaReplaceOnChanges, nil, &diags)
+		emitReplaceOnChanges()
+		g.genLifecycleBlock(body, nil, &diags)
 		return diags
 	}
 
+	// Terraform-standard meta-arguments stay at the top level.
 	if opts.Range != nil {
 		d := g.genRange(body, opts.Range)
 		diags = append(diags, d...)
-	}
-
-	if opts.Parent != nil {
-		tokens, d := g.exprTokens(opts.Parent, schema.AnyType)
-		diags = append(diags, d...)
-		if !d.HasErrors() {
-			body.SetAttributeRaw("parent", tokens)
-		}
 	}
 
 	if opts.Provider != nil {
@@ -1188,15 +1291,32 @@ func (g *generator) genResourceOptions(body *hclwrite.Body, r *pcl.Resource) hcl
 		}
 	}
 
+	if opts.DependsOn != nil {
+		tokens, d := g.exprTokens(opts.DependsOn, schema.AnyType)
+		diags = append(diags, d...)
+		if !d.HasErrors() {
+			body.SetAttributeRaw("depends_on", tokens)
+		}
+	}
+
+	// Pulumi-specific options go in the nested `pulumi { }` block.
+	if opts.Parent != nil {
+		tokens, d := g.exprTokens(opts.Parent, schema.AnyType)
+		diags = append(diags, d...)
+		if !d.HasErrors() {
+			pulumiBody().SetAttributeRaw("parent", tokens)
+		}
+	}
+
 	if opts.AdditionalSecretOutputs != nil {
-		g.genPropertyPathList(body, "additional_secret_outputs", opts.AdditionalSecretOutputs, &diags)
+		g.genPropertyPathList(pulumiBody(), "additional_secret_outputs", opts.AdditionalSecretOutputs, &diags)
 	}
 
 	if opts.RetainOnDelete != nil {
 		tokens, d := g.exprTokens(opts.RetainOnDelete, schema.BoolType)
 		diags = append(diags, d...)
 		if !d.HasErrors() {
-			body.SetAttributeRaw("retain_on_delete", tokens)
+			pulumiBody().SetAttributeRaw("retain_on_delete", tokens)
 		}
 	}
 
@@ -1204,7 +1324,7 @@ func (g *generator) genResourceOptions(body *hclwrite.Body, r *pcl.Resource) hcl
 		tokens, d := g.exprTokens(opts.DeletedWith, schema.AnyType)
 		diags = append(diags, d...)
 		if !d.HasErrors() {
-			body.SetAttributeRaw("deleted_with", tokens)
+			pulumiBody().SetAttributeRaw("deleted_with", tokens)
 		}
 	}
 
@@ -1212,55 +1332,55 @@ func (g *generator) genResourceOptions(body *hclwrite.Body, r *pcl.Resource) hcl
 		tokens, d := g.exprTokens(opts.ReplaceWith, schema.AnyType)
 		diags = append(diags, d...)
 		if !d.HasErrors() {
-			body.SetAttributeRaw("replace_with", tokens)
+			pulumiBody().SetAttributeRaw("replace_with", tokens)
 		}
 	}
 
 	if opts.HideDiffs != nil {
-		g.genPropertyPathList(body, "hide_diffs", opts.HideDiffs, &diags)
+		g.genPropertyPathList(pulumiBody(), "hide_diffs", opts.HideDiffs, &diags)
 	}
 
-	g.genReplaceOnChanges(body, schemaReplaceOnChanges, opts.ReplaceOnChanges, &diags)
+	emitReplaceOnChanges()
 
-	if opts.ReplacementTrigger != nil {
-		tokens, d := g.exprTokens(opts.ReplacementTrigger, schema.AnyType)
+	if opts.ImportID != nil {
+		tokens, d := g.exprTokens(opts.ImportID, schema.StringType)
 		diags = append(diags, d...)
 		if !d.HasErrors() {
-			body.SetAttributeRaw("replacement_trigger", tokens)
+			pulumiBody().SetAttributeRaw("import_id", tokens)
 		}
 	}
 
-	if opts.IgnoreChanges != nil || opts.Protect != nil || opts.DeleteBeforeReplace != nil {
-		lifecycleBlock := body.AppendNewBlock("lifecycle", nil)
-		if opts.Protect != nil {
-			tokens, d := g.exprTokens(opts.Protect, schema.BoolType)
-			diags = append(diags, d...)
-			if !d.HasErrors() {
-				lifecycleBlock.Body().SetAttributeRaw("prevent_destroy", tokens)
-			}
-		}
-		if opts.IgnoreChanges != nil {
-			tokens, d := g.exprTokens(opts.IgnoreChanges, schema.AnyType)
-			diags = append(diags, d...)
-			if !d.HasErrors() {
-				lifecycleBlock.Body().SetAttributeRaw("ignore_changes", tokens)
-			}
-		}
-		if opts.DeleteBeforeReplace != nil {
-			// PCL deleteBeforeReplace=true means delete-then-create.
-			// HCL create_before_destroy=true means create-then-delete.
-			// So create_before_destroy = !deleteBeforeReplace.
-			// We generate the inverted expression.
-			tokens, d := g.exprTokens(opts.DeleteBeforeReplace, schema.BoolType)
-			diags = append(diags, d...)
-			if !d.HasErrors() {
-				invertedTokens := append(hclwrite.Tokens{
-					{Type: hclsyntax.TokenBang, Bytes: []byte("!")},
-				}, tokens...)
-				lifecycleBlock.Body().SetAttributeRaw("create_before_destroy", invertedTokens)
-			}
+	if opts.EnvVarMappings != nil {
+		tokens, d := g.exprTokens(opts.EnvVarMappings, schema.AnyType)
+		diags = append(diags, d...)
+		if !d.HasErrors() {
+			pulumiBody().SetAttributeRaw("env_var_mappings", tokens)
 		}
 	}
+
+	// HCL doesn't bake versions into generated code, so always emit version when specified.
+	if opts.Version != nil {
+		tokens, d := g.exprTokens(opts.Version, schema.StringType)
+		diags = append(diags, d...)
+		if !d.HasErrors() {
+			pulumiBody().SetAttributeRaw("version", tokens)
+		}
+	}
+
+	if opts.PluginDownloadURL != nil && pcl.NeedsPluginDownloadURLResourceOption(opts.PluginDownloadURL, r.Schema) {
+		tokens, d := g.exprTokens(opts.PluginDownloadURL, schema.StringType)
+		diags = append(diags, d...)
+		if !d.HasErrors() {
+			pulumiBody().SetAttributeRaw("plugin_download_url", tokens)
+		}
+	}
+
+	if opts.Aliases != nil {
+		g.genAliases(pulumiBody(), opts.Aliases, &diags)
+	}
+
+	// Block-form meta-arguments come after attributes, at the top level.
+	g.genLifecycleBlock(body, opts, &diags)
 
 	if opts.CustomTimeouts != nil {
 		timeoutsBlock := body.AppendNewBlock("timeouts", nil)
@@ -1278,51 +1398,6 @@ func (g *generator) genResourceOptions(body *hclwrite.Body, r *pcl.Resource) hcl
 				}
 			}
 		}
-	}
-
-	if opts.DependsOn != nil {
-		tokens, d := g.exprTokens(opts.DependsOn, schema.AnyType)
-		diags = append(diags, d...)
-		if !d.HasErrors() {
-			body.SetAttributeRaw("depends_on", tokens)
-		}
-	}
-
-	if opts.ImportID != nil {
-		tokens, d := g.exprTokens(opts.ImportID, schema.StringType)
-		diags = append(diags, d...)
-		if !d.HasErrors() {
-			body.SetAttributeRaw("import_id", tokens)
-		}
-	}
-
-	if opts.EnvVarMappings != nil {
-		tokens, d := g.exprTokens(opts.EnvVarMappings, schema.AnyType)
-		diags = append(diags, d...)
-		if !d.HasErrors() {
-			body.SetAttributeRaw("env_var_mappings", tokens)
-		}
-	}
-
-	// HCL doesn't bake versions into generated code, so always emit version when specified.
-	if opts.Version != nil {
-		tokens, d := g.exprTokens(opts.Version, schema.StringType)
-		diags = append(diags, d...)
-		if !d.HasErrors() {
-			body.SetAttributeRaw("version", tokens)
-		}
-	}
-
-	if opts.PluginDownloadURL != nil && pcl.NeedsPluginDownloadURLResourceOption(opts.PluginDownloadURL, r.Schema) {
-		tokens, d := g.exprTokens(opts.PluginDownloadURL, schema.StringType)
-		diags = append(diags, d...)
-		if !d.HasErrors() {
-			body.SetAttributeRaw("plugin_download_url", tokens)
-		}
-	}
-
-	if opts.Aliases != nil {
-		g.genAliases(body, opts.Aliases, &diags)
 	}
 
 	return diags
@@ -1562,6 +1637,87 @@ func makeStringListTokens(strs []string) hclwrite.Tokens {
 	}
 	tokens = append(tokens, &hclwrite.Token{Type: hclsyntax.TokenCBrack, Bytes: []byte("]")})
 	return tokens
+}
+
+// genLifecycleBlock writes the resource's `lifecycle { ... }` block.
+//
+// Pulumi defaults to create-then-delete; Terraform defaults to the opposite.
+// To make the Pulumi default explicit, we emit `create_before_destroy = true`
+// whenever `deleteBeforeReplace` is unset (or literal `false`). When it's
+// literal `true`, the TF default already matches the user's intent, so we omit
+// `create_before_destroy` entirely. Non-literal expressions fall through to
+// `create_before_destroy = !<expr>`.
+//
+// If the block ends up empty, it's not emitted.
+func (g *generator) genLifecycleBlock(body *hclwrite.Body, opts *pcl.ResourceOptions, diags *hcl.Diagnostics) {
+	type attr struct {
+		name   string
+		tokens hclwrite.Tokens
+	}
+	var attrs []attr
+
+	if opts != nil {
+		if opts.Protect != nil {
+			tokens, d := g.exprTokens(opts.Protect, schema.BoolType)
+			*diags = append(*diags, d...)
+			if !d.HasErrors() {
+				attrs = append(attrs, attr{"prevent_destroy", tokens})
+			}
+		}
+		if opts.IgnoreChanges != nil {
+			tokens, d := g.exprTokens(opts.IgnoreChanges, schema.AnyType)
+			*diags = append(*diags, d...)
+			if !d.HasErrors() {
+				attrs = append(attrs, attr{"ignore_changes", tokens})
+			}
+		}
+		if opts.ReplacementTrigger != nil {
+			tokens, d := g.exprTokens(opts.ReplacementTrigger, schema.AnyType)
+			*diags = append(*diags, d...)
+			if !d.HasErrors() {
+				// TF expects a list. PCL's `replacementTrigger` is a single
+				// expression, so wrap it in a 1-element list.
+				attrs = append(attrs, attr{"replace_triggered_by",
+					hclwrite.TokensForTuple([]hclwrite.Tokens{tokens})})
+			}
+		}
+	}
+
+	cbdTokens := createBeforeDestroyTokens(g, opts, diags)
+	if cbdTokens != nil {
+		attrs = append(attrs, attr{"create_before_destroy", cbdTokens})
+	}
+
+	if len(attrs) == 0 {
+		return
+	}
+	block := body.AppendNewBlock("lifecycle", nil).Body()
+	for _, a := range attrs {
+		block.SetAttributeRaw(a.name, a.tokens)
+	}
+}
+
+// createBeforeDestroyTokens computes the value of `create_before_destroy` from
+// PCL's `deleteBeforeReplace`. Returns nil when the attribute should not be
+// emitted (TF default already matches the user's request).
+func createBeforeDestroyTokens(g *generator, opts *pcl.ResourceOptions, diags *hcl.Diagnostics) hclwrite.Tokens {
+	if opts == nil || opts.DeleteBeforeReplace == nil {
+		return hclwrite.Tokens{{Type: hclsyntax.TokenIdent, Bytes: []byte("true")}}
+	}
+	if lit, ok := opts.DeleteBeforeReplace.(*model.LiteralValueExpression); ok && lit.Value.Type() == cty.Bool {
+		if lit.Value.True() {
+			return nil
+		}
+		return hclwrite.Tokens{{Type: hclsyntax.TokenIdent, Bytes: []byte("true")}}
+	}
+	tokens, d := g.exprTokens(opts.DeleteBeforeReplace, schema.BoolType)
+	*diags = append(*diags, d...)
+	if d.HasErrors() {
+		return nil
+	}
+	return append(hclwrite.Tokens{
+		{Type: hclsyntax.TokenBang, Bytes: []byte("!")},
+	}, tokens...)
 }
 
 // genReplaceOnChanges generates the replace_on_changes attribute, merging schema-based and option-based paths.
@@ -2072,14 +2228,24 @@ func (g *generator) funcCallTokens(expr *model.FunctionCallExpression) (hclwrite
 		}
 		return g.passthroughFuncCallTokens(expr.Name, expr.Args)
 	case "cwd":
+		// PCL cwd() is the program working directory (the dir holding the
+		// .tf files, after any Pulumi -main). In Terraform-semantic HCL
+		// that's the absolute config root, which abspath(path.root)
+		// materializes (path.root is "."). The eject path inverts this
+		// exact pattern back to cwd().
+		return hclwrite.TokensForFunctionCall("abspath",
+			hclwrite.TokensForTraversal(hcl.Traversal{
+				hcl.TraverseRoot{Name: "path"},
+				hcl.TraverseAttr{Name: "root"},
+			})), nil
+	case "rootDirectory":
+		// PCL rootDirectory() is the project root (where Pulumi.yaml lives,
+		// the dir above any -main subdir). That matches Terraform's path.cwd
+		// — the original cwd before any -chdir — which our engine populates
+		// with the Pulumi RootDirectory.
 		return hclwrite.TokensForTraversal(hcl.Traversal{
 			hcl.TraverseRoot{Name: "path"},
 			hcl.TraverseAttr{Name: "cwd"},
-		}), nil
-	case "rootDirectory":
-		return hclwrite.TokensForTraversal(hcl.Traversal{
-			hcl.TraverseRoot{Name: "path"},
-			hcl.TraverseAttr{Name: "root"},
 		}), nil
 	case "stack":
 		return hclwrite.TokensForTraversal(hcl.Traversal{
@@ -2443,17 +2609,32 @@ func (g *generator) scopeTraversalTokens(expr *model.ScopeTraversalExpression) (
 		rewritten = append(rewritten, traverseNameStep(part.LogicalName()))
 		return hclwrite.TokensForTraversal(append(rewritten, traversal[1:]...)), nil
 	case *pcl.Resource:
-		// Rewrite "myResource.property" → "resource_type.myResource.property".
+		// Rewrite "myResource.property" → "resource_type.myResource.property"
+		// for normal resources, or "<pkg>.<alias>.property" for providers
+		// (which are declared with a `provider` block, not a `resource` block).
 		//
 		// TODO: Resource traversal needs to be type (and schema) aware. It needs to invoke
 		// [transform.SnakeCaseFromPulumiCase] on property values, and the invoke the standard ["<key>"]
 		// & [<idx>] operators otherwise.
 		token, _ := part.GetToken()
+		rewritten := make(hcl.Traversal, 0, len(traversal)+1)
+		if part.Schema != nil && part.Schema.IsProvider {
+			pkgName := token
+			if i := strings.LastIndex(token, ":"); i >= 0 {
+				pkgName = token[i+1:]
+			}
+			rewritten = append(rewritten, hcl.TraverseRoot{Name: pkgName})
+			rewritten = append(rewritten, traverseNameStep(part.LogicalName()))
+			var props []*schema.Property
+			if part.Schema != nil {
+				props = part.Schema.Properties
+			}
+			return hclwrite.TokensForTraversal(append(rewritten, schemaAwareRewriteTraversal(props, traversal[1:])...)), nil
+		}
 		hclType, diags := packages.PulumiResourceTokenToHCL(resourceSchemaPackage(part.Schema), resourceSchemaToken(part.Schema, token))
 		if diags.HasErrors() {
 			return nil, diags
 		}
-		rewritten := make(hcl.Traversal, 0, len(traversal)+1)
 		rewritten = append(rewritten, hcl.TraverseRoot{Name: hclType})
 		rewritten = append(rewritten, traverseNameStep(part.LogicalName()))
 		// part.Schema can be nil when the binder ran with SkipResourceTypechecking

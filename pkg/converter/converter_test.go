@@ -235,10 +235,10 @@ func TestBlocksToObjectAttrs(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			src := []byte(tt.hcl)
-			file, diags := hclsyntax.ParseConfig(src, "test.hcl", hcl.Pos{})
+			file, diags := hclsyntax.ParseConfig(src, "test.tf", hcl.Pos{})
 			require.False(t, diags.HasErrors(), diags.Error())
 
-			ft := &fileTransformer{sources: map[string][]byte{"test.hcl": src}}
+			ft := &fileTransformer{sources: map[string][]byte{"test.tf": src}}
 			result := ft.blocksToObjectAttrs(file.Body.(*hclsyntax.Body).Blocks, tt.props)
 			assert.Equal(t, tt.expected, string(hclwrite.TokensForObject(result).Bytes()))
 		})
@@ -280,10 +280,10 @@ func TestTransformFunctionCall(t *testing.T) {
 			t.Parallel()
 
 			src := []byte(tt.name + " {\n  " + tt.hcl + "\n}\n")
-			file, diags := hclsyntax.ParseConfig(src, "test.hcl", hcl.Pos{})
+			file, diags := hclsyntax.ParseConfig(src, "test.tf", hcl.Pos{})
 			require.False(t, diags.HasErrors(), diags.Error())
 
-			ft := &fileTransformer{sources: map[string][]byte{"test.hcl": src}}
+			ft := &fileTransformer{sources: map[string][]byte{"test.tf": src}}
 			body := file.Body.(*hclsyntax.Body)
 			require.Len(t, body.Blocks, 1)
 			require.Contains(t, body.Blocks[0].Body.Attributes, "value")
@@ -334,7 +334,7 @@ func TestEjectDataBlockWithForEach(t *testing.T) {
 	}
 	loader := schemaloader.New(t, testSchema)
 
-	src := []byte(`pulumi {
+	src := []byte(`terraform {
   required_providers {
     test = {
       source  = "pulumi/test"
@@ -361,7 +361,7 @@ resource "test_item" "inbound" {
 `)
 
 	out := hclwrite.NewEmptyFile()
-	diags := transformSingleFile(t, src, "main.hcl", out.Body(), loader, nil)
+	diags := transformSingleFile(t, src, "main.tf", out.Body(), loader, nil)
 	require.False(t, diags.HasErrors(), diags.Error())
 
 	expected := `resource "inbound" "test:index:Item" {
@@ -373,6 +373,7 @@ resource "test_item" "inbound" {
       "a" = "alpha"
       "b" = "bravo"
     }
+    deleteBeforeReplace = true
   }
 }
 
@@ -409,7 +410,7 @@ func TestEjectInvokeInListComprehension(t *testing.T) {
 		},
 	}
 	loader := schemaloader.New(t, testSchema)
-	src := []byte(`pulumi {
+	src := []byte(`terraform {
   required_providers {
     test = {
       source  = "pulumi/test"
@@ -435,7 +436,7 @@ output "results" {
 `)
 
 	out := hclwrite.NewEmptyFile()
-	diags := transformSingleFile(t, src, "main.hcl", out.Body(), loader, nil)
+	diags := transformSingleFile(t, src, "main.tf", out.Body(), loader, nil)
 	require.False(t, diags.HasErrors(), diags.Error())
 
 	expected := `output "results" {
@@ -508,11 +509,11 @@ func TestTransformSplatExpr(t *testing.T) {
 			t.Parallel()
 
 			src := []byte(tt.name + " {\n  " + tt.hcl + "\n}\n")
-			file, diags := hclsyntax.ParseConfig(src, "test.hcl", hcl.Pos{})
+			file, diags := hclsyntax.ParseConfig(src, "test.tf", hcl.Pos{})
 			require.False(t, diags.HasErrors(), diags.Error())
 
 			ft := &fileTransformer{
-				sources:         map[string][]byte{"test.hcl": src},
+				sources:         map[string][]byte{"test.tf": src},
 				knownHCLTypes:   map[string]bool{"my_res": true},
 				resourceSchemas: tt.schemas,
 			}
@@ -587,7 +588,7 @@ func serveLoader(t *testing.T, loader schema.ReferenceLoader) string {
 
 // TestGenerateProgramMultiFile verifies that converting a multi-file PCL
 // program to HCL preserves the per-file structure: each <name>.pp produces a
-// <name>.hcl, with the `pulumi { required_providers { ... } }` block placed
+// <name>.tf, with the `terraform { required_providers { ... } }` block placed
 // in the file that declared the `package` block and resources/outputs placed
 // in the file that declared each node.
 func TestGenerateProgramMultiFile(t *testing.T) {
@@ -621,15 +622,18 @@ func TestGenerateProgramMultiFile(t *testing.T) {
 	}
 
 	assert.Equal(t, map[string]string{
-		"main.hcl": `resource "test_item" "thing" {
+		"main.tf": `resource "test_item" "thing" {
+  lifecycle {
+    create_before_destroy = true
+  }
   value = "hello"
 }
 `,
-		"outputs.hcl": `output "value" {
+		"outputs.tf": `output "value" {
   value = test_item.thing.value
 }
 `,
-		"providers.hcl": `pulumi {
+		"providers.tf": `terraform {
   required_providers {
     test = {
       source  = "pulumi/test"
@@ -642,19 +646,105 @@ func TestGenerateProgramMultiFile(t *testing.T) {
 	}, files)
 }
 
+// TestCreateBeforeDestroyDefault locks in the PCL → HCL codegen rule for
+// `lifecycle.create_before_destroy`. Pulumi's default replace mode is
+// create-then-delete; Terraform's is the opposite. So:
+//
+//   - PCL with no `deleteBeforeReplace`: emit `create_before_destroy = true`
+//     (Pulumi default, the inverse of TF's, must be made explicit).
+//   - PCL `deleteBeforeReplace = true` (literal): emit no `create_before_destroy`
+//     — TF's default already matches Pulumi's request.
+//   - PCL `deleteBeforeReplace = false` (literal): equivalent to no option; emit
+//     `create_before_destroy = true`.
+func TestCreateBeforeDestroyDefault(t *testing.T) {
+	t.Parallel()
+
+	loader := schemaloader.New(t, multiFileTestSchema)
+
+	cases := []struct {
+		name string
+		pcl  string
+		want string
+	}{
+		{
+			name: "no options",
+			pcl: `resource "thing" "test:index:Item" {
+    value = "hello"
+}
+`,
+			want: `resource "test_item" "thing" {
+  lifecycle {
+    create_before_destroy = true
+  }
+  value = "hello"
+}
+`,
+		},
+		{
+			name: "deleteBeforeReplace = true",
+			pcl: `resource "thing" "test:index:Item" {
+    value = "hello"
+    options {
+        deleteBeforeReplace = true
+    }
+}
+`,
+			want: `resource "test_item" "thing" {
+  value = "hello"
+}
+`,
+		},
+		{
+			name: "deleteBeforeReplace = false",
+			pcl: `resource "thing" "test:index:Item" {
+    value = "hello"
+    options {
+        deleteBeforeReplace = false
+    }
+}
+`,
+			want: `resource "test_item" "thing" {
+  lifecycle {
+    create_before_destroy = true
+  }
+  value = "hello"
+}
+`,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			program := parseAndBindMultiFile(t, loader, map[string]string{
+				"main.pp": tc.pcl,
+				"providers.pp": `package "test" {
+    baseProviderName = "test"
+    baseProviderVersion = "1.0.0"
+}
+`,
+			})
+			filesB, diags, err := codegen.GenerateProgram(program)
+			require.NoError(t, err)
+			require.False(t, diags.HasErrors(), diags.Error())
+			assert.Equal(t, tc.want, string(filesB["main.tf"]))
+		})
+	}
+}
+
 // TestConvertProgramCrossFileReferences locks in the multi-file fix by
 // converting a project where every kind of cross-file reference appears, and
 // asserting on the full output of every emitted PCL file:
 //
-//   - A `pulumi.required_providers` entry declared in providers.hcl must be
+//   - A `pulumi.required_providers` entry declared in providers.tf must be
 //     visible to data-source resolution in sibling files (otherwise the
-//     test_echo data block in data.hcl would fail to resolve).
-//   - A resource in main.hcl is referenced from outputs.hcl. The reference
+//     test_echo data block in data.tf would fail to resolve).
+//   - A resource in main.tf is referenced from outputs.tf. The reference
 //     `test_item.thing.value` must rewrite to the PCL form `thing.value`.
-//   - A data block in data.hcl is referenced from outputs.hcl. The reference
+//   - A data block in data.tf is referenced from outputs.tf. The reference
 //     `data.test_echo.lookup.result` must be inlined as an `invoke(...)`
 //     expression, with the data block's argument literals slurped from
-//     data.hcl's source bytes — not the active file's bytes.
+//     data.tf's source bytes — not the active file's bytes.
 func TestConvertProgramCrossFileReferences(t *testing.T) {
 	t.Parallel()
 
@@ -698,7 +788,7 @@ func TestConvertProgramCrossFileReferences(t *testing.T) {
 		[]byte("name: cross-file\nruntime: hcl\n"), 0o644))
 
 	hclFiles := map[string]string{
-		"providers.hcl": `pulumi {
+		"providers.tf": `terraform {
   required_providers {
     test = {
       source  = "pulumi/test"
@@ -707,15 +797,15 @@ func TestConvertProgramCrossFileReferences(t *testing.T) {
   }
 }
 `,
-		"main.hcl": `resource "test_item" "thing" {
+		"main.tf": `resource "test_item" "thing" {
   value = "hello"
 }
 `,
-		"data.hcl": `data "test_echo" "lookup" {
+		"data.tf": `data "test_echo" "lookup" {
   input = "the-input-from-data-hcl"
 }
 `,
-		"outputs.hcl": `output "value" {
+		"outputs.tf": `output "value" {
   value = test_item.thing.value
 }
 
@@ -752,6 +842,9 @@ output "echoed" {
 		"providers.pp": "",
 		"main.pp": `resource "thing" "test:index:Item" {
   value = "hello"
+  options {
+    deleteBeforeReplace = true
+  }
 }
 
 `,
@@ -788,15 +881,15 @@ func TestEjectMultiFileHCL(t *testing.T) {
 		[]byte("name: multifile-eject\nruntime: hcl\n"), 0o644))
 
 	hclFiles := map[string]string{
-		"main.hcl": `resource "test_item" "thing" {
+		"main.tf": `resource "test_item" "thing" {
   value = "hello"
 }
 `,
-		"outputs.hcl": `output "value" {
+		"outputs.tf": `output "value" {
   value = test_item.thing.value
 }
 `,
-		"providers.hcl": `pulumi {
+		"providers.tf": `terraform {
   required_providers {
     test = {
       source  = "pulumi/test"
@@ -833,6 +926,9 @@ func TestEjectMultiFileHCL(t *testing.T) {
 	assert.Equal(t, map[string]string{
 		"main.pp": `resource "thing" "test:index:Item" {
   value = "hello"
+  options {
+    deleteBeforeReplace = true
+  }
 }
 
 `,

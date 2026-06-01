@@ -1,0 +1,18 @@
+pulumi-hcl vendored sources
+===========================
+
+This directory contains source code copied from third-party projects, used
+under their original licenses.
+
+------------------------------------------------------------------------------
+
+vendored/communicator/
+
+    Source:  https://github.com/opentofu/opentofu (internal/communicator)
+    License: Mozilla Public License 2.0 (see LICENSE-MPL-2.0)
+
+    Copyright (c) The OpenTofu Authors
+    Copyright (c) 2023 HashiCorp, Inc.
+
+    File-level copyleft per MPL-2.0 applies to every file in this subtree.
+    Original copyright headers are preserved verbatim.

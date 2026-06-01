@@ -27,6 +27,7 @@ import (
 	"unicode"
 
 	"github.com/hashicorp/hcl/v2"
+	"github.com/pulumi-labs/pulumi-hcl/pkg/hcl/bridge"
 	"github.com/pulumi-labs/pulumi-hcl/pkg/hcl/eval"
 	"github.com/pulumi/pulumi/pkg/v3/codegen"
 	"github.com/pulumi/pulumi/pkg/v3/codegen/cgstrings"
@@ -47,12 +48,16 @@ import (
 // additional variables in scope (e.g. iterator variables for dynamic blocks).
 type EvalFunc = func(propKey resource.PropertyKey, expr hcl.Expression, extraVars map[string]cty.Value) (cty.Value, hcl.Diagnostics)
 
-func EvalFunctionWithSchema(config hcl.Body, r *schema.Function, eval EvalFunc) (property.Map, hcl.Diagnostics) {
+// EvalFunctionWithSchema evaluates a function-call body against the Pulumi
+// function schema. When mapping is non-nil, TF names that are blocks (per the
+// TF schema) are accepted in block form even if the Pulumi schema flattens
+// them, and non-conventional Pulumi renames are honored.
+func EvalFunctionWithSchema(config hcl.Body, r *schema.Function, mapping *bridge.BodyMapping, eval EvalFunc) (property.Map, hcl.Diagnostics) {
 	var props []*schema.Property
 	if r.Inputs != nil {
 		props = r.Inputs.Properties
 	}
-	functionInputs, attrExprs, diags := evalBlockWithSchema(config, props, eval)
+	functionInputs, attrExprs, diags := evalBlockWithSchema(config, props, mapping, eval)
 	if diags.HasErrors() {
 		return property.Map{}, diags
 	}
@@ -65,8 +70,10 @@ func EvalFunctionWithSchema(config hcl.Body, r *schema.Function, eval EvalFunc) 
 	return m, diags
 }
 
-func EvalResourceWithSchema(config hcl.Body, r *schema.Resource, eval EvalFunc) (property.Map, hcl.Diagnostics) {
-	resourceInputs, attrExprs, diags := evalBlockWithSchema(config, r.InputProperties, eval)
+// EvalResourceWithSchema evaluates a resource body against the Pulumi resource
+// schema. See EvalFunctionWithSchema for the role of mapping.
+func EvalResourceWithSchema(config hcl.Body, r *schema.Resource, mapping *bridge.BodyMapping, eval EvalFunc) (property.Map, hcl.Diagnostics) {
+	resourceInputs, attrExprs, diags := evalBlockWithSchema(config, r.InputProperties, mapping, eval)
 	if diags.HasErrors() {
 		return property.Map{}, diags
 	}
@@ -113,11 +120,11 @@ func (e *rangedDiagError) Error() string {
 	return e.summary + "; " + e.detail
 }
 
-func evalBlocksWithSchema(config hcl.Blocks, props []*schema.Property, eval EvalFunc) ([]cty.Value, hcl.Diagnostics) {
+func evalBlocksWithSchema(config hcl.Blocks, props []*schema.Property, mapping *bridge.BodyMapping, eval EvalFunc) ([]cty.Value, hcl.Diagnostics) {
 	out := make([]cty.Value, len(config))
 	var diags hcl.Diagnostics
 	for i, v := range config {
-		evaluated, _, diag := evalBlockWithSchema(v.Body, props, eval)
+		evaluated, _, diag := evalBlockWithSchema(v.Body, props, mapping, eval)
 		diags = diags.Extend(diag)
 		if diag.HasErrors() {
 			return nil, diags
@@ -128,9 +135,11 @@ func evalBlocksWithSchema(config hcl.Blocks, props []*schema.Property, eval Eval
 }
 
 // evalBlockWithSchema also returns each top-level attribute's source
-// expression so the conversion path can anchor error diagnostics.
-func evalBlockWithSchema(config hcl.Body, props []*schema.Property, eval EvalFunc) (cty.Value, map[string]hcl.Expression, hcl.Diagnostics) {
-	body, diags := config.Content(inputBodyFromProperties(props))
+// expression so the conversion path can anchor error diagnostics. The
+// optional mapping overrides which TF names are blocks vs attributes and
+// supplies non-conventional TF→Pulumi name renames.
+func evalBlockWithSchema(config hcl.Body, props []*schema.Property, mapping *bridge.BodyMapping, eval EvalFunc) (cty.Value, map[string]hcl.Expression, hcl.Diagnostics) {
+	body, diags := config.Content(inputBodyFromProperties(props, mapping))
 	if diags.HasErrors() {
 		return cty.Value{}, nil, diags
 	}
@@ -139,10 +148,37 @@ func evalBlockWithSchema(config hcl.Body, props []*schema.Property, eval EvalFun
 		return cty.EmptyObjectVal, nil, diags
 	}
 
+	// resolveProp picks the Pulumi property for a TF (snake_case) name, going
+	// through the mapping when available (for explicit renames), falling back
+	// to the snake↔camel convention otherwise.
+	resolveProp := func(tfName string) (string, *schema.Property) {
+		if mapping != nil {
+			if fm := mapping.Lookup(tfName); fm != nil {
+				for _, p := range props {
+					if p.Name == fm.PulumiName {
+						return p.Name, p
+					}
+				}
+			}
+		}
+		return camelCaseFromSnakeCase(tfName, props)
+	}
+
+	// storageKey is the cty/attrExprs key for a TF attribute; using the
+	// snake-form of the Pulumi name lets the downstream ctyToObject pipeline
+	// match the property via its existing camelCaseFromSnakeCase lookup, even
+	// when the bridge applied a non-default rename.
+	storageKey := func(tfName string, prop *schema.Property) string {
+		if prop != nil {
+			return snakeCaseFromCamelCase(prop.Name)
+		}
+		return tfName
+	}
+
 	attrExprs := make(map[string]hcl.Expression, len(body.Attributes))
 	resourceInputs := make(map[string]cty.Value, len(body.Attributes)+len(body.Blocks))
 	for name, attr := range body.Attributes {
-		_, prop := camelCaseFromSnakeCase(name, props)
+		_, prop := resolveProp(name)
 		contract.Assertf(prop != nil, "unable to find schema for validated property")
 
 		out, attrDiag := eval(resource.PropertyKey(prop.Name), attr.Expr, nil)
@@ -150,13 +186,14 @@ func evalBlockWithSchema(config hcl.Body, props []*schema.Property, eval EvalFun
 		if attrDiag.HasErrors() {
 			return cty.Value{}, nil, diags
 		}
-		attrExprs[name] = attr.Expr
-		resourceInputs[name] = conformCtyToType(out, ctyTypeFromType(prop.Type))
+		key := storageKey(name, prop)
+		attrExprs[key] = attr.Expr
+		resourceInputs[key] = conformCtyToType(out, ctyTypeFromType(prop.Type))
 	}
 
 	for name, blocks := range body.Blocks.ByType() {
 		if name == "dynamic" {
-			d := evalDynamicBlocks(blocks, props, resourceInputs, eval)
+			d := evalDynamicBlocks(blocks, props, resourceInputs, mapping, eval)
 			diags = diags.Extend(d)
 			if d.HasErrors() {
 				return cty.Value{}, nil, diags
@@ -164,25 +201,51 @@ func evalBlockWithSchema(config hcl.Body, props []*schema.Property, eval EvalFun
 			continue
 		}
 
-		var prop *schema.Property
-		for _, p := range props {
-			if snakeCaseFromCamelCase(p.Name) == name {
-				prop = p
-				break
-			}
-		}
+		_, prop := resolveProp(name)
 		contract.Assertf(prop != nil, "unable to find schema for validated property")
 
-		blockType, _ := AsHCLBlockType(prop.Type)
-		values, d := evalBlocksWithSchema(blocks, blockType.Properties, eval)
+		blockProps, isList := blockPropertiesOf(prop.Type)
+		var nestedMapping *bridge.BodyMapping
+		if mapping != nil {
+			if fm := mapping.Lookup(name); fm != nil {
+				nestedMapping = fm.Nested
+			}
+		}
+		values, d := evalBlocksWithSchema(blocks, blockProps, nestedMapping, eval)
 		if d.HasErrors() {
 			diags = diags.Extend(d)
 			return cty.Value{}, nil, diags
 		}
-		resourceInputs[name] = cty.ListVal(values)
+		key := storageKey(name, prop)
+		switch {
+		case isList:
+			resourceInputs[key] = blockListValue(values)
+		case len(values) == 1:
+			// TF block flattened to a single Pulumi object (MaxItemsOne).
+			resourceInputs[key] = values[0]
+		default:
+			// Multiple blocks for a non-list field: keep the last (TF SDKv2
+			// behaviour for repeated MaxItems=1 blocks is an error, but we
+			// surface that via the provider's later validation).
+			resourceInputs[key] = values[len(values)-1]
+		}
 	}
 
 	return cty.ObjectVal(resourceInputs), attrExprs, diags
+}
+
+// blockPropertiesOf returns the inner-block property list and whether the
+// outer container is a list-shaped block (Array<Object>). For Object-typed
+// Pulumi props (the bridge's MaxItemsOne flattening), the inner Properties
+// are still the block's contents and isList is false.
+func blockPropertiesOf(typ schema.Type) (props []*schema.Property, isList bool) {
+	if obj, ok := AsHCLBlockType(typ); ok {
+		return obj.Properties, true
+	}
+	if obj, ok := codegen.UnwrapType(typ).(*schema.ObjectType); ok {
+		return obj.Properties, false
+	}
+	return nil, false
 }
 
 // dynamicBlockSchema is the body schema for the inside of a dynamic block.
@@ -208,17 +271,29 @@ var dynamicBlockSchema = &hcl.BodySchema{
 //	}
 func evalDynamicBlocks(
 	blocks hcl.Blocks, props []*schema.Property,
-	resourceInputs map[string]cty.Value, eval EvalFunc,
+	resourceInputs map[string]cty.Value, mapping *bridge.BodyMapping, eval EvalFunc,
 ) hcl.Diagnostics {
 	var diags hcl.Diagnostics
 	for _, block := range blocks {
 		propName := block.Labels[0]
 
 		var prop *schema.Property
-		for _, p := range props {
-			if snakeCaseFromCamelCase(p.Name) == propName {
-				prop = p
-				break
+		if mapping != nil {
+			if fm := mapping.Lookup(propName); fm != nil {
+				for _, p := range props {
+					if p.Name == fm.PulumiName {
+						prop = p
+						break
+					}
+				}
+			}
+		}
+		if prop == nil {
+			for _, p := range props {
+				if snakeCaseFromCamelCase(p.Name) == propName {
+					prop = p
+					break
+				}
 			}
 		}
 		if prop == nil {
@@ -231,12 +306,12 @@ func evalDynamicBlocks(
 			return diags
 		}
 
-		blockType, ok := AsHCLBlockType(prop.Type)
-		if !ok {
+		blockProps, isList := blockPropertiesOf(prop.Type)
+		if blockProps == nil {
 			diags = append(diags, &hcl.Diagnostic{
 				Severity: hcl.DiagError,
 				Summary:  "invalid dynamic block type",
-				Detail:   fmt.Sprintf("property %q is not a block type (List<Object>)", propName),
+				Detail:   fmt.Sprintf("property %q is not a block type", propName),
 				Subject:  block.DefRange.Ptr(),
 			})
 			return diags
@@ -253,16 +328,30 @@ func evalDynamicBlocks(
 		if d.HasErrors() {
 			return diags
 		}
+		// ElementIterator panics on marked containers; per-element marks are
+		// re-applied below so collection-level sensitivity / DepMarks reach
+		// every attribute derived from each.value.
+		var forEachMarks cty.ValueMarks
+		forEachVal, forEachMarks = forEachVal.Unmark()
 
 		// Determine the iterator variable name (defaults to block label).
+		// `iterator = <ident>` takes a bare identifier as the new iterator
+		// name, not an expression to evaluate — extract it directly from
+		// the traversal instead of running it through eval.
 		iteratorName := propName
 		if iterAttr, ok := content.Attributes["iterator"]; ok {
-			iterVal, d := eval("", iterAttr.Expr, nil)
-			diags = diags.Extend(d)
-			if d.HasErrors() {
+			traversals := iterAttr.Expr.Variables()
+			if len(traversals) == 1 && len(traversals[0]) == 1 {
+				iteratorName = traversals[0].RootName()
+			} else {
+				diags = append(diags, &hcl.Diagnostic{
+					Severity: hcl.DiagError,
+					Summary:  "Invalid iterator value",
+					Detail:   "The iterator argument must be a single identifier.",
+					Subject:  iterAttr.Range.Ptr(),
+				})
 				return diags
 			}
-			iteratorName = iterVal.AsString()
 		}
 
 		// Find the content block.
@@ -288,6 +377,10 @@ func evalDynamicBlocks(
 		it := forEachVal.ElementIterator()
 		for it.Next() {
 			key, value := it.Element()
+			if len(forEachMarks) > 0 {
+				key = key.WithMarks(forEachMarks)
+				value = value.WithMarks(forEachMarks)
+			}
 
 			iterVars := map[string]cty.Value{
 				iteratorName: cty.ObjectVal(map[string]cty.Value{
@@ -303,7 +396,13 @@ func evalDynamicBlocks(
 				return eval(propKey, expr, merged)
 			}
 
-			evaluated, _, d := evalBlockWithSchema(contentBody, blockType.Properties, dynamicEval)
+			var nestedMapping *bridge.BodyMapping
+			if mapping != nil {
+				if fm := mapping.Lookup(propName); fm != nil {
+					nestedMapping = fm.Nested
+				}
+			}
+			evaluated, _, d := evalBlockWithSchema(contentBody, blockProps, nestedMapping, dynamicEval)
 			diags = diags.Extend(d)
 			if d.HasErrors() {
 				return diags
@@ -311,15 +410,27 @@ func evalDynamicBlocks(
 			values = append(values, evaluated)
 		}
 
+		key := snakeCaseFromCamelCase(prop.Name)
 		if len(values) > 0 {
-			if existing, ok := resourceInputs[propName]; ok {
-				// Merge with existing static blocks.
-				for it := existing.ElementIterator(); it.Next(); {
-					_, v := it.Element()
-					values = append(values, v)
+			switch {
+			case isList:
+				if existing, ok := resourceInputs[key]; ok {
+					// Merge with existing static blocks.
+					for it := existing.ElementIterator(); it.Next(); {
+						_, v := it.Element()
+						values = append(values, v)
+					}
 				}
+				// Per-element object types can diverge when content sets
+				// disjoint subsets of optional fields (e.g. `lookup(v, "k",
+				// null)` produces null-of-Dynamic for absent keys), so fall
+				// back to a tuple rather than cty.ListVal, which would panic.
+				resourceInputs[key] = blockListValue(values)
+			default:
+				// Singular block (MaxItemsOne): a dynamic expansion of length 1
+				// fills it; >1 is a user error the provider will validate.
+				resourceInputs[key] = values[len(values)-1]
 			}
-			resourceInputs[propName] = cty.ListVal(values)
 		}
 	}
 	return diags
@@ -341,6 +452,17 @@ func schemaToCtyPrimitive(typ schema.Type) (cty.Type, bool) {
 }
 
 func conformCtyToType(val cty.Value, typ cty.Type) cty.Value {
+	// LengthInt and friends panic on marked values, so unmark for inspection
+	// and re-apply afterward to keep DepMarks propagating.
+	val, marks := val.Unmark()
+	out := conformUnmarkedCtyToType(val, typ)
+	if len(marks) > 0 {
+		out = out.WithMarks(marks)
+	}
+	return out
+}
+
+func conformUnmarkedCtyToType(val cty.Value, typ cty.Type) cty.Value {
 	if val.Type().Equals(typ) {
 		return val
 	}
@@ -382,15 +504,47 @@ func AsHCLBlockType(typ schema.Type) (*schema.ObjectType, bool) {
 	return obj, ok
 }
 
-func inputBodyFromProperties(r []*schema.Property) *hcl.BodySchema {
+func inputBodyFromProperties(r []*schema.Property, mapping *bridge.BodyMapping) *hcl.BodySchema {
 	body := new(hcl.BodySchema)
+
+	// pulumiNameForTF resolves a TF (snake_case) name to the matching Pulumi
+	// property when the mapping provides an explicit rename.
+	pulumiNameForTF := map[string]string{}
+	tfBlockNames := map[string]bool{}
+	if mapping != nil {
+		for tfName, fm := range mapping.Fields {
+			pulumiNameForTF[tfName] = fm.PulumiName
+			if fm.TFBlock {
+				tfBlockNames[tfName] = true
+			}
+		}
+	}
+
+	// addedBlocks tracks block names we've emitted so we don't double-add when
+	// a TF block also matches the convention-based block path.
+	addedBlocks := map[string]bool{}
+	addedAttrs := map[string]bool{}
+
 	var hasBlockTypes bool
 	for _, p := range r {
 		typeName := snakeCaseFromCamelCase(p.Name)
+		// If the mapping reverses to a different TF name, prefer that.
+		for tfName, puName := range pulumiNameForTF {
+			if puName == p.Name {
+				typeName = tfName
+				break
+			}
+		}
+
+		if tfBlockNames[typeName] {
+			body.Blocks = append(body.Blocks, hcl.BlockHeaderSchema{Type: typeName})
+			addedBlocks[typeName] = true
+			hasBlockTypes = true
+			continue
+		}
 		if _, ok := AsHCLBlockType(p.Type); ok {
-			body.Blocks = append(body.Blocks, hcl.BlockHeaderSchema{
-				Type: typeName,
-			})
+			body.Blocks = append(body.Blocks, hcl.BlockHeaderSchema{Type: typeName})
+			addedBlocks[typeName] = true
 			hasBlockTypes = true
 			continue
 		}
@@ -400,7 +554,19 @@ func inputBodyFromProperties(r []*schema.Property) *hcl.BodySchema {
 			// by ctyToObject and is therefore not required in the HCL body.
 			Required: p.IsRequired() && p.ConstValue == nil,
 		})
+		addedAttrs[typeName] = true
 	}
+
+	// For any TF block declared by the mapping that didn't map back to a
+	// Pulumi property (rare; e.g. provider-side filters), surface it as a
+	// block so the parser doesn't reject it outright.
+	for tfName := range tfBlockNames {
+		if !addedBlocks[tfName] && !addedAttrs[tfName] {
+			body.Blocks = append(body.Blocks, hcl.BlockHeaderSchema{Type: tfName})
+			hasBlockTypes = true
+		}
+	}
+
 	if hasBlockTypes {
 		body.Blocks = append(body.Blocks, hcl.BlockHeaderSchema{
 			Type:       "dynamic",
@@ -586,6 +752,9 @@ func ctyToResourceProperty(path string, val cty.Value, prop schema.Type, expr hc
 			return property.Value{}, fmt.Errorf("expected object at %q for resource reference, found %#v", path, val.Type())
 		}
 		refAttr, hasRef := val.AsValueMap()["__ref"]
+		if hasRef {
+			refAttr, _ = refAttr.Unmark()
+		}
 		if !hasRef || !refAttr.IsKnown() {
 			return property.New(property.Computed), nil
 		}
@@ -818,21 +987,27 @@ func ctyObjectToPropertyValue(val cty.Value) (property.Value, error) {
 	return property.New(obj), nil
 }
 
-func ResourceOutputToCty(pv property.Map, r *schema.Resource, dryRun bool) (map[string]cty.Value, error) {
+// ResourceOutputToCty projects Pulumi resource outputs into a cty value.
+// When mapping is non-nil the cty keys are TF attribute names, so HCL
+// traversals like `aws_lambda_function.fn.function_name` resolve even when
+// the bridge has renamed the property on the Pulumi side.
+func ResourceOutputToCty(pv property.Map, r *schema.Resource, mapping *bridge.BodyMapping, dryRun bool) (map[string]cty.Value, error) {
 	properties := r.Properties
-	// Providers pass "version" as an output - even though it's not in the schema.
+	// version + pluginDownloadURL aren't in the schema Properties but
+	// flow through as outputs via the Pulumi resource-options machinery.
 	if r.IsProvider {
-		properties = append(slices.Clone(r.Properties), &schema.Property{
-			Name: "version",
-			Type: schema.StringType,
-		})
+		properties = append(slices.Clone(r.Properties),
+			&schema.Property{Name: "version", Type: schema.StringType},
+			&schema.Property{Name: "pluginDownloadURL", Type: schema.StringType},
+		)
 	}
-	return propertyObjectToCtyMap("", pv, properties, dryRun)
+	return propertyObjectToCtyMap("", pv, properties, mapping, dryRun)
 }
 
-func FunctionOutputToCty(pv property.Map, r *schema.Function, dryRun bool) (cty.Value, error) {
+// FunctionOutputToCty mirrors ResourceOutputToCty for invoke return values.
+func FunctionOutputToCty(pv property.Map, r *schema.Function, mapping *bridge.BodyMapping, dryRun bool) (cty.Value, error) {
 	if obj, ok := r.ReturnType.(*schema.ObjectType); ok {
-		o, err := propertyObjectToCtyMap("", pv, obj.Properties, dryRun)
+		o, err := propertyObjectToCtyMap("", pv, obj.Properties, mapping, dryRun)
 		return cty.ObjectVal(o), err
 	}
 	for k, scalarPV := range pv.AsMap() {
@@ -844,10 +1019,44 @@ func FunctionOutputToCty(pv property.Map, r *schema.Function, dryRun bool) (cty.
 	return cty.Value{}, fmt.Errorf("invoke %q: provider returned empty scalar result", r.Token)
 }
 
-func propertyObjectToCtyMap(path string, m property.Map, properties []*schema.Property, dryRun bool) (map[string]cty.Value, error) {
+// tfNameForPulumi returns the TF-side attribute name for a Pulumi property
+// name when the mapping carries an explicit rename or non-default casing;
+// otherwise the convention-based snake_case form is used.
+func tfNameForPulumi(pulumiName string, mapping *bridge.BodyMapping) string {
+	if mapping != nil {
+		for tfName, fm := range mapping.Fields {
+			if fm.PulumiName == pulumiName {
+				return tfName
+			}
+		}
+	}
+	return snakeCaseFromCamelCase(pulumiName)
+}
+
+// nestedMappingFor returns the nested BodyMapping for a property by Pulumi
+// name, when mapping has it; nil otherwise.
+func nestedMappingFor(pulumiName string, mapping *bridge.BodyMapping) *bridge.BodyMapping {
+	if mapping == nil {
+		return nil
+	}
+	for _, fm := range mapping.Fields {
+		if fm.PulumiName == pulumiName {
+			return fm.Nested
+		}
+	}
+	return nil
+}
+
+func propertyObjectToCtyMap(path string, m property.Map, properties []*schema.Property, mapping *bridge.BodyMapping, dryRun bool) (map[string]cty.Value, error) {
 	result := make(map[string]cty.Value, m.Len())
 	for _, p := range properties {
-		hclName := snakeCaseFromCamelCase(p.Name)
+		hclName := tfNameForPulumi(p.Name, mapping)
+		nested := nestedMappingFor(p.Name, mapping)
+		// In TF, a block (even MaxItems=1) is always a list. The bridge
+		// flattens MaxItemsOne blocks to objects on the Pulumi side; we
+		// re-wrap them as singleton lists on output so HCL source like
+		// `r.settings[0].x` resolves the same way as in TF.
+		singularBlock := mapping != nil && fieldIsSingularBlock(mapping, p.Name)
 		v, ok := m.GetOk(p.Name)
 		if !ok {
 			if dryRun {
@@ -872,14 +1081,31 @@ func propertyObjectToCtyMap(path string, m property.Map, properties []*schema.Pr
 		} else {
 			vPath = path + "." + hclName
 		}
-		convertedV, err := propertyValueToCty(vPath, v, p.Type, dryRun)
+		convertedV, err := propertyValueToCtyWithMapping(vPath, v, p.Type, nested, dryRun)
 		if err != nil {
 			return nil, err
+		}
+		if singularBlock && !convertedV.Type().IsListType() && !convertedV.Type().IsTupleType() {
+			convertedV = cty.TupleVal([]cty.Value{convertedV})
 		}
 		result[hclName] = convertedV
 	}
 
 	return result, nil
+}
+
+// fieldIsSingularBlock reports whether the Pulumi property is a TF
+// MaxItemsOne block per the bridge mapping.
+func fieldIsSingularBlock(mapping *bridge.BodyMapping, pulumiName string) bool {
+	if mapping == nil {
+		return false
+	}
+	for _, fm := range mapping.Fields {
+		if fm.PulumiName == pulumiName {
+			return fm.TFBlock && fm.MaxItemsOne
+		}
+	}
+	return false
 }
 
 func convertToSchemaCtyType(path string, val cty.Value, typ schema.Type) (cty.Value, error) {
@@ -1050,6 +1276,22 @@ func unifyOrObject(m map[string]cty.Value) cty.Value {
 	return cty.MapVal(out)
 }
 
+// blockListValue assembles the elements of a repeated TF block (each an object)
+// into a cty list when they share a type, or a tuple when an optional attribute
+// is set in some blocks and omitted in others so their object types differ.
+// Unlike unifyOrTuple it never collapses the objects into a map, which would
+// stringify attributes and destroy the object structure the resource schema
+// expects.
+func blockListValue(values []cty.Value) cty.Value {
+	first := values[0].Type()
+	for _, v := range values[1:] {
+		if !v.Type().Equals(first) {
+			return cty.TupleVal(values)
+		}
+	}
+	return cty.ListVal(values)
+}
+
 // unifyOrTuple is the slice counterpart to unifyOrObject: a homogeneous
 // cty.ListVal when element types unify cleanly, otherwise cty.TupleVal.
 func unifyOrTuple(arr []cty.Value) cty.Value {
@@ -1082,9 +1324,16 @@ func unifyOrTuple(arr []cty.Value) cty.Value {
 }
 
 func propertyValueToCty(path string, v property.Value, typ schema.Type, dryRun bool) (cty.Value, error) {
+	return propertyValueToCtyWithMapping(path, v, typ, nil, dryRun)
+}
+
+// propertyValueToCtyWithMapping is the mapping-aware variant of
+// propertyValueToCty. Mapping is consulted for object/resource conversions so
+// nested fields land under their TF names.
+func propertyValueToCtyWithMapping(path string, v property.Value, typ schema.Type, mapping *bridge.BodyMapping, dryRun bool) (cty.Value, error) {
 	typ = codegen.UnwrapType(typ)
 	if v.Secret() {
-		computedV, err := propertyValueToCty(path, v.WithSecret(false), typ, dryRun)
+		computedV, err := propertyValueToCtyWithMapping(path, v.WithSecret(false), typ, mapping, dryRun)
 		return computedV.Mark(eval.SensitiveMark), err
 	}
 
@@ -1108,7 +1357,7 @@ func propertyValueToCty(path string, v property.Value, typ schema.Type, dryRun b
 	case v.IsMap():
 		if u, ok := typ.(*schema.UnionType); ok {
 			if chosen := selectUnionMember(v, u); chosen != nil {
-				return propertyValueToCty(path, v, chosen, dryRun)
+				return propertyValueToCtyWithMapping(path, v, chosen, mapping, dryRun)
 			}
 		}
 		elemType := schema.AnyType
@@ -1117,7 +1366,7 @@ func propertyValueToCty(path string, v property.Value, typ schema.Type, dryRun b
 			if typ.Resource == nil {
 				break
 			}
-			result, err := propertyObjectToCtyMap(path, v.AsMap(), typ.Resource.Properties, dryRun)
+			result, err := propertyObjectToCtyMap(path, v.AsMap(), typ.Resource.Properties, mapping, dryRun)
 			if err != nil {
 				return cty.Value{}, err
 			}
@@ -1125,11 +1374,19 @@ func propertyValueToCty(path string, v property.Value, typ schema.Type, dryRun b
 				ref := refVal.AsResourceReference()
 				result["__ref"] = cty.CapsuleVal(eval.ResourceReferenceCapsuleType, &ref)
 			}
+			if mapping != nil {
+				// Mapping-aware: keys are TF names which the schema-derived
+				// type won't accept; emit the literal object value instead.
+				return cty.ObjectVal(result), nil
+			}
 			return convertToSchemaCtyType(path, cty.ObjectVal(result), typ)
 		case *schema.ObjectType:
-			m, err := propertyObjectToCtyMap(path, v.AsMap(), typ.Properties, dryRun)
+			m, err := propertyObjectToCtyMap(path, v.AsMap(), typ.Properties, mapping, dryRun)
 			if err != nil {
 				return cty.Value{}, err
+			}
+			if mapping != nil {
+				return cty.ObjectVal(m), nil
 			}
 			return convertToSchemaCtyType(path, cty.ObjectVal(m), typ)
 		case *schema.MapType:
@@ -1137,7 +1394,7 @@ func propertyValueToCty(path string, v property.Value, typ schema.Type, dryRun b
 		}
 		m := make(map[string]cty.Value, v.AsMap().Len())
 		for k, v := range v.AsMap().All {
-			convertedV, err := propertyValueToCty(fmt.Sprintf("%s[%q]", path, k), v, elemType, dryRun)
+			convertedV, err := propertyValueToCtyWithMapping(fmt.Sprintf("%s[%q]", path, k), v, elemType, mapping, dryRun)
 			if err != nil {
 				return cty.Value{}, err
 			}
@@ -1165,7 +1422,7 @@ func propertyValueToCty(path string, v property.Value, typ schema.Type, dryRun b
 	case v.IsArray():
 		if u, ok := typ.(*schema.UnionType); ok {
 			if chosen := selectUnionMember(v, u); chosen != nil {
-				return propertyValueToCty(path, v, chosen, dryRun)
+				return propertyValueToCtyWithMapping(path, v, chosen, mapping, dryRun)
 			}
 		}
 		elemType := schema.AnyType
@@ -1174,7 +1431,7 @@ func propertyValueToCty(path string, v property.Value, typ schema.Type, dryRun b
 		}
 		arr := make([]cty.Value, v.AsArray().Len())
 		for i, v := range v.AsArray().All {
-			convertedV, err := propertyValueToCty(fmt.Sprintf("%s[%d]", path, i), v, elemType, dryRun)
+			convertedV, err := propertyValueToCtyWithMapping(fmt.Sprintf("%s[%d]", path, i), v, elemType, mapping, dryRun)
 			if err != nil {
 				return cty.Value{}, err
 			}
@@ -1194,7 +1451,7 @@ func propertyValueToCty(path string, v property.Value, typ schema.Type, dryRun b
 		if !ok || resType.Resource == nil {
 			return cty.NullVal(ctyTypeFromType(typ)), nil
 		}
-		result, err := propertyObjectToCtyMap(path, property.Map{}, resType.Resource.Properties, dryRun)
+		result, err := propertyObjectToCtyMap(path, property.Map{}, resType.Resource.Properties, mapping, dryRun)
 		if err != nil {
 			return cty.Value{}, err
 		}

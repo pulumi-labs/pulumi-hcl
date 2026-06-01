@@ -137,6 +137,8 @@ var expectedFailures = map[string]string{
 	"l2-resource-hook-after-failure": "PCL pcl.Hook nodes not yet supported by HCL codegen",
 	"l2-resource-hook-ignore-errors": "PCL pcl.Hook nodes not yet supported by HCL codegen",
 	"l2-resource-read":               "PCL pcl.ReadResource nodes not yet supported by HCL codegen",
+	"l2-provider-call-explicit": "upstream fixture declares `provider \"call\"`, which" +
+		" is reserved as the namespace for resource method calls in HCL",
 }
 
 // expectedEjectFailures lists tests whose eject (HCL→PCL conversion) step is
@@ -173,7 +175,10 @@ func TestLanguage(t *testing.T) {
 
 	handle, err := rpcutil.ServeWithOptions(rpcutil.ServeOptions{
 		Init: func(srv *grpc.Server) error {
-			host, err := server.NewLanguageHost(engineAddress)
+			// Conformance fixtures use Pulumi semantics where explicitly
+			// declared providers are resources that must appear in the
+			// snapshot, so opt out of Terraform's lazy provider registration.
+			host, err := server.NewLanguageHost(engineAddress, server.WithAlwaysRegisterProviders())
 			if err != nil {
 				return err
 			}

@@ -25,8 +25,33 @@ jobs:
       - uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
+      - uses: pulumi/actions@v7
+        with:
+          # Change to dev once #23330 merges
+          pulumi-version: pr#23330
+        env:
+          GITHUB_TOKEN: ${{ secrets.PULUMI_BOT_TOKEN }}
+      - uses: opentofu/setup-opentofu@v2
       - run: make test_cover
       - uses: codecov/codecov-action@v6
         with:
           files: coverage.out
           token: ${{ secrets.CODECOV_TOKEN }}
+
+  vendored-drift:
+    # Ensures the vendored/ tree matches what `go generate ./vendored`
+    # produces against the SHA pinned in vendored/doc.go. Catches both
+    # hand-edits of MPL files and forgotten regens after a SHA bump.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+      - run: go generate ./vendored
+      - name: Fail on drift
+        run: |
+          if ! git diff --exit-code -- vendored/; then
+            echo "::error::vendored/ tree drifted from regen output. Run 'go generate ./vendored' locally and commit the result."
+            exit 1
+          fi

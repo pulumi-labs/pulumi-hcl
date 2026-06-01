@@ -16,6 +16,7 @@ package parser
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/blang/semver"
 	"github.com/hashicorp/hcl/v2"
@@ -93,8 +94,8 @@ func (p *Parser) parseFiles(files map[string]*hcl.File) (*ast.Config, hcl.Diagno
 // parseBlock parses a single top-level block.
 func (p *Parser) parseBlock(config *ast.Config, block *hcl.Block) hcl.Diagnostics {
 	switch block.Type {
-	case "pulumi":
-		return p.parsePulumiBlock(config, block)
+	case "terraform":
+		return p.parseTerraformBlock(config, block)
 	case "provider":
 		return p.parseProviderBlock(config, block)
 	case "variable":
@@ -125,83 +126,112 @@ func (p *Parser) parseBlock(config *ast.Config, block *hcl.Block) hcl.Diagnostic
 	}
 }
 
-// parsePulumiBlock parses a pulumi block.
-func (p *Parser) parsePulumiBlock(config *ast.Config, block *hcl.Block) hcl.Diagnostics {
+// parseTerraformBlock parses a terraform block. Multiple terraform blocks
+// merge into a single configuration, matching Terraform's behavior.
+func (p *Parser) parseTerraformBlock(config *ast.Config, block *hcl.Block) hcl.Diagnostics {
 	var diags hcl.Diagnostics
 
-	if config.Pulumi != nil {
-		diags = append(diags, &hcl.Diagnostic{
-			Severity: hcl.DiagError,
-			Summary:  "Duplicate pulumi block",
-			Detail:   "Only one pulumi block is allowed per configuration.",
-			Subject:  &block.DefRange,
-		})
-		return diags
-	}
-
-	content, contentDiags := block.Body.Content(pulumiSchema)
+	content, contentDiags := block.Body.Content(terraformSchema)
 	diags = append(diags, contentDiags...)
 
 	if len(block.Labels) != 0 {
 		diags = append(diags, &hcl.Diagnostic{
 			Severity: hcl.DiagError,
-			Summary:  "Invalid pulumi block",
-			Detail:   "The pulumi block does not accept any labels.",
+			Summary:  "Invalid terraform block",
+			Detail:   "The terraform block does not accept any labels.",
 			Subject:  &block.DefRange,
 		})
 		return diags
 	}
 
-	pulumi := &ast.Pulumi{
-		RequiredProviders: make(map[string]*ast.RequiredProvider),
-		DeclRange:         block.DefRange,
+	tf := config.Terraform
+	if tf == nil {
+		tf = &ast.Terraform{
+			RequiredProviders: make(map[string]*ast.RequiredProvider),
+			DeclRange:         block.DefRange,
+		}
 	}
 
 	if attr, ok := content.Attributes["required_version_range"]; ok {
-		pulumi.RequiredVersionRange = attr.Expr
+		if tf.RequiredVersionRange != nil {
+			diags = append(diags, &hcl.Diagnostic{
+				Severity: hcl.DiagError,
+				Summary:  "Duplicate required_version_range attribute",
+				Detail:   "required_version_range is already set by a previous terraform block.",
+				Subject:  attr.Range.Ptr(),
+			})
+		} else {
+			tf.RequiredVersionRange = attr.Expr
+		}
+	}
+
+	if attr, ok := content.Attributes["required_version"]; ok {
+		diags = append(diags, &hcl.Diagnostic{
+			Severity: hcl.DiagWarning,
+			Summary:  "Unsupported attribute: required_version",
+			Detail: "Pulumi HCL does not enforce required_version. " +
+				"Use required_version_range to declare a supported Pulumi version range.",
+			Subject: attr.Range.Ptr(),
+		})
 	}
 
 	for _, subBlock := range content.Blocks {
 		switch subBlock.Type {
 		case "required_providers":
-			providerDiags := p.parseRequiredProviders(pulumi, subBlock)
+			providerDiags := p.parseRequiredProviders(tf, subBlock)
 			diags = append(diags, providerDiags...)
 		case "component":
-			if pulumi.Component != nil {
+			if tf.Component != nil {
 				diags = append(diags, &hcl.Diagnostic{
 					Severity: hcl.DiagError,
 					Summary:  "Duplicate component block",
-					Detail:   "Only one component block is allowed per pulumi block.",
+					Detail:   "Only one component block is allowed per terraform block.",
 					Subject:  &subBlock.DefRange,
 				})
 				continue
 			}
-			comp, compDiags := p.parsePulumiComponentBlock(subBlock)
+			comp, compDiags := p.parseTerraformComponentBlock(subBlock)
 			diags = append(diags, compDiags...)
-			pulumi.Component = comp
+			tf.Component = comp
 		case "package":
-			if pulumi.Package != nil {
+			if tf.Package != nil {
 				diags = append(diags, &hcl.Diagnostic{
 					Severity: hcl.DiagError,
 					Summary:  "Duplicate package block",
-					Detail:   "Only one package block is allowed per pulumi block.",
+					Detail:   "Only one package block is allowed per terraform block.",
 					Subject:  &subBlock.DefRange,
 				})
 				continue
 			}
-			pkg, pkgDiags := p.parsePulumiPackageBlock(subBlock)
+			pkg, pkgDiags := p.parseTerraformPackageBlock(subBlock)
 			diags = append(diags, pkgDiags...)
-			pulumi.Package = pkg
+			tf.Package = pkg
+		case "backend":
+			diags = append(diags, &hcl.Diagnostic{
+				Severity: hcl.DiagWarning,
+				Summary:  "Ignoring terraform backend block",
+				Detail: "Pulumi manages state through its own backend; the terraform `backend` " +
+					"block is ignored. Configure the backend via `pulumi login`.",
+				Subject: &subBlock.DefRange,
+			})
+		case "provider_meta":
+			diags = append(diags, &hcl.Diagnostic{
+				Severity: hcl.DiagWarning,
+				Summary:  "Ignoring terraform provider_meta block",
+				Detail: "Pulumi providers do not consume Terraform's `provider_meta` " +
+					"side channel; the block is ignored.",
+				Subject: &subBlock.DefRange,
+			})
 		}
 	}
 
-	config.Pulumi = pulumi
+	config.Terraform = tf
 	return diags
 }
 
-// parsePulumiComponentBlock parses a component sub-block within pulumi.
-func (p *Parser) parsePulumiComponentBlock(block *hcl.Block) (*ast.ComponentBlock, hcl.Diagnostics) {
-	content, diags := block.Body.Content(pulumiComponentSchema)
+// parseTerraformComponentBlock parses a component sub-block within terraform.
+func (p *Parser) parseTerraformComponentBlock(block *hcl.Block) (*ast.ComponentBlock, hcl.Diagnostics) {
+	content, diags := block.Body.Content(terraformComponentSchema)
 
 	comp := &ast.ComponentBlock{
 		Module:    "index",
@@ -243,9 +273,9 @@ func (p *Parser) parsePulumiComponentBlock(block *hcl.Block) (*ast.ComponentBloc
 	return comp, diags
 }
 
-// parsePulumiPackageBlock parses a package sub-block within pulumi.
-func (p *Parser) parsePulumiPackageBlock(block *hcl.Block) (*ast.PackageBlock, hcl.Diagnostics) {
-	content, diags := block.Body.Content(pulumiPackageSchema)
+// parseTerraformPackageBlock parses a package sub-block within terraform.
+func (p *Parser) parseTerraformPackageBlock(block *hcl.Block) (*ast.PackageBlock, hcl.Diagnostics) {
+	content, diags := block.Body.Content(terraformPackageSchema)
 
 	pkg := &ast.PackageBlock{
 		Version:   "0.0.0-dev",
@@ -288,38 +318,82 @@ func (p *Parser) parsePulumiPackageBlock(block *hcl.Block) (*ast.PackageBlock, h
 }
 
 // parseRequiredProviders parses the required_providers block.
-func (p *Parser) parseRequiredProviders(pulumi *ast.Pulumi, block *hcl.Block) hcl.Diagnostics {
+func (p *Parser) parseRequiredProviders(tf *ast.Terraform, block *hcl.Block) hcl.Diagnostics {
 	var diags hcl.Diagnostics
 
 	attrs, attrDiags := block.Body.JustAttributes()
 	diags = append(diags, attrDiags...)
 
 	for name, attr := range attrs {
+		if _, exists := tf.RequiredProviders[name]; exists {
+			diags = append(diags, &hcl.Diagnostic{
+				Severity: hcl.DiagError,
+				Summary:  "Duplicate required_providers entry",
+				Detail: fmt.Sprintf(
+					"required provider %q is already declared by a previous required_providers block.",
+					name),
+				Subject: attr.Range.Ptr(),
+			})
+			continue
+		}
+
 		provider := &ast.RequiredProvider{
 			Name:      name,
 			DeclRange: attr.Range,
 		}
 
-		// The value can be a string (version only) or an object
-		val, valDiags := attr.Expr.Value(nil)
-		diags = append(diags, valDiags...)
-
-		if val.Type() == cty.String {
-			provider.Version = val.AsString()
-		} else if val.Type().IsObjectType() {
-			if val.Type().HasAttribute("source") {
-				if sourceVal := val.GetAttr("source"); !sourceVal.IsNull() {
-					provider.Source = sourceVal.AsString()
+		// The value can be a string (version only) or an object with
+		// `source`, `version`, and/or `configuration_aliases`. We walk
+		// the object item-by-item rather than evaluating it whole because
+		// `configuration_aliases` holds traversals (e.g. `[simple.foo]`)
+		// that can't resolve in the empty parse-time context. pulumi-hcl
+		// doesn't act on `configuration_aliases` — the matching provider
+		// arrives via the caller's `providers = {...}` block at runtime
+		// — so we accept and discard it.
+		if pairs, mapDiags := hcl.ExprMap(attr.Expr); !mapDiags.HasErrors() {
+			for _, pair := range pairs {
+				kw := hcl.ExprAsKeyword(pair.Key)
+				switch kw {
+				case "source":
+					v, vd := pair.Value.Value(nil)
+					diags = append(diags, vd...)
+					if v.Type() == cty.String && !v.IsNull() {
+						provider.Source = v.AsString()
+					}
+				case "version":
+					v, vd := pair.Value.Value(nil)
+					diags = append(diags, vd...)
+					if v.Type() == cty.String && !v.IsNull() {
+						provider.Version = v.AsString()
+					}
+				case "configuration_aliases":
+					// Accept and ignore — see comment above.
 				}
 			}
-			if val.Type().HasAttribute("version") {
-				if versionVal := val.GetAttr("version"); !versionVal.IsNull() {
-					provider.Version = versionVal.AsString()
-				}
+		} else {
+			val, valDiags := attr.Expr.Value(nil)
+			diags = append(diags, valDiags...)
+			if val.Type() == cty.String {
+				provider.Version = val.AsString()
 			}
 		}
 
-		pulumi.RequiredProviders[name] = provider
+		// Pulumi providers don't go through TF-style constraint resolution, so
+		// any version given must be a concrete semver.
+		if provider.Version != "" && provider.IsPulumi() {
+			if _, err := semver.ParseTolerant(provider.Version); err != nil {
+				diags = append(diags, &hcl.Diagnostic{
+					Severity: hcl.DiagError,
+					Summary:  "Invalid provider version",
+					Detail: fmt.Sprintf(
+						"%q is not a valid semver version for Pulumi provider %q: %s",
+						provider.Version, name, err),
+					Subject: attr.Expr.Range().Ptr(),
+				})
+			}
+		}
+
+		tf.RequiredProviders[name] = provider
 	}
 
 	return diags
@@ -328,6 +402,18 @@ func (p *Parser) parseRequiredProviders(pulumi *ast.Pulumi, block *hcl.Block) hc
 // parseProviderBlock parses a provider block.
 func (p *Parser) parseProviderBlock(config *ast.Config, block *hcl.Block) hcl.Diagnostics {
 	var diags hcl.Diagnostics
+
+	// `call` is reserved for the method-call namespace populated by
+	// `call "<res>" "<method>" { ... }` blocks.
+	if block.Labels[0] == "call" {
+		return hcl.Diagnostics{{
+			Severity: hcl.DiagError,
+			Summary:  "Reserved provider name",
+			Detail: `"call" is reserved as the namespace for method calls on resources ` +
+				`(declared via call blocks) and cannot be used as a provider package name.`,
+			Subject: block.LabelRanges[0].Ptr(),
+		}}
+	}
 
 	content, remain, contentDiags := block.Body.PartialContent(providerSchema)
 	diags = append(diags, contentDiags...)
@@ -345,6 +431,11 @@ func (p *Parser) parseProviderBlock(config *ast.Config, block *hcl.Block) hcl.Di
 			provider.Alias = val.AsString()
 		}
 	}
+	for _, subBlock := range content.Blocks {
+		if subBlock.Type == "pulumi" {
+			diags = append(diags, p.parsePulumiProviderOptions(subBlock, provider)...)
+		}
+	}
 
 	key := provider.Key()
 	if _, exists := config.Providers[key]; exists {
@@ -358,6 +449,29 @@ func (p *Parser) parseProviderBlock(config *ast.Config, block *hcl.Block) hcl.Di
 	}
 
 	config.Providers[key] = provider
+	return diags
+}
+
+// parsePulumiProviderOptions parses a provider block's nested `pulumi { }`
+// block, extracting Pulumi-specific options onto provider. These options live
+// in their own block so they cannot collide with the provider's own
+// configuration attributes.
+func (p *Parser) parsePulumiProviderOptions(block *hcl.Block, provider *ast.Provider) hcl.Diagnostics {
+	content, diags := block.Body.Content(pulumiProviderOptionsSchema)
+
+	if attr, ok := content.Attributes["env_var_mappings"]; ok {
+		provider.EnvVarMappings = attr.Expr
+	}
+	if attr, ok := content.Attributes["plugin_download_url"]; ok {
+		provider.PluginDownloadURL = attr.Expr
+	}
+	if attr, ok := content.Attributes["additional_secret_outputs"]; ok {
+		provider.AdditionalSecretOutputs = attr.Expr
+	}
+	if attr, ok := content.Attributes["version"]; ok {
+		provider.Version = attr.Expr
+	}
+
 	return diags
 }
 
@@ -387,10 +501,11 @@ func (p *Parser) parseVariableBlock(config *ast.Config, block *hcl.Block) hcl.Di
 
 	if attr, ok := content.Attributes["type"]; ok {
 		variable.Type = attr.Expr
-		ty, typeDiags := typeexpr.TypeConstraint(attr.Expr)
+		ty, defs, typeDiags := typeexpr.TypeConstraintWithDefaults(attr.Expr)
 		diags = append(diags, typeDiags...)
 		if !typeDiags.HasErrors() {
 			variable.TypeConstraint = ty
+			variable.TypeDefaults = defs
 		}
 	}
 
@@ -558,6 +673,43 @@ func (p *Parser) parseResourceBlock(config *ast.Config, block *hcl.Block, isData
 		}
 	}
 
+	// Parse nested blocks
+	for _, subBlock := range content.Blocks {
+		switch subBlock.Type {
+		case "pulumi":
+			diags = append(diags, p.parsePulumiResourceOptions(subBlock, resource)...)
+		case "lifecycle":
+			lcResult, lcDiags := p.parseLifecycleBlock(subBlock)
+			diags = append(diags, lcDiags...)
+			resource.Lifecycle = lcResult.Lifecycle
+			resource.Preconditions = append(resource.Preconditions, lcResult.Preconditions...)
+			resource.Postconditions = append(resource.Postconditions, lcResult.Postconditions...)
+		case "connection":
+			conn, connDiags := p.parseConnectionBlock(subBlock)
+			diags = append(diags, connDiags...)
+			resource.Connection = conn
+		case "provisioner":
+			prov, provDiags := p.parseProvisionerBlock(subBlock)
+			diags = append(diags, provDiags...)
+			if prov != nil {
+				resource.Provisioners = append(resource.Provisioners, prov)
+			}
+		case "timeouts":
+			timeouts, timeoutsDiags := p.parseTimeoutsBlock(subBlock)
+			diags = append(diags, timeoutsDiags...)
+			resource.Timeouts = timeouts
+		}
+	}
+
+	targetMap[key] = resource
+	return diags
+}
+
+// parsePulumiResourceOptions parses a resource or data block's nested
+// `pulumi { }` block, extracting Pulumi-specific options onto resource.
+func (p *Parser) parsePulumiResourceOptions(block *hcl.Block, resource *ast.Resource) hcl.Diagnostics {
+	content, diags := block.Body.Content(pulumiResourceOptionsSchema)
+
 	if attr, ok := content.Attributes["parent"]; ok {
 		traversal, travDiags := hcl.AbsTraversalForExpr(attr.Expr)
 		diags = append(diags, travDiags...)
@@ -632,10 +784,6 @@ func (p *Parser) parseResourceBlock(config *ast.Config, block *hcl.Block, isData
 		}
 	}
 
-	if attr, ok := content.Attributes["replacement_trigger"]; ok {
-		resource.ReplacementTrigger = attr.Expr
-	}
-
 	if attr, ok := content.Attributes["import_id"]; ok {
 		val, valDiags := attr.Expr.Value(nil)
 		diags = append(diags, valDiags...)
@@ -660,33 +808,6 @@ func (p *Parser) parseResourceBlock(config *ast.Config, block *hcl.Block, isData
 		resource.Aliases = attr.Expr
 	}
 
-	// Parse nested blocks
-	for _, subBlock := range content.Blocks {
-		switch subBlock.Type {
-		case "lifecycle":
-			lcResult, lcDiags := p.parseLifecycleBlock(subBlock)
-			diags = append(diags, lcDiags...)
-			resource.Lifecycle = lcResult.Lifecycle
-			resource.Preconditions = append(resource.Preconditions, lcResult.Preconditions...)
-			resource.Postconditions = append(resource.Postconditions, lcResult.Postconditions...)
-		case "connection":
-			conn, connDiags := p.parseConnectionBlock(subBlock)
-			diags = append(diags, connDiags...)
-			resource.Connection = conn
-		case "provisioner":
-			prov, provDiags := p.parseProvisionerBlock(subBlock)
-			diags = append(diags, provDiags...)
-			if prov != nil {
-				resource.Provisioners = append(resource.Provisioners, prov)
-			}
-		case "timeouts":
-			timeouts, timeoutsDiags := p.parseTimeoutsBlock(subBlock)
-			diags = append(diags, timeoutsDiags...)
-			resource.Timeouts = timeouts
-		}
-	}
-
-	targetMap[key] = resource
 	return diags
 }
 
@@ -772,12 +893,16 @@ func (p *Parser) parseLifecycleBlock(block *hcl.Block) (*lifecycleResult, hcl.Di
 	return result, diags
 }
 
-// parseConnectionBlock parses a connection block.
+// parseConnectionBlock parses a connection block. The block body is stored
+// verbatim on the Connection so the runtime can re-evaluate every attribute
+// (including ones the parser inspected like `type`) against the live HCL
+// eval context — PartialContent strips recognized attrs from `remain`, so
+// using it here would hide `host`, `user`, etc. from the runtime.
 func (p *Parser) parseConnectionBlock(block *hcl.Block) (*ast.Connection, hcl.Diagnostics) {
-	content, remain, diags := block.Body.PartialContent(connectionSchema)
+	content, _, diags := block.Body.PartialContent(connectionSchema)
 
 	conn := &ast.Connection{
-		Config:    remain,
+		Config:    block.Body,
 		DeclRange: block.DefRange,
 	}
 
@@ -796,6 +921,23 @@ func (p *Parser) parseConnectionBlock(block *hcl.Block) (*ast.Connection, hcl.Di
 	return conn, diags
 }
 
+// exprAsKeywordOrString returns the value of expr if it's either a bare
+// keyword (e.g. `continue`) or a string literal (`"continue"`). TF accepts
+// both forms for `when` and `on_failure`; we match that.
+func exprAsKeywordOrString(expr hcl.Expression) string {
+	if kw := hcl.ExprAsKeyword(expr); kw != "" {
+		return kw
+	}
+	val, diags := expr.Value(nil)
+	if diags.HasErrors() || !val.IsKnown() || val.IsNull() {
+		return ""
+	}
+	if val.Type() != cty.String {
+		return ""
+	}
+	return val.AsString()
+}
+
 // parseProvisionerBlock parses a provisioner block.
 func (p *Parser) parseProvisionerBlock(block *hcl.Block) (*ast.Provisioner, hcl.Diagnostics) {
 	content, remain, diags := block.Body.PartialContent(provisionerSchema)
@@ -809,16 +951,32 @@ func (p *Parser) parseProvisionerBlock(block *hcl.Block) (*ast.Provisioner, hcl.
 	}
 
 	if attr, ok := content.Attributes["when"]; ok {
-		kw := hcl.ExprAsKeyword(attr.Expr)
-		if kw != "" {
-			provisioner.When = kw
+		if kw := exprAsKeywordOrString(attr.Expr); kw != "" {
+			if kw != "create" && kw != "destroy" {
+				diags = append(diags, &hcl.Diagnostic{
+					Severity: hcl.DiagError,
+					Summary:  "Invalid \"when\" value",
+					Detail:   fmt.Sprintf("Expected \"create\" or \"destroy\", got %q.", kw),
+					Subject:  attr.Expr.Range().Ptr(),
+				})
+			} else {
+				provisioner.When = kw
+			}
 		}
 	}
 
 	if attr, ok := content.Attributes["on_failure"]; ok {
-		kw := hcl.ExprAsKeyword(attr.Expr)
-		if kw != "" {
-			provisioner.OnFailure = kw
+		if kw := exprAsKeywordOrString(attr.Expr); kw != "" {
+			if kw != "fail" && kw != "continue" {
+				diags = append(diags, &hcl.Diagnostic{
+					Severity: hcl.DiagError,
+					Summary:  "Invalid \"on_failure\" value",
+					Detail:   fmt.Sprintf("Expected \"fail\" or \"continue\", got %q.", kw),
+					Subject:  attr.Expr.Range().Ptr(),
+				})
+			} else {
+				provisioner.OnFailure = kw
+			}
 		}
 	}
 
@@ -1007,24 +1165,63 @@ func (p *Parser) parseModuleBlock(config *ast.Config, block *hcl.Block) hcl.Diag
 		}
 	}
 
-	// Parse providers map
+	// Parse providers map. Keys may be bare provider names ("simple"),
+	// dotted local aliases ("simple.foo"), or quoted strings. HCL flags a
+	// bare dotted form as "Ambiguous attribute key" at Value() time, so
+	// resolve via AbsTraversalForExpr first (it goes through the
+	// ObjectConsKeyExpr wrapper without triggering that diagnostic).
 	if attr, ok := content.Attributes["providers"]; ok {
 		pairs, pairDiags := hcl.ExprMap(attr.Expr)
 		diags = append(diags, pairDiags...)
 		for _, pair := range pairs {
-			keyVal, keyDiags := pair.Key.Value(nil)
+			key, keyDiags := providersMapKey(pair.Key)
 			diags = append(diags, keyDiags...)
-			if keyVal.Type() != cty.String {
+			if key == "" {
 				continue
 			}
-			key := keyVal.AsString()
-
 			module.Providers[key] = pair.Value
 		}
 	}
 
 	config.Modules[name] = module
 	return diags
+}
+
+// providersMapKey resolves a key from a module-call's `providers = {...}`
+// map to its canonical "name" or "name.alias" string form. Reports a
+// diagnostic when the key isn't a traversal (bare or dotted) or a static
+// string.
+func providersMapKey(key hcl.Expression) (string, hcl.Diagnostics) {
+	if trav, td := hcl.AbsTraversalForExpr(key); !td.HasErrors() && len(trav) > 0 {
+		var name strings.Builder
+		name.WriteString(trav.RootName())
+		for i := 1; i < len(trav); i++ {
+			attr, ok := trav[i].(hcl.TraverseAttr)
+			if !ok {
+				return "", hcl.Diagnostics{&hcl.Diagnostic{
+					Severity: hcl.DiagError,
+					Summary:  "Invalid provider map key",
+					Detail:   "Each key in a module's `providers = {...}` map must be a local provider name, optionally followed by a single alias step (e.g. `simple` or `simple.foo`).",
+					Subject:  key.Range().Ptr(),
+				}}
+			}
+			name.WriteString("." + attr.Name)
+		}
+		return name.String(), nil
+	}
+	v, vd := key.Value(nil)
+	if vd.HasErrors() {
+		return "", vd
+	}
+	if v.Type() != cty.String || v.IsNull() {
+		return "", hcl.Diagnostics{&hcl.Diagnostic{
+			Severity: hcl.DiagError,
+			Summary:  "Invalid provider map key",
+			Detail:   "Each key in a module's `providers = {...}` map must be a local provider name, optionally followed by a single alias step (e.g. `simple` or `simple.foo`), or a string literal of that form.",
+			Subject:  key.Range().Ptr(),
+		}}
+	}
+	return v.AsString(), nil
 }
 
 // parseMovedBlock parses a moved block.

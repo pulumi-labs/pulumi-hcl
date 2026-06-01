@@ -17,10 +17,13 @@ package transform
 import (
 	"testing"
 
+	"github.com/hashicorp/hcl/v2"
+	"github.com/hashicorp/hcl/v2/hclsyntax"
 	"github.com/pulumi-labs/pulumi-hcl/pkg/hcl/eval"
 	"github.com/pulumi/pulumi/pkg/v3/codegen/schema"
 	"github.com/pulumi/pulumi/pkg/v3/codegen/testing/utils/rapidresource"
 	"github.com/pulumi/pulumi/pkg/v3/codegen/testing/utils/rapidschema"
+	"github.com/pulumi/pulumi/sdk/v3/go/common/resource"
 	"github.com/pulumi/pulumi/sdk/v3/go/property"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -390,6 +393,123 @@ func TestCtyToResourceInputs(t *testing.T) {
 			assert.Equal(t, tt.expected, result)
 		})
 	}
+}
+
+// A marked for_each container (e.g. carrying a DepMark from an unknown
+// attribute) must not panic ElementIterator.
+func TestEvalDynamicBlocks_MarkedForEach(t *testing.T) {
+	t.Parallel()
+
+	src := []byte(`
+resource "fake" "f" {
+  dynamic "settings" {
+    for_each = local.vpcs
+    content {
+      name = settings.value.name
+    }
+  }
+}`)
+	file, diags := hclsyntax.ParseConfig(src, "test.hcl", hcl.Pos{Line: 1, Column: 1})
+	require.False(t, diags.HasErrors(), diags.Error())
+
+	body := file.Body.(*hclsyntax.Body)
+	var resourceBody hcl.Body
+	for _, b := range body.Blocks {
+		if b.Type == "resource" {
+			resourceBody = b.Body
+			break
+		}
+	}
+	require.NotNil(t, resourceBody)
+
+	r := &schema.Resource{
+		Token: "fake:index:F",
+		InputProperties: []*schema.Property{{
+			Name: "settings",
+			Type: &schema.ArrayType{ElementType: &schema.ObjectType{
+				Properties: []*schema.Property{{Name: "name", Type: schema.StringType}},
+			}},
+		}},
+	}
+
+	markedForEach := cty.MapVal(map[string]cty.Value{
+		"primary": cty.ObjectVal(map[string]cty.Value{
+			"name": cty.StringVal("p"),
+		}),
+	}).WithMarks(cty.NewValueMarks(eval.DepMark("urn:pulumi:dev::p::aws:ec2/vpc:Vpc::test")))
+
+	evalFn := func(_ resource.PropertyKey, expr hcl.Expression, extraVars map[string]cty.Value) (cty.Value, hcl.Diagnostics) {
+		if extraVars == nil {
+			return markedForEach, nil
+		}
+		return expr.Value(&hcl.EvalContext{Variables: extraVars})
+	}
+
+	_, diags = EvalResourceWithSchema(resourceBody, r, nil, evalFn)
+	require.False(t, diags.HasErrors(), "unexpected diags: %v", diags)
+}
+
+// A sensitive for_each container must propagate the mark to each.key /
+// each.value so attributes derived from them become Pulumi secrets.
+func TestEvalDynamicBlocks_SensitiveForEach(t *testing.T) {
+	t.Parallel()
+
+	src := []byte(`
+resource "fake" "f" {
+  dynamic "settings" {
+    for_each = local.vpcs
+    content {
+      name = settings.value.name
+    }
+  }
+}`)
+	file, diags := hclsyntax.ParseConfig(src, "test.hcl", hcl.Pos{Line: 1, Column: 1})
+	require.False(t, diags.HasErrors(), diags.Error())
+
+	body := file.Body.(*hclsyntax.Body)
+	var resourceBody hcl.Body
+	for _, b := range body.Blocks {
+		if b.Type == "resource" {
+			resourceBody = b.Body
+			break
+		}
+	}
+	require.NotNil(t, resourceBody)
+
+	r := &schema.Resource{
+		Token: "fake:index:F",
+		InputProperties: []*schema.Property{{
+			Name: "settings",
+			Type: &schema.ArrayType{ElementType: &schema.ObjectType{
+				Properties: []*schema.Property{{Name: "name", Type: schema.StringType}},
+			}},
+		}},
+	}
+
+	sensitiveForEach := cty.MapVal(map[string]cty.Value{
+		"primary": cty.ObjectVal(map[string]cty.Value{
+			"name": cty.StringVal("p"),
+		}),
+	}).WithMarks(cty.NewValueMarks(eval.SensitiveMark))
+
+	evalFn := func(_ resource.PropertyKey, expr hcl.Expression, extraVars map[string]cty.Value) (cty.Value, hcl.Diagnostics) {
+		if extraVars == nil {
+			return sensitiveForEach, nil
+		}
+		return expr.Value(&hcl.EvalContext{Variables: extraVars})
+	}
+
+	out, diags := EvalResourceWithSchema(resourceBody, r, nil, evalFn)
+	require.False(t, diags.HasErrors(), "unexpected diags: %v", diags)
+
+	expected := property.NewMap(map[string]property.Value{
+		"settings": property.New(property.NewArray([]property.Value{
+			property.New(property.NewMap(map[string]property.Value{
+				"name": property.New("p").WithSecret(true),
+			})),
+		})),
+	})
+	assert.Equal(t, expected, out)
 }
 
 func TestCtyToPropertyValue_Primitives(t *testing.T) {
@@ -814,7 +934,7 @@ func TestResourceOutputToCtyDoesNotErrorOnValidValues(t *testing.T) {
 				continue
 			}
 			outputs := rapidresource.ResourceProperties(res).Draw(rt, "outputs:"+res.Token)
-			_, err := ResourceOutputToCty(outputs, res, false)
+			_, err := ResourceOutputToCty(outputs, res, nil, false)
 			require.NoError(t, err)
 		}
 	})
@@ -914,7 +1034,7 @@ func TestResourceOutputToCtyUnionTypeCollapse(t *testing.T) {
 			}),
 		})
 
-		r, err := ResourceOutputToCty(outputs, res, false)
+		r, err := ResourceOutputToCty(outputs, res, nil, false)
 		require.NoError(t, err)
 		assert.Equal(t, map[string]cty.Value{
 			"p": cty.ObjectVal(map[string]cty.Value{
@@ -971,7 +1091,7 @@ func TestResourceOutputToCtyUnionTypeCollapseNested(t *testing.T) {
 			}),
 		})
 
-		r, err := ResourceOutputToCty(outputs, res, false)
+		r, err := ResourceOutputToCty(outputs, res, nil, false)
 		require.NoError(t, err)
 		// Object{foo_bar:String} and Map<String> unify to Map<String>, so the
 		// outer array can stay as a clean cty.ListVal of cty.MapVal.
@@ -999,7 +1119,7 @@ func TestResourceOutputToCtyUnionTypeCollapseNested(t *testing.T) {
 			}),
 		})
 
-		r, err := ResourceOutputToCty(outputs, res, false)
+		r, err := ResourceOutputToCty(outputs, res, nil, false)
 		require.NoError(t, err)
 		assert.Equal(t, map[string]cty.Value{
 			"lookup": cty.MapVal(map[string]cty.Value{
@@ -1032,7 +1152,7 @@ func TestResourceOutputToCtyUnionTypeCollapseNested(t *testing.T) {
 			}),
 		})
 
-		r, err := ResourceOutputToCty(outputs, res, false)
+		r, err := ResourceOutputToCty(outputs, res, nil, false)
 		require.NoError(t, err)
 		// After union resolution every leaf becomes Map<String>, so both the
 		// inner maps and the outer array can stay homogeneous.
@@ -1065,7 +1185,7 @@ func TestResourceOutputToCtyUnionTypeCollapseNested(t *testing.T) {
 			}),
 		})
 
-		r, err := ResourceOutputToCty(outputs, res, false)
+		r, err := ResourceOutputToCty(outputs, res, nil, false)
 		require.NoError(t, err)
 		// Object{foo_bar:String} and Map<String> unify to Map<String>, so the
 		// outer collection can stay as a clean cty.MapVal of cty.MapVal.
@@ -1107,7 +1227,7 @@ func TestResourceOutputToCtyUnionTypeCollapseNested(t *testing.T) {
 			outputs := property.NewMap(map[string]property.Value{
 				"v": property.New(map[string]property.Value{"p": property.New("hi")}),
 			})
-			r, err := ResourceOutputToCty(outputs, res, false)
+			r, err := ResourceOutputToCty(outputs, res, nil, false)
 			require.NoError(t, err)
 			assert.Equal(t, map[string]cty.Value{
 				"v": cty.ObjectVal(map[string]cty.Value{"p": cty.StringVal("hi")}),
@@ -1120,7 +1240,7 @@ func TestResourceOutputToCtyUnionTypeCollapseNested(t *testing.T) {
 			outputs := property.NewMap(map[string]property.Value{
 				"v": property.New(map[string]property.Value{"p": property.New(true)}),
 			})
-			r, err := ResourceOutputToCty(outputs, res, false)
+			r, err := ResourceOutputToCty(outputs, res, nil, false)
 			require.NoError(t, err)
 			assert.Equal(t, map[string]cty.Value{
 				"v": cty.ObjectVal(map[string]cty.Value{"p": cty.BoolVal(true)}),
@@ -1159,7 +1279,7 @@ func TestResourceOutputToCtyUnionTypeCollapseNested(t *testing.T) {
 			}),
 		})
 
-		r, err := ResourceOutputToCty(outputs, res, false)
+		r, err := ResourceOutputToCty(outputs, res, nil, false)
 		require.NoError(t, err)
 		assert.Equal(t, map[string]cty.Value{
 			"v": cty.MapVal(map[string]cty.Value{
@@ -1197,7 +1317,7 @@ func TestResourceOutputToCtyUnionTypeCollapseNested(t *testing.T) {
 			}),
 		})
 
-		r, err := ResourceOutputToCty(outputs, res, false)
+		r, err := ResourceOutputToCty(outputs, res, nil, false)
 		require.NoError(t, err)
 		assert.Equal(t, map[string]cty.Value{
 			"v": cty.MapVal(map[string]cty.Value{
@@ -1241,7 +1361,7 @@ func TestResourceOutputToCtyUnionTypeCollapseNested(t *testing.T) {
 			}),
 		})
 
-		r, err := ResourceOutputToCty(outputs, res, false)
+		r, err := ResourceOutputToCty(outputs, res, nil, false)
 		require.NoError(t, err)
 		assert.Equal(t, map[string]cty.Value{
 			"v": cty.ObjectVal(map[string]cty.Value{
@@ -1275,7 +1395,7 @@ func TestResourceOutputToCtyJSONType(t *testing.T) {
 		}),
 	})
 
-	r, err := ResourceOutputToCty(outputs, res, false)
+	r, err := ResourceOutputToCty(outputs, res, nil, false)
 	require.NoError(t, err)
 	assert.Equal(t, map[string]cty.Value{
 		"wrapper": cty.ObjectVal(map[string]cty.Value{

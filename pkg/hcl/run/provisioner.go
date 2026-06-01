@@ -17,359 +17,122 @@ package run
 import (
 	"context"
 	"fmt"
-	"strings"
 
-	"github.com/pulumi-labs/pulumi-hcl/pkg/hcl/ast"
-	"github.com/pulumi-labs/pulumi-hcl/pkg/hcl/transform"
+	"github.com/hashicorp/hcl/v2"
+	"github.com/pulumi/pulumi/pkg/v3/codegen/schema"
 	"github.com/pulumi/pulumi/sdk/v3/go/property"
 	"github.com/zclconf/go-cty/cty"
+
+	"github.com/pulumi-labs/pulumi-hcl/pkg/hcl/ast"
+	"github.com/pulumi-labs/pulumi-hcl/pkg/hcl/bridge"
+	"github.com/pulumi-labs/pulumi-hcl/pkg/hcl/eval"
+	"github.com/pulumi-labs/pulumi-hcl/pkg/hcl/graph"
+	"github.com/pulumi-labs/pulumi-hcl/pkg/hcl/transform"
+	"github.com/pulumi-labs/pulumi-hcl/pkg/provisioner/runtime"
 )
 
-// processProvisioners processes all provisioners for a resource.
-// Provisioners run in order, with each depending on the previous one.
-// Terraform provisioners map to the Pulumi Command provider:
-//   - local-exec  -> command:local:Command
-//   - remote-exec -> command:remote:Command
-//   - file        -> command:remote:CopyToRemote
-func (e *Engine) processProvisioners(
+// bindProvisionerHooks binds AfterCreate (when=create) or BeforeDelete
+// (when=destroy). TF does not re-run provisioners on update — no AfterUpdate
+// binding. The HCL eval context is snapshotted now since the callback fires
+// asynchronously, after processing has moved past this resource.
+func (e *Engine) bindProvisionerHooks(
 	ctx context.Context,
 	res *ast.Resource,
-	parentURN string,
-	resourceOutputs cty.Value,
-	resourceKey string,
+	resSchema *schema.Resource,
+	mapping *bridge.BodyMapping,
+	instance *graph.ExpandedResource,
+	evalCtx *eval.Context,
+	opts *ResourceOptions,
 ) error {
 	if len(res.Provisioners) == 0 {
 		return nil
 	}
-
-	// Set self to the resource outputs so provisioners can reference self
-	e.evaluator.Context().SetSelf(resourceOutputs)
-	defer e.evaluator.Context().ClearSelf()
-
-	// Get the resource-level connection config if present
-	var resourceConn *ast.Connection
-	if res.Connection != nil {
-		resourceConn = res.Connection
+	if opts.Hooks == nil {
+		opts.Hooks = &ResourceHookBinding{}
 	}
-
-	// Track the previous provisioner URN for dependency chaining
-	var prevProvisionerURN string
+	hclSnapshot := evalCtx.HCLContext()
+	dryRun := e.dryRun
 
 	for i, prov := range res.Provisioners {
-		// Determine the connection to use (provisioner-level overrides resource-level)
-		conn := resourceConn
-		if prov.Connection != nil {
-			conn = prov.Connection
+		prov, index := prov, i+1
+		spec := &runtime.Spec{
+			Type:   prov.Type,
+			Config: prov.Config,
+			Conn:   effectiveConnectionBody(prov, res),
 		}
-
-		// Build dependencies - each provisioner depends on the parent resource and the previous provisioner
-		deps := []string{parentURN}
-		if prevProvisionerURN != "" {
-			deps = append(deps, prevProvisionerURN)
+		when := prov.When
+		if when == "" {
+			when = "create"
 		}
+		onFailureContinue := prov.OnFailure == "continue"
+		useOldOutputs := when == "destroy"
+		hookName := fmt.Sprintf("%s:provisioner:%d", instance.Key, i)
 
-		// Generate a unique name for this provisioner
-		provName := fmt.Sprintf("%s-provisioner-%d", resourceKey, i)
-
-		var urn string
-		var err error
-
-		switch prov.Type {
-		case "local-exec":
-			urn, err = e.registerLocalExecProvisioner(ctx, prov, provName, deps, parentURN)
-		case "remote-exec":
-			urn, err = e.registerRemoteExecProvisioner(ctx, prov, conn, provName, deps, parentURN)
-		case "file":
-			urn, err = e.registerFileProvisioner(ctx, prov, conn, provName, deps, parentURN)
-		default:
-			return fmt.Errorf("unsupported provisioner type: %s", prov.Type)
-		}
-
-		if err != nil {
-			// Handle on_failure = "continue"
-			if prov.OnFailure == "continue" {
-				// Log warning but continue to next provisioner
-				continue
+		callback := func(hookCtx context.Context, args *ResourceHookArgs) error {
+			outputs := args.NewOutputs
+			if useOldOutputs {
+				outputs = args.OldOutputs
 			}
-			return fmt.Errorf("provisioner %s failed: %w", prov.Type, err)
+			selfCtx, err := selfBoundEvalCtx(hclSnapshot, outputs, args.ID, args.URN, resSchema, mapping, dryRun)
+			if err != nil {
+				return fmt.Errorf("provisioner %d for %s: %w", index, instance.Key, err)
+			}
+			if runErr := runtime.Run(hookCtx, spec, selfCtx); runErr != nil {
+				if onFailureContinue {
+					return nil
+				}
+				return fmt.Errorf("provisioner %d (%s) for %s: %w",
+					index, prov.Type, instance.Key, runErr)
+			}
+			return nil
 		}
 
-		prevProvisionerURN = urn
-	}
+		if err := e.resmon.RegisterResourceHook(ctx, hookName, callback, ResourceHookOptions{
+			OnDryRun: false, // TF doesn't run provisioners during plan.
+		}); err != nil {
+			return fmt.Errorf("registering provisioner hook: %w", err)
+		}
 
+		if useOldOutputs {
+			opts.Hooks.BeforeDelete = append(opts.Hooks.BeforeDelete, hookName)
+		} else {
+			opts.Hooks.AfterCreate = append(opts.Hooks.AfterCreate, hookName)
+		}
+	}
 	return nil
 }
 
-// registerLocalExecProvisioner registers a local-exec provisioner as a command:local:Command resource.
-func (e *Engine) registerLocalExecProvisioner(
-	ctx context.Context,
-	prov *ast.Provisioner,
-	name string,
-	deps []string,
-	parentURN string,
-) (string, error) {
-	inputs := make(map[string]property.Value)
-
-	attrs, _ := prov.Config.JustAttributes()
-
-	// Map command attribute
-	if attr, ok := attrs["command"]; ok {
-		val, diags := attr.Expr.Value(e.evaluator.Context().HCLContext())
-		if diags.HasErrors() {
-			return "", fmt.Errorf("evaluating command: %s", diags.Error())
-		}
-		if val.Type() == cty.String {
-			// The Command provider uses "create" for the command to run on creation
-			inputs["create"] = property.New(val.AsString())
-		}
+// effectiveConnectionBody: provisioner-level overrides resource-level.
+func effectiveConnectionBody(prov *ast.Provisioner, res *ast.Resource) hcl.Body {
+	if prov.Connection != nil {
+		return prov.Connection.Config
 	}
-
-	// Map working_dir to dir
-	if attr, ok := attrs["working_dir"]; ok {
-		val, diags := attr.Expr.Value(e.evaluator.Context().HCLContext())
-		if diags.HasErrors() {
-			return "", fmt.Errorf("evaluating working_dir: %s", diags.Error())
-		}
-		if val.Type() == cty.String {
-			inputs["dir"] = property.New(val.AsString())
-		}
+	if res.Connection != nil {
+		return res.Connection.Config
 	}
-
-	// Map interpreter
-	if attr, ok := attrs["interpreter"]; ok {
-		val, diags := attr.Expr.Value(e.evaluator.Context().HCLContext())
-		if diags.HasErrors() {
-			return "", fmt.Errorf("evaluating interpreter: %s", diags.Error())
-		}
-		if val.CanIterateElements() {
-			pv, err := transform.CtyToPropertyValue(val)
-			if err != nil {
-				return "", fmt.Errorf("converting interpreter: %w", err)
-			}
-			inputs["interpreter"] = pv
-		}
-	}
-
-	// Map environment
-	if attr, ok := attrs["environment"]; ok {
-		val, diags := attr.Expr.Value(e.evaluator.Context().HCLContext())
-		if diags.HasErrors() {
-			return "", fmt.Errorf("evaluating environment: %s", diags.Error())
-		}
-		pv, err := transform.CtyToPropertyValue(val)
-		if err != nil {
-			return "", fmt.Errorf("converting environment: %w", err)
-		}
-		inputs["environment"] = pv
-	}
-
-	// Handle when = "destroy" - map to delete instead of create
-	if prov.When == "destroy" {
-		if createCmd, ok := inputs["create"]; ok {
-			inputs["delete"] = createCmd
-			delete(inputs, "create")
-		}
-	}
-
-	opts := &ResourceOptions{
-		DependsOn: deps,
-		Parent:    parentURN,
-	}
-
-	urn, _, _, err := e.registerResource(ctx, "command:local:Command", name, property.NewMap(inputs), opts)
-	return urn, err
+	return nil
 }
 
-// registerRemoteExecProvisioner registers a remote-exec provisioner as a command:remote:Command resource.
-func (e *Engine) registerRemoteExecProvisioner(
-	ctx context.Context,
-	prov *ast.Provisioner,
-	conn *ast.Connection,
-	name string,
-	deps []string,
-	parentURN string,
-) (string, error) {
-	inputs := make(map[string]property.Value)
-
-	attrs, _ := prov.Config.JustAttributes()
-
-	// Build the command from inline, script, or scripts
-	var command string
-
-	if attr, ok := attrs["inline"]; ok {
-		// inline is a list of commands to run
-		val, diags := attr.Expr.Value(e.evaluator.Context().HCLContext())
-		if diags.HasErrors() {
-			return "", fmt.Errorf("evaluating inline: %s", diags.Error())
-		}
-		if val.CanIterateElements() {
-			var commands []string
-			it := val.ElementIterator()
-			for it.Next() {
-				_, v := it.Element()
-				if v.Type() == cty.String {
-					commands = append(commands, v.AsString())
-				}
-			}
-			command = strings.Join(commands, "\n")
-		}
-	} else if attr, ok := attrs["script"]; ok {
-		// script is a path to a script file
-		val, diags := attr.Expr.Value(e.evaluator.Context().HCLContext())
-		if diags.HasErrors() {
-			return "", fmt.Errorf("evaluating script: %s", diags.Error())
-		}
-		if val.Type() == cty.String {
-			// For remote-exec, we need to copy the script first, then execute it
-			// For simplicity, we'll use the script content directly if readable
-			command = fmt.Sprintf("sh %s", val.AsString())
-		}
-	} else if attr, ok := attrs["scripts"]; ok {
-		// scripts is a list of script file paths
-		val, diags := attr.Expr.Value(e.evaluator.Context().HCLContext())
-		if diags.HasErrors() {
-			return "", fmt.Errorf("evaluating scripts: %s", diags.Error())
-		}
-		if val.CanIterateElements() {
-			var commands []string
-			it := val.ElementIterator()
-			for it.Next() {
-				_, v := it.Element()
-				if v.Type() == cty.String {
-					commands = append(commands, fmt.Sprintf("sh %s", v.AsString()))
-				}
-			}
-			command = strings.Join(commands, "\n")
-		}
+// selfBoundEvalCtx binds `self` to resource outputs + the synthetic id/urn
+// the engine injects elsewhere (see registerResourceInstanceInContext).
+func selfBoundEvalCtx(
+	parent *hcl.EvalContext, outputs property.Map, id, urn string,
+	resSchema *schema.Resource, mapping *bridge.BodyMapping, dryRun bool,
+) (*hcl.EvalContext, error) {
+	if outputs.Len() == 0 && id == "" && urn == "" {
+		return parent, nil
 	}
-
-	if command != "" {
-		inputs["create"] = property.New(command)
+	outputObj, err := transform.ResourceOutputToCty(outputs, resSchema, mapping, dryRun)
+	if err != nil {
+		return nil, fmt.Errorf("converting outputs: %w", err)
 	}
-
-	// Build connection configuration
-	if conn != nil {
-		connProp, err := e.buildConnectionProperty(conn)
-		if err != nil {
-			return "", fmt.Errorf("building connection: %w", err)
-		}
-		inputs["connection"] = connProp
+	if id != "" {
+		outputObj["id"] = cty.StringVal(id)
 	}
-
-	// Handle when = "destroy"
-	if prov.When == "destroy" {
-		if createCmd, ok := inputs["create"]; ok {
-			inputs["delete"] = createCmd
-			delete(inputs, "create")
-		}
+	if urn != "" {
+		outputObj["urn"] = cty.StringVal(urn)
 	}
-
-	opts := &ResourceOptions{
-		DependsOn: deps,
-		Parent:    parentURN,
-	}
-
-	urn, _, _, err := e.registerResource(ctx, "command:remote:Command", name, property.NewMap(inputs), opts)
-	return urn, err
-}
-
-// registerFileProvisioner registers a file provisioner as a command:remote:CopyToRemote resource.
-func (e *Engine) registerFileProvisioner(
-	ctx context.Context,
-	prov *ast.Provisioner,
-	conn *ast.Connection,
-	name string,
-	deps []string,
-	parentURN string,
-) (string, error) {
-	inputs := make(map[string]property.Value)
-
-	attrs, _ := prov.Config.JustAttributes()
-
-	// Map source or content
-	if attr, ok := attrs["source"]; ok {
-		val, diags := attr.Expr.Value(e.evaluator.Context().HCLContext())
-		if diags.HasErrors() {
-			return "", fmt.Errorf("evaluating source: %s", diags.Error())
-		}
-		if val.Type() == cty.String {
-			inputs["localPath"] = property.New(val.AsString())
-		}
-	} else if attr, ok := attrs["content"]; ok {
-		val, diags := attr.Expr.Value(e.evaluator.Context().HCLContext())
-		if diags.HasErrors() {
-			return "", fmt.Errorf("evaluating content: %s", diags.Error())
-		}
-		if val.Type() == cty.String {
-			// For content, we need to create a temp file or use stdin
-			// The Command provider's CopyToRemote doesn't directly support content
-			// We'll need to create an Asset from the content
-			inputs["content"] = property.New(val.AsString())
-		}
-	}
-
-	// Map destination to remotePath
-	if attr, ok := attrs["destination"]; ok {
-		val, diags := attr.Expr.Value(e.evaluator.Context().HCLContext())
-		if diags.HasErrors() {
-			return "", fmt.Errorf("evaluating destination: %s", diags.Error())
-		}
-		if val.Type() == cty.String {
-			inputs["remotePath"] = property.New(val.AsString())
-		}
-	}
-
-	// Build connection configuration
-	if conn != nil {
-		connProp, err := e.buildConnectionProperty(conn)
-		if err != nil {
-			return "", fmt.Errorf("building connection: %w", err)
-		}
-		inputs["connection"] = connProp
-	}
-
-	opts := &ResourceOptions{
-		DependsOn: deps,
-		Parent:    parentURN,
-	}
-
-	urn, _, _, err := e.registerResource(ctx, "command:remote:CopyToRemote", name, property.NewMap(inputs), opts)
-	return urn, err
-}
-
-// buildConnectionProperty builds a connection property map from an ast.Connection.
-func (e *Engine) buildConnectionProperty(conn *ast.Connection) (property.Value, error) {
-	connMap := make(map[string]property.Value)
-
-	attrs, _ := conn.Config.JustAttributes()
-
-	// Map connection attributes
-	attrMappings := map[string]string{
-		"host":        "host",
-		"port":        "port",
-		"user":        "user",
-		"password":    "password",
-		"private_key": "privateKey",
-	}
-
-	for tfAttr, pulumiAttr := range attrMappings {
-		if attr, ok := attrs[tfAttr]; ok {
-			val, diags := attr.Expr.Value(e.evaluator.Context().HCLContext())
-			if diags.HasErrors() {
-				return property.Value{}, fmt.Errorf("evaluating %s: %s", tfAttr, diags.Error())
-			}
-			pv, err := transform.CtyToPropertyValue(val)
-			if err != nil {
-				return property.Value{}, fmt.Errorf("converting %s: %w", tfAttr, err)
-			}
-			connMap[pulumiAttr] = pv
-		}
-	}
-
-	// Default port to 22 if not specified for SSH
-	if _, ok := connMap["port"]; !ok && conn.Type == "ssh" {
-		connMap["port"] = property.New(22.0)
-	}
-
-	return property.New(connMap), nil
+	child := parent.NewChild()
+	child.Variables = map[string]cty.Value{"self": cty.ObjectVal(outputObj)}
+	return child, nil
 }

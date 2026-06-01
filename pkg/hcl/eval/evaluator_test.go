@@ -170,6 +170,37 @@ func TestEvaluateCount(t *testing.T) {
 	}
 }
 
+// AsBigFloat panics on marked values; a non-sensitive mark (e.g. DepMark)
+// must be stripped first.
+func TestEvaluateCount_MarkedKnownValue(t *testing.T) {
+	ctx := NewContext("/tmp", "/tmp", "", "", "")
+	ctx.SetVariable("n", cty.NumberIntVal(3).WithMarks(
+		cty.NewValueMarks(DepMark("urn:pulumi:dev::p::aws:ec2/vpc:Vpc::test")),
+	))
+	eval := NewEvaluator(ctx)
+
+	result, isBool, diags := eval.EvaluateCount(parseExpr(t, `var.n`))
+	require.False(t, diags.HasErrors(), "unexpected diags: %v", diags)
+	assert.Equal(t, 3, result)
+	assert.False(t, isBool)
+}
+
+// ElementIterator panics on marked containers; a non-sensitive mark must
+// be stripped first.
+func TestEvaluateForEach_MarkedContainer(t *testing.T) {
+	ctx := NewContext("/tmp", "/tmp", "", "", "")
+	ctx.SetVariable("m", cty.MapVal(map[string]cty.Value{
+		"primary": cty.StringVal("p"),
+	}).WithMarks(cty.NewValueMarks(DepMark("urn:pulumi:dev::p::aws:ec2/vpc:Vpc::test"))))
+	eval := NewEvaluator(ctx)
+
+	result, diags := eval.EvaluateForEach(parseExpr(t, `var.m`))
+	require.False(t, diags.HasErrors(), "unexpected diags: %v", diags)
+	assert.Equal(t, map[string]cty.Value{
+		"primary": cty.StringVal("p"),
+	}, result)
+}
+
 func TestEvaluateCountNil(t *testing.T) {
 	ctx := NewContext("/tmp", "/tmp", "", "", "")
 	eval := NewEvaluator(ctx)
@@ -316,18 +347,29 @@ func TestContextEach(t *testing.T) {
 }
 
 func TestContextPath(t *testing.T) {
-	ctx := NewContext("/project/module", "/project/module", "", "", "")
+	t.Run("root module yields '.'", func(t *testing.T) {
+		ctx := NewContext("/project/module", "/project/module", "", "", "")
+		eval := NewEvaluator(ctx)
+		result, diags := eval.EvaluateString(parseExpr(t, `path.module`))
+		assert.False(t, diags.HasErrors(), diags.Error())
+		assert.Equal(t, ".", result)
 
-	eval := NewEvaluator(ctx)
+		result, diags = eval.EvaluateString(parseExpr(t, `path.root`))
+		assert.False(t, diags.HasErrors(), diags.Error())
+		assert.Equal(t, ".", result)
+	})
 
-	expr := parseExpr(t, `path.module`)
-	result, diags := eval.EvaluateString(expr)
-	if diags.HasErrors() {
-		t.Errorf("Unexpected error: %s", diags.Error())
-	}
-	if result != "/project/module" {
-		t.Errorf("Expected '/project/module', got %q", result)
-	}
+	t.Run("nested module yields relative path from root", func(t *testing.T) {
+		ctx := NewContext("/project/modules/sub", "/project", "", "", "")
+		eval := NewEvaluator(ctx)
+		result, diags := eval.EvaluateString(parseExpr(t, `path.module`))
+		assert.False(t, diags.HasErrors(), diags.Error())
+		assert.Equal(t, "modules/sub", result)
+
+		result, diags = eval.EvaluateString(parseExpr(t, `path.root`))
+		assert.False(t, diags.HasErrors(), diags.Error())
+		assert.Equal(t, ".", result)
+	})
 }
 
 func TestContextTerraform(t *testing.T) {
@@ -578,4 +620,98 @@ func TestIsKnown(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestMarkOutputLeaves(t *testing.T) {
+	mark := DepMark("urn:test::a")
+
+	t.Run("primitive marks at top", func(t *testing.T) {
+		out := MarkOutputLeaves(cty.StringVal("hello"), mark)
+		assert.True(t, out.HasMark(mark))
+	})
+
+	t.Run("object marks each leaf but not container", func(t *testing.T) {
+		obj := cty.ObjectVal(map[string]cty.Value{
+			"id":   cty.StringVal("xyz"),
+			"name": cty.StringVal("foo"),
+		})
+		out := MarkOutputLeaves(obj, mark)
+		assert.False(t, out.IsMarked(), "container itself should be unmarked")
+		assert.True(t, out.GetAttr("id").HasMark(mark))
+		assert.True(t, out.GetAttr("name").HasMark(mark))
+	})
+
+	t.Run("list marks each element", func(t *testing.T) {
+		list := cty.ListVal([]cty.Value{cty.StringVal("a"), cty.StringVal("b")})
+		out := MarkOutputLeaves(list, mark)
+		assert.False(t, out.IsMarked())
+		for it := out.ElementIterator(); it.Next(); {
+			_, v := it.Element()
+			assert.True(t, v.HasMark(mark))
+		}
+	})
+
+	t.Run("nested objects mark every leaf", func(t *testing.T) {
+		nested := cty.ObjectVal(map[string]cty.Value{
+			"tags": cty.MapVal(map[string]cty.Value{
+				"Name": cty.StringVal("hi"),
+			}),
+		})
+		out := MarkOutputLeaves(nested, mark)
+		name := out.GetAttr("tags").Index(cty.StringVal("Name"))
+		assert.True(t, name.HasMark(mark))
+	})
+
+	t.Run("empty containers untouched", func(t *testing.T) {
+		empty := cty.MapValEmpty(cty.String)
+		out := MarkOutputLeaves(empty, mark)
+		assert.False(t, out.IsMarked())
+		assert.True(t, out.RawEquals(empty))
+	})
+
+	t.Run("null and unknown leaves get marked", func(t *testing.T) {
+		assert.True(t, MarkOutputLeaves(cty.NullVal(cty.String), mark).HasMark(mark))
+		assert.True(t, MarkOutputLeaves(cty.UnknownVal(cty.String), mark).HasMark(mark))
+	})
+}
+
+func TestCollectDepURNs(t *testing.T) {
+	a := DepMark("urn:test::a")
+	b := DepMark("urn:test::b")
+
+	t.Run("no marks", func(t *testing.T) {
+		assert.Empty(t, CollectDepURNs(cty.StringVal("hi")))
+	})
+
+	t.Run("single leaf mark", func(t *testing.T) {
+		assert.Equal(t, []string{"urn:test::a"},
+			CollectDepURNs(cty.StringVal("hi").Mark(a)))
+	})
+
+	t.Run("nested distinct marks deduplicated and ordered first-seen", func(t *testing.T) {
+		// {x: marked(a), y: [marked(b), marked(a)]}
+		v := cty.ObjectVal(map[string]cty.Value{
+			"x": cty.StringVal("v").Mark(a),
+			"y": cty.ListVal([]cty.Value{
+				cty.StringVal("p").Mark(b),
+				cty.StringVal("q").Mark(a),
+			}),
+		})
+		urns := CollectDepURNs(v)
+		assert.ElementsMatch(t, []string{"urn:test::a", "urn:test::b"}, urns)
+	})
+
+	t.Run("ignores non-DepMark marks like SensitiveMark", func(t *testing.T) {
+		v := cty.StringVal("secret").Mark(SensitiveMark)
+		assert.Empty(t, CollectDepURNs(v))
+	})
+
+	t.Run("propagates through MarkOutputLeaves-marked container", func(t *testing.T) {
+		obj := MarkOutputLeaves(cty.ObjectVal(map[string]cty.Value{
+			"id": cty.StringVal("xyz"),
+		}), a)
+		// User-facing read of the marked leaf:
+		idAttr := obj.GetAttr("id")
+		assert.Equal(t, []string{"urn:test::a"}, CollectDepURNs(idAttr))
+	})
 }

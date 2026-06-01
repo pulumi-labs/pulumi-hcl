@@ -73,17 +73,17 @@ func NewHCLProvider(modulePath, addr string) (*HCLProvider, error) {
 	}
 
 	// Load the module to generate schema
-	loaded, err := loader.LoadModule(modulePath, ".")
+	loaded, err := loader.LoadModule(modulePath, "", ".")
 	if err != nil {
 		return nil, fmt.Errorf("loading module: %w", err)
 	}
 
-	if loaded.Config.Pulumi == nil || loaded.Config.Pulumi.Component == nil {
-		return nil, fmt.Errorf("module at %q is missing a pulumi { component { ... } } block", modulePath)
+	if loaded.Config.Terraform == nil || loaded.Config.Terraform.Component == nil {
+		return nil, fmt.Errorf("module at %q is missing a terraform { component { ... } } block", modulePath)
 	}
 
-	comp := loaded.Config.Pulumi.Component
-	pkg := loaded.Config.Pulumi.Package
+	comp := loaded.Config.Terraform.Component
+	pkg := loaded.Config.Terraform.Package
 
 	pkgName := filepath.Base(modulePath)
 	pkgVersion := "0.0.0-dev"
@@ -197,7 +197,7 @@ func (p *HCLProvider) Construct(ctx context.Context, req *pulumirpc.ConstructReq
 	monitor := pulumirpc.NewResourceMonitorClient(monitorConn)
 
 	// Load the module
-	loaded, err := p.moduleLoader.LoadModule(p.modulePath, ".")
+	loaded, err := p.moduleLoader.LoadModule(p.modulePath, "", ".")
 	if err != nil {
 		return nil, fmt.Errorf("loading module: %w", err)
 	}
@@ -557,6 +557,15 @@ func (m *constructResourceMonitor) RegisterPackage(
 	pkg workspace.PackageDescriptor,
 ) (run.PackageRef, error) {
 	return "", nil
+}
+
+// RegisterResourceHook is not yet supported in Construct modules: the callback
+// server would need to be hosted on the provider (outliving any single
+// Construct call) rather than per-monitor.
+func (m *constructResourceMonitor) RegisterResourceHook(
+	ctx context.Context, name string, callback run.ResourceHookFunction, opts run.ResourceHookOptions,
+) error {
+	return fmt.Errorf("resource hooks are not supported within component constructions")
 }
 
 // buildStateDependencies builds the state dependencies map from outputs.

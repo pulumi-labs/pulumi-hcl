@@ -34,8 +34,15 @@ type Provider struct {
 	// This allows multiple configurations of the same provider.
 	Alias string
 
-	// Config is the body containing provider configuration attributes.
+	// Config is the body containing provider configuration attributes
+	// (with the Pulumi-specific resource-option attributes already extracted).
 	Config hcl.Body
+
+	// Pulumi-specific resource options. See providerSchema in pkg/hcl/parser.
+	EnvVarMappings          hcl.Expression
+	PluginDownloadURL       hcl.Expression
+	AdditionalSecretOutputs hcl.Expression
+	Version                 hcl.Expression
 
 	// DeclRange is the source range of the provider block.
 	DeclRange hcl.Range

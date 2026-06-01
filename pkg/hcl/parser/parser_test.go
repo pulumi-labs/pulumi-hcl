@@ -16,15 +16,20 @@ package parser
 
 import (
 	"testing"
+
+	"github.com/hashicorp/hcl/v2"
+	"github.com/pulumi-labs/pulumi-hcl/pkg/hcl/ast"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestParseBasicConfig(t *testing.T) {
 	src := []byte(`
-pulumi {
+terraform {
   required_providers {
     aws = {
       source  = "pulumi/aws"
-      version = "~> 6.0"
+      version = "6.0.0"
     }
   }
 }
@@ -83,14 +88,14 @@ module "vpc" {
 		t.FailNow()
 	}
 
-	// Verify pulumi block
-	if config.Pulumi == nil {
-		t.Error("Expected pulumi block")
+	// Verify terraform block
+	if config.Terraform == nil {
+		t.Error("Expected terraform block")
 	} else {
-		if len(config.Pulumi.RequiredProviders) != 1 {
-			t.Errorf("Expected 1 required provider, got %d", len(config.Pulumi.RequiredProviders))
+		if len(config.Terraform.RequiredProviders) != 1 {
+			t.Errorf("Expected 1 required provider, got %d", len(config.Terraform.RequiredProviders))
 		}
-		if rp, ok := config.Pulumi.RequiredProviders["aws"]; ok {
+		if rp, ok := config.Terraform.RequiredProviders["aws"]; ok {
 			if rp.Source != "pulumi/aws" {
 				t.Errorf("Expected source 'pulumi/aws', got %q", rp.Source)
 			}
@@ -249,6 +254,280 @@ resource "aws_instance" "web" {
 	}
 }
 
+// TestRequiredProvidersShapes pins down how each documented required_providers
+// shape parses, and which of them route through the terraform-provider plugin.
+// Sources non-prefixed by "pulumi/" (including a missing source) are TF-style
+// and default to "hashicorp/<name>".
+func TestRequiredProvidersShapes(t *testing.T) {
+	t.Parallel()
+	const src = `terraform {
+  required_providers {
+    ex1 = "~> 4.0"
+    ex2 = { version = "~> 4.0" }
+    ex3 = { source = "example/abc" }
+    ex4 = { source = "example/def", version = "5.0.0" }
+    ex5 = { source = "pulumi/ghi", version = "6.7.8" }
+  }
+}`
+	cfg, diags := NewParser().ParseSource("test.hcl", []byte(src))
+	require.False(t, diags.HasErrors(), "diags: %v", diags)
+	require.NotNil(t, cfg.Terraform)
+
+	got := cfg.Terraform.RequiredProviders
+	for _, v := range got {
+		v.DeclRange = hcl.Range{}
+	}
+	assert.Equal(t, map[string]*ast.RequiredProvider{
+		"ex1": {
+			Name:    "ex1",
+			Version: "~> 4.0",
+		},
+		"ex2": {
+			Name:    "ex2",
+			Version: "~> 4.0",
+		},
+		"ex3": {
+			Name:   "ex3",
+			Source: "example/abc",
+		},
+		"ex4": {
+			Name:    "ex4",
+			Source:  "example/def",
+			Version: "5.0.0",
+		},
+		"ex5": {
+			Name:    "ex5",
+			Source:  "pulumi/ghi",
+			Version: "6.7.8",
+		},
+	}, got)
+}
+
+func TestRequiredProvidersVersionMustBeSemver(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name    string
+		hcl     string
+		wantErr bool
+	}{
+		{
+			name: "pulumi_source_semver_ok",
+			hcl: `terraform {
+  required_providers {
+    aws = { source = "pulumi/aws", version = "6.0.0" }
+  }
+}`,
+		},
+		{
+			name: "pulumi_source_constraint_rejected",
+			hcl: `terraform {
+  required_providers {
+    aws = { source = "pulumi/aws", version = "~> 6.0" }
+  }
+}`,
+			wantErr: true,
+		},
+		{
+			// Empty source now defaults to "hashicorp/<name>" (TF-style),
+			// so a constraint-form version is fine.
+			name: "no_source_constraint_ok",
+			hcl: `terraform {
+  required_providers {
+    aws = { version = "~> 6.0" }
+  }
+}`,
+		},
+		{
+			name: "tf_source_constraint_ok",
+			hcl: `terraform {
+  required_providers {
+    random = { source = "hashicorp/random", version = "~> 4.0.0" }
+  }
+}`,
+		},
+		{
+			name: "pulumi_source_no_version_ok",
+			hcl: `terraform {
+  required_providers {
+    aws = { source = "pulumi/aws" }
+  }
+}`,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			_, diags := NewParser().ParseSource("test.hcl", []byte(tc.hcl))
+			if tc.wantErr {
+				require.True(t, diags.HasErrors(), "expected parse errors, got %v", diags)
+				require.Equal(t, "Invalid provider version", diags[0].Summary)
+			} else {
+				require.False(t, diags.HasErrors(), "unexpected parse errors: %v", diags)
+			}
+		})
+	}
+}
+
+func TestTerraformBlockCompat(t *testing.T) {
+	t.Parallel()
+
+	t.Run("multiple_terraform_blocks_merge", func(t *testing.T) {
+		t.Parallel()
+		src := `
+terraform {
+  backend "remote" {
+    organization = "pulumi"
+  }
+}
+
+terraform {
+  required_providers {
+    aws = { source = "hashicorp/aws", version = "6.19.0" }
+  }
+}`
+		cfg, diags := NewParser().ParseSource("test.hcl", []byte(src))
+		require.False(t, diags.HasErrors(), "unexpected errors: %v", diags)
+		require.NotNil(t, cfg.Terraform)
+		require.Contains(t, cfg.Terraform.RequiredProviders, "aws")
+	})
+
+	t.Run("backend_warns_continues", func(t *testing.T) {
+		t.Parallel()
+		src := `
+terraform {
+  backend "remote" {
+    organization = "pulumi"
+  }
+  required_providers {
+    aws = { source = "hashicorp/aws", version = "6.19.0" }
+  }
+}`
+		cfg, diags := NewParser().ParseSource("test.hcl", []byte(src))
+		require.False(t, diags.HasErrors(), "unexpected errors: %v", diags)
+		require.Contains(t, cfg.Terraform.RequiredProviders, "aws")
+		var found bool
+		for _, d := range diags {
+			if d.Severity == hcl.DiagWarning && d.Summary == "Ignoring terraform backend block" {
+				found = true
+				break
+			}
+		}
+		require.True(t, found, "expected warning for backend block, got %v", diags)
+	})
+
+	t.Run("provider_meta_warns_continues", func(t *testing.T) {
+		t.Parallel()
+		src := `
+terraform {
+  required_providers {
+    aws = { source = "hashicorp/aws", version = ">= 6.0" }
+  }
+  provider_meta "aws" {
+    user_agent = ["github.com/terraform-aws-modules/terraform-aws-sqs"]
+  }
+}`
+		cfg, diags := NewParser().ParseSource("test.hcl", []byte(src))
+		require.False(t, diags.HasErrors(), "unexpected errors: %v", diags)
+		require.Contains(t, cfg.Terraform.RequiredProviders, "aws")
+		var found bool
+		for _, d := range diags {
+			if d.Severity == hcl.DiagWarning && d.Summary == "Ignoring terraform provider_meta block" {
+				found = true
+				break
+			}
+		}
+		require.True(t, found, "expected warning for provider_meta block, got %v", diags)
+	})
+
+	t.Run("duplicate_required_provider_across_blocks", func(t *testing.T) {
+		t.Parallel()
+		src := `
+terraform {
+  required_providers {
+    aws = { source = "hashicorp/aws", version = "6.19.0" }
+  }
+}
+
+terraform {
+  required_providers {
+    aws = { source = "hashicorp/aws", version = "7.0.0" }
+  }
+}`
+		_, diags := NewParser().ParseSource("test.hcl", []byte(src))
+		require.True(t, diags.HasErrors(), "expected duplicate-provider error, got %v", diags)
+		require.Equal(t, "Duplicate required_providers entry", diags[0].Summary)
+	})
+
+	t.Run("duplicate_required_version_range_across_blocks", func(t *testing.T) {
+		t.Parallel()
+		src := `
+terraform {
+  required_version_range = ">= 1.0.0"
+}
+
+terraform {
+  required_version_range = ">= 2.0.0"
+}`
+		_, diags := NewParser().ParseSource("test.hcl", []byte(src))
+		require.True(t, diags.HasErrors(), "expected duplicate-required_version_range error, got %v", diags)
+		require.Equal(t, "Duplicate required_version_range attribute", diags[0].Summary)
+	})
+
+	t.Run("required_version_warns_continues", func(t *testing.T) {
+		t.Parallel()
+		src := `
+terraform {
+  required_version = ">= 1.0.0"
+  required_providers {
+    aws = { source = "hashicorp/aws", version = "6.19.0" }
+  }
+}`
+		cfg, diags := NewParser().ParseSource("test.hcl", []byte(src))
+		require.False(t, diags.HasErrors(), "unexpected errors: %v", diags)
+		require.Contains(t, cfg.Terraform.RequiredProviders, "aws")
+		var found bool
+		for _, d := range diags {
+			if d.Severity == hcl.DiagWarning && d.Summary == "Unsupported attribute: required_version" {
+				found = true
+				break
+			}
+		}
+		require.True(t, found, "expected warning for required_version, got %v", diags)
+	})
+}
+
+func TestParseProvisionerInvalidWhen(t *testing.T) {
+	src := []byte(`
+resource "aws_instance" "web" {
+  provisioner "local-exec" {
+    command = "true"
+    when    = "sometimes"
+  }
+}
+`)
+	p := NewParser()
+	_, diags := p.ParseSource("test.hcl", src)
+	require.True(t, diags.HasErrors())
+	require.Equal(t, "Invalid \"when\" value", diags[0].Summary)
+}
+
+func TestParseProvisionerInvalidOnFailure(t *testing.T) {
+	src := []byte(`
+resource "aws_instance" "web" {
+  provisioner "local-exec" {
+    command    = "true"
+    on_failure = "panic"
+  }
+}
+`)
+	p := NewParser()
+	_, diags := p.ParseSource("test.hcl", src)
+	require.True(t, diags.HasErrors())
+	require.Equal(t, "Invalid \"on_failure\" value", diags[0].Summary)
+}
+
 func TestParseMetaArguments(t *testing.T) {
 	src := []byte(`
 resource "aws_instance" "web" {
@@ -327,4 +606,51 @@ resource "aws_instance" "app" {
 	} else if !r2.Lifecycle.IgnoreAllChanges {
 		t.Error("Expected ignore_changes = all")
 	}
+}
+
+func TestParseProviderCallReserved(t *testing.T) {
+	src := []byte(`
+provider "call" {
+  value = "x"
+}
+`)
+
+	p := NewParser()
+	_, diags := p.ParseSource("test.tf", src)
+	if !diags.HasErrors() {
+		t.Fatal("expected parse error for provider named \"call\"")
+	}
+	if got := diags.Error(); !contains(got, `"call" is reserved`) {
+		t.Errorf("parser error missing expected substring; got: %q", got)
+	}
+}
+
+// TF 1.3+ allows `optional(<type>, <default>)` for object attributes.
+// HCL's typeexpr.TypeConstraint rejects the 2-arg form; we use the
+// TypeConstraintWithDefaults variant. aws-ia/vpc, aws-ia/ipam, and many
+// other registry modules use this idiom.
+func TestVariableTypeOptionalWithDefault(t *testing.T) {
+	t.Parallel()
+	src := []byte(`
+variable "subnets" {
+  type = object({
+    name    = string
+    cidr    = optional(string, "10.0.0.0/16")
+    enabled = optional(bool, true)
+  })
+}
+`)
+	_, diags := NewParser().ParseSource("test.tf", src)
+	if diags.HasErrors() {
+		t.Fatalf("unexpected errors: %v", diags.Errs())
+	}
+}
+
+func contains(s, sub string) bool {
+	for i := 0; i+len(sub) <= len(s); i++ {
+		if s[i:i+len(sub)] == sub {
+			return true
+		}
+	}
+	return false
 }

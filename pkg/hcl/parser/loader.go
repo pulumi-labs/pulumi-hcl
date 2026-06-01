@@ -35,8 +35,8 @@ func NewLoader() *Loader {
 	}
 }
 
-// LoadDirectory loads all HCL files from the specified directory.
-// It looks for files with .hcl extension.
+// LoadDirectory loads all Terraform HCL files from the specified directory.
+// It looks for files with .tf extension.
 func (l *Loader) LoadDirectory(dir string) (map[string]*hcl.File, hcl.Diagnostics) {
 	files := make(map[string]*hcl.File)
 	var diags hcl.Diagnostics
@@ -56,7 +56,7 @@ func (l *Loader) LoadDirectory(dir string) (map[string]*hcl.File, hcl.Diagnostic
 		}
 
 		name := entry.Name()
-		if !isHCLFile(name) {
+		if !isTerraformFile(name) {
 			continue
 		}
 
@@ -72,8 +72,8 @@ func (l *Loader) LoadDirectory(dir string) (map[string]*hcl.File, hcl.Diagnostic
 	if len(files) == 0 && !diags.HasErrors() {
 		diags = append(diags, &hcl.Diagnostic{
 			Severity: hcl.DiagError,
-			Summary:  "No HCL files found",
-			Detail:   "The directory does not contain any .hcl files.",
+			Summary:  "No Terraform files found",
+			Detail:   "The directory does not contain any .tf files.",
 		})
 	}
 
@@ -109,7 +109,7 @@ func (l *Loader) Files() map[string]*hcl.File {
 	return l.parser.Files()
 }
 
-// isHCLFile returns true if the filename indicates an HCL configuration file.
-func isHCLFile(name string) bool {
-	return strings.HasSuffix(name, ".hcl") || strings.HasSuffix(name, ".hcl.json")
+// isTerraformFile returns true if the filename indicates a Terraform configuration file.
+func isTerraformFile(name string) bool {
+	return strings.HasSuffix(name, ".tf") || strings.HasSuffix(name, ".tf.json")
 }

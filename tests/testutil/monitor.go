@@ -16,6 +16,7 @@ package testutil
 
 import (
 	"context"
+	"fmt"
 	"sync"
 
 	"github.com/pulumi-labs/pulumi-hcl/pkg/hcl/run"
@@ -30,6 +31,10 @@ type MockResourceMonitor struct {
 	InvokedFunctions    []run.InvokeRequest
 	StackOutputs        property.Map
 	stackURN            string
+	hooks               map[string]registeredHook
+
+	// DryRun mirrors engine preview mode: hooks with OnDryRun=false are skipped.
+	DryRun bool
 
 	// InvokeHandler, if set, is called for each Invoke instead of the default behavior.
 	InvokeHandler func(ctx context.Context, req run.InvokeRequest) (*run.InvokeResponse, error)
@@ -38,21 +43,80 @@ type MockResourceMonitor struct {
 	RegisterResourceHandler func(ctx context.Context, req run.RegisterResourceRequest) (*run.RegisterResourceResponse, error)
 }
 
+type registeredHook struct {
+	callback run.ResourceHookFunction
+	opts     run.ResourceHookOptions
+}
+
 func (m *MockResourceMonitor) RegisterResource(ctx context.Context, req run.RegisterResourceRequest) (*run.RegisterResourceResponse, error) {
 	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.RegisteredResources = append(m.RegisteredResources, req)
 	urn := "urn:pulumi:test::project::" + req.Type + "::" + req.Name
 	if req.Type == "pulumi:pulumi:Stack" {
 		m.stackURN = urn
-	} else if m.RegisterResourceHandler != nil {
-		return m.RegisterResourceHandler(ctx, req)
 	}
-	return &run.RegisterResourceResponse{
-		URN:     urn,
-		ID:      req.Name + "-id",
-		Outputs: req.Inputs,
-	}, nil
+	hooks := m.hooks
+	m.mu.Unlock()
+
+	// The mock has no state, so every registration is treated as a create.
+	args := &run.ResourceHookArgs{
+		URN:       urn,
+		Name:      req.Name,
+		Type:      req.Type,
+		NewInputs: req.Inputs,
+	}
+	if req.Hooks != nil {
+		if err := m.runHooks(ctx, hooks, req.Hooks.BeforeCreate, args); err != nil {
+			return nil, err
+		}
+	}
+
+	m.mu.Lock()
+	m.RegisteredResources = append(m.RegisteredResources, req)
+	handler := m.RegisterResourceHandler
+	m.mu.Unlock()
+
+	var resp *run.RegisterResourceResponse
+	var err error
+	if req.Type != "pulumi:pulumi:Stack" && handler != nil {
+		resp, err = handler(ctx, req)
+	} else {
+		resp = &run.RegisterResourceResponse{
+			URN:     urn,
+			ID:      req.Name + "-id",
+			Outputs: req.Inputs,
+		}
+	}
+	if err != nil {
+		return resp, err
+	}
+
+	if req.Hooks != nil {
+		args.NewOutputs = resp.Outputs
+		args.ID = resp.ID
+		if err := m.runHooks(ctx, hooks, req.Hooks.AfterCreate, args); err != nil {
+			return resp, err
+		}
+	}
+
+	return resp, nil
+}
+
+func (m *MockResourceMonitor) runHooks(
+	ctx context.Context, hooks map[string]registeredHook, names []string, args *run.ResourceHookArgs,
+) error {
+	for _, name := range names {
+		h, ok := hooks[name]
+		if !ok {
+			return fmt.Errorf("hook %q not registered", name)
+		}
+		if m.DryRun && !h.opts.OnDryRun {
+			continue
+		}
+		if err := h.callback(ctx, args); err != nil {
+			return fmt.Errorf("hook %q failed: %w", name, err)
+		}
+	}
+	return nil
 }
 
 func (m *MockResourceMonitor) Invoke(ctx context.Context, req run.InvokeRequest) (*run.InvokeResponse, error) {
@@ -92,4 +156,19 @@ func (m *MockResourceMonitor) CheckPulumiVersion(ctx context.Context, versionRan
 
 func (m *MockResourceMonitor) RegisterPackage(ctx context.Context, pkg workspace.PackageDescriptor) (run.PackageRef, error) {
 	return "", nil
+}
+
+func (m *MockResourceMonitor) RegisterResourceHook(
+	ctx context.Context, name string, callback run.ResourceHookFunction, opts run.ResourceHookOptions,
+) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.hooks == nil {
+		m.hooks = make(map[string]registeredHook)
+	}
+	if _, exists := m.hooks[name]; exists {
+		return fmt.Errorf("hook %q already registered", name)
+	}
+	m.hooks[name] = registeredHook{callback: callback, opts: opts}
+	return nil
 }

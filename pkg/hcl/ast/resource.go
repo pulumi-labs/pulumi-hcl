@@ -103,9 +103,6 @@ type Resource struct {
 	// Property names are in Pulumi camelCase format (e.g., "someProperty").
 	ReplaceOnChanges []string
 
-	// ReplacementTrigger is an expression whose change triggers resource replacement.
-	ReplacementTrigger hcl.Expression
-
 	// ImportID is the resource ID to import this resource as.
 	ImportID string
 

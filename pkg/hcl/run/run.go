@@ -19,6 +19,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
 	"slices"
@@ -28,6 +29,7 @@ import (
 
 	"github.com/hashicorp/hcl/v2"
 	"github.com/pulumi-labs/pulumi-hcl/pkg/hcl/ast"
+	"github.com/pulumi-labs/pulumi-hcl/pkg/hcl/bridge"
 	"github.com/pulumi-labs/pulumi-hcl/pkg/hcl/eval"
 	"github.com/pulumi-labs/pulumi-hcl/pkg/hcl/graph"
 	"github.com/pulumi-labs/pulumi-hcl/pkg/hcl/modulepath"
@@ -72,6 +74,40 @@ type ResourceMonitor interface {
 
 	// CheckPulumiVersion checks if the Pulumi CLI version satisfies the given version range.
 	CheckPulumiVersion(ctx context.Context, versionRange string) error
+
+	// RegisterResourceHook registers a named callback. Must be called before any
+	// resource registration that binds the hook by name via Hooks.
+	RegisterResourceHook(ctx context.Context, name string, callback ResourceHookFunction, opts ResourceHookOptions) error
+}
+
+// ResourceHookFunction is the engine-invoked hook callback. A non-nil return
+// fails the operation; the error message is surfaced to the user.
+type ResourceHookFunction func(ctx context.Context, args *ResourceHookArgs) error
+
+type ResourceHookOptions struct {
+	// OnDryRun controls whether the hook runs during previews.
+	OnDryRun bool
+}
+
+type ResourceHookArgs struct {
+	URN        string
+	ID         string
+	Name       string
+	Type       string
+	NewInputs  property.Map
+	OldInputs  property.Map
+	NewOutputs property.Map
+	OldOutputs property.Map
+}
+
+type ResourceHookBinding struct {
+	BeforeCreate []string
+	BeforeUpdate []string
+	AfterCreate  []string
+	AfterUpdate  []string
+	BeforeDelete []string
+	AfterDelete  []string
+	OnError      []string
 }
 
 // CustomTimeouts contains custom timeout values for resource operations.
@@ -129,6 +165,7 @@ type RegisterResourceRequest struct {
 	Version                 string
 	PluginDownloadURL       string
 	PackageRef              PackageRef
+	Hooks                   *ResourceHookBinding
 }
 
 // RegisterResourceResponse contains the result of registering a resource.
@@ -206,10 +243,18 @@ type inheritableOpts struct {
 	RetainOnDelete *bool
 }
 
-// unknownTokenDiag turns a packages.NotFoundError into an hcl.Diagnostic
-// anchored at typeRange. Other errors pass through unchanged for the caller
-// to wrap.
+// unknownTokenDiag turns a packages.NotFoundError or ProviderAsResourceError
+// into an hcl.Diagnostic anchored at typeRange. Other errors pass through.
 func unknownTokenDiag(kind string, typeRange hcl.Range, err error) error {
+	var pae *packages.ProviderAsResourceError
+	if errors.As(err, &pae) {
+		return hcl.Diagnostics{{
+			Severity: hcl.DiagError,
+			Summary:  "Provider declared as a resource",
+			Detail:   pae.Error(),
+			Subject:  typeRange.Ptr(),
+		}}
+	}
 	var nfe *packages.NotFoundError
 	if !errors.As(err, &nfe) {
 		return err
@@ -236,6 +281,12 @@ type Engine struct {
 	// pkgLoader loads Pulumi package schemas.
 	pkgLoader schema.ReferenceLoader
 
+	// providerInfoSource resolves TF provider mappings (bridge ProviderInfo)
+	// so HCL block/attribute names line up 1:1 with the TF source. May be nil
+	// when the host can't reach a mapper, in which case the convention-based
+	// transform path is used.
+	providerInfoSource bridge.ProviderInfoSource
+
 	// resmon is the resource monitor for registering resources.
 	resmon ResourceMonitor
 
@@ -245,8 +296,11 @@ type Engine struct {
 	// resourceInheritableOpts maps resource keys to the options that children can inherit.
 	resourceInheritableOpts *util.SyncMap[string, inheritableOpts]
 
-	// dataSourceDependencies maps data source keys to their resource dependencies (URNs).
-	dataSourceDependencies *util.SyncMap[string, []resource.URN]
+	// defaultProviders maps a package name to the urn::id of its un-aliased
+	// `provider "<pkg>" {}` block. Resources whose package matches and that
+	// omit an explicit `provider` arg use this so the provider block's config
+	// flows through, instead of the engine spinning up an empty default.
+	defaultProviders *util.SyncMap[string, string]
 
 	// stackOutputs collects outputs to be registered on the stack.
 	stackOutputs map[string]property.Value
@@ -292,6 +346,18 @@ type Engine struct {
 	// failedNodes tracks resource nodes that failed to register, keyed by instance key.
 	// Dependent nodes check this map and are skipped when a dependency failed.
 	failedNodes *util.SyncMap[string, error]
+
+	// graph is the resolved dependency graph for the current run. Stored on
+	// the engine so processNode handlers can consult its topology (e.g.
+	// processProvider checks whether anything depends on a provider node
+	// before registering it).
+	graph *graph.Graph
+
+	// alwaysRegisterProviders forces every `provider` block to be registered
+	// as a resource even when nothing references it, bypassing Terraform's
+	// lazy provider-configure semantics. Test-only; see
+	// EngineOptions.AlwaysRegisterProviders.
+	alwaysRegisterProviders bool
 }
 
 // EngineOptions configures the engine.
@@ -325,11 +391,24 @@ type EngineOptions struct {
 
 	SchemaLoader schema.ReferenceLoader
 
+	// ProviderInfoSource is the bridge mapping resolver. Optional; when nil
+	// the engine falls back to convention-based name mapping.
+	ProviderInfoSource bridge.ProviderInfoSource
+
 	// Packages maps parameterized package alias to its descriptor.
 	// The engine calls RegisterPackage on the resource monitor for each entry before running the program.
 	Packages map[string]workspace.PackageDescriptor
 
 	Parallel int
+
+	// AlwaysRegisterProviders forces every `provider` block to be registered
+	// as a resource even when no resource references it. This exists ONLY for
+	// the language conformance tests, whose Pulumi-semantics fixtures expect
+	// explicitly-declared providers to appear in the snapshot. Production runs
+	// must leave this false to preserve Terraform's lazy provider-configure
+	// behavior (an unused provider whose config would fail is never
+	// configured).
+	AlwaysRegisterProviders bool
 }
 
 // NewEngine creates a new execution engine.
@@ -345,10 +424,11 @@ func NewEngine(config *ast.Config, opts *EngineOptions) *Engine {
 		config:                  config,
 		evaluator:               eval.NewEvaluator(evalCtx),
 		pkgLoader:               opts.SchemaLoader,
+		providerInfoSource:      opts.ProviderInfoSource,
 		resmon:                  opts.ResourceMonitor,
 		resourceOutputs:         util.NewSyncMap[string, cty.Value](),
 		resourceInheritableOpts: util.NewSyncMap[string, inheritableOpts](),
-		dataSourceDependencies:  util.NewSyncMap[string, []resource.URN](),
+		defaultProviders:        util.NewSyncMap[string, string](),
 		stackOutputs:            make(map[string]property.Value),
 		projectName:             opts.ProjectName,
 		stackName:               opts.StackName,
@@ -363,6 +443,7 @@ func NewEngine(config *ast.Config, opts *EngineOptions) *Engine {
 		moduleInstances:         util.NewSyncMap[string, []*moduleInstance](),
 		parallel:                opts.Parallel,
 		failedNodes:             util.NewSyncMap[string, error](),
+		alwaysRegisterProviders: opts.AlwaysRegisterProviders,
 	}
 
 	return engine
@@ -393,6 +474,7 @@ func (e *Engine) Run(ctx context.Context) error {
 	if errs := g.Validate(); len(errs) > 0 {
 		return errors.Join(errs...)
 	}
+	e.graph = g
 
 	// Process nodes in parallel where possible
 	if err := e.processGraph(ctx, g); err != nil {
@@ -579,6 +661,11 @@ func (e *Engine) processVariable(_ context.Context, node *graph.Node) error {
 		}
 	}
 
+	// Fill in optional()-attribute defaults before sensitive marking.
+	if v.TypeDefaults != nil && !val.IsNull() && val.IsKnown() {
+		val = v.TypeDefaults.Apply(val)
+	}
+
 	// Handle sensitive marking
 	if v.Sensitive || isSecret {
 		val = val.Mark(eval.SensitiveMark)
@@ -706,6 +793,17 @@ func (e *Engine) processProvider(ctx context.Context, node *graph.Node) error {
 		return fmt.Errorf("provider node missing Provider field")
 	}
 
+	// TF/tofu only configures providers that something actually uses; an
+	// unused `provider` block is silently ignored even if its body would
+	// fail validate/configure. The graph already captures every real use
+	// as an in-edge to the provider node (explicit `provider = ...` refs
+	// and root implicit-default refs), so no dependents means no use.
+	// alwaysRegisterProviders (test-only) opts out so conformance fixtures
+	// see explicitly-declared providers in the snapshot.
+	if !e.alwaysRegisterProviders && e.graph != nil && !e.graph.HasDependents(node.Key) {
+		return nil
+	}
+
 	if node.ModuleInfo != nil {
 		return e.forEachModuleInstance(node, func(inst *moduleInstance) error {
 			return e.registerProviderInContext(ctx, node, provider, inst.EvalCtx, inst.URN, inst)
@@ -715,33 +813,109 @@ func (e *Engine) processProvider(ctx context.Context, node *graph.Node) error {
 	return e.registerProviderInContext(ctx, node, provider, e.evaluator.Context(), e.stackURN, nil)
 }
 
+// resolvePassThroughProvider looks up a provider passed into a module via
+// `providers = { <localKey> = <parentExpr> }` and returns the resolved
+// URN::ID, or "" when the resource isn't in a module, there's no entry for
+// localKey, or the parent expression doesn't yield a provider reference.
+func (e *Engine) resolvePassThroughProvider(modInfo *graph.ModuleInfo, localKey string) string {
+	if modInfo == nil || modInfo.Module == nil || localKey == "" {
+		return ""
+	}
+	passExpr, ok := modInfo.Module.Providers[localKey]
+	if !ok {
+		return ""
+	}
+	parentCtx := e.parentEvalContext(modInfo)
+	if parentCtx == nil {
+		return ""
+	}
+	val, diags := eval.NewEvaluator(parentCtx).EvaluateExpression(passExpr)
+	if diags.HasErrors() {
+		return ""
+	}
+	ref, err := providerRefFromCty(val)
+	if err != nil {
+		return ""
+	}
+	return ref
+}
+
+// parentEvalContext returns the eval.Context of the enclosing module
+// instance (or the root context when modInfo's parent is root).
+func (e *Engine) parentEvalContext(modInfo *graph.ModuleInfo) *eval.Context {
+	if modInfo.ParentPrefix() == "" {
+		return e.evaluator.Context()
+	}
+	parentInsts, ok := e.moduleInstances.Get(modInfo.ParentPrefix())
+	if !ok || len(parentInsts) == 0 {
+		return nil
+	}
+	return parentInsts[0].EvalCtx
+}
+
+// providerExprKey returns "name" or "name.alias" from a provider-reference
+// expression. Returns "" for anything that isn't a single one-or-two-step
+// traversal. Mirrors graph.providerExprKey — duplicated to keep the run
+// package free of internal graph helpers.
+func providerExprKey(expr hcl.Expression) string {
+	if expr == nil {
+		return ""
+	}
+	traversals := expr.Variables()
+	if len(traversals) != 1 {
+		return ""
+	}
+	t := traversals[0]
+	if len(t) == 0 {
+		return ""
+	}
+	name := t.RootName()
+	if len(t) == 1 {
+		return name
+	}
+	if attr, ok := t[1].(hcl.TraverseAttr); ok {
+		return name + "." + attr.Name
+	}
+	return name
+}
+
 func (e *Engine) registerProviderInContext(
 	ctx context.Context, node *graph.Node, provider *ast.Provider,
 	evalCtx *eval.Context, parentURN string, modInst *moduleInstance,
 ) error {
 	typeToken := "pulumi:providers:" + provider.Name
 
-	attrs, _ := provider.Config.JustAttributes()
-	inputs := make(map[string]property.Value)
-
 	hclCtx := evalCtx.HCLContext()
-	for name, attr := range attrs {
-		if name == "alias" {
-			continue
-		}
 
-		val, diags := attr.Expr.Value(hclCtx)
-		if diags.HasErrors() {
-			return fmt.Errorf("evaluating provider attribute %s: %s", name, diags.Error())
-		}
-
-		pv, err := transform.CtyToPropertyValue(val)
-		if err != nil {
-			return fmt.Errorf("converting provider attribute %s: %w", name, err)
-		}
-
-		inputs[name] = pv
+	// Schema-aware eval is needed so schema.Property.Secret marks survive.
+	pkg, perr := packages.ResolvePackage(ctx, e.pkgLoader, e.knownProviders(), "pulumi_providers_"+provider.Name)
+	if perr != nil {
+		return fmt.Errorf("resolving provider package %s: %w", provider.Name, perr)
 	}
+	resSchema, perr := pkg.Provider()
+	if perr != nil {
+		return fmt.Errorf("resolving provider schema for %s: %w", provider.Name, perr)
+	}
+
+	providerMapping := e.providerConfigBodyMapping(ctx, provider.Name)
+	inputsMap, diags := transform.EvalResourceWithSchema(provider.Config, resSchema, providerMapping,
+		func(_ resource.PropertyKey, expr hcl.Expression, extraVars map[string]cty.Value) (cty.Value, hcl.Diagnostics) {
+			c := hclCtx
+			if len(extraVars) > 0 {
+				child := hclCtx.NewChild()
+				child.Variables = extraVars
+				c = child
+			}
+			return expr.Value(c)
+		})
+	if diags.HasErrors() {
+		return fmt.Errorf("evaluating provider %s config: %s", provider.Name, diags.Error())
+	}
+	inputs := make(map[string]property.Value, inputsMap.Len())
+	inputsMap.AllStable(func(k string, v property.Value) bool {
+		inputs[k] = v
+		return true
+	})
 
 	logicalName := provider.Alias
 	if logicalName == "" {
@@ -752,36 +926,119 @@ func (e *Engine) registerProviderInContext(
 		logicalName = modInstanceName + "-" + logicalName
 	}
 
-	resp, err := e.resmon.RegisterResource(ctx, RegisterResourceRequest{
-		Type:   typeToken,
-		Name:   logicalName,
-		Inputs: property.NewMap(inputs),
-		Custom: true,
-		Parent: parentURN,
-	})
+	// Version comes from an explicit attribute, else required_providers.
+	var version string
+	if provider.Version != nil {
+		val, vdiags := provider.Version.Value(hclCtx)
+		if vdiags.HasErrors() {
+			return fmt.Errorf("evaluating provider version: %s", vdiags.Error())
+		}
+		if val.Type() == cty.String {
+			version = val.AsString()
+		}
+	}
+	if version == "" && e.config.Terraform != nil {
+		if req, ok := e.config.Terraform.RequiredProviders[provider.Name]; ok && req.IsPulumi() {
+			version = req.Version
+		}
+	}
+
+	req := RegisterResourceRequest{
+		Type:       typeToken,
+		Name:       logicalName,
+		Custom:     true,
+		Parent:     parentURN,
+		Version:    version,
+		PackageRef: e.packageRefs[provider.Name],
+	}
+	if resSchema.PackageReference != nil {
+		req.PluginDownloadURL = resSchema.PackageReference.PluginDownloadURL()
+	}
+
+	if provider.EnvVarMappings != nil {
+		val, vdiags := provider.EnvVarMappings.Value(hclCtx)
+		if vdiags.HasErrors() {
+			return fmt.Errorf("evaluating env_var_mappings: %s", vdiags.Error())
+		}
+		mappings, err := transform.CtyToPropertyValue(val)
+		if err != nil {
+			return fmt.Errorf("converting env_var_mappings: %w", err)
+		}
+		if mappings.IsMap() {
+			req.EnvVarMappings = make(map[string]string)
+			mappings.AsMap().AllStable(func(k string, v property.Value) bool {
+				if v.IsString() {
+					req.EnvVarMappings[k] = v.AsString()
+				}
+				return true
+			})
+		}
+	}
+
+	if provider.PluginDownloadURL != nil {
+		val, vdiags := provider.PluginDownloadURL.Value(hclCtx)
+		if vdiags.HasErrors() {
+			return fmt.Errorf("evaluating plugin_download_url: %s", vdiags.Error())
+		}
+		if val.Type() == cty.String {
+			// Surface via Inputs so it appears as a top-level output;
+			// the resource-option field (req.PluginDownloadURL) is
+			// set below to the package's schema default.
+			inputs["pluginDownloadURL"] = property.New(val.AsString())
+		}
+	}
+
+	if provider.AdditionalSecretOutputs != nil {
+		val, vdiags := provider.AdditionalSecretOutputs.Value(hclCtx)
+		if vdiags.HasErrors() {
+			return fmt.Errorf("evaluating additional_secret_outputs: %s", vdiags.Error())
+		}
+		if val.Type().IsTupleType() || val.Type().IsListType() {
+			for it := val.ElementIterator(); it.Next(); {
+				_, v := it.Element()
+				if v.Type() == cty.String {
+					req.AdditionalSecretOutputs = append(req.AdditionalSecretOutputs, v.AsString())
+				}
+			}
+		}
+	}
+
+	req.Inputs = property.NewMap(inputs)
+
+	resp, err := e.resmon.RegisterResource(ctx, req)
 	if err != nil {
 		return fmt.Errorf("registering provider %s: %w", node.Key, err)
 	}
 
 	providerID := resp.ID
 
-	outputObj := make(map[string]cty.Value)
-	outputObj["id"] = cty.StringVal(providerID)
+	// Use ResourceOutputToCty to match processResource's snake_case key emission.
+	outputObj, err := transform.ResourceOutputToCty(resp.Outputs, resSchema, providerMapping, e.dryRun)
+	if err != nil {
+		return fmt.Errorf("converting provider outputs to HCL types: %w", err)
+	}
+	if e.dryRun && providerID == "" {
+		outputObj["id"] = cty.UnknownVal(cty.String)
+	} else {
+		outputObj["id"] = cty.StringVal(providerID)
+	}
 	outputObj["urn"] = cty.StringVal(resp.URN)
 
-	for k, v := range resp.Outputs.All {
-		snakeKey := camelToSnake(string(k))
-		outputObj[snakeKey] = transform.PropertyValueToCty(v)
+	e.resourceOutputs.Set(node.Key, eval.MarkOutputLeaves(cty.ObjectVal(outputObj), eval.DepMark(resp.URN)))
+
+	// Top-level un-aliased provider blocks become the default provider for
+	// resources of the same package that don't set `provider` explicitly.
+	if provider.Alias == "" && node.ModuleInfo == nil && providerID != "" {
+		e.defaultProviders.Set(provider.Name, resp.URN+"::"+providerID)
 	}
 
-	e.resourceOutputs.Set(node.Key, cty.ObjectVal(outputObj))
-
+	markedProviderOutputs := eval.MarkOutputLeaves(cty.ObjectVal(outputObj), eval.DepMark(resp.URN))
 	if node.ModuleInfo != nil {
 		// Strip prefix for module-internal references
 		bareKey := strings.TrimPrefix(node.Key, node.ModuleInfo.Prefix())
-		evalCtx.SetResource(bareKey, cty.ObjectVal(outputObj))
+		evalCtx.SetResource(bareKey, markedProviderOutputs)
 	} else {
-		evalCtx.SetResource(node.Key, cty.ObjectVal(outputObj))
+		evalCtx.SetResource(node.Key, markedProviderOutputs)
 	}
 
 	return nil
@@ -807,7 +1064,7 @@ func (e *Engine) processResourceInContext(
 	ctx context.Context, node *graph.Node, res *ast.Resource,
 	evalCtx *eval.Context, parentURN string, modInst *moduleInstance,
 ) error {
-	resSchema, err := packages.ResolveResource(ctx, e.pkgLoader, e.knownProviders(), res.Type)
+	resSchema, err := e.resolveResource(ctx, res.Type)
 	if err != nil {
 		if diag := unknownTokenDiag("resource", res.TypeRange, err); diag != err {
 			return diag
@@ -853,6 +1110,23 @@ func (e *Engine) processResourceInContext(
 		}
 	}
 
+	// Empty count/for_each still needs the resource address bound so downstream
+	// references (e.g. an unconditional module output that walks the resource)
+	// see an empty collection rather than "no such attribute".
+	if len(result.Instances) == 0 && (res.Count != nil || res.ForEach != nil) {
+		baseKey := node.Key
+		if node.ModuleInfo != nil {
+			baseKey = strings.TrimPrefix(baseKey, node.ModuleInfo.Prefix())
+		}
+		var empty cty.Value
+		if res.Count != nil {
+			empty = cty.EmptyTupleVal
+		} else {
+			empty = cty.EmptyObjectVal
+		}
+		evalCtx.SetResource(baseKey, empty)
+	}
+
 	return nil
 }
 
@@ -892,7 +1166,8 @@ func (e *Engine) registerResourceInstanceInContext(
 		plainInputProps[p.Name] = p.Plain
 	}
 
-	resourceInputs, diags := transform.EvalResourceWithSchema(res.Config, resSchema,
+	resourceMapping := e.resourceBodyMapping(ctx, res.Type)
+	resourceInputs, diags := transform.EvalResourceWithSchema(res.Config, resSchema, resourceMapping,
 		func(propKey resource.PropertyKey, expr hcl.Expression, extraVars map[string]cty.Value) (cty.Value, hcl.Diagnostics) {
 			var val cty.Value
 			var diags hcl.Diagnostics
@@ -911,23 +1186,8 @@ func (e *Engine) registerResourceInstanceInContext(
 				return val, diags
 			}
 
-			for _, dep := range eval.ExtractDependencies(expr) {
-				fullDep := dep
-				if node.ModuleInfo != nil {
-					fullDep = node.ModuleInfo.Prefix() + dep
-				}
-				if resOutputs, ok := e.resourceOutputs.Get(fullDep); ok {
-					if urnVal := resOutputs.GetAttr("urn"); urnVal.Type() == cty.String {
-						addToDependsOn(string(propKey), urnVal.AsString())
-					}
-				}
-				if dsKey, ok := strings.CutPrefix(fullDep, "data."); ok {
-					if dsDeps, exists := e.dataSourceDependencies.Get(dsKey); exists {
-						for _, urn := range dsDeps {
-							addToDependsOn(string(propKey), string(urn))
-						}
-					}
-				}
+			for _, urn := range eval.CollectDepURNs(val) {
+				addToDependsOn(string(propKey), urn)
 			}
 
 			return val, diags
@@ -961,9 +1221,9 @@ func (e *Engine) registerResourceInstanceInContext(
 
 	if opts.Version == "" {
 		pkgName := packageNameFromResourceType(res.Type)
-		if e.config.Pulumi != nil {
-			if req, ok := e.config.Pulumi.RequiredProviders[pkgName]; ok && req.Version != "" {
-				opts.Version = ExtractSemverFromConstraint(req.Version)
+		if e.config.Terraform != nil {
+			if req, ok := e.config.Terraform.RequiredProviders[pkgName]; ok && req.IsPulumi() {
+				opts.Version = req.Version
 			}
 		}
 	}
@@ -975,7 +1235,19 @@ func (e *Engine) registerResourceInstanceInContext(
 	opts.PackageRef = e.packageRefForType(res.Type)
 
 	if len(res.Preconditions) > 0 {
-		if err := e.evaluateCheckRules(res.Preconditions, instance.Key, "precondition"); err != nil {
+		if err := e.bindPreconditionHooks(ctx, res, instance, evalCtx, opts); err != nil {
+			return err
+		}
+	}
+
+	if len(res.Postconditions) > 0 {
+		if err := e.bindPostconditionHooks(ctx, res, resSchema, resourceMapping, instance, evalCtx, opts); err != nil {
+			return err
+		}
+	}
+
+	if len(res.Provisioners) > 0 {
+		if err := e.bindProvisionerHooks(ctx, res, resSchema, resourceMapping, instance, evalCtx, opts); err != nil {
 			return err
 		}
 	}
@@ -995,7 +1267,7 @@ func (e *Engine) registerResourceInstanceInContext(
 		return fmt.Errorf("resolving resource references in outputs: %w", err)
 	}
 
-	outputObj, err := transform.ResourceOutputToCty(outputs, resSchema, e.dryRun)
+	outputObj, err := transform.ResourceOutputToCty(outputs, resSchema, resourceMapping, e.dryRun)
 	if err != nil {
 		return fmt.Errorf("converting resource outputs to HCL types: %w", err)
 	}
@@ -1006,7 +1278,9 @@ func (e *Engine) registerResourceInstanceInContext(
 	}
 	outputObj["urn"] = cty.StringVal(urn)
 
-	e.resourceOutputs.Set(instance.Key, cty.ObjectVal(outputObj))
+	markedOutputs := eval.MarkOutputLeaves(cty.ObjectVal(outputObj), eval.DepMark(urn))
+
+	e.resourceOutputs.Set(instance.Key, markedOutputs)
 
 	var iOpts inheritableOpts
 	if opts.Protect {
@@ -1020,32 +1294,18 @@ func (e *Engine) registerResourceInstanceInContext(
 		if node.ModuleInfo != nil {
 			baseKey = strings.TrimPrefix(baseKey, node.ModuleInfo.Prefix())
 		}
-		evalCtx.SetCountResource(baseKey, *instance.Index, cty.ObjectVal(outputObj))
+		evalCtx.SetCountResource(baseKey, *instance.Index, markedOutputs)
 	} else if instance.EachKey != nil {
 		baseKey := instance.OriginalKey
 		if node.ModuleInfo != nil {
 			baseKey = strings.TrimPrefix(baseKey, node.ModuleInfo.Prefix())
 		}
-		evalCtx.SetEachResource(baseKey, instance.EachKey.AsString(), cty.ObjectVal(outputObj))
+		evalCtx.SetEachResource(baseKey, instance.EachKey.AsString(), markedOutputs)
 	} else if node.ModuleInfo != nil {
 		bareKey := strings.TrimPrefix(instance.Key, node.ModuleInfo.Prefix())
-		evalCtx.SetResource(bareKey, cty.ObjectVal(outputObj))
+		evalCtx.SetResource(bareKey, markedOutputs)
 	} else {
-		evalCtx.SetResource(instance.Key, cty.ObjectVal(outputObj))
-	}
-
-	if len(res.Postconditions) > 0 {
-		evalCtx.SetSelf(cty.ObjectVal(outputObj))
-		defer evalCtx.ClearSelf()
-		if err := e.evaluateCheckRules(res.Postconditions, instance.Key, "postcondition"); err != nil {
-			return err
-		}
-	}
-
-	if len(res.Provisioners) > 0 {
-		if err := e.processProvisioners(ctx, res, urn, cty.ObjectVal(outputObj), instance.Key); err != nil {
-			return fmt.Errorf("processing provisioners: %w", err)
-		}
+		evalCtx.SetResource(instance.Key, markedOutputs)
 	}
 
 	return nil
@@ -1071,9 +1331,8 @@ func (e *Engine) buildResourceOptionsInContext(
 			continue
 		}
 		if outputs, ok := e.resourceOutputs.Get(resPrefix + depKey); ok {
-			urnVal := outputs.GetAttr("urn")
-			if urnVal.Type() == cty.String {
-				opts.DependsOn = append(opts.DependsOn, urnVal.AsString())
+			if urn := ctyAsString(outputs.GetAttr("urn")); urn != "" {
+				opts.DependsOn = append(opts.DependsOn, urn)
 			}
 		}
 	}
@@ -1095,53 +1354,67 @@ func (e *Engine) buildResourceOptionsInContext(
 		if res.Lifecycle.IgnoreAllChanges {
 			opts.IgnoreChanges = []string{"*"}
 		}
-		// create_before_destroy controls replacement order:
-		// - true: create new, then delete old (Pulumi's default behavior)
-		// - false: delete old, then create new (Terraform's default behavior)
-		// - nil/unset: use Pulumi's default (create-then-delete)
-		//
-		// Pulumi's deleteBeforeReplace is the inverse:
-		// - true: delete old, then create new
-		// - false: create new, then delete old (default)
-		if res.Lifecycle.CreateBeforeDestroy != nil {
-			if *res.Lifecycle.CreateBeforeDestroy {
-				// Explicit true: create-then-delete (Pulumi default, but mark as explicitly set)
-				opts.DeleteBeforeReplace = false
-				opts.DeleteBeforeReplaceDef = true
-			} else {
-				// Explicit false: delete-then-create (Terraform default)
-				opts.DeleteBeforeReplace = true
-				opts.DeleteBeforeReplaceDef = true
-			}
-		}
-		if len(res.Lifecycle.ReplaceTriggeredBy) > 0 {
-			return nil, fmt.Errorf("lifecycle \"replace_triggered_by\" on resource %q is not supported by Pulumi HCL",
-				res.Type+"."+res.Name)
-		}
 	}
+	// create_before_destroy controls replacement order, with TF semantics:
+	//   - true: create new, then delete old
+	//   - false or absent: delete old, then create new (TF default)
+	//
+	// Mapped to Pulumi's inverse `deleteBeforeReplace`:
+	//   - cbd=true  -> DeleteBeforeReplace=false
+	//   - cbd=false -> DeleteBeforeReplace=true
+	//   - cbd unset -> DeleteBeforeReplace=true (TF default, opposite of Pulumi's)
+	opts.DeleteBeforeReplaceDef = true
+	opts.DeleteBeforeReplace = res.Lifecycle == nil || res.Lifecycle.CreateBeforeDestroy == nil || !*res.Lifecycle.CreateBeforeDestroy
 
 	if res.ResourceParent != nil {
 		depKey := graph.FormatTraversal(res.ResourceParent)
 		if depKey != "" {
 			if outputs, ok := e.resourceOutputs.Get(resPrefix + depKey); ok {
-				urnVal := outputs.GetAttr("urn")
-				if urnVal.Type() == cty.String {
-					opts.Parent = urnVal.AsString()
+				if urn := ctyAsString(outputs.GetAttr("urn")); urn != "" {
+					opts.Parent = urn
 				}
 			}
 		}
 	}
 
 	if res.Provider != nil {
-		val, valDiags := e.evaluator.EvaluateExpression(res.Provider)
-		if valDiags.HasErrors() {
-			return nil, fmt.Errorf("evaluating provider for %s.%s: %s", res.Type, res.Name, valDiags.Error())
+		// `provider = X.alias` (or `provider = X`). For an in-module
+		// resource, the parent module call may have mapped this local
+		// reference to a parent-scope provider via
+		// `providers = { X.alias = ... }` — that wins over any local
+		// definition. Fall back to evaluating the expression in the
+		// resource's own scope, which is what TF does when there is no
+		// pass-through.
+		if ref := e.resolvePassThroughProvider(modInfo, providerExprKey(res.Provider)); ref != "" {
+			opts.Provider = ref
+		} else {
+			val, valDiags := eval.NewEvaluator(evalCtx).EvaluateExpression(res.Provider)
+			if valDiags.HasErrors() {
+				return nil, fmt.Errorf("evaluating provider for %s.%s: %s", res.Type, res.Name, valDiags.Error())
+			}
+			ref, err := providerRefFromCty(val)
+			if err != nil {
+				return nil, fmt.Errorf("resolving provider for %s.%s: %w", res.Type, res.Name, err)
+			}
+			opts.Provider = ref
 		}
-		ref, err := providerRefFromCty(val)
-		if err != nil {
-			return nil, fmt.Errorf("resolving provider for %s.%s: %w", res.Type, res.Name, err)
+	} else if modInfo != nil {
+		// Implicit default in a module: try a pass-through entry, then
+		// the in-module `provider "<pkg>" {}` block (registered earlier
+		// at key resPrefix+pkg in resourceOutputs). If neither exists,
+		// fall through to Pulumi's engine default.
+		pkg := packageNameFromResourceType(res.Type)
+		if ref := e.resolvePassThroughProvider(modInfo, pkg); ref != "" {
+			opts.Provider = ref
+		} else if outputs, ok := e.resourceOutputs.Get(resPrefix + pkg); ok {
+			if ref, err := providerRefFromCty(outputs); err == nil {
+				opts.Provider = ref
+			}
 		}
-		opts.Provider = ref
+	} else {
+		if ref, ok := e.defaultProviders.Get(packageNameFromResourceType(res.Type)); ok {
+			opts.Provider = ref
+		}
 	}
 
 	for _, traversal := range res.Providers {
@@ -1150,14 +1423,14 @@ func (e *Engine) buildResourceOptionsInContext(
 			continue
 		}
 		if providerOutputs, ok := e.resourceOutputs.Get(resPrefix + providerKey); ok {
-			urnVal := providerOutputs.GetAttr("urn")
-			idVal := providerOutputs.GetAttr("id")
-			if urnVal.Type() == cty.String && idVal.Type() == cty.String {
+			urn := ctyAsString(providerOutputs.GetAttr("urn"))
+			id := ctyAsString(providerOutputs.GetAttr("id"))
+			if urn != "" && id != "" {
 				pkgName := packageNameFromResourceType(strings.SplitN(providerKey, ".", 2)[0])
 				if opts.Providers == nil {
 					opts.Providers = make(map[string]string)
 				}
-				opts.Providers[pkgName] = urnVal.AsString() + "::" + idVal.AsString()
+				opts.Providers[pkgName] = urn + "::" + id
 			}
 		}
 	}
@@ -1239,9 +1512,8 @@ func (e *Engine) buildResourceOptionsInContext(
 		depKey := graph.FormatTraversal(res.DeletedWith)
 		if depKey != "" {
 			if outputs, ok := e.resourceOutputs.Get(resPrefix + depKey); ok {
-				urnVal := outputs.GetAttr("urn")
-				if urnVal.Type() == cty.String {
-					opts.DeletedWith = urnVal.AsString()
+				if urn := ctyAsString(outputs.GetAttr("urn")); urn != "" {
+					opts.DeletedWith = urn
 				}
 			}
 		}
@@ -1253,9 +1525,8 @@ func (e *Engine) buildResourceOptionsInContext(
 			continue
 		}
 		if outputs, ok := e.resourceOutputs.Get(resPrefix + depKey); ok {
-			urnVal := outputs.GetAttr("urn")
-			if urnVal.Type() == cty.String {
-				opts.ReplaceWith = append(opts.ReplaceWith, urnVal.AsString())
+			if urn := ctyAsString(outputs.GetAttr("urn")); urn != "" {
+				opts.ReplaceWith = append(opts.ReplaceWith, urn)
 			}
 		}
 	}
@@ -1266,14 +1537,33 @@ func (e *Engine) buildResourceOptionsInContext(
 	// Handle replace_on_changes - property paths (already in camelCase)
 	opts.ReplaceOnChanges = append(opts.ReplaceOnChanges, res.ReplaceOnChanges...)
 
-	if res.ReplacementTrigger != nil {
-		val, diags := res.ReplacementTrigger.Value(hclCtx)
-		if !diags.HasErrors() {
-			pv, err := transform.CtyToPropertyValue(val)
-			if err == nil {
-				opts.ReplacementTrigger = pv
+	// `lifecycle { replace_triggered_by = [a, b, ...] }` evaluates each
+	// expression and feeds the result to RegisterResource as the
+	// ReplacementTrigger property value: any element flipping triggers a
+	// replacement. A single-element list is unwrapped to a scalar so the
+	// trigger value round-trips with Pulumi's scalar `replacementTrigger`.
+	if res.Lifecycle != nil && len(res.Lifecycle.ReplaceTriggeredBy) > 0 {
+		vals := make([]cty.Value, 0, len(res.Lifecycle.ReplaceTriggeredBy))
+		for _, expr := range res.Lifecycle.ReplaceTriggeredBy {
+			val, diags := expr.Value(hclCtx)
+			if diags.HasErrors() {
+				return nil, fmt.Errorf("evaluating replace_triggered_by on %q: %s",
+					res.Type+"."+res.Name, diags.Error())
 			}
+			vals = append(vals, val)
 		}
+		var triggerVal cty.Value
+		if len(vals) == 1 {
+			triggerVal = vals[0]
+		} else {
+			triggerVal = cty.TupleVal(vals)
+		}
+		pv, err := transform.CtyToPropertyValue(triggerVal)
+		if err != nil {
+			return nil, fmt.Errorf("converting replace_triggered_by on %q: %w",
+				res.Type+"."+res.Name, err)
+		}
+		opts.ReplacementTrigger = pv
 	}
 
 	// Handle inline import_id attribute
@@ -1382,37 +1672,27 @@ func (e *Engine) evaluateAliases(expr hcl.Expression) ([]Alias, error) {
 	for it.Next() {
 		_, elem := it.Element()
 		if elem.Type() == cty.String {
-			aliases = append(aliases, Alias{URN: elem.AsString()})
+			aliases = append(aliases, Alias{URN: ctyAsString(elem)})
 		} else if elem.Type().IsObjectType() {
 			spec := &AliasSpec{}
 			objType := elem.Type()
 			if objType.HasAttribute("name") {
-				if v := elem.GetAttr("name"); v.Type() == cty.String {
-					spec.Name = v.AsString()
-				}
+				spec.Name = ctyAsString(elem.GetAttr("name"))
 			}
 			if objType.HasAttribute("type") {
-				if v := elem.GetAttr("type"); v.Type() == cty.String {
-					spec.Type = v.AsString()
-				}
+				spec.Type = ctyAsString(elem.GetAttr("type"))
 			}
 			if objType.HasAttribute("stack") {
-				if v := elem.GetAttr("stack"); v.Type() == cty.String {
-					spec.Stack = v.AsString()
-				}
+				spec.Stack = ctyAsString(elem.GetAttr("stack"))
 			}
 			if objType.HasAttribute("project") {
-				if v := elem.GetAttr("project"); v.Type() == cty.String {
-					spec.Project = v.AsString()
-				}
+				spec.Project = ctyAsString(elem.GetAttr("project"))
 			}
 			if objType.HasAttribute("parent_urn") {
-				if v := elem.GetAttr("parent_urn"); v.Type() == cty.String {
-					spec.ParentURN = v.AsString()
-				}
+				spec.ParentURN = ctyAsString(elem.GetAttr("parent_urn"))
 			}
 			if objType.HasAttribute("no_parent") {
-				if v := elem.GetAttr("no_parent"); v.Type() == cty.Bool {
+				if v, _ := elem.GetAttr("no_parent").Unmark(); v.Type() == cty.Bool && !v.IsNull() && v.IsKnown() {
 					spec.NoParent = v.True()
 				}
 			}
@@ -1437,11 +1717,11 @@ func (e *Engine) packageRefForType(hclToken string) PackageRef {
 }
 
 func (e *Engine) knownProviders() []string {
-	if e.config.Pulumi == nil {
+	if e.config.Terraform == nil {
 		return nil
 	}
-	providers := make([]string, 0, len(e.config.Pulumi.RequiredProviders))
-	for name := range e.config.Pulumi.RequiredProviders {
+	providers := make([]string, 0, len(e.config.Terraform.RequiredProviders))
+	for name := range e.config.Terraform.RequiredProviders {
 		providers = append(providers, name)
 	}
 	return providers
@@ -1472,38 +1752,6 @@ func (e *Engine) hasFailedDependency(res *ast.Resource) bool {
 		}
 	}
 	return false
-}
-
-func ExtractSemverFromConstraint(constraint string) string {
-	// Remove common constraint operators
-	constraint = strings.TrimSpace(constraint)
-	constraint = strings.TrimPrefix(constraint, ">=")
-	constraint = strings.TrimPrefix(constraint, "~>")
-	constraint = strings.TrimPrefix(constraint, ">")
-	constraint = strings.TrimPrefix(constraint, "=")
-	constraint = strings.TrimPrefix(constraint, "^")
-	constraint = strings.TrimSpace(constraint)
-
-	// Handle multiple constraints (comma-separated) - take the first one
-	if idx := strings.Index(constraint, ","); idx >= 0 {
-		constraint = strings.TrimSpace(constraint[:idx])
-	}
-
-	// Validate it looks like a semver (digits and dots)
-	if constraint == "" {
-		return ""
-	}
-
-	// Ensure it has at least major.minor.patch format
-	parts := strings.Split(constraint, ".")
-	switch len(parts) {
-	case 1:
-		return parts[0] + ".0.0"
-	case 2:
-		return constraint + ".0"
-	default:
-		return constraint
-	}
 }
 
 // buildResourceName builds the Pulumi resource name from the logical name and instance key.
@@ -1603,6 +1851,7 @@ type ResourceOptions struct {
 	Version                 string
 	PluginDownloadURL       string
 	PackageRef              PackageRef
+	Hooks                   *ResourceHookBinding
 }
 
 // registerResource registers a resource with the Pulumi engine.
@@ -1643,6 +1892,7 @@ func (e *Engine) registerResource(
 		Version:                 opts.Version,
 		PluginDownloadURL:       opts.PluginDownloadURL,
 		PackageRef:              opts.PackageRef,
+		Hooks:                   opts.Hooks,
 	})
 	if err != nil {
 		return "", "", property.Map{}, err
@@ -1670,7 +1920,7 @@ func (e *Engine) processDataSource(ctx context.Context, node *graph.Node) error 
 func (e *Engine) processDataSourceInContext(
 	ctx context.Context, node *graph.Node, ds *ast.Resource, evalCtx *eval.Context,
 ) error {
-	funcSchema, err := packages.ResolveFunction(ctx, e.pkgLoader, e.knownProviders(), ds.Type)
+	funcSchema, err := e.resolveFunction(ctx, ds.Type)
 	if err != nil {
 		if diag := unknownTokenDiag("data source", ds.TypeRange, err); diag != err {
 			return diag
@@ -1688,12 +1938,11 @@ func (e *Engine) processDataSourceInContext(
 		return e.processRangedDataSource(ctx, node, ds, funcSchema, evalCtx, dsKey)
 	}
 
-	ctyOutputs, allDeps, err := e.invokeDataSourceOnce(ctx, node, ds, funcSchema, evalCtx)
+	ctyOutputs, err := e.invokeDataSourceOnce(ctx, node, ds, funcSchema, evalCtx)
 	if err != nil {
 		return err
 	}
 	evalCtx.SetDataSource(dsKey, ctyOutputs)
-	e.dataSourceDependencies.Set(dsKey, allDeps)
 	return nil
 }
 
@@ -1730,7 +1979,6 @@ func (e *Engine) processRangedDataSource(
 
 	result := expander.Expand(node)
 
-	var allDeps []resource.URN
 	var tupleOutputs []cty.Value
 	eachOutputs := make(map[string]cty.Value)
 	isForEach := ds.ForEach != nil
@@ -1743,7 +1991,7 @@ func (e *Engine) processRangedDataSource(
 			evalCtx.SetEach(*instance.EachKey, *instance.EachValue)
 		}
 
-		ctyOut, deps, invokeErr := e.invokeDataSourceOnce(ctx, node, ds, funcSchema, evalCtx)
+		ctyOut, invokeErr := e.invokeDataSourceOnce(ctx, node, ds, funcSchema, evalCtx)
 
 		if instance.Index != nil {
 			evalCtx.ClearCount()
@@ -1755,7 +2003,6 @@ func (e *Engine) processRangedDataSource(
 		if invokeErr != nil {
 			return invokeErr
 		}
-		allDeps = append(allDeps, deps...)
 		if isForEach {
 			eachOutputs[instance.EachKey.AsString()] = ctyOut
 		} else {
@@ -1779,22 +2026,32 @@ func (e *Engine) processRangedDataSource(
 	}
 
 	evalCtx.SetDataSource(dsKey, aggregated)
-	e.dataSourceDependencies.Set(dsKey, allDeps)
 	return nil
 }
 
 // invokeDataSourceOnce performs a single data-source invocation using the
 // current state of evalCtx (which may have each/count set by the caller).
-// It returns the converted outputs and the URNs this invocation depended on.
+// The returned outputs are marked with the URN deps gathered from inputs
+// and explicit depends_on, so downstream reads of data.X.Y carry them
+// without a separate dependency map.
 func (e *Engine) invokeDataSourceOnce(
 	ctx context.Context, node *graph.Node, ds *ast.Resource, funcSchema *schema.Function,
 	evalCtx *eval.Context,
-) (cty.Value, []resource.URN, error) {
+) (cty.Value, error) {
 	hclCtx := evalCtx.HCLContext()
 
-	var allDeps []resource.URN
+	var depMarks []any
+	seen := make(map[string]bool)
+	addURN := func(urn string) {
+		if urn == "" || seen[urn] {
+			return
+		}
+		seen[urn] = true
+		depMarks = append(depMarks, eval.DepMark(urn))
+	}
 
-	inputs, diags := transform.EvalFunctionWithSchema(ds.Config, funcSchema,
+	dataSourceMapping := e.dataSourceBodyMapping(ctx, ds.Type)
+	inputs, diags := transform.EvalFunctionWithSchema(ds.Config, funcSchema, dataSourceMapping,
 		func(propKey resource.PropertyKey, expr hcl.Expression, extraVars map[string]cty.Value) (cty.Value, hcl.Diagnostics) {
 			var val cty.Value
 			var diags hcl.Diagnostics
@@ -1809,27 +2066,14 @@ func (e *Engine) invokeDataSourceOnce(
 				return val, diags
 			}
 
-			for _, dep := range eval.ExtractDependencies(expr) {
-				fullDep := dep
-				if node.ModuleInfo != nil {
-					fullDep = node.ModuleInfo.Prefix() + dep
-				}
-				if resOutputs, ok := e.resourceOutputs.Get(fullDep); ok {
-					if urnVal := resOutputs.GetAttr("urn"); urnVal.Type() == cty.String {
-						allDeps = append(allDeps, resource.URN(urnVal.AsString()))
-					}
-				}
-				if dsKey, ok := strings.CutPrefix(fullDep, "data."); ok {
-					if dsDeps, exists := e.dataSourceDependencies.Get(dsKey); exists {
-						allDeps = append(allDeps, dsDeps...)
-					}
-				}
+			for _, urn := range eval.CollectDepURNs(val) {
+				addURN(urn)
 			}
 
 			return val, diags
 		})
 	if diags.HasErrors() {
-		return cty.NilVal, nil, diags
+		return cty.NilVal, diags
 	}
 
 	invokeReq := InvokeRequest{
@@ -1839,28 +2083,39 @@ func (e *Engine) invokeDataSourceOnce(
 	}
 
 	if ds.Provider != nil {
-		val, valDiags := e.evaluator.EvaluateExpression(ds.Provider)
-		if valDiags.HasErrors() {
-			return cty.NilVal, nil, fmt.Errorf("evaluating provider for data %s.%s: %s", ds.Type, ds.Name, valDiags.Error())
+		if ref := e.resolvePassThroughProvider(node.ModuleInfo, providerExprKey(ds.Provider)); ref != "" {
+			invokeReq.Provider = ref
+		} else {
+			val, valDiags := eval.NewEvaluator(evalCtx).EvaluateExpression(ds.Provider)
+			if valDiags.HasErrors() {
+				return cty.NilVal, fmt.Errorf("evaluating provider for data %s.%s: %s", ds.Type, ds.Name, valDiags.Error())
+			}
+			ref, err := providerRefFromCty(val)
+			if err != nil {
+				return cty.NilVal, fmt.Errorf("resolving provider for data %s.%s: %w", ds.Type, ds.Name, err)
+			}
+			invokeReq.Provider = ref
 		}
-		ref, err := providerRefFromCty(val)
-		if err != nil {
-			return cty.NilVal, nil, fmt.Errorf("resolving provider for data %s.%s: %w", ds.Type, ds.Name, err)
+	} else if node.ModuleInfo != nil {
+		pkg := packageNameFromResourceType(ds.Type)
+		resPrefix := node.ModuleInfo.Prefix()
+		if ref := e.resolvePassThroughProvider(node.ModuleInfo, pkg); ref != "" {
+			invokeReq.Provider = ref
+		} else if outputs, ok := e.resourceOutputs.Get(resPrefix + pkg); ok {
+			if ref, err := providerRefFromCty(outputs); err == nil {
+				invokeReq.Provider = ref
+			}
 		}
-		invokeReq.Provider = ref
-	}
-
-	if ds.Version != nil {
-		val, valDiags := ds.Version.Value(hclCtx)
-		if !valDiags.HasErrors() && val.Type() == cty.String {
-			invokeReq.Version = val.AsString()
+	} else {
+		if ref, ok := e.defaultProviders.Get(packageNameFromResourceType(ds.Type)); ok {
+			invokeReq.Provider = ref
 		}
 	}
 
 	if ds.PluginDownloadURL != nil {
 		val, valDiags := ds.PluginDownloadURL.Value(hclCtx)
 		if !valDiags.HasErrors() && val.Type() == cty.String {
-			invokeReq.PluginDownloadURL = val.AsString()
+			invokeReq.PluginDownloadURL = ctyAsString(val)
 		}
 	}
 
@@ -1874,24 +2129,32 @@ func (e *Engine) invokeDataSourceOnce(
 			fullDepKey = node.ModuleInfo.Prefix() + depKey
 		}
 		if outputs, ok := e.resourceOutputs.Get(fullDepKey); ok {
-			urnVal := outputs.GetAttr("urn")
-			if urnVal.Type() == cty.String {
-				allDeps = append(allDeps, resource.URN(urnVal.AsString()))
-			}
+			addURN(ctyAsString(outputs.GetAttr("urn")))
 		}
 	}
 
-	outputs, err := e.invokeFunction(ctx, invokeReq)
-	if err != nil {
-		return cty.NilVal, nil, fmt.Errorf("invoking data source: %w", err)
+	// Match the Node.js / Python SDK behavior: during preview, if any input
+	// to the invoke is unknown, skip the provider call and synthesize an
+	// all-unknown result.
+	var outputs property.Map
+	if !e.dryRun || !property.New(inputs).HasComputed() {
+		var err error
+		outputs, err = e.invokeFunction(ctx, invokeReq)
+		if err != nil {
+			return cty.NilVal, fmt.Errorf("invoking data source: %w", err)
+		}
 	}
 
-	ctyOutputs, err := transform.FunctionOutputToCty(outputs, funcSchema, e.dryRun)
+	ctyOutputs, err := transform.FunctionOutputToCty(outputs, funcSchema, dataSourceMapping, e.dryRun)
 	if err != nil {
-		return cty.NilVal, nil, fmt.Errorf("converting function outputs to HCL types: %w", err)
+		return cty.NilVal, fmt.Errorf("converting function outputs to HCL types: %w", err)
 	}
 
-	return ctyOutputs, allDeps, nil
+	for _, m := range depMarks {
+		ctyOutputs = eval.MarkOutputLeaves(ctyOutputs, m)
+	}
+
+	return ctyOutputs, nil
 }
 
 // processCall processes a call block (method invocation on a resource).
@@ -1912,7 +2175,7 @@ func (e *Engine) processCall(ctx context.Context, node *graph.Node) error {
 			resKey = k
 			resType = res.Type
 			var err error
-			resSchema, err = packages.ResolveResource(ctx, e.pkgLoader, e.knownProviders(), res.Type)
+			resSchema, err = e.resolveResource(ctx, res.Type)
 			if err != nil {
 				if diag := unknownTokenDiag("resource", res.TypeRange, err); diag != err {
 					return diag
@@ -1925,14 +2188,24 @@ func (e *Engine) processCall(ctx context.Context, node *graph.Node) error {
 	}
 
 	if resKey == "" {
-		// Try providers
-		if _, exists := e.config.Providers[call.ResourceName]; exists {
-			resKey = call.ResourceName
-			var err error
-			// Providers use their name as the key
-			providerToken := "pulumi_providers_" + e.config.Providers[call.ResourceName].Name
+		// Try providers — config.Providers is keyed by provider.Key(),
+		// so we search by alias / name instead of by ResourceName directly.
+		var matched *ast.Provider
+		for _, p := range e.config.Providers {
+			if p.Alias == call.ResourceName || (p.Alias == "" && p.Name == call.ResourceName) {
+				matched = p
+				break
+			}
+		}
+		if matched != nil {
+			resKey = matched.Key()
+			providerToken := "pulumi_providers_" + matched.Name
 			resType = providerToken
-			resSchema, err = packages.ResolveResource(ctx, e.pkgLoader, e.knownProviders(), providerToken)
+			pkg, err := packages.ResolvePackage(ctx, e.pkgLoader, e.knownProviders(), providerToken)
+			if err != nil {
+				return fmt.Errorf("resolving provider package for call: %w", err)
+			}
+			resSchema, err = pkg.Provider()
 			if err != nil {
 				return fmt.Errorf("resolving provider schema for call: %w", err)
 			}
@@ -1961,19 +2234,19 @@ func (e *Engine) processCall(ctx context.Context, node *graph.Node) error {
 		return fmt.Errorf("resource %q outputs not found", resKey)
 	}
 
-	urnVal := outputs.GetAttr("urn")
-	if urnVal.Type() != cty.String {
+	urnStr := ctyAsString(outputs.GetAttr("urn"))
+	if urnStr == "" {
 		return fmt.Errorf("resource %q missing URN", resKey)
 	}
-	urn := resource.URN(urnVal.AsString())
+	urn := resource.URN(urnStr)
 
 	// Build __self__ resource reference
 	var selfID property.Value
 	if resSchema.IsComponent && !isProviderResource {
 		selfID = property.New(property.Null)
 	} else {
-		idVal := outputs.GetAttr("id")
-		if idVal.Type() == cty.String && idVal.IsKnown() {
+		idVal, _ := outputs.GetAttr("id").Unmark()
+		if idVal.Type() == cty.String && idVal.IsKnown() && !idVal.IsNull() {
 			selfID = property.New(idVal.AsString())
 		} else if idVal.Type() == cty.String {
 			selfID = property.New(property.Computed)
@@ -1998,7 +2271,7 @@ func (e *Engine) processCall(ctx context.Context, node *graph.Node) error {
 		filteredFunc.Inputs = &filteredInputs
 	}
 
-	userArgs, diags := transform.EvalFunctionWithSchema(call.Config, &filteredFunc,
+	userArgs, diags := transform.EvalFunctionWithSchema(call.Config, &filteredFunc, nil,
 		func(_ resource.PropertyKey, expr hcl.Expression, extraVars map[string]cty.Value) (cty.Value, hcl.Diagnostics) {
 			if len(extraVars) > 0 {
 				childCtx := e.evaluator.Context().HCLContext().NewChild()
@@ -2021,7 +2294,7 @@ func (e *Engine) processCall(ctx context.Context, node *graph.Node) error {
 	}
 
 	// Convert return values to cty
-	ctyOutputs, err := transform.FunctionOutputToCty(ret, method.Function, e.dryRun)
+	ctyOutputs, err := transform.FunctionOutputToCty(ret, method.Function, nil, e.dryRun)
 	if err != nil {
 		return fmt.Errorf("converting call outputs to HCL types: %w", err)
 	}
@@ -2121,8 +2394,8 @@ type moduleLoaderAdapter struct {
 	loader *modules.Loader
 }
 
-func (a *moduleLoaderAdapter) LoadModule(source, workDir string) (*graph.LoadedModule, error) {
-	loaded, err := a.loader.LoadModule(source, workDir)
+func (a *moduleLoaderAdapter) LoadModule(source, version, workDir string) (*graph.LoadedModule, error) {
+	loaded, err := a.loader.LoadModule(source, version, workDir)
 	if err != nil {
 		return nil, err
 	}
@@ -2172,7 +2445,8 @@ func (e *Engine) processModuleVariable(node *graph.Node) error {
 
 		if hasInput {
 			var diags hcl.Diagnostics
-			val, diags = inputAttr.Expr.Value(parentEvalCtx.HCLContext())
+			hclCtx := parentEvalCtx.HCLContextWithIteration(inst.Index, inst.EachKey, inst.EachVal)
+			val, diags = inputAttr.Expr.Value(hclCtx)
 			if diags.HasErrors() {
 				return fmt.Errorf("evaluating module input %s: %s", varName, diags.Error())
 			}
@@ -2190,6 +2464,12 @@ func (e *Engine) processModuleVariable(node *graph.Node) error {
 			} else {
 				return fmt.Errorf("variable %q is required but no value was provided", varName)
 			}
+		}
+
+		// Fill in optional()-attribute defaults before type conversion so
+		// the result satisfies the declared object shape.
+		if v.TypeDefaults != nil && !val.IsNull() && val.IsKnown() {
+			val = v.TypeDefaults.Apply(val)
 		}
 
 		// Coerce the value to match the variable's type constraint.
@@ -2221,17 +2501,27 @@ func (e *Engine) processModuleInit(ctx context.Context, node *graph.Node) error 
 	parentURN := e.stackURN
 	parentEvalCtx := e.evaluator.Context()
 
-	// If this is a nested module, look up the parent instance URN.
+	// If this is a nested module, look up the parent instance URN. When the
+	// parent has zero instances (count=0 / for_each empty) the entire inner
+	// subtree must be skipped — registering an empty instances slice lets
+	// downstream per-instance work (vars, locals, nested modules, resources)
+	// loop zero times instead of falling back to the root context.
 	if modInfo.ParentPrefix() != "" {
 		parentInstances, ok := e.moduleInstances.Get(modInfo.ParentPrefix())
-		if ok && len(parentInstances) > 0 {
-			parentURN = parentInstances[0].URN
-			parentEvalCtx = parentInstances[0].EvalCtx
+		if !ok || len(parentInstances) == 0 {
+			e.moduleInstances.Set(modInfo.Prefix(), nil)
+			return nil
 		}
+		parentURN = parentInstances[0].URN
+		parentEvalCtx = parentInstances[0].EvalCtx
 	}
 
 	// Load the child module to get variable type constraints for input coercion.
-	childMod, err := e.moduleLoader.LoadModule(mod.Source, e.workDir)
+	loaderWorkDir := modInfo.ParentSourcePath
+	if loaderWorkDir == "" {
+		loaderWorkDir = e.workDir
+	}
+	childMod, err := e.moduleLoader.LoadModule(mod.Source, mod.Version, loaderWorkDir)
 	if err != nil {
 		return fmt.Errorf("loading module %s for input types: %w", mod.Source, err)
 	}
@@ -2279,22 +2569,13 @@ func (e *Engine) processModuleInit(ctx context.Context, node *graph.Node) error 
 		return nil
 	}
 
-	// Count expansion
 	if mod.Count != nil {
-		countVal, diags := mod.Count.Value(parentEvalCtx.HCLContext())
+		count, _, diags := eval.NewEvaluator(parentEvalCtx).EvaluateCount(mod.Count)
 		if diags.HasErrors() {
 			return fmt.Errorf("evaluating module count: %s", diags.Error())
 		}
-		if countVal.HasMark(eval.SensitiveMark) {
-			return hcl.Diagnostics{eval.SensitiveArgumentDiagnostic("count", mod.Count)}
-		}
-		if !countVal.Type().Equals(cty.Number) {
-			return fmt.Errorf("module count must be a number")
-		}
-		count, _ := countVal.AsBigFloat().Int64()
 		var instances []*moduleInstance
-		for i := range count {
-			idx := int(i)
+		for idx := range count {
 			instPath := instancePath(modInfo, &idx, nil)
 			componentOpts := &ResourceOptions{Parent: parentURN}
 			componentURN, _, _, err := e.registerComponentResource(ctx, componentType, instPath.LogicalName(), property.NewMap(inputs), componentOpts)
@@ -2318,21 +2599,15 @@ func (e *Engine) processModuleInit(ctx context.Context, node *graph.Node) error 
 		return nil
 	}
 
-	// ForEach expansion
-	forEachVal, diags := mod.ForEach.Value(parentEvalCtx.HCLContext())
+	forEach, diags := eval.NewEvaluator(parentEvalCtx).EvaluateForEach(mod.ForEach)
 	if diags.HasErrors() {
 		return fmt.Errorf("evaluating module for_each: %s", diags.Error())
 	}
-	if forEachVal.HasMark(eval.SensitiveMark) {
-		return hcl.Diagnostics{eval.SensitiveArgumentDiagnostic("for_each", mod.ForEach)}
-	}
-	if !forEachVal.CanIterateElements() {
-		return fmt.Errorf("module for_each must be a set or map")
-	}
+
 	var instances []*moduleInstance
-	it := forEachVal.ElementIterator()
-	for it.Next() {
-		k, v := it.Element()
+	for _, ks := range slices.Sorted(maps.Keys(forEach)) {
+		k := cty.StringVal(ks)
+		v := forEach[ks]
 		instPath := instancePath(modInfo, nil, &k)
 		componentOpts := &ResourceOptions{Parent: parentURN}
 		componentURN, _, _, err := e.registerComponentResource(ctx, componentType, instPath.LogicalName(), property.NewMap(inputs), componentOpts)
@@ -2617,6 +2892,9 @@ func (e *Engine) processOutput(_ context.Context, name string, output *ast.Outpu
 //   - an object carrying an `__ref` ResourceReference capsule (e.g., the result
 //     of a `call.<resource>.<method>` that returns a provider).
 func providerRefFromCty(val cty.Value) (string, error) {
+	if val.IsMarked() {
+		val, _ = val.Unmark()
+	}
 	if !val.IsKnown() {
 		return "", errors.New("provider value is not yet known")
 	}
@@ -2627,7 +2905,7 @@ func providerRefFromCty(val cty.Value) (string, error) {
 		return "", fmt.Errorf("provider value must be an object, got %s", val.Type().FriendlyName())
 	}
 	if val.Type().HasAttribute("__ref") {
-		refVal := val.GetAttr("__ref")
+		refVal, _ := val.GetAttr("__ref").Unmark()
 		if refVal.Type() != eval.ResourceReferenceCapsuleType {
 			return "", fmt.Errorf("provider value has __ref of unexpected type %s", refVal.Type().FriendlyName())
 		}
@@ -2642,32 +2920,14 @@ func providerRefFromCty(val cty.Value) (string, error) {
 		return string(ref.URN) + "::" + id, nil
 	}
 	if val.Type().HasAttribute("urn") && val.Type().HasAttribute("id") {
-		urnVal := val.GetAttr("urn")
-		idVal := val.GetAttr("id")
-		if urnVal.Type() != cty.String || idVal.Type() != cty.String {
-			return "", fmt.Errorf("provider value urn/id must be strings, got urn=%s id=%s",
-				urnVal.Type().FriendlyName(), idVal.Type().FriendlyName())
+		urn := ctyAsString(val.GetAttr("urn"))
+		id := ctyAsString(val.GetAttr("id"))
+		if urn == "" || id == "" {
+			return "", fmt.Errorf("provider value urn/id must be non-empty strings, got urn=%q id=%q", urn, id)
 		}
-		return urnVal.AsString() + "::" + idVal.AsString(), nil
+		return urn + "::" + id, nil
 	}
 	return "", errors.New("provider value is not a resource reference")
-}
-
-// camelToSnake converts a camelCase string to snake_case.
-// For example, "publicIp" becomes "public_ip", "vpcSecurityGroupIds" becomes "vpc_security_group_ids".
-func camelToSnake(s string) string {
-	var result strings.Builder
-	for i, r := range s {
-		if i > 0 && r >= 'A' && r <= 'Z' {
-			result.WriteByte('_')
-		}
-		if r >= 'A' && r <= 'Z' {
-			result.WriteRune(r + 32) // Convert to lowercase
-		} else {
-			result.WriteRune(r)
-		}
-	}
-	return result.String()
 }
 
 // RunFromDirectory parses and executes an HCL program from a directory.
@@ -2707,61 +2967,157 @@ func Validate(config *ast.Config) []error {
 	return errs
 }
 
-// evaluateCheckRules evaluates a list of preconditions or postconditions.
-// Returns an error if any check fails, with the evaluated error message.
-func (e *Engine) evaluateCheckRules(
-	rules []*ast.CheckRule,
-	resourceName string,
-	phase string,
+// bindPreconditionHooks registers a hook per precondition and binds it to
+// BeforeCreate/BeforeUpdate so a false condition blocks the operation.
+//
+// The HCL eval context is snapshotted at registration so the async callback
+// sees the per-instance count/each/self that was in scope here — by the time
+// the callback fires, processing has moved on. Other resources' outputs are
+// pinned too; graph order guarantees all referenced resources are settled
+// by registration time. Unknown values defer (return nil) per TF's
+// "known after apply" semantics.
+func (e *Engine) bindPreconditionHooks(
+	ctx context.Context,
+	res *ast.Resource,
+	instance *graph.ExpandedResource,
+	evalCtx *eval.Context,
+	opts *ResourceOptions,
 ) error {
-	for i, rule := range rules {
-		// Evaluate the condition
-		condVal, diags := e.evaluator.EvaluateExpression(rule.Condition)
-		if diags.HasErrors() {
-			return fmt.Errorf("evaluating %s %d for %s: %s", phase, i+1, resourceName, diags.Error())
-		}
-
-		// Check if condition is true
-		if condVal.Type() != cty.Bool {
-			return fmt.Errorf("%s %d for %s: condition must be a boolean", phase, i+1, resourceName)
-		}
-
-		if condVal.True() {
-			// Condition passed, continue to next rule
-			continue
-		}
-
-		// Condition failed - evaluate the error message
-		msgVal, msgDiags := e.evaluator.EvaluateExpression(rule.ErrorMessage)
-		if msgDiags.HasErrors() {
-			return fmt.Errorf("%s %d for %s failed (could not evaluate error message: %s)",
-				phase, i+1, resourceName, msgDiags.Error())
-		}
-
-		var errMsg string
-		if msgVal.Type() == cty.String {
-			errMsg = msgVal.AsString()
-		} else {
-			errMsg = fmt.Sprintf("%s check failed", phase)
-		}
-
-		return fmt.Errorf("%s for %s: %s", phase, resourceName, errMsg)
+	if opts.Hooks == nil {
+		opts.Hooks = &ResourceHookBinding{}
 	}
-
+	hclSnapshot := evalCtx.HCLContext()
+	for i, rule := range res.Preconditions {
+		rule, index := rule, i+1
+		hookName := fmt.Sprintf("%s:precondition:%d", instance.Key, i)
+		callback := func(_ context.Context, _ *ResourceHookArgs) error {
+			return evaluatePrecondition(rule, hclSnapshot, index, instance.Key)
+		}
+		if err := e.resmon.RegisterResourceHook(ctx, hookName, callback, ResourceHookOptions{
+			OnDryRun: true,
+		}); err != nil {
+			return fmt.Errorf("registering precondition hook: %w", err)
+		}
+		opts.Hooks.BeforeCreate = append(opts.Hooks.BeforeCreate, hookName)
+		opts.Hooks.BeforeUpdate = append(opts.Hooks.BeforeUpdate, hookName)
+	}
 	return nil
+}
+
+// bindPostconditionHooks registers a hook per postcondition and binds it to
+// AfterCreate/AfterUpdate. The hook fires after the resource is created or
+// updated; the engine supplies the resource's new outputs as `self` in the
+// callback. Failed postconditions surface as deployment errors but do not
+// unwind the resource registration — same as TF.
+func (e *Engine) bindPostconditionHooks(
+	ctx context.Context,
+	res *ast.Resource,
+	resSchema *schema.Resource,
+	mapping *bridge.BodyMapping,
+	instance *graph.ExpandedResource,
+	evalCtx *eval.Context,
+	opts *ResourceOptions,
+) error {
+	if opts.Hooks == nil {
+		opts.Hooks = &ResourceHookBinding{}
+	}
+	hclSnapshot := evalCtx.HCLContext()
+	dryRun := e.dryRun
+	for i, rule := range res.Postconditions {
+		rule, index := rule, i+1
+		hookName := fmt.Sprintf("%s:postcondition:%d", instance.Key, i)
+		callback := func(_ context.Context, args *ResourceHookArgs) error {
+			return evaluatePostcondition(rule, hclSnapshot, args.NewOutputs, resSchema, mapping, dryRun, index, instance.Key)
+		}
+		if err := e.resmon.RegisterResourceHook(ctx, hookName, callback, ResourceHookOptions{
+			OnDryRun: true,
+		}); err != nil {
+			return fmt.Errorf("registering postcondition hook: %w", err)
+		}
+		opts.Hooks.AfterCreate = append(opts.Hooks.AfterCreate, hookName)
+		opts.Hooks.AfterUpdate = append(opts.Hooks.AfterUpdate, hookName)
+	}
+	return nil
+}
+
+// evaluatePostcondition evaluates a postcondition with `self` bound to the
+// engine-supplied NewOutputs.
+func evaluatePostcondition(
+	rule *ast.CheckRule, hclCtx *hcl.EvalContext, newOutputs property.Map,
+	resSchema *schema.Resource, mapping *bridge.BodyMapping, dryRun bool, index int, resourceName string,
+) error {
+	outputObj, err := transform.ResourceOutputToCty(newOutputs, resSchema, mapping, dryRun)
+	if err != nil {
+		return fmt.Errorf("converting outputs for postcondition %d on %s: %w", index, resourceName, err)
+	}
+	selfCtx := hclCtx.NewChild()
+	selfCtx.Variables = map[string]cty.Value{"self": cty.ObjectVal(outputObj)}
+	condVal, diags := rule.Condition.Value(selfCtx)
+	if diags.HasErrors() {
+		return fmt.Errorf("evaluating postcondition %d for %s: %s", index, resourceName, diags.Error())
+	}
+	condVal, _ = condVal.Unmark()
+	if !condVal.IsKnown() {
+		return nil
+	}
+	if condVal.Type() != cty.Bool {
+		return fmt.Errorf("postcondition %d for %s: condition must be a boolean", index, resourceName)
+	}
+	if condVal.True() {
+		return nil
+	}
+	msgVal, msgDiags := rule.ErrorMessage.Value(selfCtx)
+	if msgDiags.HasErrors() {
+		return fmt.Errorf("postcondition %d for %s failed (could not evaluate error message: %s)",
+			index, resourceName, msgDiags.Error())
+	}
+	msg := "postcondition check failed"
+	if s := ctyAsString(msgVal); s != "" {
+		msg = s
+	}
+	return fmt.Errorf("postcondition for %s: %s", resourceName, msg)
+}
+
+// evaluatePrecondition returns nil when the rule holds or its condition is
+// unknown (deferred), or a formatted error when it fails.
+func evaluatePrecondition(rule *ast.CheckRule, hclCtx *hcl.EvalContext, index int, resourceName string) error {
+	condVal, diags := rule.Condition.Value(hclCtx)
+	if diags.HasErrors() {
+		return fmt.Errorf("evaluating precondition %d for %s: %s", index, resourceName, diags.Error())
+	}
+	condVal, _ = condVal.Unmark()
+	if !condVal.IsKnown() {
+		return nil
+	}
+	if condVal.Type() != cty.Bool {
+		return fmt.Errorf("precondition %d for %s: condition must be a boolean", index, resourceName)
+	}
+	if condVal.True() {
+		return nil
+	}
+	msgVal, msgDiags := rule.ErrorMessage.Value(hclCtx)
+	if msgDiags.HasErrors() {
+		return fmt.Errorf("precondition %d for %s failed (could not evaluate error message: %s)",
+			index, resourceName, msgDiags.Error())
+	}
+	msg := "precondition check failed"
+	if s := ctyAsString(msgVal); s != "" {
+		msg = s
+	}
+	return fmt.Errorf("precondition for %s: %s", resourceName, msg)
 }
 
 // checkPulumiVersion checks if the Pulumi CLI version satisfies the required version range.
 // The version requirement is specified via the pulumi block's requiredVersionRange attribute.
 func (e *Engine) checkPulumiVersion(ctx context.Context) error {
 	// Check if the pulumi block exists and has a version requirement
-	if e.config.Pulumi == nil || e.config.Pulumi.RequiredVersionRange == nil {
+	if e.config.Terraform == nil || e.config.Terraform.RequiredVersionRange == nil {
 		// No version requirement specified
 		return nil
 	}
 
 	// Evaluate the requiredVersionRange expression
-	versionVal, diags := e.evaluator.EvaluateExpression(e.config.Pulumi.RequiredVersionRange)
+	versionVal, diags := e.evaluator.EvaluateExpression(e.config.Terraform.RequiredVersionRange)
 	if diags.HasErrors() {
 		return fmt.Errorf("evaluating requiredVersionRange: %s", diags.Error())
 	}
@@ -2780,3 +3136,16 @@ func (e *Engine) checkPulumiVersion(ctx context.Context) error {
 }
 
 func ptr[T any](v T) *T { return &v }
+
+// ctyAsString reads a cty value as a string, tolerating marks (resource
+// output leaves carry DepMarks) and returning "" for null / unknown /
+// non-string. Use the cty API directly if you need to distinguish those.
+func ctyAsString(v cty.Value) string {
+	if v.IsMarked() {
+		v, _ = v.Unmark()
+	}
+	if v.IsNull() || !v.IsKnown() || v.Type() != cty.String {
+		return ""
+	}
+	return v.AsString()
+}

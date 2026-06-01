@@ -1,0 +1,29 @@
+terraform {
+  required_providers {
+    simple = {
+      source  = "pulumi/simple"
+      version = "2.0.0"
+    }
+  }
+}
+
+resource "simple_resource" "res2" {
+  lifecycle {
+    create_before_destroy = true
+  }
+  value = local.localVar
+}
+resource "simple_resource" "res1" {
+  lifecycle {
+    create_before_destroy = true
+  }
+  value = true
+}
+// This test asserts that PCL declaration order does not need to match usage order. That is a resource can be declared
+// lower in the file than it is first referenced.
+output "out" {
+  value = simple_resource.res2.value
+}
+locals {
+  localVar = simple_resource.res1.value
+}
