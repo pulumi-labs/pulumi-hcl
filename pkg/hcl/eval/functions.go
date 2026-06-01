@@ -1518,6 +1518,10 @@ var cidrNetmaskFunc = function.New(&function.Spec{
 			return cty.NilVal, fmt.Errorf("invalid CIDR: %s", err)
 		}
 
+		if network.IP.To4() == nil {
+			return cty.NilVal, fmt.Errorf("IPv6 addresses cannot have a netmask: %s", prefix)
+		}
+
 		mask := net.IP(network.Mask)
 		return cty.StringVal(mask.String()), nil
 	},
