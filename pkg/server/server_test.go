@@ -221,6 +221,148 @@ resource "subpackage_hello_world" "example" {}
 	}, resp.Packages[0])
 }
 
+// TestGetRequiredPackages_TransitiveModuleSource reproduces
+// https://github.com/pulumi-labs/pulumi-hcl/issues/184: a provider declared in
+// a child module's required_providers with a non-hashicorp source must be
+// resolved from that source, not defaulted to "hashicorp/<name>".
+//
+// GetRequiredPackages only consults the root config's RequiredProviders map, so
+// a provider declared solely in a child module has a nil entry there and
+// tfProviderSource falls back to "hashicorp/rollbar" — dropping both the
+// declared source ("rollbar/rollbar") and the version constraint.
+func TestGetRequiredPackages_TransitiveModuleSource(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "main.tf"), []byte(`
+module "child" {
+  source = "./child"
+}
+`), 0o600))
+
+	childDir := filepath.Join(dir, "child")
+	require.NoError(t, os.MkdirAll(childDir, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(childDir, "main.tf"), []byte(`
+terraform {
+  required_providers {
+    rollbar = {
+      source  = "rollbar/rollbar"
+      version = ">= 1.0"
+    }
+  }
+}
+`), 0o600))
+
+	host := &LanguageHost{}
+	resp, err := host.GetRequiredPackages(t.Context(), &pulumirpc.GetRequiredPackagesRequest{
+		Info: &pulumirpc.ProgramInfo{
+			ProgramDirectory: dir,
+			RootDirectory:    dir,
+			EntryPoint:       ".",
+		},
+	})
+	require.NoError(t, err)
+
+	assert.Empty(t, resp.Packages)
+	assert.Equal(t, []*pulumirpc.PackageSpec{{
+		Source:     "terraform-provider",
+		Parameters: []string{"rollbar/rollbar", ">= 1.0"},
+	}}, resp.Specs)
+}
+
+// TestGetRequiredPackages_SameSourceVersionIntersection mirrors tofu: two
+// modules requiring the same provider source are installed once, with their
+// version constraints unioned into one ", "-joined constraint. The
+// terraform-provider plugin then intersects them at resolve time (verified
+// end-to-end: ">= 3.0.0, < 3.2.0" resolves random v3.1.x), so an empty
+// intersection fails exactly as `tofu init` does.
+func TestGetRequiredPackages_SameSourceVersionIntersection(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "main.tf"), []byte(`
+module "a" { source = "./a" }
+module "b" { source = "./b" }
+`), 0o600))
+
+	for name, constraint := range map[string]string{"a": ">= 3.0", "b": "< 3.2"} {
+		sub := filepath.Join(dir, name)
+		require.NoError(t, os.MkdirAll(sub, 0o755))
+		require.NoError(t, os.WriteFile(filepath.Join(sub, "main.tf"), []byte(`
+terraform {
+  required_providers {
+    dns = {
+      source  = "hashicorp/dns"
+      version = "`+constraint+`"
+    }
+  }
+}
+`), 0o600))
+	}
+
+	host := &LanguageHost{}
+	resp, err := host.GetRequiredPackages(t.Context(), &pulumirpc.GetRequiredPackagesRequest{
+		Info: &pulumirpc.ProgramInfo{
+			ProgramDirectory: dir,
+			RootDirectory:    dir,
+			EntryPoint:       ".",
+		},
+	})
+	require.NoError(t, err)
+
+	assert.Empty(t, resp.Packages)
+	// Constraints are joined in sorted order, so the spec is deterministic
+	// regardless of module-walk order ("< 3.2" sorts before ">= 3.0").
+	assert.Equal(t, []*pulumirpc.PackageSpec{{
+		Source:     "terraform-provider",
+		Parameters: []string{"hashicorp/dns", "< 3.2, >= 3.0"},
+	}}, resp.Specs)
+}
+
+// TestGetRequiredPackages_DistinctSourcesSameLocalName mirrors tofu: provider
+// requirements are keyed by source, not local name, so two modules using the
+// same local name ("dns") for different sources yield two distinct installs.
+func TestGetRequiredPackages_DistinctSourcesSameLocalName(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "main.tf"), []byte(`
+module "a" { source = "./a" }
+module "b" { source = "./b" }
+`), 0o600))
+
+	for name, source := range map[string]string{"a": "hashicorp/dns", "b": "rollbar/rollbar"} {
+		sub := filepath.Join(dir, name)
+		require.NoError(t, os.MkdirAll(sub, 0o755))
+		require.NoError(t, os.WriteFile(filepath.Join(sub, "main.tf"), []byte(`
+terraform {
+  required_providers {
+    dns = {
+      source = "`+source+`"
+    }
+  }
+}
+`), 0o600))
+	}
+
+	host := &LanguageHost{}
+	resp, err := host.GetRequiredPackages(t.Context(), &pulumirpc.GetRequiredPackagesRequest{
+		Info: &pulumirpc.ProgramInfo{
+			ProgramDirectory: dir,
+			RootDirectory:    dir,
+			EntryPoint:       ".",
+		},
+	})
+	require.NoError(t, err)
+
+	assert.Empty(t, resp.Packages)
+	// Specs are sorted by source.
+	assert.Equal(t, []*pulumirpc.PackageSpec{
+		{Source: "terraform-provider", Parameters: []string{"hashicorp/dns"}},
+		{Source: "terraform-provider", Parameters: []string{"rollbar/rollbar"}},
+	}, resp.Specs)
+}
+
 // TestMissingNonPulumiSDKs_ImplicitProvider reproduces the tf_stack_test bug:
 // a program references `data "archive_file" ...` without declaring `archive`
 // in required_providers. The provider is *implicit* — its only mention is in

@@ -1,0 +1,6 @@
+kind: bug-fixes
+body: Resolve a `required_providers` source declared in a child module from its declared source instead of defaulting to the `hashicorp/` namespace
+time: 2026-06-01T19:11:38.000000+02:00
+custom:
+    Component: language-host
+    PR: "188"
