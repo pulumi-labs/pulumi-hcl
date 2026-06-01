@@ -43,8 +43,5 @@ func (d *Driver) execTf(t *testing.T, args ...string) ([]byte, error) {
 			cmd.String(), stdout.String(), stderr.String())
 		err = fmt.Errorf("%w: %s", err, stderr.String())
 	}
-	if stderrStr := stderr.String(); len(stderrStr) > 0 {
-		t.Logf("%q stderr:\n%s\n", cmd.String(), stderrStr)
-	}
 	return stdout.Bytes(), err
 }
