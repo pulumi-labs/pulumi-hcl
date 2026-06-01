@@ -623,6 +623,38 @@ func TestTypeFunctions(t *testing.T) {
 	}
 }
 
+// TestToNumber pins that `tonumber` parses the whole string as a decimal
+// number rather than truncating at the first non-digit character. A `%d`-style
+// parse would stop at the '.' in "3.14" or the 'e' in "1e2" and silently return
+// a truncated integer.
+func TestToNumber(t *testing.T) {
+	tests := []struct {
+		name     string
+		expr     string
+		expected cty.Value
+	}{
+		{"integer", `tonumber("42")`, cty.MustParseNumberVal("42")},
+		{"fraction", `tonumber("3.14")`, cty.MustParseNumberVal("3.14")},
+		{"exponent", `tonumber("1e2")`, cty.MustParseNumberVal("1e2")},
+		{"negative fraction", `tonumber("-2.5")`, cty.MustParseNumberVal("-2.5")},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := evalExpr(t, "/tmp", tt.expr)
+			assert.Equal(t, tt.expected, result)
+		})
+	}
+}
+
+// TestToNumberError pins that `tonumber` of a string that is not a decimal
+// number errors rather than returning a truncated value.
+func TestToNumberError(t *testing.T) {
+	_, err := toNumberFunc.Call([]cty.Value{cty.StringVal("12abc")})
+	assert.EqualError(t, err,
+		`cannot convert "12abc" to number; given string must be a decimal representation of a number`)
+}
+
 // TestCoalesceErrors pins that `coalesce` errors when every argument is skipped.
 // Both null and empty-string arguments are skipped, so an all-null or
 // all-empty-string call has no value to return and must fail rather than yield

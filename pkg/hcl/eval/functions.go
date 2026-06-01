@@ -1741,25 +1741,17 @@ var toNumberFunc = function.New(&function.Spec{
 	},
 	Type: function.StaticReturnType(cty.Number),
 	Impl: func(args []cty.Value, retType cty.Type) (cty.Value, error) {
-		val := args[0]
-		if val.Type() == cty.Number {
-			return val, nil
-		}
-		if val.Type() == cty.String {
-			s := val.AsString()
-			// Try parsing as integer first
-			var i int64
-			if _, err := fmt.Sscanf(s, "%d", &i); err == nil {
-				return cty.NumberIntVal(i), nil
+		ret, err := convert.Convert(args[0], cty.Number)
+		if err != nil {
+			val, _ := args[0].UnmarkDeep()
+			if val.Type() == cty.String && !val.IsNull() {
+				return cty.NilVal, fmt.Errorf(
+					"cannot convert %q to number; given string must be a decimal representation of a number",
+					val.AsString())
 			}
-			// Try parsing as float
-			var f float64
-			if _, err := fmt.Sscanf(s, "%f", &f); err == nil {
-				return cty.NumberFloatVal(f), nil
-			}
-			return cty.NilVal, fmt.Errorf("cannot convert %q to number", s)
+			return cty.NilVal, fmt.Errorf("cannot convert %s to number", val.Type().FriendlyName())
 		}
-		return cty.NilVal, fmt.Errorf("cannot convert %s to number", val.Type().FriendlyName())
+		return ret, nil
 	},
 })
 
