@@ -31,7 +31,6 @@ import (
 	"encoding/json"
 	"encoding/pem"
 	"fmt"
-	"math"
 	"net"
 	"os"
 	"path/filepath"
@@ -1810,11 +1809,7 @@ var toStringFunc = function.New(&function.Spec{
 		case cty.String:
 			return val, nil
 		case cty.Number:
-			f, _ := val.AsBigFloat().Float64()
-			if f == math.Trunc(f) {
-				return cty.StringVal(fmt.Sprintf("%d", int64(f))), nil
-			}
-			return cty.StringVal(fmt.Sprintf("%g", f)), nil
+			return convert.Convert(val, cty.String)
 		case cty.Bool:
 			return cty.StringVal(fmt.Sprintf("%t", val.True())), nil
 		// For complex types, JSON encode

@@ -579,6 +579,9 @@ func TestTypeFunctions(t *testing.T) {
 		expected cty.Value
 	}{
 		{"tostring", `tostring(42)`, cty.StringVal("42")},
+		{"tostring int beyond float64", `tostring(9007199254740993)`, cty.StringVal("9007199254740993")},
+		{"tostring int beyond int64", `tostring(12345678901234567890)`, cty.StringVal("12345678901234567890")},
+		{"tostring high-precision decimal", `tostring(123.456789012345678)`, cty.StringVal("123.456789012345678")},
 		{"tonumber", `tonumber("42")`, cty.NumberIntVal(42)},
 		{"tobool true", `tobool("true")`, cty.BoolVal(true)},
 		{"tobool false", `tobool("false")`, cty.BoolVal(false)},
