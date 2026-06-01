@@ -87,8 +87,9 @@ func TestStringFunctions(t *testing.T) {
 		// chomp
 		{"chomp", `chomp("hello\n")`, cty.StringVal("hello")},
 
-		// indent
-		{"indent", `indent(2, "hello\nworld")`, cty.StringVal("  hello\n  world")},
+		// indent pads after each newline, leaving the first line untouched.
+		{"indent", `indent(2, "hello\nworld")`, cty.StringVal("hello\n  world")},
+		{"indent pads blank line", `indent(2, "a\n\nb")`, cty.StringVal("a\n  \n  b")},
 
 		// title
 		{"title", `title("hello world")`, cty.StringVal("Hello World")},
