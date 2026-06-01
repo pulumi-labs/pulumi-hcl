@@ -262,8 +262,10 @@ func TestCollectionFunctions(t *testing.T) {
 		{"one single", `one(["hello"])`, cty.StringVal("hello")},
 		{"one empty", `one([])`, cty.NullVal(cty.DynamicPseudoType)},
 
-		// sum
+		// sum accumulates with arbitrary precision, so the exact result survives
+		// even when an input is not representable as a float64.
 		{"sum", `sum([1, 2, 3, 4])`, cty.NumberIntVal(10)},
+		{"sum precise", `sum([9007199254740993, 1])`, cty.NumberIntVal(9007199254740994)},
 
 		// min/max
 		{"min", `min(5, 2, 8)`, cty.NumberIntVal(2)},
@@ -638,6 +640,13 @@ func TestCoalesceErrors(t *testing.T) {
 			assert.EqualError(t, err, "no non-null, non-empty-string arguments")
 		})
 	}
+}
+
+// TestSumEmptyList pins that `sum` of an empty list errors, as Terraform does,
+// rather than returning zero.
+func TestSumEmptyList(t *testing.T) {
+	_, err := sumFunc.Call([]cty.Value{cty.ListValEmpty(cty.Number)})
+	assert.EqualError(t, err, "cannot sum an empty list")
 }
 
 // TestToSetToListPreserveEmptyElementType pins that `toset` / `tolist` over a
