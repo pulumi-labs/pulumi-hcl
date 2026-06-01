@@ -190,7 +190,33 @@ PATH="$PWD/bin:$PATH" go test ./tests/tfcompat/ -run 'Test(L1|L2)<Name>' -count=
 
 Both must now PASS (with `-count=1` — the rebuilt binary won't be picked up otherwise).
 
-## Step 6 — Changelog + branch + PR
+## Step 6 — Sweep for related divergences before shipping
+
+**Before you open the PR, check whether the same root cause produces a sibling
+bug, and fix it in the same PR.** A divergence almost never lives alone: the same
+helper, library choice, or code path usually backs a *sibling* operation, and
+shipping only one half leaves the matching bug behind for the next migration to
+hit.
+
+Look in particular for:
+
+- **The inverse operation.** encode ↔ decode, parse ↔ format, marshal ↔
+  unmarshal, get ↔ set. Fixing `yamlencode` (hand-rolled on `yaml.v3` instead of
+  go-cty-yaml) left an *identical* `yamldecode` bug — same wrong library, mirror
+  symptom — that had to ship as a separate follow-up. Don't make that mistake:
+  when you fix one direction, probe the other in the same session.
+- **Sibling functions sharing the impl.** Functions bound to the same hand-rolled
+  helper or the same family (`base64*`, `file*`, `cidr*`, the `to*` converters).
+  Grep for other call sites of any helper you touched.
+
+For each candidate, run a quick `tofu` probe against the equivalent pulumi-hcl
+result. If it also diverges in the migration-affecting direction, fold the fix
+into this PR and extend the one tfcompat case to cover both (one combined
+`l1_<family>` case is fine — e.g. `l1_yaml` exercising both `yamlencode` and
+`yamldecode`). If a sibling is genuinely out of scope, say so explicitly in the
+PR body rather than leaving it silently unfixed.
+
+## Step 7 — Changelog + branch + PR
 
 Model the flow on PR https://github.com/pulumi-labs/pulumi-hcl/pull/170 (the urlencode
 fix). Predict the next sequential PR number and use it for both the filename and the
