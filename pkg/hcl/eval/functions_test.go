@@ -724,6 +724,15 @@ func TestCidrHostOutOfRange(t *testing.T) {
 	assert.EqualError(t, err, "prefix of 24 does not accommodate a host numbered 256")
 }
 
+// TestCidrNetmaskIPv6 pins that `cidrnetmask` rejects an IPv6 prefix, as
+// OpenTofu does, rather than rendering the mask: a netmask is an IPv4-only
+// concept.
+func TestCidrNetmaskIPv6(t *testing.T) {
+	t.Parallel()
+	_, err := cidrNetmaskFunc.Call([]cty.Value{cty.StringVal("2001:db8::/32")})
+	assert.EqualError(t, err, "IPv6 addresses cannot have a netmask: 2001:db8::/32")
+}
+
 // TestToSetToListPreserveEmptyElementType pins that `toset` / `tolist` over a
 // typed-but-empty collection preserves the element type rather than collapsing
 // to `dynamic`.
