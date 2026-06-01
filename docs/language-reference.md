@@ -19,19 +19,19 @@ Pulumi HCL lets you write Pulumi programs using Terraform-compatible HCL syntax.
 - [Expressions](#expressions)
 - [Built-in Functions](#built-in-functions)
 - [Stack References](#stack-references)
-- [Pulumi Block](#pulumi-block)
+- [Terraform Block](#terraform-block)
 - [Terraform Compatibility](#terraform-compatibility)
 
 ## Overview
 
-A Pulumi HCL program consists of one or more `.hcl` files in a directory with a `Pulumi.yaml` specifying `runtime: hcl`:
+A Pulumi HCL program consists of one or more `.tf` files in a directory with a `Pulumi.yaml` specifying `runtime: hcl`:
 
 ```yaml
 name: my-project
 runtime: hcl
 ```
 
-HCL files declare infrastructure using blocks for [resources](#resources), [data sources](#data-sources), [variables](#variables), [locals](#locals), [outputs](#outputs), [providers](#providers), [modules](#modules), and Pulumi-specific constructs like [call blocks](#call-blocks). Programs also support [moved and import blocks](#moved-and-import-blocks) for resource lifecycle management, [stack references](#stack-references) for cross-stack access, and a [pulumi block](#pulumi-block) for version constraints and multi-language component declarations.
+HCL files declare infrastructure using blocks for [resources](#resources), [data sources](#data-sources), [variables](#variables), [locals](#locals), [outputs](#outputs), [providers](#providers), [modules](#modules), and Pulumi-specific constructs like [call blocks](#call-blocks). Programs also support [moved and import blocks](#moved-and-import-blocks) for resource lifecycle management, [stack references](#stack-references) for cross-stack access, and a [terraform block](#terraform-block) for version constraints and multi-language component declarations.
 
 The full set of [expressions](#expressions) and [built-in functions](#built-in-functions) from Terraform's HCL is available, along with Pulumi-specific asset/archive functions. See [Terraform Compatibility](#terraform-compatibility) for the small number of differences.
 
@@ -49,7 +49,7 @@ The full set of [expressions](#expressions) and [built-in functions](#built-in-f
 | `call`      | Invoke methods on resources                       |
 | `moved`     | Rename resources without recreation               |
 | `import`    | Import existing cloud resources                   |
-| `pulumi`    | Version constraints and component declarations    |
+| `terraform` | Version constraints and component declarations    |
 
 ## Variables
 
@@ -137,13 +137,13 @@ The first label is the resource type (Terraform-style, e.g. `aws_instance`). The
 
 ### Meta-Arguments
 
-| Argument     | Type       | Description                                            |
-|--------------|------------|--------------------------------------------------------|
-| `count`      | number     | Create multiple instances indexed by `count.index`     |
-| `for_each`   | map or set | Create instances keyed by `each.key` with `each.value` |
-| `depends_on` | list       | Explicit dependencies on other resources               |
-| `provider`   | reference  | Specific provider configuration to use                 |
-| `providers`  | list       | Explicit provider resources (component resources only) |
+| Argument     | Type       | Description                                                |
+|--------------|------------|------------------------------------------------------------|
+| `count`      | number     | Create multiple instances indexed by `count.index`         |
+| `for_each`   | map or set | Create instances keyed by `each.key` with `each.value`     |
+| `depends_on` | list       | Explicit dependencies on other resources                   |
+| `provider`   | reference  | Specific provider configuration to use                     |
+| `providers`  | list       | Explicit provider configurations (modules/components only) |
 
 ### Lifecycle Block
 
@@ -155,15 +155,17 @@ resource "aws_instance" "web" {
     create_before_destroy = true
     prevent_destroy       = true
     ignore_changes        = [tags]
+    replace_triggered_by  = [aws_instance.other]
   }
 }
 ```
 
-| Attribute               | Type      | Description                                              |
-|-------------------------|-----------|----------------------------------------------------------|
-| `create_before_destroy` | bool      | When `false`, deletes before replacing (Pulumi creates first by default) |
-| `prevent_destroy`       | bool      | Protect resource from accidental deletion (maps to Pulumi `protect`) |
-| `ignore_changes`        | list      | Property paths to exclude from diff detection            |
+| Attribute               | Type | Description                                                              |
+|-------------------------|------|--------------------------------------------------------------------------|
+| `create_before_destroy` | bool | When `true`, creates the replacement before destroying the old resource. |
+| `prevent_destroy`       | bool | Protect resource from accidental deletion (maps to Pulumi `protect`)     |
+| `ignore_changes`        | list | Property paths to exclude from diff detection                            |
+| `replace_triggered_by`  | list | Replace this resource when any referenced resource or attribute changes  |
 
 ### Timeouts Block
 
@@ -295,24 +297,25 @@ When using `for_each`, instances are keyed: `aws_instance.web["key"].id`.
 
 ## Resource Options
 
-These are Pulumi-specific meta-arguments available on resource blocks.
+These are Pulumi-specific meta-arguments. They live in a nested `pulumi` block:
 
 ```hcl
 resource "aws_instance" "web" {
   # ...
 
-  parent                     = module.my_component
-  additional_secret_outputs  = ["password"]
-  retain_on_delete           = true
-  deleted_with               = aws_vpc.main
-  replace_on_changes         = ["ami"]
-  replace_with               = [aws_instance.replacement]
-  hide_diffs                 = ["user_data"]
-  replacement_trigger        = var.force_replace
-  import_id                  = "i-1234567890abcdef0"
-  aliases                    = ["old-name"]
-  version                    = "6.0.0"
-  plugin_download_url        = "https://example.com/plugins"
+  pulumi {
+    parent                     = module.my_component
+    additional_secret_outputs  = ["password"]
+    retain_on_delete           = true
+    deleted_with               = aws_vpc.main
+    replace_on_changes         = ["ami"]
+    replace_with               = [aws_instance.replacement]
+    hide_diffs                 = ["user_data"]
+    import_id                  = "i-1234567890abcdef0"
+    aliases                    = ["old-name"]
+    version                    = "6.0.0"
+    plugin_download_url        = "https://example.com/plugins"
+  }
 }
 ```
 
@@ -325,17 +328,15 @@ resource "aws_instance" "web" {
 | `replace_with`              | list         | Resources whose replacement triggers replacement of this one |
 | `hide_diffs`                | list(string) | Property paths whose diffs should not be displayed           |
 | `replace_on_changes`        | list(string) | Property paths that force replacement when changed           |
-| `replacement_trigger`       | expression   | Expression whose change triggers replacement                 |
 | `import_id`                 | string       | Cloud resource ID to import                                  |
 | `aliases`                   | list         | Alternative names for this resource (used during renames)    |
 | `version`                   | string       | Provider plugin version                                      |
 | `plugin_download_url`       | string       | URL to download the provider plugin from                     |
+| `env_var_mappings`          | expression   | Environment variable remappings for the provider             |
 
-Provider resources (`resource "pulumi_providers_*"`) additionally accept:
-
-| Attribute          | Type       | Description                                      |
-|--------------------|------------|--------------------------------------------------|
-| `env_var_mappings` | expression | Environment variable remappings for the provider |
+To trigger replacement when another resource or attribute changes, use the
+standard Terraform [`replace_triggered_by`](#lifecycle-block) lifecycle
+argument.
 
 ## Data Sources
 
@@ -367,13 +368,17 @@ Providers supply the implementation for resources and data sources.
 
 ### Required Providers
 
-Declare provider requirements inside the `pulumi` block:
+Providers are resolved the same way as OpenTofu. By default they are looked up
+in the [OpenTofu registry](https://opentofu.org/registry/), so an unqualified
+`aws` resolves to `registry.opentofu.org/hashicorp/aws`. Declaring
+`required_providers` is only necessary to pin a source or version. Requirements
+go inside the `terraform` block:
 
 ```hcl
-pulumi {
+terraform {
   required_providers {
     aws = {
-      source  = "pulumi/aws"
+      source  = "hashicorp/aws"
       version = ">= 6.0"
     }
     random = {
@@ -384,7 +389,9 @@ pulumi {
 }
 ```
 
-Provider sources must use the `pulumi/` namespace (not `hashicorp/`).
+Sources prefixed with `pulumi/` consume a native Pulumi provider; any other
+source is bridged from its Terraform provider. See
+[docs/providers.md](providers.md) for the full resolution rules.
 
 ### Provider Configuration
 
@@ -416,22 +423,26 @@ resource "aws_instance" "web" {
 }
 ```
 
-### Provider Resources
+### Explicit Providers
 
-Providers can also be declared as resources for use with component resources:
+Pass an aliased provider configuration to a resource with the `provider`
+meta-argument, or to a component (module) with `providers`:
 
 ```hcl
-resource "pulumi_providers_aws" "explicit" {
+provider "aws" {
+  alias  = "explicit"
   region = "us-west-2"
 }
 
 resource "aws_instance" "web" {
-  providers = [pulumi_providers_aws.explicit]
+  provider = aws.explicit
   # ...
 }
 ```
 
-The `pulumi_providers_<name>` resource type creates an explicit provider instance. Pass it to component resources via the `providers` meta-argument.
+Pulumi-specific provider options (`version`, `plugin_download_url`,
+`env_var_mappings`, `additional_secret_outputs`) go in a nested `pulumi` block
+inside the `provider` block.
 
 ## Outputs
 
@@ -762,43 +773,43 @@ These Terraform functions have no equivalent:
 
 | Function          | Reason                                        |
 |-------------------|-----------------------------------------------|
-| `templatestring`  | Inline template rendering not supported       |
 | `plantimestamp`   | No Pulumi equivalent for plan-time timestamps |
 | `ephemeralasnull` | Pulumi has no ephemeral value concept         |
-| `issensitive`     | Not implemented                               |
 
 ## Stack References
 
-Access outputs from other Pulumi stacks using the `pulumi_stackreference` resource:
+Access outputs from other Pulumi stacks using the `pulumi_stack_reference` resource:
 
 ```hcl
-resource "pulumi_stackreference" "network" {
+resource "pulumi_stack_reference" "network" {
   name = "myorg/networking/prod"
 }
 
 output "vpc_id" {
-  value = pulumi_stackreference.network.outputs["vpc_id"]
+  value = pulumi_stack_reference.network.outputs["vpc_id"]
 }
 ```
 
-## Pulumi Block
+## Terraform Block
 
-The `pulumi` block configures Pulumi-specific settings.
+The `terraform` block declares provider requirements (see
+[Required Providers](#required-providers)) and other program-level settings.
 
 ### Version Constraints
 
 ```hcl
-pulumi {
+terraform {
   required_version_range = ">= 3.0.0"
 }
 ```
 
 ### Multi-Language Components
 
-The `component` and `package` blocks declare an HCL module as a reusable component consumable from any Pulumi language. See [Multi-Language Components](mlc.md) for full details.
+The `component` and `package` blocks declare an HCL module as a reusable component consumable from any Pulumi
+language. See [Multi-Language Components](mlc.md) for full details.
 
 ```hcl
-pulumi {
+terraform {
   component {
     name   = "VpcNetwork"
     module = "index"
@@ -812,28 +823,10 @@ pulumi {
 
 ## Terraform Compatibility
 
-Pulumi HCL is broadly compatible with Terraform's HCL syntax. This section covers the differences.
-
-### Required Changes
-
-Provider requirements move into the `pulumi` block (the top-level
-`terraform` block is not supported), and provider sources must use the
-`pulumi/` namespace:
-
-```hcl
-pulumi {
-  required_providers {
-    aws = {
-      source  = "pulumi/aws"  # not "hashicorp/aws"
-      version = ">= 6.0"
-    }
-  }
-}
-```
+Pulumi HCL aims to run valid Terraform configuration unchanged. This section covers the behavioral differences and the
+few unsupported features. If you find a case where `tofu` works and `pulumi` does not, please [open an issue](https://github.com/pulumi-labs/pulumi-hcl/issues/new).
 
 ### Behavioral Differences
-
-**Resource replacement order** — Pulumi creates the new resource before deleting the old one (opposite of Terraform). Set `create_before_destroy = false` in the `lifecycle` block to get Terraform's delete-first behavior.
 
 **Sensitive values** — Variables and outputs marked `sensitive = true` become Pulumi secrets, encrypted at rest in state.
 
@@ -841,22 +834,23 @@ pulumi {
 
 ### Feature Mappings
 
-| Terraform Feature       | Pulumi Equivalent      | Notes                               |
-|-------------------------|------------------------|-------------------------------------|
-| `prevent_destroy`       | `protect`              | Same behavior                       |
-| `ignore_changes`        | `ignoreChanges`        | Same behavior                       |
-| `create_before_destroy` | `deleteBeforeReplace`  | Inverted logic                      |
-| `moved` blocks          | `aliases`              | Renames without recreation          |
-| `import` blocks         | Import resource option | Imports existing resources          |
-| `timeouts`              | `customTimeouts`       | Same duration format                |
-| Modules                 | Component resources    | All source types supported          |
-| Provisioners            | Command provider       | `local-exec`, `remote-exec`, `file` |
+| Terraform Feature       | Pulumi Equivalent      | Notes                                    |
+|-------------------------|------------------------|------------------------------------------|
+| `prevent_destroy`       | `protect`              | Same behavior                            |
+| `ignore_changes`        | `ignoreChanges`        | Same behavior                            |
+| `create_before_destroy` | `deleteBeforeReplace`  | Inverted; defaults to TF delete-first    |
+| `replace_triggered_by`  | `replacementTrigger`   | Replaces when a referenced value changes |
+| `moved` blocks          | `aliases`              | Renames without recreation               |
+| `import` blocks         | Import resource option | Imports existing resources               |
+| `timeouts`              | `customTimeouts`       | Same duration format                     |
+| Modules                 | Component resources    | All source types supported               |
+| Provisioners            | Command provider       | `local-exec`, `remote-exec`, `file`      |
 
 ### Unsupported Features
 
-- **Top-level `terraform` block** — Provider requirements live in `pulumi { required_providers { ... } }`. State backends (`backend`, `cloud`) are not modeled; Pulumi manages state independently.
-- **`replace_triggered_by`** — Terraform cascades replacement when *other* resources change. Use Pulumi HCL's `replace_with` resource option for the same effect; the Terraform-syntax `replace_triggered_by` attribute on a `lifecycle` block produces an error.
-- **WinRM connections** — Only SSH is supported in `connection` blocks.
+- **`backend`, `cloud`, `required_version`** — Accepted inside the `terraform` block but ignored with a warning; Pulumi manages state independently and tracks its own version constraints via `required_version_range`.
+- **WinRM connections** — Only `type = "ssh"` is supported in `connection` blocks.
+- **`List<Object>` empty vs null** — HCL block syntax cannot distinguish between an empty and null `List<Object>`, a known incompatibility with some Pulumi programs.
 
 ### CLI Equivalents
 

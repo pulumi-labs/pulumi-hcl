@@ -219,7 +219,7 @@ func evalBlockWithSchema(config hcl.Body, props []*schema.Property, mapping *bri
 		key := storageKey(name, prop)
 		switch {
 		case isList:
-			resourceInputs[key] = unifyOrTuple(values)
+			resourceInputs[key] = blockListValue(values)
 		case len(values) == 1:
 			// TF block flattened to a single Pulumi object (MaxItemsOne).
 			resourceInputs[key] = values[0]
@@ -423,9 +423,9 @@ func evalDynamicBlocks(
 				}
 				// Per-element object types can diverge when content sets
 				// disjoint subsets of optional fields (e.g. `lookup(v, "k",
-				// null)` produces null-of-Dynamic for absent keys). Unify
-				// before cty.ListVal, which would otherwise panic.
-				resourceInputs[key] = unifyOrTuple(values)
+				// null)` produces null-of-Dynamic for absent keys), so fall
+				// back to a tuple rather than cty.ListVal, which would panic.
+				resourceInputs[key] = blockListValue(values)
 			default:
 				// Singular block (MaxItemsOne): a dynamic expansion of length 1
 				// fills it; >1 is a user error the provider will validate.
@@ -1274,6 +1274,22 @@ func unifyOrObject(m map[string]cty.Value) cty.Value {
 		}
 	}
 	return cty.MapVal(out)
+}
+
+// blockListValue assembles the elements of a repeated TF block (each an object)
+// into a cty list when they share a type, or a tuple when an optional attribute
+// is set in some blocks and omitted in others so their object types differ.
+// Unlike unifyOrTuple it never collapses the objects into a map, which would
+// stringify attributes and destroy the object structure the resource schema
+// expects.
+func blockListValue(values []cty.Value) cty.Value {
+	first := values[0].Type()
+	for _, v := range values[1:] {
+		if !v.Type().Equals(first) {
+			return cty.TupleVal(values)
+		}
+	}
+	return cty.ListVal(values)
 }
 
 // unifyOrTuple is the slice counterpart to unifyOrObject: a homogeneous

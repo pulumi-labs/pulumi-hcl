@@ -43,13 +43,16 @@ import (
 
 	"github.com/apparentlymart/go-cidr/cidr"
 	"github.com/google/uuid"
+	"github.com/hashicorp/hcl/v2"
 	"github.com/hashicorp/hcl/v2/ext/customdecode"
 	"github.com/hashicorp/hcl/v2/ext/tryfunc"
+	"github.com/hashicorp/hcl/v2/hclsyntax"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/resource/archive"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/resource/asset"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/resource/urn"
 	"github.com/pulumi/pulumi/sdk/v3/go/property"
 	"github.com/zclconf/go-cty/cty"
+	"github.com/zclconf/go-cty/cty/convert"
 	"github.com/zclconf/go-cty/cty/function"
 	"github.com/zclconf/go-cty/cty/function/stdlib"
 	"golang.org/x/crypto/bcrypt"
@@ -219,6 +222,19 @@ func Functions(baseDir string) map[string]function.Function {
 		"remoteAsset":   remoteAssetFunc(),
 		"remoteArchive": remoteArchiveFunc(),
 	}
+
+	// templatestring renders an arbitrary string as a template. The functions
+	// available inside that template are every function except the template
+	// functions themselves, which keeps a template from invoking itself
+	// recursively without bound.
+	nestedTemplateFuncs := make(map[string]function.Function, len(funcs))
+	for name, fn := range funcs {
+		if name == "templatefile" || name == "templatestring" {
+			continue
+		}
+		nestedTemplateFuncs[name] = fn
+	}
+	funcs["templatestring"] = templateStringFunc(nestedTemplateFuncs)
 
 	return funcs
 }
@@ -988,6 +1004,60 @@ func templateFileFunc(baseDir string) function.Function {
 			return cty.StringVal(result), nil
 		},
 	})
+}
+
+// templateStringFunc renders its first argument as an HCL template using the
+// variables in its second argument. nestedFuncs is the function table made
+// available inside the template.
+func templateStringFunc(nestedFuncs map[string]function.Function) function.Function {
+	return function.New(&function.Spec{
+		Params: []function.Parameter{
+			{Name: "template", Type: cty.String},
+			{Name: "vars", Type: cty.DynamicPseudoType},
+		},
+		Type: function.StaticReturnType(cty.String),
+		Impl: func(args []cty.Value, retType cty.Type) (cty.Value, error) {
+			return renderTemplate(args[0], args[1], nestedFuncs)
+		},
+	})
+}
+
+// renderTemplate parses templateVal as an HCL template and evaluates it with
+// varsVal's entries in scope plus the supplied functions, returning the
+// rendered string. Marks on the inputs propagate to the result.
+func renderTemplate(
+	templateVal, varsVal cty.Value, funcs map[string]function.Function,
+) (cty.Value, error) {
+	templateVal, tmplMarks := templateVal.Unmark()
+
+	expr, diags := hclsyntax.ParseTemplate(
+		[]byte(templateVal.AsString()), "<templatestring>", hcl.InitialPos)
+	if diags.HasErrors() {
+		return cty.NilVal, diags
+	}
+
+	vars := map[string]cty.Value{}
+	if !varsVal.IsNull() {
+		if ty := varsVal.Type(); !ty.IsObjectType() && !ty.IsMapType() {
+			return cty.NilVal, fmt.Errorf(
+				"vars argument must be an object, got %s", ty.FriendlyName())
+		}
+		for it := varsVal.ElementIterator(); it.Next(); {
+			k, v := it.Element()
+			vars[k.AsString()] = v
+		}
+	}
+
+	val, diags := expr.Value(&hcl.EvalContext{Variables: vars, Functions: funcs})
+	if diags.HasErrors() {
+		return cty.NilVal, diags
+	}
+
+	val, err := convert.Convert(val, cty.String)
+	if err != nil {
+		return cty.NilVal, err
+	}
+	return val.WithMarks(tmplMarks), nil
 }
 
 // Date and time functions

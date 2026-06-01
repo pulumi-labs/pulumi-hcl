@@ -1,6 +1,6 @@
 # Providers
 
-Pulumi HCL discovers providers are discovered the same way as `opentofu`. If
+Pulumi HCL discovers providers the same way as `opentofu`. If
 `terraform.required_providers` is set, then that overrides the default provider
 information.
 
@@ -85,3 +85,48 @@ terraform {
 ```
 
 Pulumi providers require a semver version, instead of a full version constraint.
+
+## Configuration
+
+Configure a provider instance with a `provider` block, exactly like
+`opentofu`. Use `alias` to declare additional configurations of the same
+provider and select one on a resource with the `provider` meta-argument:
+
+```hcl
+provider "aws" {
+  region = "us-west-2"
+}
+
+provider "aws" {
+  alias  = "east"
+  region = "us-east-1"
+}
+
+resource "aws_instance" "web" {
+  provider = aws.east
+}
+```
+
+### Pulumi provider options
+
+Pulumi-specific provider options live in a nested `pulumi` block so they cannot
+collide with a provider's own configuration attributes:
+
+```hcl
+provider "aws" {
+  region = "us-west-2"
+
+  pulumi {
+    version             = "6.0.0"
+    plugin_download_url = "https://example.com/plugins"
+    env_var_mappings    = { AWS_REGION = "region" }
+  }
+}
+```
+
+| Option                      | Description                                          |
+|-----------------------------|------------------------------------------------------|
+| `version`                   | Provider plugin version                              |
+| `plugin_download_url`       | URL to download the provider plugin from             |
+| `env_var_mappings`          | Environment variable remappings for the provider     |
+| `additional_secret_outputs` | Provider output properties to encrypt in state       |

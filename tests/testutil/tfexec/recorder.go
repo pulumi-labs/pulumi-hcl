@@ -160,7 +160,7 @@ func wrapDataSource(typeName string, ds *schema.Resource, r *Recorder) *schema.R
 func snapshot(d *schema.ResourceData, sch map[string]*schema.Schema) map[string]any {
 	out := make(map[string]any, len(sch))
 	for k := range sch {
-		v := d.Get(k)
+		v := canonicalizeSets(d.Get(k))
 		// Roundtrip through JSON to canonicalize types (TF's set/map shapes
 		// can otherwise compare unequal across paths).
 		b, err := json.Marshal(v)
@@ -176,4 +176,35 @@ func snapshot(d *schema.ResourceData, sch map[string]*schema.Schema) map[string]
 		out[k] = n
 	}
 	return out
+}
+
+// canonicalizeSets replaces TF's *schema.Set values with the equivalent
+// ordered []any, recursing through lists and maps so nested sets are handled
+// too. json.Marshal can't encode a *schema.Set (its hash func field), and two
+// equal-content sets compare unequal across paths because those func fields
+// differ — so without this every set-typed attribute spuriously diverges.
+func canonicalizeSets(v any) any {
+	switch t := v.(type) {
+	case *schema.Set:
+		list := t.List()
+		out := make([]any, len(list))
+		for i, e := range list {
+			out[i] = canonicalizeSets(e)
+		}
+		return out
+	case []any:
+		out := make([]any, len(t))
+		for i, e := range t {
+			out[i] = canonicalizeSets(e)
+		}
+		return out
+	case map[string]any:
+		out := make(map[string]any, len(t))
+		for k, e := range t {
+			out[k] = canonicalizeSets(e)
+		}
+		return out
+	default:
+		return v
+	}
 }

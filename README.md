@@ -10,7 +10,7 @@ A Pulumi language plugin that enables running Pulumi against a Terraform HCL IaC
 This plugin allows you to use familiar Terraform/HCL syntax while leveraging Pulumi's state management, secrets handling, and cloud platform. It parses HCL files and translates them to Pulumi resource registrations at runtime.
 
 ```hcl
-# main.hcl
+# main.tf
 resource "aws_s3_bucket" "my_bucket" {
   bucket = "my-unique-bucket-name"
 
@@ -27,7 +27,8 @@ output "bucket_arn" {
 
 ## Installation
 
-Install the plugin onto your path:
+Pulumi HCL ships with the [`pulumi`](https://github.com/pulumi/pulumi) CLI. If you need the absolute latest version, you
+can install the plugin directly onto your path:
 
 ```bash
 go install github.com/pulumi-labs/pulumi-hcl/cmd/pulumi-language-hcl@latest  # for the language
@@ -44,10 +45,10 @@ runtime: hcl
 description: My HCL project
 ```
 
-2. Create HCL files (`.hcl` extension):
+2. Create HCL files (`.tf` extension):
 
 ```hcl
-# main.hcl
+# main.tf
 resource "random_pet" "my_pet" {
   length = 2
 }
@@ -240,11 +241,19 @@ import {
 
 ### Provider Configuration
 
+Providers are resolved the same way as OpenTofu. By default they are looked up
+in the [OpenTofu registry](https://opentofu.org/registry/), so unqualified
+sources such as `aws` resolve to `registry.opentofu.org/hashicorp/aws` and are
+bridged into Pulumi automatically — no `required_providers` entry is needed.
+
+Use the `terraform` block to pin a source or version, and `provider` blocks to
+configure provider instances:
+
 ```hcl
-pulumi {
+terraform {
   required_providers {
     aws = {
-      source  = "pulumi/aws"
+      source  = "hashicorp/aws"
       version = ">= 6.0"
     }
   }
@@ -255,7 +264,10 @@ provider "aws" {
 }
 ```
 
-The `terraform` block is not supported. Provider requirements live inside the `pulumi` block via `required_providers`. State is managed by Pulumi independently.
+Sources prefixed with `pulumi/` (e.g. `pulumi/aws`) consume a native Pulumi provider
+instead of bridging a Terraform one. `backend`, `cloud`, and `required_version` inside the
+`terraform` block are accepted for compatibility but ignored with a warning.  See
+[docs/providers.md](docs/providers.md) for details.
 
 ## Design Overview
 
@@ -281,7 +293,7 @@ The `terraform` block is not supported. Provider requirements live inside the `p
 │  ┌─────────────────────────────────────────────────────────────┐│
 │  │ Parser (pkg/hcl/parser)                                     ││
 │  │  - Uses hashicorp/hcl/v2 (MPL licensed)                     ││
-│  │  - Parses *.hcl files into AST                              ││
+│  │  - Parses *.tf files into AST                               ││
 │  └─────────────────────────────────────────────────────────────┘│
 │  ┌─────────────────────────────────────────────────────────────┐│
 │  │ AST (pkg/hcl/ast)                                           ││
@@ -348,14 +360,9 @@ Type resolution is conducted with the following algorithm:
 
 For example, `aws_ec2_instance` → provider `aws`, lookup key `ec2instance` → matches `aws:ec2/instance:Instance` in the AWS schema.
 
-### Name Conversion
-
-Pulumi HCL expects `snake_case` properties. The plugin ensures that the engine sees Pulumi's `camelCase` property
-names. Map keys are not translated.
-
 ## Multi-Language Components
 
-HCL modules can be published as reusable Pulumi components consumable from any language. See [docs/mlc.md](docs/mlc.md) for details on authoring MLCs with the `pulumi { component { ... } package { ... } }` syntax.
+HCL modules can be published as reusable Pulumi components consumable from any language. See [docs/mlc.md](docs/mlc.md) for details on authoring MLCs with the `terraform { component { ... } package { ... } }` syntax.
 
 ## Terraform Compatibility
 
@@ -368,32 +375,34 @@ This plugin supports the majority of Terraform's HCL syntax. For detailed compat
 - `variable` blocks with defaults and types
 - `locals` blocks
 - `output` blocks
-- `provider` blocks
-- `terraform.required_providers` block
+- `provider` blocks (including `alias` for multiple configurations)
+- `terraform` block with `required_providers`
 - `module` blocks (local, Git, Terraform Registry, HTTP sources)
 - `provisioner` blocks (`local-exec`, `remote-exec`, `file`)
+- `dynamic` blocks
 - `moved` blocks (map to Pulumi aliases)
 - `import` blocks (map to Pulumi import option)
+- `lifecycle` meta-arguments, including `replace_triggered_by`
 - Most Terraform built-in functions
 - Resource and data source references
 - Splat expressions (`resource.name[*].attr`)
 
 ### Not Supported
 
-- `replace_triggered_by` lifecycle attribute — use the `replace_with` resource option instead
-- `dynamic` blocks (dynamic block generation is not implemented)
+- `backend`, `cloud`, and `required_version` in the `terraform` block — accepted but ignored with a warning; Pulumi manages state independently
+- WinRM `connection` blocks — `connection` supports `type = "ssh"` only
 - `List<Object>` empty vs null distinction: HCL block syntax cannot distinguish between an empty and null `List<Object>`, which is a known incompatibility with some Pulumi programs
 
 ### Pulumi-Specific Extensions
 
 ```hcl
 # Stack references
-resource "pulumi_stackreference" "network" {
+resource "pulumi_stack_reference" "network" {
   name = "myorg/networking/prod"
 }
 
 output "vpc_id" {
-  value = pulumi_stackreference.network.outputs["vpc_id"]
+  value = pulumi_stack_reference.network.outputs["vpc_id"]
 }
 ```
 

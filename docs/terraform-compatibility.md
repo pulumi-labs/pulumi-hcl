@@ -2,6 +2,16 @@
 
 Pulumi HCL should be able to run all valid Terraform config programs without changes.
 
+## Known Limitations
+
+A small number of Terraform features are not modeled:
+
+- **`backend`, `cloud`, and `required_version`** in the `terraform` block are accepted but ignored with a warning. Pulumi manages state independently and tracks its own version constraints via `required_version_range`.
+- **WinRM `connection` blocks** are not supported — `connection` accepts `type = "ssh"` only.
+- **`List<Object>` empty vs null** — HCL block syntax cannot distinguish an empty `List<Object>` from a null one, a known incompatibility with some Pulumi programs.
+
+State files are not interchangeable: import existing resources with `pulumi import` rather than reusing a Terraform state file. By default `create_before_destroy` matches Terraform's delete-first replacement order.
+
 ## CLI Reference
 
 | Terraform           | Pulumi           |
@@ -23,7 +33,6 @@ Pulumi HCL supports nearly all of Terraform's built-in functions with identical 
 
 | Function          | Category        | Notes                                                                         |
 |-------------------|-----------------|-------------------------------------------------------------------------------|
-| `templatestring`  | String          | Renders an inline template string with a given context object.                |
 | `plantimestamp`   | Date and Time   | Returns the timestamp at the start of a plan, which has no Pulumi equivalent. |
 | `ephemeralasnull` | Type Conversion | Replaces ephemeral values with `null`; Pulumi has no ephemeral value concept. |
 
