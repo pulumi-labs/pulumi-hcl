@@ -14,11 +14,11 @@ resource "simple_resource" "targetOnly" {
   value = true
 }
 resource "simple_resource" "unrelated" {
+  depends_on = [simple_resource.dep]
   lifecycle {
     create_before_destroy = true
   }
-  depends_on = [simple_resource.dep]
-  value      = true
+  value = true
 }
 resource "simple_resource" "dep" {
   lifecycle {

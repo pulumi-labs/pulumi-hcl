@@ -20,16 +20,20 @@ resource "simple_resource" "withExplicitDefaultURL" {
   value = true
 }
 resource "simple_resource" "withCustomURL1" {
+  pulumi {
+    plugin_download_url = "https://custom.pulumi.test/provider1"
+  }
   lifecycle {
     create_before_destroy = true
   }
-  plugin_download_url = "https://custom.pulumi.test/provider1"
-  value               = true
+  value = true
 }
 resource "simple_resource" "withCustomURL2" {
+  pulumi {
+    plugin_download_url = "https://custom.pulumi.test/provider2"
+  }
   lifecycle {
     create_before_destroy = true
   }
-  plugin_download_url = "https://custom.pulumi.test/provider2"
-  value               = false
+  value = false
 }

@@ -14,7 +14,9 @@ resource "simple_resource" "target" {
   value = true
 }
 resource "simple_resource" "deletedWith" {
-  deleted_with = simple_resource.target
+  pulumi {
+    deleted_with = simple_resource.target
+  }
   lifecycle {
     create_before_destroy = true
   }

@@ -18,11 +18,11 @@ resource "fail_on_create_resource" "failing" {
   value = false
 }
 resource "simple_resource" "dependent" {
+  depends_on = [fail_on_create_resource.failing]
   lifecycle {
     create_before_destroy = true
   }
-  depends_on = [fail_on_create_resource.failing]
-  value      = true
+  value = true
 }
 resource "simple_resource" "dependent_on_output" {
   lifecycle {
@@ -37,9 +37,9 @@ resource "simple_resource" "independent" {
   value = true
 }
 resource "simple_resource" "double_dependency" {
+  depends_on = [simple_resource.independent, simple_resource.dependent_on_output]
   lifecycle {
     create_before_destroy = true
   }
-  depends_on = [simple_resource.independent, simple_resource.dependent_on_output]
-  value      = true
+  value = true
 }

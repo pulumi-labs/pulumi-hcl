@@ -744,6 +744,24 @@ func (ft *fileTransformer) emitFile(
 			sawCreateBeforeDestroy := false
 			for _, subBlock := range block.Body.Blocks {
 				switch subBlock.Type {
+				case "pulumi":
+					// Pulumi-specific resource options live in their
+					// own block; map them the same way as top-level
+					// attributes.
+					for _, attr := range sortedAttributes(subBlock.Body.Attributes) {
+						pclName, isOpt := resourceOptionHCLToPCL[attr.Name]
+						if !isOpt {
+							continue
+						}
+						var tokens hclwrite.Tokens
+						switch attr.Name {
+						case "additional_secret_outputs", "hide_diffs", "replace_on_changes":
+							tokens = ft.transformPropertyPathList(attr.Expr)
+						default:
+							tokens = ft.transformExpr(attr.Expr)
+						}
+						opts = append(opts, optEntry{pclName, tokens})
+					}
 				case "dynamic":
 					d := ft.convertDynamicBlock(blk.Body(), subBlock, res.InputProperties)
 					resultDiags = append(resultDiags, d...)
@@ -869,26 +887,31 @@ func (ft *fileTransformer) emitFile(
 			}
 			var opts []optEntry
 			for _, attr := range sortedAttributes(block.Body.Attributes) {
-				switch attr.Name {
-				case "alias":
-					continue
-				case "env_var_mappings":
-					opts = append(opts, optEntry{"envVarMappings", ft.transformExpr(attr.Expr)})
-					continue
-				case "plugin_download_url":
-					opts = append(opts, optEntry{"pluginDownloadURL", ft.transformExpr(attr.Expr)})
-					continue
-				case "version":
-					opts = append(opts, optEntry{"version", ft.transformExpr(attr.Expr)})
-					continue
-				case "additional_secret_outputs":
-					opts = append(opts, optEntry{"additionalSecretOutputs", ft.transformPropertyPathList(attr.Expr)})
+				if attr.Name == "alias" {
 					continue
 				}
 				name, _ := transform.PulumiCaseFromSnakeCase(attr.Name, providerRes.InputProperties)
 				start := attr.Range().Start.Byte
 				ft.emitLeadingComments(blk.Body(), start)
 				blk.Body().SetAttributeRaw(name, ft.withTrailing(ft.transformExpr(attr.Expr), start))
+			}
+			// Pulumi-specific provider options live in a nested `pulumi` block.
+			for _, subBlock := range block.Body.Blocks {
+				if subBlock.Type != "pulumi" {
+					continue
+				}
+				for _, attr := range sortedAttributes(subBlock.Body.Attributes) {
+					switch attr.Name {
+					case "env_var_mappings":
+						opts = append(opts, optEntry{"envVarMappings", ft.transformExpr(attr.Expr)})
+					case "plugin_download_url":
+						opts = append(opts, optEntry{"pluginDownloadURL", ft.transformExpr(attr.Expr)})
+					case "version":
+						opts = append(opts, optEntry{"version", ft.transformExpr(attr.Expr)})
+					case "additional_secret_outputs":
+						opts = append(opts, optEntry{"additionalSecretOutputs", ft.transformPropertyPathList(attr.Expr)})
+					}
+				}
 			}
 			if len(opts) > 0 {
 				optBlk := blk.Body().AppendNewBlock("options", nil)
@@ -1762,8 +1785,24 @@ func (ft *fileTransformer) invokeExprTokens(hclType, dsName string) hclwrite.Tok
 				})
 			}
 		}
-		// Convert blocks (array-of-object properties) to PCL array arguments.
-		argAttrs = append(argAttrs, ft.blocksToObjectAttrs(body.Blocks, inputProps)...)
+		// Pulumi-specific invoke options live in a nested `pulumi` block; the
+		// remaining blocks are array-of-object input properties.
+		var inputBlocks []*hclsyntax.Block
+		for _, b := range body.Blocks {
+			if b.Type != "pulumi" {
+				inputBlocks = append(inputBlocks, b)
+				continue
+			}
+			for _, attr := range sortedAttributes(b.Body.Attributes) {
+				if pclName, isOpt := invokeOptionHCLToPCL[attr.Name]; isOpt {
+					optAttrs = append(optAttrs, hclwrite.ObjectAttrTokens{
+						Name:  hclwrite.TokensForIdentifier(pclName),
+						Value: ft.transformExpr(attr.Expr),
+					})
+				}
+			}
+		}
+		argAttrs = append(argAttrs, ft.blocksToObjectAttrs(inputBlocks, inputProps)...)
 	}
 
 	argsTokens := hclwrite.TokensForObject(argAttrs)

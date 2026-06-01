@@ -8,14 +8,18 @@ terraform {
 }
 
 resource "simple_resource" "retainOnDelete" {
-  retain_on_delete = true
+  pulumi {
+    retain_on_delete = true
+  }
   lifecycle {
     create_before_destroy = true
   }
   value = true
 }
 resource "simple_resource" "notRetainOnDelete" {
-  retain_on_delete = false
+  pulumi {
+    retain_on_delete = false
+  }
   lifecycle {
     create_before_destroy = true
   }

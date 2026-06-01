@@ -14,9 +14,9 @@ resource "simple_resource" "noDependsOn" {
   value = true
 }
 resource "simple_resource" "withDependsOn" {
+  depends_on = [simple_resource.noDependsOn]
   lifecycle {
     create_before_destroy = true
   }
-  depends_on = [simple_resource.noDependsOn]
-  value      = false
+  value = false
 }

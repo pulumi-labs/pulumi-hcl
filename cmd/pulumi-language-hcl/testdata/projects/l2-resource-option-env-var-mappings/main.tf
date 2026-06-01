@@ -9,8 +9,10 @@ terraform {
 
 provider "simple" {
   alias = "prov"
-  env_var_mappings = {
-    "MY_VAR"    = "PROVIDER_VAR"
-    "OTHER_VAR" = "TARGET_VAR"
+  pulumi {
+    env_var_mappings = {
+      "MY_VAR"    = "PROVIDER_VAR"
+      "OTHER_VAR" = "TARGET_VAR"
+    }
   }
 }

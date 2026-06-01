@@ -8,7 +8,9 @@ terraform {
 }
 
 resource "simple_resource" "hideDiffs" {
-  hide_diffs = ["value"]
+  pulumi {
+    hide_diffs = ["value"]
+  }
   lifecycle {
     create_before_destroy = true
   }

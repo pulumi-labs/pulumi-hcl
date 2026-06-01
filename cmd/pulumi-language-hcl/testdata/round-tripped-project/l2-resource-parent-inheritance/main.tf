@@ -18,7 +18,9 @@ resource "simple_resource" "parent1" {
   value = true
 }
 resource "simple_resource" "child1" {
-  parent = simple_resource.parent1
+  pulumi {
+    parent = simple_resource.parent1
+  }
   lifecycle {
     create_before_destroy = true
   }
@@ -31,7 +33,9 @@ resource "simple_resource" "orphan1" {
   value = true
 }
 resource "simple_resource" "parent2" {
-  retain_on_delete = true
+  pulumi {
+    retain_on_delete = true
+  }
   lifecycle {
     prevent_destroy       = true
     create_before_destroy = true
@@ -39,15 +43,19 @@ resource "simple_resource" "parent2" {
   value = true
 }
 resource "simple_resource" "child2" {
-  parent = simple_resource.parent2
+  pulumi {
+    parent = simple_resource.parent2
+  }
   lifecycle {
     create_before_destroy = true
   }
   value = true
 }
 resource "simple_resource" "child3" {
-  parent           = simple_resource.parent2
-  retain_on_delete = false
+  pulumi {
+    parent           = simple_resource.parent2
+    retain_on_delete = false
+  }
   lifecycle {
     prevent_destroy       = false
     create_before_destroy = true

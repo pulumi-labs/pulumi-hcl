@@ -37,7 +37,9 @@ resource "simple_resource" "aliasNoParent" {
   value = true
 }
 resource "simple_resource" "aliasParent" {
-  parent = simple_resource.aliasURN
+  pulumi {
+    parent = simple_resource.aliasURN
+  }
   lifecycle {
     create_before_destroy = true
   }

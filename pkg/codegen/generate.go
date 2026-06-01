@@ -1061,38 +1061,53 @@ func (g *generator) genInvokeDataSource(body *hclwrite.Body, ds spilledDataSourc
 		}
 	}
 
-	// Third arg is the invoke options object
+	// Third arg is the invoke options object. Terraform-standard options
+	// (provider, depends_on) stay on the data block; Pulumi-specific options
+	// (parent, version, plugin_download_url) go in a nested `pulumi { }` block.
 	if len(invoke.Args) >= 3 {
 		if optsExpr, ok := invoke.Args[2].(*model.ObjectConsExpression); ok {
+			var pulumiBlockBody *hclwrite.Body
+			pulumiBody := func() *hclwrite.Body {
+				if pulumiBlockBody == nil {
+					pulumiBlockBody = block.Body().AppendNewBlock("pulumi", nil).Body()
+				}
+				return pulumiBlockBody
+			}
 			for _, item := range optsExpr.Items {
 				keyLit, ok := item.Key.(*model.LiteralValueExpression)
 				if !ok {
 					continue
 				}
 				switch keyLit.Value.AsString() {
-				case "provider", "parent":
+				case "provider":
 					tokens, d := g.exprTokens(item.Value, schema.AnyType)
 					diags = append(diags, d...)
 					if !d.HasErrors() {
-						block.Body().SetAttributeRaw(keyLit.Value.AsString(), tokens)
-					}
-				case "version":
-					tokens, d := g.exprTokens(item.Value, schema.StringType)
-					diags = append(diags, d...)
-					if !d.HasErrors() {
-						block.Body().SetAttributeRaw("version", tokens)
-					}
-				case "pluginDownloadUrl":
-					tokens, d := g.exprTokens(item.Value, schema.StringType)
-					diags = append(diags, d...)
-					if !d.HasErrors() {
-						block.Body().SetAttributeRaw("plugin_download_url", tokens)
+						block.Body().SetAttributeRaw("provider", tokens)
 					}
 				case "dependsOn":
 					tokens, d := g.exprTokens(item.Value, schema.AnyType)
 					diags = append(diags, d...)
 					if !d.HasErrors() {
 						block.Body().SetAttributeRaw("depends_on", tokens)
+					}
+				case "parent":
+					tokens, d := g.exprTokens(item.Value, schema.AnyType)
+					diags = append(diags, d...)
+					if !d.HasErrors() {
+						pulumiBody().SetAttributeRaw("parent", tokens)
+					}
+				case "version":
+					tokens, d := g.exprTokens(item.Value, schema.StringType)
+					diags = append(diags, d...)
+					if !d.HasErrors() {
+						pulumiBody().SetAttributeRaw("version", tokens)
+					}
+				case "pluginDownloadUrl":
+					tokens, d := g.exprTokens(item.Value, schema.StringType)
+					diags = append(diags, d...)
+					if !d.HasErrors() {
+						pulumiBody().SetAttributeRaw("plugin_download_url", tokens)
 					}
 				}
 			}
@@ -1157,32 +1172,40 @@ func (g *generator) genProvider(body *hclwrite.Body, r *pcl.Resource) hcl.Diagno
 
 	var diags hcl.Diagnostics
 
-	// Pulumi-specific options are emitted inline; provider blocks have no
-	// `options` sub-block.
+	// Pulumi-specific options go in a nested `pulumi { }` block so they cannot
+	// collide with the provider's own configuration attributes. `alias` is a
+	// Terraform-standard meta-argument and stays at the top level.
 	opts := r.Options
 	if opts != nil {
+		var pulumiBlockBody *hclwrite.Body
+		pulumiBody := func() *hclwrite.Body {
+			if pulumiBlockBody == nil {
+				pulumiBlockBody = block.Body().AppendNewBlock("pulumi", nil).Body()
+			}
+			return pulumiBlockBody
+		}
 		if opts.PluginDownloadURL != nil {
 			tokens, d := g.exprTokens(opts.PluginDownloadURL, schema.StringType)
 			diags = append(diags, d...)
 			if !d.HasErrors() {
-				block.Body().SetAttributeRaw("plugin_download_url", tokens)
+				pulumiBody().SetAttributeRaw("plugin_download_url", tokens)
 			}
 		}
 		if opts.Version != nil {
 			tokens, d := g.exprTokens(opts.Version, schema.StringType)
 			diags = append(diags, d...)
 			if !d.HasErrors() {
-				block.Body().SetAttributeRaw("version", tokens)
+				pulumiBody().SetAttributeRaw("version", tokens)
 			}
 		}
 		if opts.AdditionalSecretOutputs != nil {
-			g.genPropertyPathList(block.Body(), "additional_secret_outputs", opts.AdditionalSecretOutputs, &diags)
+			g.genPropertyPathList(pulumiBody(), "additional_secret_outputs", opts.AdditionalSecretOutputs, &diags)
 		}
 		if opts.EnvVarMappings != nil {
 			tokens, d := g.exprTokens(opts.EnvVarMappings, schema.AnyType)
 			diags = append(diags, d...)
 			if !d.HasErrors() {
-				block.Body().SetAttributeRaw("env_var_mappings", tokens)
+				pulumiBody().SetAttributeRaw("env_var_mappings", tokens)
 			}
 		}
 	}
@@ -1220,25 +1243,36 @@ func (g *generator) genResourceOptions(body *hclwrite.Body, r *pcl.Resource) hcl
 			func(s string) string { return s })
 	}
 
-	if opts == nil {
-		if len(schemaReplaceOnChanges) > 0 {
-			g.genReplaceOnChanges(body, schemaReplaceOnChanges, nil, &diags)
+	// pulumiBody lazily appends the `pulumi { }` block on first use so it is
+	// omitted entirely when there are no Pulumi-specific options.
+	var pulumiBlockBody *hclwrite.Body
+	pulumiBody := func() *hclwrite.Body {
+		if pulumiBlockBody == nil {
+			pulumiBlockBody = body.AppendNewBlock("pulumi", nil).Body()
 		}
+		return pulumiBlockBody
+	}
+
+	var optReplaceOnChanges model.Expression
+	if opts != nil {
+		optReplaceOnChanges = opts.ReplaceOnChanges
+	}
+	emitReplaceOnChanges := func() {
+		if len(schemaReplaceOnChanges) > 0 || len(extractPropertyNames(optReplaceOnChanges)) > 0 {
+			g.genReplaceOnChanges(pulumiBody(), schemaReplaceOnChanges, optReplaceOnChanges, &diags)
+		}
+	}
+
+	if opts == nil {
+		emitReplaceOnChanges()
 		g.genLifecycleBlock(body, nil, &diags)
 		return diags
 	}
 
+	// Terraform-standard meta-arguments stay at the top level.
 	if opts.Range != nil {
 		d := g.genRange(body, opts.Range)
 		diags = append(diags, d...)
-	}
-
-	if opts.Parent != nil {
-		tokens, d := g.exprTokens(opts.Parent, schema.AnyType)
-		diags = append(diags, d...)
-		if !d.HasErrors() {
-			body.SetAttributeRaw("parent", tokens)
-		}
 	}
 
 	if opts.Provider != nil {
@@ -1257,15 +1291,32 @@ func (g *generator) genResourceOptions(body *hclwrite.Body, r *pcl.Resource) hcl
 		}
 	}
 
+	if opts.DependsOn != nil {
+		tokens, d := g.exprTokens(opts.DependsOn, schema.AnyType)
+		diags = append(diags, d...)
+		if !d.HasErrors() {
+			body.SetAttributeRaw("depends_on", tokens)
+		}
+	}
+
+	// Pulumi-specific options go in the nested `pulumi { }` block.
+	if opts.Parent != nil {
+		tokens, d := g.exprTokens(opts.Parent, schema.AnyType)
+		diags = append(diags, d...)
+		if !d.HasErrors() {
+			pulumiBody().SetAttributeRaw("parent", tokens)
+		}
+	}
+
 	if opts.AdditionalSecretOutputs != nil {
-		g.genPropertyPathList(body, "additional_secret_outputs", opts.AdditionalSecretOutputs, &diags)
+		g.genPropertyPathList(pulumiBody(), "additional_secret_outputs", opts.AdditionalSecretOutputs, &diags)
 	}
 
 	if opts.RetainOnDelete != nil {
 		tokens, d := g.exprTokens(opts.RetainOnDelete, schema.BoolType)
 		diags = append(diags, d...)
 		if !d.HasErrors() {
-			body.SetAttributeRaw("retain_on_delete", tokens)
+			pulumiBody().SetAttributeRaw("retain_on_delete", tokens)
 		}
 	}
 
@@ -1273,7 +1324,7 @@ func (g *generator) genResourceOptions(body *hclwrite.Body, r *pcl.Resource) hcl
 		tokens, d := g.exprTokens(opts.DeletedWith, schema.AnyType)
 		diags = append(diags, d...)
 		if !d.HasErrors() {
-			body.SetAttributeRaw("deleted_with", tokens)
+			pulumiBody().SetAttributeRaw("deleted_with", tokens)
 		}
 	}
 
@@ -1281,16 +1332,54 @@ func (g *generator) genResourceOptions(body *hclwrite.Body, r *pcl.Resource) hcl
 		tokens, d := g.exprTokens(opts.ReplaceWith, schema.AnyType)
 		diags = append(diags, d...)
 		if !d.HasErrors() {
-			body.SetAttributeRaw("replace_with", tokens)
+			pulumiBody().SetAttributeRaw("replace_with", tokens)
 		}
 	}
 
 	if opts.HideDiffs != nil {
-		g.genPropertyPathList(body, "hide_diffs", opts.HideDiffs, &diags)
+		g.genPropertyPathList(pulumiBody(), "hide_diffs", opts.HideDiffs, &diags)
 	}
 
-	g.genReplaceOnChanges(body, schemaReplaceOnChanges, opts.ReplaceOnChanges, &diags)
+	emitReplaceOnChanges()
 
+	if opts.ImportID != nil {
+		tokens, d := g.exprTokens(opts.ImportID, schema.StringType)
+		diags = append(diags, d...)
+		if !d.HasErrors() {
+			pulumiBody().SetAttributeRaw("import_id", tokens)
+		}
+	}
+
+	if opts.EnvVarMappings != nil {
+		tokens, d := g.exprTokens(opts.EnvVarMappings, schema.AnyType)
+		diags = append(diags, d...)
+		if !d.HasErrors() {
+			pulumiBody().SetAttributeRaw("env_var_mappings", tokens)
+		}
+	}
+
+	// HCL doesn't bake versions into generated code, so always emit version when specified.
+	if opts.Version != nil {
+		tokens, d := g.exprTokens(opts.Version, schema.StringType)
+		diags = append(diags, d...)
+		if !d.HasErrors() {
+			pulumiBody().SetAttributeRaw("version", tokens)
+		}
+	}
+
+	if opts.PluginDownloadURL != nil && pcl.NeedsPluginDownloadURLResourceOption(opts.PluginDownloadURL, r.Schema) {
+		tokens, d := g.exprTokens(opts.PluginDownloadURL, schema.StringType)
+		diags = append(diags, d...)
+		if !d.HasErrors() {
+			pulumiBody().SetAttributeRaw("plugin_download_url", tokens)
+		}
+	}
+
+	if opts.Aliases != nil {
+		g.genAliases(pulumiBody(), opts.Aliases, &diags)
+	}
+
+	// Block-form meta-arguments come after attributes, at the top level.
 	g.genLifecycleBlock(body, opts, &diags)
 
 	if opts.CustomTimeouts != nil {
@@ -1309,51 +1398,6 @@ func (g *generator) genResourceOptions(body *hclwrite.Body, r *pcl.Resource) hcl
 				}
 			}
 		}
-	}
-
-	if opts.DependsOn != nil {
-		tokens, d := g.exprTokens(opts.DependsOn, schema.AnyType)
-		diags = append(diags, d...)
-		if !d.HasErrors() {
-			body.SetAttributeRaw("depends_on", tokens)
-		}
-	}
-
-	if opts.ImportID != nil {
-		tokens, d := g.exprTokens(opts.ImportID, schema.StringType)
-		diags = append(diags, d...)
-		if !d.HasErrors() {
-			body.SetAttributeRaw("import_id", tokens)
-		}
-	}
-
-	if opts.EnvVarMappings != nil {
-		tokens, d := g.exprTokens(opts.EnvVarMappings, schema.AnyType)
-		diags = append(diags, d...)
-		if !d.HasErrors() {
-			body.SetAttributeRaw("env_var_mappings", tokens)
-		}
-	}
-
-	// HCL doesn't bake versions into generated code, so always emit version when specified.
-	if opts.Version != nil {
-		tokens, d := g.exprTokens(opts.Version, schema.StringType)
-		diags = append(diags, d...)
-		if !d.HasErrors() {
-			body.SetAttributeRaw("version", tokens)
-		}
-	}
-
-	if opts.PluginDownloadURL != nil && pcl.NeedsPluginDownloadURLResourceOption(opts.PluginDownloadURL, r.Schema) {
-		tokens, d := g.exprTokens(opts.PluginDownloadURL, schema.StringType)
-		diags = append(diags, d...)
-		if !d.HasErrors() {
-			body.SetAttributeRaw("plugin_download_url", tokens)
-		}
-	}
-
-	if opts.Aliases != nil {
-		g.genAliases(body, opts.Aliases, &diags)
 	}
 
 	return diags

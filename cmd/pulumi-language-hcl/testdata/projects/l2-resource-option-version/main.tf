@@ -8,18 +8,22 @@ terraform {
 }
 
 resource "simple_resource" "withV2" {
+  pulumi {
+    version = "2.0.0"
+  }
   lifecycle {
     create_before_destroy = true
   }
-  version = "2.0.0"
-  value   = true
+  value = true
 }
 resource "simple_resource" "withV26" {
+  pulumi {
+    version = "26.0.0"
+  }
   lifecycle {
     create_before_destroy = true
   }
-  version = "26.0.0"
-  value   = false
+  value = false
 }
 resource "simple_resource" "withDefault" {
   lifecycle {

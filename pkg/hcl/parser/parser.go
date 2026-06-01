@@ -431,17 +431,10 @@ func (p *Parser) parseProviderBlock(config *ast.Config, block *hcl.Block) hcl.Di
 			provider.Alias = val.AsString()
 		}
 	}
-	if attr, ok := content.Attributes["env_var_mappings"]; ok {
-		provider.EnvVarMappings = attr.Expr
-	}
-	if attr, ok := content.Attributes["plugin_download_url"]; ok {
-		provider.PluginDownloadURL = attr.Expr
-	}
-	if attr, ok := content.Attributes["additional_secret_outputs"]; ok {
-		provider.AdditionalSecretOutputs = attr.Expr
-	}
-	if attr, ok := content.Attributes["version"]; ok {
-		provider.Version = attr.Expr
+	for _, subBlock := range content.Blocks {
+		if subBlock.Type == "pulumi" {
+			diags = append(diags, p.parsePulumiProviderOptions(subBlock, provider)...)
+		}
 	}
 
 	key := provider.Key()
@@ -456,6 +449,29 @@ func (p *Parser) parseProviderBlock(config *ast.Config, block *hcl.Block) hcl.Di
 	}
 
 	config.Providers[key] = provider
+	return diags
+}
+
+// parsePulumiProviderOptions parses a provider block's nested `pulumi { }`
+// block, extracting Pulumi-specific options onto provider. These options live
+// in their own block so they cannot collide with the provider's own
+// configuration attributes.
+func (p *Parser) parsePulumiProviderOptions(block *hcl.Block, provider *ast.Provider) hcl.Diagnostics {
+	content, diags := block.Body.Content(pulumiProviderOptionsSchema)
+
+	if attr, ok := content.Attributes["env_var_mappings"]; ok {
+		provider.EnvVarMappings = attr.Expr
+	}
+	if attr, ok := content.Attributes["plugin_download_url"]; ok {
+		provider.PluginDownloadURL = attr.Expr
+	}
+	if attr, ok := content.Attributes["additional_secret_outputs"]; ok {
+		provider.AdditionalSecretOutputs = attr.Expr
+	}
+	if attr, ok := content.Attributes["version"]; ok {
+		provider.Version = attr.Expr
+	}
+
 	return diags
 }
 
@@ -657,6 +673,43 @@ func (p *Parser) parseResourceBlock(config *ast.Config, block *hcl.Block, isData
 		}
 	}
 
+	// Parse nested blocks
+	for _, subBlock := range content.Blocks {
+		switch subBlock.Type {
+		case "pulumi":
+			diags = append(diags, p.parsePulumiResourceOptions(subBlock, resource)...)
+		case "lifecycle":
+			lcResult, lcDiags := p.parseLifecycleBlock(subBlock)
+			diags = append(diags, lcDiags...)
+			resource.Lifecycle = lcResult.Lifecycle
+			resource.Preconditions = append(resource.Preconditions, lcResult.Preconditions...)
+			resource.Postconditions = append(resource.Postconditions, lcResult.Postconditions...)
+		case "connection":
+			conn, connDiags := p.parseConnectionBlock(subBlock)
+			diags = append(diags, connDiags...)
+			resource.Connection = conn
+		case "provisioner":
+			prov, provDiags := p.parseProvisionerBlock(subBlock)
+			diags = append(diags, provDiags...)
+			if prov != nil {
+				resource.Provisioners = append(resource.Provisioners, prov)
+			}
+		case "timeouts":
+			timeouts, timeoutsDiags := p.parseTimeoutsBlock(subBlock)
+			diags = append(diags, timeoutsDiags...)
+			resource.Timeouts = timeouts
+		}
+	}
+
+	targetMap[key] = resource
+	return diags
+}
+
+// parsePulumiResourceOptions parses a resource or data block's nested
+// `pulumi { }` block, extracting Pulumi-specific options onto resource.
+func (p *Parser) parsePulumiResourceOptions(block *hcl.Block, resource *ast.Resource) hcl.Diagnostics {
+	content, diags := block.Body.Content(pulumiResourceOptionsSchema)
+
 	if attr, ok := content.Attributes["parent"]; ok {
 		traversal, travDiags := hcl.AbsTraversalForExpr(attr.Expr)
 		diags = append(diags, travDiags...)
@@ -743,6 +796,10 @@ func (p *Parser) parseResourceBlock(config *ast.Config, block *hcl.Block, isData
 		resource.EnvVarMappings = attr.Expr
 	}
 
+	if attr, ok := content.Attributes["version"]; ok {
+		resource.Version = attr.Expr
+	}
+
 	if attr, ok := content.Attributes["plugin_download_url"]; ok {
 		resource.PluginDownloadURL = attr.Expr
 	}
@@ -751,33 +808,6 @@ func (p *Parser) parseResourceBlock(config *ast.Config, block *hcl.Block, isData
 		resource.Aliases = attr.Expr
 	}
 
-	// Parse nested blocks
-	for _, subBlock := range content.Blocks {
-		switch subBlock.Type {
-		case "lifecycle":
-			lcResult, lcDiags := p.parseLifecycleBlock(subBlock)
-			diags = append(diags, lcDiags...)
-			resource.Lifecycle = lcResult.Lifecycle
-			resource.Preconditions = append(resource.Preconditions, lcResult.Preconditions...)
-			resource.Postconditions = append(resource.Postconditions, lcResult.Postconditions...)
-		case "connection":
-			conn, connDiags := p.parseConnectionBlock(subBlock)
-			diags = append(diags, connDiags...)
-			resource.Connection = conn
-		case "provisioner":
-			prov, provDiags := p.parseProvisionerBlock(subBlock)
-			diags = append(diags, provDiags...)
-			if prov != nil {
-				resource.Provisioners = append(resource.Provisioners, prov)
-			}
-		case "timeouts":
-			timeouts, timeoutsDiags := p.parseTimeoutsBlock(subBlock)
-			diags = append(diags, timeoutsDiags...)
-			resource.Timeouts = timeouts
-		}
-	}
-
-	targetMap[key] = resource
 	return diags
 }
 

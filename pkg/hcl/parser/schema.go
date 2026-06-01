@@ -71,12 +71,23 @@ var terraformPackageSchema = &hcl.BodySchema{
 	},
 }
 
-// providerSchema defines the structure of a provider block. Includes the
-// Pulumi-specific resource-option attributes since they can no longer be
-// set via a `resource` block.
+// providerSchema defines the structure of a provider block. Only `alias` (a
+// Terraform-standard meta-argument) lives at the top level; Pulumi-specific
+// options go in the nested `pulumi` block so they cannot collide with a
+// provider's own configuration attributes.
 var providerSchema = &hcl.BodySchema{
 	Attributes: []hcl.AttributeSchema{
 		{Name: "alias"},
+	},
+	Blocks: []hcl.BlockHeaderSchema{
+		{Type: "pulumi"},
+	},
+}
+
+// pulumiProviderOptionsSchema defines the Pulumi-specific options allowed
+// inside a provider block's nested `pulumi` block.
+var pulumiProviderOptionsSchema = &hcl.BodySchema{
+	Attributes: []hcl.AttributeSchema{
 		{Name: "env_var_mappings"},
 		{Name: "plugin_download_url"},
 		{Name: "additional_secret_outputs"},
@@ -119,7 +130,12 @@ var outputSchema = &hcl.BodySchema{
 	},
 }
 
-// resourceSchema defines the structure of a resource/data block.
+// resourceSchema defines the structure of a resource/data block. Only the
+// Terraform-standard meta-arguments live at the top level; Pulumi-specific
+// options go in the nested `pulumi` block so they cannot collide with a
+// resource's own provider-specific attributes (which may be named e.g.
+// "version" or "parent").
+//
 // Note: The actual resource attributes are provider-specific and not validated here.
 var resourceSchema = &hcl.BodySchema{
 	Attributes: []hcl.AttributeSchema{
@@ -128,8 +144,21 @@ var resourceSchema = &hcl.BodySchema{
 		{Name: "depends_on"},
 		{Name: "provider"},
 		{Name: "providers"},
+	},
+	Blocks: []hcl.BlockHeaderSchema{
+		{Type: "pulumi"},
+		{Type: "lifecycle"},
+		{Type: "connection"},
+		{Type: "provisioner", LabelNames: []string{"type"}},
+		{Type: "timeouts"},
+	},
+}
+
+// pulumiResourceOptionsSchema defines the Pulumi-specific options allowed
+// inside a resource or data block's nested `pulumi` block.
+var pulumiResourceOptionsSchema = &hcl.BodySchema{
+	Attributes: []hcl.AttributeSchema{
 		{Name: "additional_secret_outputs"},
-		// Pulumi-specific resource options
 		{Name: "parent"},
 		{Name: "retain_on_delete"},
 		{Name: "deleted_with"},
@@ -138,14 +167,9 @@ var resourceSchema = &hcl.BodySchema{
 		{Name: "replace_on_changes"},
 		{Name: "import_id"},
 		{Name: "env_var_mappings"},
+		{Name: "version"},
 		{Name: "plugin_download_url"},
 		{Name: "aliases"},
-	},
-	Blocks: []hcl.BlockHeaderSchema{
-		{Type: "lifecycle"},
-		{Type: "connection"},
-		{Type: "provisioner", LabelNames: []string{"type"}},
-		{Type: "timeouts"},
 	},
 }
 

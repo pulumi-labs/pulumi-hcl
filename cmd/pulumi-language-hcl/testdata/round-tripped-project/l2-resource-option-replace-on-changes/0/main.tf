@@ -10,7 +10,9 @@ terraform {
 // Stage 0: Initial resource creation
 // Scenario 1: Schema-based replaceOnChanges on replaceProp
 resource "replaceonchanges_resource_a" "schemaReplace" {
-  replace_on_changes = ["replaceProp"]
+  pulumi {
+    replace_on_changes = ["replaceProp"]
+  }
   lifecycle {
     create_before_destroy = true
   }
@@ -19,7 +21,9 @@ resource "replaceonchanges_resource_a" "schemaReplace" {
 }
 // Scenario 2: Option-based replaceOnChanges on value
 resource "replaceonchanges_resource_b" "optionReplace" {
-  replace_on_changes = ["value"]
+  pulumi {
+    replace_on_changes = ["value"]
+  }
   lifecycle {
     create_before_destroy = true
   }
@@ -27,7 +31,9 @@ resource "replaceonchanges_resource_b" "optionReplace" {
 }
 // Scenario 3: Both schema and option - will change value
 resource "replaceonchanges_resource_a" "bothReplaceValue" {
-  replace_on_changes = ["replaceProp", "value"]
+  pulumi {
+    replace_on_changes = ["replaceProp", "value"]
+  }
   lifecycle {
     create_before_destroy = true
   }
@@ -36,7 +42,9 @@ resource "replaceonchanges_resource_a" "bothReplaceValue" {
 }
 // Scenario 4: Both schema and option - will change replaceProp
 resource "replaceonchanges_resource_a" "bothReplaceProp" {
-  replace_on_changes = ["replaceProp", "value"]
+  pulumi {
+    replace_on_changes = ["replaceProp", "value"]
+  }
   lifecycle {
     create_before_destroy = true
   }
@@ -52,7 +60,9 @@ resource "replaceonchanges_resource_b" "regularUpdate" {
 }
 // Scenario 6: replaceOnChanges set but no change
 resource "replaceonchanges_resource_b" "noChange" {
-  replace_on_changes = ["value"]
+  pulumi {
+    replace_on_changes = ["value"]
+  }
   lifecycle {
     create_before_destroy = true
   }
@@ -60,7 +70,9 @@ resource "replaceonchanges_resource_b" "noChange" {
 }
 // Scenario 7: replaceOnChanges on value, but only replaceProp changes
 resource "replaceonchanges_resource_a" "wrongPropChange" {
-  replace_on_changes = ["replaceProp", "value"]
+  pulumi {
+    replace_on_changes = ["replaceProp", "value"]
+  }
   lifecycle {
     create_before_destroy = true
   }
@@ -69,7 +81,9 @@ resource "replaceonchanges_resource_a" "wrongPropChange" {
 }
 // Scenario 8: Multiple properties in replaceOnChanges array
 resource "replaceonchanges_resource_a" "multiplePropReplace" {
-  replace_on_changes = ["replaceProp", "value"]
+  pulumi {
+    replace_on_changes = ["replaceProp", "value"]
+  }
   lifecycle {
     create_before_destroy = true
   }

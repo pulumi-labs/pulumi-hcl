@@ -20,13 +20,15 @@ resource "simple_resource" "parent" {
 }
 // parent "res" to a new parent and alias it so it doesn't recreate.
 resource "conformance-component_simple" "res" {
-  parent = simple_resource.parent
+  pulumi {
+    parent = simple_resource.parent
+    aliases = [{
+      no_parent = true
+    }]
+  }
   lifecycle {
     create_before_destroy = true
   }
-  aliases = [{
-    no_parent = true
-  }]
   value = true
 }
 // Make a simple resource so that plugin detection works.

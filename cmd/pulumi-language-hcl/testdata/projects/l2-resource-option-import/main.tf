@@ -8,11 +8,13 @@ terraform {
 }
 
 resource "simple_resource" "import" {
+  pulumi {
+    import_id = "fakeID123"
+  }
   lifecycle {
     create_before_destroy = true
   }
-  import_id = "fakeID123"
-  value     = true
+  value = true
 }
 resource "simple_resource" "notImport" {
   lifecycle {
