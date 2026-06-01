@@ -20,10 +20,8 @@ import (
 	"github.com/pulumi-labs/pulumi-hcl/tests/testutil/tfcompat"
 )
 
-// TestL1YamlEncode exercises the `yamlencode` built-in: both paths must quote
-// mapping keys and string scalars, keep block sequences un-indented under their
-// key, and render booleans and nulls as bare tokens.
-func TestL1YamlEncode(t *testing.T) {
+// TestL1Yaml exercises the `yamlencode` and `yamldecode` built-ins.
+func TestL1Yaml(t *testing.T) {
 	t.Parallel()
-	tfcompat.RunCase(t, "l1_yamlencode", tfcompat.Case{})
+	tfcompat.RunCase(t, "l1_yaml", tfcompat.Case{})
 }
