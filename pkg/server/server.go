@@ -325,7 +325,7 @@ func missingNonPulumiSDKs(
 	return missing
 }
 
-func isBuiltinProvider(alias string) bool { return alias == "pulumi" }
+func isBuiltinProvider(alias string) bool { return alias == "pulumi" || alias == "terraform" }
 
 // usedProviders returns the sorted provider local names referenced by config
 // (required_providers, provider blocks, resource/data type prefixes). A

@@ -77,6 +77,9 @@ func (e *Engine) providerInfoForType(ctx context.Context, tfType string) *tfbrid
 // Pulumi has organised the type into modules) and falls back to the
 // convention-based resolver in pkg/hcl/packages when no mapping is available.
 func (e *Engine) resolveResource(ctx context.Context, tfType string) (*pulumischema.Resource, error) {
+	if tfType == terraformDataType {
+		return terraformDataSchema(), nil
+	}
 	if info := e.providerInfoForType(ctx, tfType); info != nil {
 		if r, ok := info.Resources[tfType]; ok && r != nil && string(r.Tok) != "" {
 			res, err := e.loadResourceByToken(ctx, info.Name, string(r.Tok))

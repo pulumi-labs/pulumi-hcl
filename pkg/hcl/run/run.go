@@ -1254,7 +1254,7 @@ func (e *Engine) registerResourceInstanceInContext(
 
 	resourceName := e.extractModuleResourceName(res.Name, instance.Key, node.ModuleInfo, modInst)
 
-	urn, id, outputs, err := e.registerResource(ctx, resSchema.Token, resourceName, resourceInputs, opts)
+	urn, id, outputs, err := e.registerResource(ctx, res.Type, resSchema.Token, resourceName, resourceInputs, opts)
 	if err != nil {
 		e.failedNodes.Set(instance.Key, fmt.Errorf("registering resource: %w", err))
 		return nil
@@ -1854,14 +1854,19 @@ type ResourceOptions struct {
 	Hooks                   *ResourceHookBinding
 }
 
-// registerResource registers a resource with the Pulumi engine.
+// registerResource registers a resource with the Pulumi engine. tfType is the
+// HCL resource type, used only to detect builtins (like terraform_data) that are
+// lowered onto a different engine resource at this schemaless boundary.
 func (e *Engine) registerResource(
 	ctx context.Context,
+	tfType string,
 	typeToken string,
 	name string,
 	inputs property.Map,
 	opts *ResourceOptions,
 ) (string, string, property.Map, error) {
+	inputs = lowerTerraformDataInputs(tfType, inputs, opts)
+
 	// Register with the resource monitor
 	resp, err := e.resmon.RegisterResource(ctx, RegisterResourceRequest{
 		Type:                    typeToken,
@@ -1898,7 +1903,7 @@ func (e *Engine) registerResource(
 		return "", "", property.Map{}, err
 	}
 
-	return resp.URN, resp.ID, resp.Outputs, nil
+	return resp.URN, resp.ID, lowerTerraformDataOutputs(tfType, resp.Outputs, opts), nil
 }
 
 // processDataSource processes a data source definition.

@@ -1,0 +1,6 @@
+kind: bug-fixes
+body: '`terraform_data` from the builtin `terraform` provider is handled internally (lowered onto the engine''s builtin `Stash` resource) instead of being resolved to a non-existent external plugin'
+time: 2026-06-01T17:30:00.000000+02:00
+custom:
+    Component: runtime
+    PR: "187"
