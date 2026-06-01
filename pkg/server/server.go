@@ -317,23 +317,31 @@ func collectProviders(
 	if config == nil {
 		return
 	}
+	var known []string
 	if config.Terraform != nil {
 		for alias := range config.Terraform.RequiredProviders {
 			set[alias] = struct{}{}
+			known = append(known, alias)
 		}
 	}
 	for _, p := range config.Providers {
 		set[p.Name] = struct{}{}
+		known = append(known, p.Name)
+	}
+	// Resolve resource/data types against the providers this config declares so
+	// that local names containing underscores (e.g. "snake_names") aren't
+	// mis-split at the first underscore. Undeclared (implicit) providers fall
+	// back to the first underscore-delimited segment inside PackageFromToken.
+	addType := func(tfType string) {
+		if name, err := packages.PackageFromToken(known, tfType); err == nil && name != "" {
+			set[name] = struct{}{}
+		}
 	}
 	for _, r := range config.Resources {
-		if name := providerNameFromType(r.Type); name != "" {
-			set[name] = struct{}{}
-		}
+		addType(r.Type)
 	}
 	for _, d := range config.DataSources {
-		if name := providerNameFromType(d.Type); name != "" {
-			set[name] = struct{}{}
-		}
+		addType(d.Type)
 	}
 	if loader == nil {
 		return
@@ -354,17 +362,6 @@ func collectProviders(
 		visited[loaded.SourcePath] = struct{}{}
 		collectProviders(loaded.Config, loaded.SourcePath, set, loader, visited)
 	}
-}
-
-// providerNameFromType extracts the provider local name from a TF resource
-// or data source type (e.g. "aws_s3_bucket" → "aws"). Returns "" for
-// malformed types.
-func providerNameFromType(tfType string) string {
-	idx := strings.IndexByte(tfType, '_')
-	if idx <= 0 {
-		return ""
-	}
-	return tfType[:idx]
 }
 
 // Run executes an HCL program.

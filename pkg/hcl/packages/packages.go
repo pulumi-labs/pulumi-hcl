@@ -113,7 +113,7 @@ func pulumiTokenToHCL(pkg schema.PackageReference, token string, isFunction bool
 	return hclToken + "_" + camelToSnake(name), nil
 }
 
-// packageFromToken determines the package name from an HCL token and the list of
+// PackageFromToken determines the package name from an HCL token and the list of
 // known providers from required_providers.
 //
 // If exactly one known provider matches as a prefix of the token (or matches
@@ -123,7 +123,7 @@ func pulumiTokenToHCL(pkg schema.PackageReference, token string, isFunction bool
 // ambiguity. If no known provider matches, the first underscore-delimited
 // segment is used as the package name, or the whole token if it has no
 // underscore.
-func packageFromToken(knownProviders []string, token string) (string, error) {
+func PackageFromToken(knownProviders []string, token string) (string, error) {
 	var matches []string
 	for _, p := range knownProviders {
 		if strings.HasPrefix(token, p+"_") || token == p {
@@ -176,7 +176,7 @@ func ResolvePackage(
 	if isStackReferenceToken(token) {
 		return resolvePackage(ctx, loader, &schema.PackageDescriptor{Name: "pulumi"})
 	}
-	pkgName, err := packageFromToken(knownProviders, token)
+	pkgName, err := PackageFromToken(knownProviders, token)
 	if err != nil {
 		return nil, err
 	}
@@ -227,7 +227,7 @@ func resolvePackageForToken(
 		}
 		return pkg, nil
 	}
-	pkgName, err := packageFromToken(knownProviders, token)
+	pkgName, err := PackageFromToken(knownProviders, token)
 	if err != nil {
 		return nil, err
 	}
@@ -247,7 +247,7 @@ func findResource(pkg schema.PackageReference, knownProviders []string, token st
 		contract.Assertf(ok, "stack references are there")
 		return r, err
 	}
-	pkgName, err := packageFromToken(knownProviders, token)
+	pkgName, err := PackageFromToken(knownProviders, token)
 	if err != nil {
 		return nil, err
 	}
@@ -378,7 +378,7 @@ func ResolveFunction(ctx context.Context, loader schema.ReferenceLoader, knownPr
 		return nil, InvalidToken{token: token, reason: "Pulumi HCL tokens must be non-empty"}
 	}
 
-	pkgName, err := packageFromToken(knownProviders, token)
+	pkgName, err := PackageFromToken(knownProviders, token)
 	if err != nil {
 		return nil, err
 	}

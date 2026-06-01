@@ -233,6 +233,32 @@ func TestMissingNonPulumiSDKs_BuiltinProvider(t *testing.T) {
 	assert.Empty(t, missingNonPulumiSDKs(cfg, nil, ""))
 }
 
+// A provider local name that contains underscores (e.g. "snake_names") must
+// be resolved against the declared providers, not split at the first
+// underscore. The naive split yielded a spurious "snake" provider that was
+// then reported missing even though "snake_names" is pulumi-sourced.
+func TestMissingNonPulumiSDKs_UnderscoreProviderName(t *testing.T) {
+	t.Parallel()
+
+	const src = `terraform {
+  required_providers {
+    snake_names = {
+      source  = "pulumi/snake_names"
+      version = "33.0.0"
+    }
+  }
+}
+
+resource "snake_names_cool_module_some_resource" "first" {
+  the_input = true
+}
+`
+	cfg, diags := parser.NewParser().ParseSource("main.tf", []byte(src))
+	require.False(t, diags.HasErrors(), "diags: %v", diags)
+
+	assert.Empty(t, missingNonPulumiSDKs(cfg, nil, ""))
+}
+
 // Implicit provider inside a child module must surface at the top — without
 // recursion the SDK check silently misses it (the aws-ia/label gap).
 func TestMissingNonPulumiSDKs_TransitiveModuleProvider(t *testing.T) {
