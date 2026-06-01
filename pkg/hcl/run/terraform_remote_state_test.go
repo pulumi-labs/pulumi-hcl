@@ -49,13 +49,124 @@ func TestLowerRemoteStateInvoke(t *testing.T) {
 		}, got)
 	})
 
+	t.Run("remote backend defers to getRemoteReference", func(t *testing.T) {
+		t.Parallel()
+		got, err := lowerRemoteStateInvoke(remoteStateType, InvokeRequest{
+			Token: localReferenceToken,
+			Args: property.NewMap(map[string]property.Value{
+				"backend": property.New("remote"),
+				"config": property.New(map[string]property.Value{
+					"organization": property.New("acme"),
+					"workspaces":   property.New(map[string]property.Value{"name": property.New("prod")}),
+				}),
+			}),
+		})
+		require.NoError(t, err)
+		assert.Equal(t, InvokeRequest{
+			Token: remoteReferenceToken,
+			Args: property.NewMap(map[string]property.Value{
+				"organization": property.New("acme"),
+				"workspaces":   property.New(map[string]property.Value{"name": property.New("prod")}),
+			}),
+		}, got)
+	})
+
 	t.Run("unsupported backend is rejected", func(t *testing.T) {
 		t.Parallel()
 		_, err := lowerRemoteStateInvoke(remoteStateType, InvokeRequest{
 			Args: property.NewMap(map[string]property.Value{"backend": property.New("s3")}),
 		})
 		require.EqualError(t, err,
-			`terraform_remote_state: only the "local" backend is currently supported, got "s3"`)
+			`terraform_remote_state: backend "s3" is not supported (supported backends: local, remote)`)
+	})
+
+	t.Run("config fields the local backend ignores are rejected", func(t *testing.T) {
+		t.Parallel()
+		_, err := lowerRemoteStateInvoke(remoteStateType, InvokeRequest{
+			Args: property.NewMap(map[string]property.Value{
+				"backend": property.New("local"),
+				"config": property.New(map[string]property.Value{
+					"path":   property.New("state.tfstate"),
+					"bucket": property.New("oops"),
+				}),
+			}),
+		})
+		require.EqualError(t, err,
+			`terraform_remote_state: the local backend does not read config field(s) [bucket] (supported: path, workspace_dir)`)
+	})
+
+	t.Run("config fields the remote backend ignores are rejected", func(t *testing.T) {
+		t.Parallel()
+		_, err := lowerRemoteStateInvoke(remoteStateType, InvokeRequest{
+			Args: property.NewMap(map[string]property.Value{
+				"backend": property.New("remote"),
+				"config": property.New(map[string]property.Value{
+					"organization": property.New("acme"),
+					"bucket":       property.New("b"),
+				}),
+			}),
+		})
+		require.EqualError(t, err,
+			`terraform_remote_state: backend "remote" does not read config field(s) [bucket] `+
+				`(supported: hostname, organization, token, workspaces)`)
+	})
+
+	t.Run("defaults is rejected", func(t *testing.T) {
+		t.Parallel()
+		_, err := lowerRemoteStateInvoke(remoteStateType, InvokeRequest{
+			Args: property.NewMap(map[string]property.Value{
+				"backend":  property.New("local"),
+				"defaults": property.New(map[string]property.Value{"x": property.New("y")}),
+			}),
+		})
+		require.EqualError(t, err, `terraform_remote_state: "defaults" is not supported`)
+	})
+
+	t.Run("workspace threads into the remote workspaces arg", func(t *testing.T) {
+		t.Parallel()
+		got, err := lowerRemoteStateInvoke(remoteStateType, InvokeRequest{
+			Args: property.NewMap(map[string]property.Value{
+				"backend":   property.New("remote"),
+				"workspace": property.New("prod"),
+				"config":    property.New(map[string]property.Value{"organization": property.New("acme")}),
+			}),
+		})
+		require.NoError(t, err)
+		assert.Equal(t, InvokeRequest{
+			Token: remoteReferenceToken,
+			Args: property.NewMap(map[string]property.Value{
+				"organization": property.New("acme"),
+				"workspaces":   property.New(map[string]property.Value{"name": property.New("prod")}),
+			}),
+		}, got)
+	})
+
+	t.Run("workspace conflicts with config.workspaces", func(t *testing.T) {
+		t.Parallel()
+		_, err := lowerRemoteStateInvoke(remoteStateType, InvokeRequest{
+			Args: property.NewMap(map[string]property.Value{
+				"backend":   property.New("remote"),
+				"workspace": property.New("prod"),
+				"config": property.New(map[string]property.Value{
+					"organization": property.New("acme"),
+					"workspaces":   property.New(map[string]property.Value{"name": property.New("staging")}),
+				}),
+			}),
+		})
+		require.EqualError(t, err,
+			`terraform_remote_state: workspace and config.workspaces are mutually exclusive`)
+	})
+
+	t.Run("workspace is rejected on the local backend", func(t *testing.T) {
+		t.Parallel()
+		_, err := lowerRemoteStateInvoke(remoteStateType, InvokeRequest{
+			Args: property.NewMap(map[string]property.Value{
+				"backend":   property.New("local"),
+				"workspace": property.New("staging"),
+			}),
+		})
+		require.EqualError(t, err,
+			`terraform_remote_state: the local backend does not support the workspace attribute`)
 	})
 
 	t.Run("other data sources are untouched", func(t *testing.T) {
