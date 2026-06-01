@@ -65,8 +65,8 @@ type HCLProvider struct {
 }
 
 // NewHCLProvider creates a new HCL component provider.
-func NewHCLProvider(modulePath, addr string) (*HCLProvider, error) {
-	loader := modules.NewLoader()
+func NewHCLProvider(ctx context.Context, modulePath, addr string) (*HCLProvider, error) {
+	loader := modules.NewLoader(ctx)
 	pkgLoader, err := pulumiSchema.NewLoaderClient(addr)
 	if err != nil {
 		return nil, fmt.Errorf("unable to acquire schema loader: %w", err)
@@ -263,7 +263,7 @@ func (p *HCLProvider) Construct(ctx context.Context, req *pulumirpc.ConstructReq
 	}
 
 	// Create and run the engine
-	engine := run.NewEngine(loaded.Config, engineOpts)
+	engine := run.NewEngine(ctx, loaded.Config, engineOpts)
 
 	if err := engine.Run(ctx); err != nil {
 		return nil, fmt.Errorf("executing module: %w", err)

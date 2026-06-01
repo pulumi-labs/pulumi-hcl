@@ -412,7 +412,7 @@ type EngineOptions struct {
 }
 
 // NewEngine creates a new execution engine.
-func NewEngine(config *ast.Config, opts *EngineOptions) *Engine {
+func NewEngine(ctx context.Context, config *ast.Config, opts *EngineOptions) *Engine {
 	contract.Assertf(opts.SchemaLoader != nil, "EngineOptions.SchemaLoader cannot be nil")
 	contract.Assertf(opts.WorkDir != "", "EngineOptions.WorkDir cannot be empty")
 	contract.Assertf(opts.RootDir != "", "EngineOptions.RootDir cannot be empty")
@@ -439,7 +439,7 @@ func NewEngine(config *ast.Config, opts *EngineOptions) *Engine {
 		configSecretKeys:        opts.ConfigSecretKeys,
 		packages:                opts.Packages,
 		packageRefs:             make(map[string]PackageRef),
-		moduleLoader:            modules.NewLoader(),
+		moduleLoader:            modules.NewLoader(ctx),
 		moduleInstances:         util.NewSyncMap[string, []*moduleInstance](),
 		parallel:                opts.Parallel,
 		failedNodes:             util.NewSyncMap[string, error](),
@@ -2945,7 +2945,7 @@ func RunFromDirectory(ctx context.Context, dir string, opts *EngineOptions) erro
 	}
 
 	// Create and run the engine
-	engine := NewEngine(config, opts)
+	engine := NewEngine(ctx, config, opts)
 	return engine.Run(ctx)
 }
 

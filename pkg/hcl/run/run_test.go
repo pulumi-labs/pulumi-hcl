@@ -53,7 +53,7 @@ resource "aws_instance" "web" {
 	}
 
 	mock := &testutil.MockResourceMonitor{}
-	engine := run.NewEngine(config, &run.EngineOptions{
+	engine := run.NewEngine(t.Context(), config, &run.EngineOptions{
 		ProjectName:     "test-project",
 		StackName:       "dev",
 		ResourceMonitor: mock,
@@ -130,7 +130,7 @@ resource "aws_s3_bucket" "mybucket" {
 	}
 
 	mock := &testutil.MockResourceMonitor{}
-	engine := run.NewEngine(config, &run.EngineOptions{
+	engine := run.NewEngine(t.Context(), config, &run.EngineOptions{
 		ProjectName:     "test-project",
 		StackName:       "dev",
 		ResourceMonitor: mock,
@@ -190,7 +190,7 @@ resource "aws_subnet" "main" {
 	}
 
 	mock := &testutil.MockResourceMonitor{}
-	engine := run.NewEngine(config, &run.EngineOptions{
+	engine := run.NewEngine(t.Context(), config, &run.EngineOptions{
 		ProjectName:     "test-project",
 		StackName:       "dev",
 		ResourceMonitor: mock,
@@ -317,7 +317,7 @@ resource "aws_instance" "web" {
 	}
 
 	mock := &testutil.MockResourceMonitor{}
-	engine := run.NewEngine(config, &run.EngineOptions{
+	engine := run.NewEngine(t.Context(), config, &run.EngineOptions{
 		ProjectName:     "test-project",
 		StackName:       "dev",
 		ResourceMonitor: mock,
@@ -392,7 +392,7 @@ resource "aws_instance" "web" {
 	}
 
 	mock := &testutil.MockResourceMonitor{}
-	engine := run.NewEngine(config, &run.EngineOptions{
+	engine := run.NewEngine(t.Context(), config, &run.EngineOptions{
 		ProjectName:     "test-project",
 		StackName:       "dev",
 		ResourceMonitor: mock,
@@ -457,7 +457,7 @@ resource "aws_instance" "web" {
 	}
 
 	mock := &testutil.MockResourceMonitor{}
-	engine := run.NewEngine(config, &run.EngineOptions{
+	engine := run.NewEngine(t.Context(), config, &run.EngineOptions{
 		ProjectName:     "test-project",
 		StackName:       "dev",
 		ResourceMonitor: mock,
@@ -523,7 +523,7 @@ resource "aws_instance" "web" {
 	}
 
 	mock := &testutil.MockResourceMonitor{}
-	engine := run.NewEngine(config, &run.EngineOptions{
+	engine := run.NewEngine(t.Context(), config, &run.EngineOptions{
 		ProjectName:     "test-project",
 		StackName:       "dev",
 		ResourceMonitor: mock,
@@ -588,7 +588,7 @@ output "region_value" {
 	}
 
 	mock := &testutil.MockResourceMonitor{}
-	engine := run.NewEngine(config, &run.EngineOptions{
+	engine := run.NewEngine(t.Context(), config, &run.EngineOptions{
 		ProjectName:     "test-project",
 		StackName:       "dev",
 		ResourceMonitor: mock,
@@ -654,7 +654,7 @@ output "region_value" {
 	t.Setenv("TF_VAR_region", "eu-west-1")
 
 	mock := &testutil.MockResourceMonitor{}
-	engine := run.NewEngine(config, &run.EngineOptions{
+	engine := run.NewEngine(t.Context(), config, &run.EngineOptions{
 		ProjectName:     "test-project",
 		StackName:       "dev",
 		ResourceMonitor: mock,
@@ -745,7 +745,7 @@ variable "required_var" {
 			require.False(t, diags.HasErrors(), "parse error: %s", diags.Error())
 
 			mock := &testutil.MockResourceMonitor{}
-			engine := run.NewEngine(config, &run.EngineOptions{
+			engine := run.NewEngine(t.Context(), config, &run.EngineOptions{
 				ProjectName:     "test-project",
 				StackName:       "dev",
 				ResourceMonitor: mock,
@@ -788,7 +788,7 @@ output "instance_type" {
 	}
 
 	mock := &testutil.MockResourceMonitor{}
-	engine := run.NewEngine(config, &run.EngineOptions{
+	engine := run.NewEngine(t.Context(), config, &run.EngineOptions{
 		ProjectName:     "test-project",
 		StackName:       "dev",
 		ResourceMonitor: mock,
@@ -848,7 +848,7 @@ variable "instance_type" {
 	}
 
 	mock := &testutil.MockResourceMonitor{}
-	engine := run.NewEngine(config, &run.EngineOptions{
+	engine := run.NewEngine(t.Context(), config, &run.EngineOptions{
 		ProjectName:     "test-project",
 		StackName:       "dev",
 		ResourceMonitor: mock,
@@ -914,7 +914,7 @@ resource "test_resource" "res" {
 		require.False(t, diags.HasErrors(), diags.Error())
 
 		mock := &testutil.MockResourceMonitor{}
-		engine := run.NewEngine(config, &run.EngineOptions{
+		engine := run.NewEngine(t.Context(), config, &run.EngineOptions{
 			ProjectName:     "test-project",
 			StackName:       "dev",
 			ResourceMonitor: mock,
@@ -970,7 +970,7 @@ resource "test_resource" "upstream" {
 	require.False(t, diags.HasErrors(), diags.Error())
 
 	mock := &testutil.MockResourceMonitor{}
-	engine := run.NewEngine(config, &run.EngineOptions{
+	engine := run.NewEngine(t.Context(), config, &run.EngineOptions{
 		ProjectName:     "test-project",
 		StackName:       "dev",
 		ResourceMonitor: mock,
@@ -1030,7 +1030,7 @@ resource "test_resource" "dependent" {
 			}, nil
 		},
 	}
-	engine := run.NewEngine(config, &run.EngineOptions{
+	engine := run.NewEngine(t.Context(), config, &run.EngineOptions{
 		ProjectName:     "test-project",
 		StackName:       "dev",
 		ResourceMonitor: mock,
@@ -1073,7 +1073,7 @@ resource "test_resource" "res" {
 		require.False(t, diags.HasErrors(), diags.Error())
 
 		mock := &testutil.MockResourceMonitor{}
-		engine := run.NewEngine(config, &run.EngineOptions{
+		engine := run.NewEngine(t.Context(), config, &run.EngineOptions{
 			ProjectName:     "test-project",
 			StackName:       "dev",
 			ResourceMonitor: mock,
@@ -1129,7 +1129,7 @@ resource "aws_instance" "web" {
 	require.False(t, diags.HasErrors(), diags.Error())
 
 	mock := &testutil.MockResourceMonitor{}
-	engine := run.NewEngine(config, &run.EngineOptions{
+	engine := run.NewEngine(t.Context(), config, &run.EngineOptions{
 		ProjectName:     "test-project",
 		StackName:       "dev",
 		ResourceMonitor: mock,
@@ -1184,7 +1184,7 @@ resource "aws_instance" "web" {
 	require.False(t, diags.HasErrors(), diags.Error())
 
 	mock := &testutil.MockResourceMonitor{}
-	engine := run.NewEngine(config, &run.EngineOptions{
+	engine := run.NewEngine(t.Context(), config, &run.EngineOptions{
 		ProjectName:     "test-project",
 		StackName:       "dev",
 		ResourceMonitor: mock,
@@ -1235,7 +1235,7 @@ resource "aws_instance" "web" {
 	require.False(t, diags.HasErrors(), diags.Error())
 
 	mock := &testutil.MockResourceMonitor{}
-	engine := run.NewEngine(config, &run.EngineOptions{
+	engine := run.NewEngine(t.Context(), config, &run.EngineOptions{
 		ProjectName:     "test-project",
 		StackName:       "dev",
 		ResourceMonitor: mock,
@@ -1329,7 +1329,7 @@ output "vpc_id" {
 	}
 
 	mock := &testutil.MockResourceMonitor{}
-	engine := run.NewEngine(config, &run.EngineOptions{
+	engine := run.NewEngine(t.Context(), config, &run.EngineOptions{
 		ProjectName:     "test-project",
 		StackName:       "dev",
 		ResourceMonitor: mock,
@@ -1441,7 +1441,7 @@ module "vpc.primary" {
 	require.False(t, diags.HasErrors(), "parse error: %s", diags.Error())
 
 	mock := &testutil.MockResourceMonitor{}
-	engine := run.NewEngine(config, &run.EngineOptions{
+	engine := run.NewEngine(t.Context(), config, &run.EngineOptions{
 		ProjectName:     "test-project",
 		StackName:       "dev",
 		ResourceMonitor: mock,
@@ -1509,7 +1509,7 @@ resource "kubernetes_networking.k8s.io_v1_ingress" "ingress" {
 	require.False(t, diags.HasErrors(), "parse error: %s", diags.Error())
 
 	mock := &testutil.MockResourceMonitor{}
-	engine := run.NewEngine(config, &run.EngineOptions{
+	engine := run.NewEngine(t.Context(), config, &run.EngineOptions{
 		ProjectName:     "test-project",
 		StackName:       "dev",
 		ResourceMonitor: mock,
@@ -1574,7 +1574,7 @@ output "name" { value = "leaf" }
 	require.False(t, diags.HasErrors(), "parse error: %s", diags.Error())
 
 	mock := &testutil.MockResourceMonitor{}
-	engine := run.NewEngine(config, &run.EngineOptions{
+	engine := run.NewEngine(t.Context(), config, &run.EngineOptions{
 		ProjectName:     "test-project",
 		StackName:       "dev",
 		ResourceMonitor: mock,
@@ -1710,7 +1710,7 @@ module "m" {
 			}, nil
 		},
 	}
-	engine := run.NewEngine(config, &run.EngineOptions{
+	engine := run.NewEngine(t.Context(), config, &run.EngineOptions{
 		ProjectName:     "test-project",
 		StackName:       "dev",
 		ResourceMonitor: mock,
@@ -1771,7 +1771,7 @@ module "multi" {
 	}
 
 	mock := &testutil.MockResourceMonitor{}
-	engine := run.NewEngine(config, &run.EngineOptions{
+	engine := run.NewEngine(t.Context(), config, &run.EngineOptions{
 		ProjectName:     "test-project",
 		StackName:       "dev",
 		ResourceMonitor: mock,
@@ -1810,7 +1810,7 @@ resource "aws_instance" "web" {
 	}
 
 	mock := &testutil.MockResourceMonitor{}
-	engine := run.NewEngine(config, &run.EngineOptions{
+	engine := run.NewEngine(t.Context(), config, &run.EngineOptions{
 		ProjectName:     "test-project",
 		StackName:       "dev",
 		ResourceMonitor: mock,
@@ -1892,7 +1892,7 @@ resource "aws_instance" "web" {
 	}
 
 	mock := &testutil.MockResourceMonitor{}
-	engine := run.NewEngine(config, &run.EngineOptions{
+	engine := run.NewEngine(t.Context(), config, &run.EngineOptions{
 		ProjectName:     "test-project",
 		StackName:       "dev",
 		ResourceMonitor: mock,
@@ -1972,7 +1972,7 @@ resource "aws_instance" "imported" {
 	}
 
 	mock := &testutil.MockResourceMonitor{}
-	engine := run.NewEngine(config, &run.EngineOptions{
+	engine := run.NewEngine(t.Context(), config, &run.EngineOptions{
 		ProjectName:     "test-project",
 		StackName:       "dev",
 		ResourceMonitor: mock,
@@ -2068,7 +2068,7 @@ resource "test_resource" "res" {
 	}
 
 	mock := &testutil.MockResourceMonitor{}
-	engine := run.NewEngine(config, &run.EngineOptions{
+	engine := run.NewEngine(t.Context(), config, &run.EngineOptions{
 		ProjectName:     "test-project",
 		StackName:       "dev",
 		ResourceMonitor: mock,
@@ -2156,7 +2156,7 @@ func TestEngine_HetListOutputRoundTrip(t *testing.T) {
 			}, nil
 		},
 	}
-	engine := run.NewEngine(config, &run.EngineOptions{
+	engine := run.NewEngine(t.Context(), config, &run.EngineOptions{
 		ProjectName:     "test-project",
 		StackName:       "dev",
 		ResourceMonitor: monitor,
@@ -2254,7 +2254,7 @@ func TestEngine_SchemaConstValues(t *testing.T) {
 		require.False(t, diags.HasErrors(), "parse error: %s", diags.Error())
 
 		mock := &testutil.MockResourceMonitor{}
-		engine := run.NewEngine(config, &run.EngineOptions{
+		engine := run.NewEngine(t.Context(), config, &run.EngineOptions{
 			ProjectName:     "test-project",
 			StackName:       "dev",
 			ResourceMonitor: mock,
@@ -2368,7 +2368,7 @@ resource "aws_ec2_vpd" "example" {}
 	require.Empty(t, diags)
 
 	mock := &testutil.MockResourceMonitor{}
-	engine := run.NewEngine(config, &run.EngineOptions{
+	engine := run.NewEngine(t.Context(), config, &run.EngineOptions{
 		ProjectName:     "test-project",
 		StackName:       "dev",
 		ResourceMonitor: mock,
@@ -2412,7 +2412,7 @@ data "aws_ec2_vpd" "example" {}
 	require.False(t, diags.HasErrors(), diags.Error())
 
 	mock := &testutil.MockResourceMonitor{}
-	engine := run.NewEngine(config, &run.EngineOptions{
+	engine := run.NewEngine(t.Context(), config, &run.EngineOptions{
 		ProjectName:     "test-project",
 		StackName:       "dev",
 		ResourceMonitor: mock,
@@ -2480,7 +2480,7 @@ module "child" {
 	require.False(t, diags.HasErrors(), diags.Error())
 
 	mock := &testutil.MockResourceMonitor{}
-	engine := run.NewEngine(config, &run.EngineOptions{
+	engine := run.NewEngine(t.Context(), config, &run.EngineOptions{
 		ProjectName:     "test-project",
 		StackName:       "dev",
 		ResourceMonitor: mock,

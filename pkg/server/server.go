@@ -151,7 +151,7 @@ func (host *LanguageHost) GetRequiredPackages(
 		required = config.Terraform.RequiredProviders
 	}
 
-	for _, alias := range usedProviders(config, req.Info.ProgramDirectory) {
+	for _, alias := range usedProviders(ctx, config, req.Info.ProgramDirectory) {
 		if isBuiltinProvider(alias) {
 			continue
 		}
@@ -269,9 +269,9 @@ func readParameterizationInfos(dir string) (map[string]workspace.PackageDescript
 // by config (and its transitively-loaded modules) that lack an on-disk SDK.
 // Empty workDir skips module recursion.
 func missingNonPulumiSDKs(
-	config *ast.Config, sdks map[string]workspace.PackageDescriptor, workDir string,
+	ctx context.Context, config *ast.Config, sdks map[string]workspace.PackageDescriptor, workDir string,
 ) []string {
-	used := usedProviders(config, workDir)
+	used := usedProviders(ctx, config, workDir)
 	pulumiSourced := map[string]bool{}
 	if config != nil && config.Terraform != nil {
 		for alias, req := range config.Terraform.RequiredProviders {
@@ -298,11 +298,11 @@ func isBuiltinProvider(alias string) bool { return alias == "pulumi" }
 // usedProviders returns the sorted provider local names referenced by config
 // (required_providers, provider blocks, resource/data type prefixes). A
 // non-empty workDir enables recursion through `module` blocks.
-func usedProviders(config *ast.Config, workDir string) []string {
+func usedProviders(ctx context.Context, config *ast.Config, workDir string) []string {
 	set := map[string]struct{}{}
 	var loader *modules.Loader
 	if workDir != "" && config != nil && len(config.Modules) > 0 {
-		loader = modules.NewLoader()
+		loader = modules.NewLoader(ctx)
 	}
 	collectProviders(config, workDir, set, loader, map[string]struct{}{})
 	out := make([]string, 0, len(set))
@@ -424,7 +424,7 @@ func (host *LanguageHost) Run(
 		return nil, fmt.Errorf("unable to read parameterization: %w", err)
 	}
 
-	if missing := missingNonPulumiSDKs(config, paramDescriptors, req.Info.ProgramDirectory); len(missing) > 0 {
+	if missing := missingNonPulumiSDKs(ctx, config, paramDescriptors, req.Info.ProgramDirectory); len(missing) > 0 {
 		return &pulumirpc.RunResponse{
 			Error: fmt.Sprintf(
 				"missing local SDK for non-Pulumi provider(s) %v; run `pulumi install` to fetch them",
@@ -450,7 +450,7 @@ func (host *LanguageHost) Run(
 	providerInfoSource := bridge.NewCache(bridge.NewMapperSource(mapperClient))
 
 	// Create and run the engine
-	engine := run.NewEngine(config, &run.EngineOptions{
+	engine := run.NewEngine(ctx, config, &run.EngineOptions{
 		ProjectName:             req.Project,
 		StackName:               req.Stack,
 		Organization:            req.Organization,
@@ -577,7 +577,7 @@ func (host *LanguageHost) RunPlugin(
 	}
 
 	// Create the provider (name and version are derived from the module's terraform {} block)
-	provider, err := NewHCLProvider(modulePath, req.LoaderTarget)
+	provider, err := NewHCLProvider(server.Context(), modulePath, req.LoaderTarget)
 	if err != nil {
 		errBytes := fmt.Appendf(nil, "Error creating provider: %v\n", err)
 		if err := server.Send(&pulumirpc.RunPluginResponse{

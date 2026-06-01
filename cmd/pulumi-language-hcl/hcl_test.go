@@ -1763,7 +1763,7 @@ output "instance_ami" {
 	require.False(t, hclDiags.HasErrors(), hclDiags.Error())
 
 	mock := &testutil.MockResourceMonitor{}
-	engine := hclrun.NewEngine(config, &hclrun.EngineOptions{
+	engine := hclrun.NewEngine(t.Context(), config, &hclrun.EngineOptions{
 		ProjectName:     "test-project",
 		StackName:       "dev",
 		ResourceMonitor: mock,
@@ -2113,7 +2113,7 @@ output "result" {
 			}, nil
 		},
 	}
-	engine := hclrun.NewEngine(config, &hclrun.EngineOptions{
+	engine := hclrun.NewEngine(t.Context(), config, &hclrun.EngineOptions{
 		ProjectName:     "test-project",
 		StackName:       "dev",
 		ResourceMonitor: mock,
@@ -2219,7 +2219,7 @@ resource "test_bucket" "bucket" {
 		require.False(t, diags.HasErrors(), diags.Error())
 
 		mock := &testutil.MockResourceMonitor{}
-		engine := hclrun.NewEngine(config, &hclrun.EngineOptions{
+		engine := hclrun.NewEngine(t.Context(), config, &hclrun.EngineOptions{
 			ProjectName:     "test-project",
 			StackName:       "dev",
 			ResourceMonitor: mock,
@@ -2264,7 +2264,7 @@ data "test_getlen" "invoke_0" {
 		require.False(t, diags.HasErrors(), diags.Error())
 
 		mock := &testutil.MockResourceMonitor{}
-		engine := hclrun.NewEngine(config, &hclrun.EngineOptions{
+		engine := hclrun.NewEngine(t.Context(), config, &hclrun.EngineOptions{
 			ProjectName:     "test-project",
 			StackName:       "dev",
 			ResourceMonitor: mock,
@@ -2377,7 +2377,7 @@ func testConvertedPCLWithComponent(
 	if mock == nil {
 		mock = &testutil.MockResourceMonitor{}
 	}
-	engine := hclrun.NewEngine(config, &hclrun.EngineOptions{
+	engine := hclrun.NewEngine(t.Context(), config, &hclrun.EngineOptions{
 		ProjectName:     "test-project",
 		StackName:       "dev",
 		ResourceMonitor: mock,
@@ -2443,7 +2443,7 @@ output "instance_ami" {
 	require.False(t, hclDiags.HasErrors(), hclDiags.Error())
 
 	mock := &testutil.MockResourceMonitor{}
-	engine := hclrun.NewEngine(config, &hclrun.EngineOptions{
+	engine := hclrun.NewEngine(t.Context(), config, &hclrun.EngineOptions{
 		ProjectName:     "test-project",
 		StackName:       "dev",
 		ResourceMonitor: mock,
@@ -2535,7 +2535,7 @@ resource web "aws:index:Instance" {
 	require.False(t, hclDiags.HasErrors(), hclDiags.Error())
 
 	mock := &testutil.MockResourceMonitor{}
-	engine := hclrun.NewEngine(config, &hclrun.EngineOptions{
+	engine := hclrun.NewEngine(t.Context(), config, &hclrun.EngineOptions{
 		ProjectName:     "test-project",
 		StackName:       "dev",
 		ResourceMonitor: mock,
