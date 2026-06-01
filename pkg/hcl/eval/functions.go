@@ -157,15 +157,14 @@ func Functions(baseDir string) map[string]function.Function {
 		"yamlencode":       yamlEncodeFunc,
 
 		// Filesystem functions
-		"abspath":      abspathFunc(baseDir),
-		"dirname":      dirnameFunc,
-		"pathexpand":   pathExpandFunc,
-		"basename":     basenameFunc,
-		"file":         fileFunc(baseDir),
-		"fileexists":   fileExistsFunc(baseDir),
-		"fileset":      filesetFunc(baseDir),
-		"filebase64":   fileBase64Func(baseDir),
-		"templatefile": templateFileFunc(baseDir),
+		"abspath":    abspathFunc(baseDir),
+		"dirname":    dirnameFunc,
+		"pathexpand": pathExpandFunc,
+		"basename":   basenameFunc,
+		"file":       fileFunc(baseDir),
+		"fileexists": fileExistsFunc(baseDir),
+		"fileset":    filesetFunc(baseDir),
+		"filebase64": fileBase64Func(baseDir),
 
 		// Date and time functions
 		"formatdate": stdlib.FormatDateFunc,
@@ -224,9 +223,9 @@ func Functions(baseDir string) map[string]function.Function {
 		"remoteArchive": remoteArchiveFunc(),
 	}
 
-	// templatestring renders an arbitrary string as a template. The functions
-	// available inside that template are every function except the template
-	// functions themselves, which keeps a template from invoking itself
+	// templatefile and templatestring render a file or string as a template. The
+	// functions available inside that template are every function except the
+	// template functions themselves, which keeps a template from invoking itself
 	// recursively without bound.
 	nestedTemplateFuncs := make(map[string]function.Function, len(funcs))
 	for name, fn := range funcs {
@@ -235,6 +234,7 @@ func Functions(baseDir string) map[string]function.Function {
 		}
 		nestedTemplateFuncs[name] = fn
 	}
+	funcs["templatefile"] = templateFileFunc(baseDir, nestedTemplateFuncs)
 	funcs["templatestring"] = templateStringFunc(nestedTemplateFuncs)
 
 	return funcs
@@ -1016,7 +1016,13 @@ func fileBase64Func(baseDir string) function.Function {
 	})
 }
 
-func templateFileFunc(baseDir string) function.Function {
+// templateFileFunc reads the file at its first argument and renders it as an HCL
+// template using the variables in its second argument, just like OpenTofu: the
+// file's interpolations may call functions and use `%{ for }` / `%{ if }`
+// directives. nestedFuncs is the function table made available inside the
+// template; it omits the template functions themselves to prevent unbounded
+// recursion.
+func templateFileFunc(baseDir string, nestedFuncs map[string]function.Function) function.Function {
 	return function.New(&function.Spec{
 		Params: []function.Parameter{
 			{Name: "path", Type: cty.String},
@@ -1025,31 +1031,15 @@ func templateFileFunc(baseDir string) function.Function {
 		Type: function.StaticReturnType(cty.String),
 		Impl: func(args []cty.Value, retType cty.Type) (cty.Value, error) {
 			path := args[0].AsString()
-			if !filepath.IsAbs(path) {
-				path = filepath.Join(baseDir, path)
+			fullPath := path
+			if !filepath.IsAbs(fullPath) {
+				fullPath = filepath.Join(baseDir, fullPath)
 			}
-			content, err := os.ReadFile(path)
+			content, err := os.ReadFile(fullPath)
 			if err != nil {
 				return cty.NilVal, err
 			}
-
-			// Simple template substitution for ${var} patterns
-			vars := args[1]
-			result := string(content)
-			if vars.Type().IsObjectType() || vars.Type().IsMapType() {
-				for it := vars.ElementIterator(); it.Next(); {
-					k, v := it.Element()
-					key := k.AsString()
-					var val string
-					if v.Type() == cty.String {
-						val = v.AsString()
-					} else {
-						val = v.GoString()
-					}
-					result = strings.ReplaceAll(result, "${"+key+"}", val)
-				}
-			}
-			return cty.StringVal(result), nil
+			return renderTemplate(path, cty.StringVal(string(content)), args[1], nestedFuncs)
 		},
 	})
 }
@@ -1065,21 +1055,22 @@ func templateStringFunc(nestedFuncs map[string]function.Function) function.Funct
 		},
 		Type: function.StaticReturnType(cty.String),
 		Impl: func(args []cty.Value, retType cty.Type) (cty.Value, error) {
-			return renderTemplate(args[0], args[1], nestedFuncs)
+			return renderTemplate("<templatestring>", args[0], args[1], nestedFuncs)
 		},
 	})
 }
 
 // renderTemplate parses templateVal as an HCL template and evaluates it with
 // varsVal's entries in scope plus the supplied functions, returning the
-// rendered string. Marks on the inputs propagate to the result.
+// rendered string. filename labels the template in any diagnostics. Marks on the
+// inputs propagate to the result.
 func renderTemplate(
-	templateVal, varsVal cty.Value, funcs map[string]function.Function,
+	filename string, templateVal, varsVal cty.Value, funcs map[string]function.Function,
 ) (cty.Value, error) {
 	templateVal, tmplMarks := templateVal.Unmark()
 
 	expr, diags := hclsyntax.ParseTemplate(
-		[]byte(templateVal.AsString()), "<templatestring>", hcl.InitialPos)
+		[]byte(templateVal.AsString()), filename, hcl.InitialPos)
 	if diags.HasErrors() {
 		return cty.NilVal, diags
 	}

@@ -927,6 +927,23 @@ func TestFileFunctions(t *testing.T) {
 		}
 	})
 
+	// Create a template file exercising a function call and a `for` directive,
+	// which a naive ${var} substitution cannot render.
+	richTmpl := filepath.Join(tmpDir, "rich.tpl")
+	if err := os.WriteFile(richTmpl,
+		[]byte(`Hello ${upper(name)}, you have %{ for n in nums }${n} %{ endfor }items`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	t.Run("templatefile renders functions and directives", func(t *testing.T) {
+		t.Parallel()
+		result := evalExpr(t, tmpDir, `templatefile("rich.tpl", {name = "ada", nums = [1, 2, 3]})`)
+		expected := cty.StringVal("Hello ADA, you have 1 2 3 items")
+		if !result.RawEquals(expected) {
+			t.Errorf("Expected %s, got %s", expected.GoString(), result.GoString())
+		}
+	})
+
 	// Create subdirectory with files
 	subDir := filepath.Join(tmpDir, "subdir")
 	if err := os.Mkdir(subDir, 0o755); err != nil {
