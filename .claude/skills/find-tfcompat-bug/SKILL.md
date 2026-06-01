@@ -13,6 +13,15 @@ The divergence can be anywhere the two runtimes can disagree — an expression/f
 result (the L1 seam), or resource, module, provider, or lifecycle behavior (the L2
 seam). Functions are the easiest place to start, not the only place to look.
 
+**Direction matters — only one direction is a bug.** A bug is an input that **works in
+OpenTofu but does not work (or works differently) in pulumi-hcl**: OpenTofu produces a
+value and pulumi-hcl errors or returns something else. That is the case a user migrating
+real Terraform/OpenTofu configuration into pulumi-hcl actually hits. The reverse — an
+input pulumi-hcl accepts that OpenTofu rejects (pulumi-hcl is more lenient) — is **not** a
+bug to chase here: no OpenTofu config depends on it, and tightening pulumi-hcl to also
+reject it removes capability without helping any migration. If the only divergence you can
+find is pulumi-hcl being more permissive than OpenTofu, discard it and keep hunting.
+
 Each invocation produces **exactly one** bug fix on its **own branch off master**
 with its own changelog entry and PR. Do not stack fixes.
 
@@ -86,6 +95,12 @@ passthrough. Look for: wrong error on edge input, precision loss, off-by-one tok
 mapping, charset handling, escaping rules, a field that diverges only in state, an
 operation that succeeds on one path and errors on the other.
 
+Keep the direction in mind (see the intro): the case you want is one where **OpenTofu
+succeeds and pulumi-hcl errors or returns a different value**. When an `operation that
+succeeds on one path and errors on the other` turns up, check which side errors — if
+pulumi-hcl is the one that succeeds and OpenTofu errors, that is pulumi-hcl being more
+lenient, which is not the bug you are looking for. Discard it and keep hunting.
+
 **Observability caveat:** pulumi serializes stack-output numbers as `float64`. Integer
 precision past ~16 significant digits is lost on BOTH paths, so it cannot be exposed via
 output comparison. Don't build a case whose only difference is unobservable in outputs —
@@ -125,7 +140,10 @@ func TestL2<Name>(t *testing.T) {
 
 `RunCase` loads every file under `testdata/cases/<name>/` and runs it through both
 `tofu apply` and `pulumi up`, asserting identical stack outputs. For an L1 case the
-fixture is pure `locals` + `output` (one output per behavior). The `Case` struct gives
+fixture is pure `locals` + `output` (one output per behavior). **Put the fixture on disk
+under `testdata/cases/<name>/` and pass an empty `tfcompat.Case{}` — this is the default,
+including multi-file cases** (e.g. a `templatefile` case ships its `main.tf` *and* the
+template it reads; `RunCase` loads every file in the directory). The `Case` struct gives
 you more knobs when outputs alone can't show the divergence:
 
 - `Providers` / `Config` — register TF providers / set input variables.
@@ -134,6 +152,11 @@ you more knobs when outputs alone can't show the divergence:
   destroy, or sequence multiple operations.
 - `Stage.ExpectErr` — require BOTH runtimes to fail with a matching error substring; the
   way to prove an error-behavior divergence.
+
+Reach for inline `Stages` with a `Files` map **only** when you need something the plain
+disk fixture can't express — an `ExpectErr` assertion, or a multi-stage
+preview/destroy/re-apply sequence. A normal output-comparison case (even one with several
+files) belongs on disk, not inline.
 
 Confirm the bug is real **on master before the fix**:
 
