@@ -235,8 +235,11 @@ func TestCollectionFunctions(t *testing.T) {
 			cty.StringVal("a"), cty.StringVal("b"),
 		})},
 
-		// coalesce (coalesce returns first non-empty, "" is technically a value so it's returned)
+		// coalesce returns the first non-null, non-empty-string argument.
 		{"coalesce", `coalesce("a", "b")`, cty.StringVal("a")},
+		{"coalesce skips empty string", `coalesce("", "b")`, cty.StringVal("b")},
+		{"coalesce skips null then empty", `coalesce(null, "", "w")`, cty.StringVal("w")},
+		{"coalesce keeps zero", `coalesce(0, 5)`, cty.NumberIntVal(0)},
 
 		// coalescelist (returns tuple type not list)
 		{"coalescelist", `length(coalescelist([], ["a"]))`, cty.NumberIntVal(1)},
@@ -607,6 +610,32 @@ func TestTypeFunctions(t *testing.T) {
 			if !result.RawEquals(tt.expected) {
 				t.Errorf("Expected %s, got %s", tt.expected.GoString(), result.GoString())
 			}
+		})
+	}
+}
+
+// TestCoalesceErrors pins that `coalesce` errors when every argument is skipped.
+// Both null and empty-string arguments are skipped, so an all-null or
+// all-empty-string call has no value to return and must fail rather than yield
+// null or an empty string.
+func TestCoalesceErrors(t *testing.T) {
+	tests := []struct {
+		name string
+		args []cty.Value
+	}{
+		{"both null", []cty.Value{
+			cty.NullVal(cty.DynamicPseudoType), cty.NullVal(cty.DynamicPseudoType),
+		}},
+		{"all empty string", []cty.Value{cty.StringVal(""), cty.StringVal("")}},
+		{"null then empty string", []cty.Value{
+			cty.NullVal(cty.String), cty.StringVal(""),
+		}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := coalesceFunc.Call(tt.args)
+			assert.EqualError(t, err, "no non-null, non-empty-string arguments")
 		})
 	}
 }
