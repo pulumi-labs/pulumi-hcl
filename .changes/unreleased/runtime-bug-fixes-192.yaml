@@ -1,0 +1,6 @@
+kind: bug-fixes
+body: '`cidrhost` matches OpenTofu: a negative host number counts back from the end of the prefix''s address range, and a host number that exceeds the available host bits is rejected rather than silently overflowing into the network portion'
+time: 2026-06-01T19:30:00.000000+02:00
+custom:
+    Component: runtime
+    PR: "192"

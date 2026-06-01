@@ -1489,17 +1489,16 @@ var cidrHostFunc = function.New(&function.Spec{
 	Type: function.StaticReturnType(cty.String),
 	Impl: func(args []cty.Value, retType cty.Type) (cty.Value, error) {
 		prefix := args[0].AsString()
-		hostnum, _ := args[1].AsBigFloat().Int64()
+		hostnum, _ := args[1].AsBigFloat().Int(nil)
 
 		_, network, err := net.ParseCIDR(prefix)
 		if err != nil {
 			return cty.NilVal, fmt.Errorf("invalid CIDR: %s", err)
 		}
 
-		ip := network.IP
-		for i := len(ip) - 1; i >= 0 && hostnum > 0; i-- {
-			ip[i] += byte(hostnum & 0xff)
-			hostnum >>= 8
+		ip, err := cidr.HostBig(network, hostnum)
+		if err != nil {
+			return cty.NilVal, err
 		}
 
 		return cty.StringVal(ip.String()), nil
