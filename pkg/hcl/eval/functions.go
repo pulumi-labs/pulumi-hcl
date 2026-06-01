@@ -88,7 +88,7 @@ func Functions(baseDir string) map[string]function.Function {
 		"chomp":       stdlib.ChompFunc,
 		"format":      stdlib.FormatFunc,
 		"formatlist":  stdlib.FormatListFunc,
-		"indent":      indentFunc,
+		"indent":      stdlib.IndentFunc,
 		"join":        stdlib.JoinFunc,
 		"lower":       stdlib.LowerFunc,
 		"regex":       stdlib.RegexFunc,
@@ -271,27 +271,6 @@ var canFunc = function.New(&function.Spec{
 })
 
 // String functions
-
-var indentFunc = function.New(&function.Spec{
-	Params: []function.Parameter{
-		{Name: "spaces", Type: cty.Number},
-		{Name: "string", Type: cty.String},
-	},
-	Type: function.StaticReturnType(cty.String),
-	Impl: func(args []cty.Value, retType cty.Type) (cty.Value, error) {
-		spaces := args[0].AsBigFloat()
-		spacesInt, _ := spaces.Int64()
-		str := args[1].AsString()
-		indent := strings.Repeat(" ", int(spacesInt))
-		lines := strings.Split(str, "\n")
-		for i := range lines {
-			if lines[i] != "" {
-				lines[i] = indent + lines[i]
-			}
-		}
-		return cty.StringVal(strings.Join(lines, "\n")), nil
-	},
-})
 
 var startsWithFunc = function.New(&function.Spec{
 	Params: []function.Parameter{
