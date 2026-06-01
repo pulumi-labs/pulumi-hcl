@@ -56,6 +56,7 @@ import (
 	"github.com/zclconf/go-cty/cty/function"
 	"github.com/zclconf/go-cty/cty/function/stdlib"
 	"golang.org/x/crypto/bcrypt"
+	"golang.org/x/text/encoding/ianaindex"
 	"gopkg.in/yaml.v3"
 )
 
@@ -766,6 +767,8 @@ var base64GzipFunc = function.New(&function.Spec{
 	},
 })
 
+// textDecodeBase64Func base64-decodes a string and then reinterprets the bytes
+// using the named IANA character encoding.
 var textDecodeBase64Func = function.New(&function.Spec{
 	Params: []function.Parameter{
 		{Name: "string", Type: cty.String},
@@ -773,14 +776,32 @@ var textDecodeBase64Func = function.New(&function.Spec{
 	},
 	Type: function.StaticReturnType(cty.String),
 	Impl: func(args []cty.Value, retType cty.Type) (cty.Value, error) {
+		enc, err := ianaindex.IANA.Encoding(args[1].AsString())
+		if err != nil || enc == nil {
+			return cty.NilVal, fmt.Errorf(
+				"%q is not a supported IANA encoding name or alias", args[1].AsString())
+		}
+
 		decoded, err := base64.StdEncoding.DecodeString(args[0].AsString())
 		if err != nil {
-			return cty.NilVal, err
+			return cty.NilVal, fmt.Errorf("invalid source string: %w", err)
 		}
-		return cty.StringVal(string(decoded)), nil
+
+		reinterpreted, err := enc.NewDecoder().Bytes(decoded)
+		if err != nil || bytes.ContainsRune(reinterpreted, '�') {
+			encName, err := ianaindex.IANA.Name(enc)
+			if err != nil {
+				encName = args[1].AsString()
+			}
+			return cty.NilVal, fmt.Errorf(
+				"the given string contains symbols that are not defined for %s", encName)
+		}
+		return cty.StringVal(string(reinterpreted)), nil
 	},
 })
 
+// textEncodeBase64Func re-encodes a UTF-8 string into the named IANA character
+// encoding and then base64-encodes the result.
 var textEncodeBase64Func = function.New(&function.Spec{
 	Params: []function.Parameter{
 		{Name: "string", Type: cty.String},
@@ -788,8 +809,22 @@ var textEncodeBase64Func = function.New(&function.Spec{
 	},
 	Type: function.StaticReturnType(cty.String),
 	Impl: func(args []cty.Value, retType cty.Type) (cty.Value, error) {
-		encoded := base64.StdEncoding.EncodeToString([]byte(args[0].AsString()))
-		return cty.StringVal(encoded), nil
+		enc, err := ianaindex.IANA.Encoding(args[1].AsString())
+		if err != nil || enc == nil {
+			return cty.NilVal, fmt.Errorf(
+				"%q is not a supported IANA encoding name or alias", args[1].AsString())
+		}
+		encName, err := ianaindex.IANA.Name(enc)
+		if err != nil {
+			encName = args[1].AsString()
+		}
+
+		encoded, err := enc.NewEncoder().Bytes([]byte(args[0].AsString()))
+		if err != nil {
+			return cty.NilVal, fmt.Errorf(
+				"the given string contains characters that cannot be represented in %s", encName)
+		}
+		return cty.StringVal(base64.StdEncoding.EncodeToString(encoded)), nil
 	},
 })
 

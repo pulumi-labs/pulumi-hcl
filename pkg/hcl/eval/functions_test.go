@@ -366,6 +366,10 @@ func TestEncodingFunctions(t *testing.T) {
 		{"csvdecode length", `length(csvdecode("a,b\n1,2\n3,4"))`, cty.NumberIntVal(2)},
 		{"textencodebase64", `textencodebase64("hello", "UTF-8")`, cty.StringVal("aGVsbG8=")},
 		{"textdecodebase64", `textdecodebase64("aGVsbG8=", "UTF-8")`, cty.StringVal("hello")},
+		// The encoding argument is honored: UTF-16LE encodes each ASCII
+		// character as two bytes, so its base64 output differs from UTF-8.
+		{"textencodebase64 utf16le", `textencodebase64("hello", "UTF-16LE")`, cty.StringVal("aABlAGwAbABvAA==")},
+		{"textdecodebase64 utf16le", `textdecodebase64("aABlAGwAbABvAA==", "UTF-16LE")`, cty.StringVal("hello")},
 	}
 
 	for _, tt := range tests {
