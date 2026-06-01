@@ -58,7 +58,6 @@ import (
 	"github.com/zclconf/go-cty/cty/function/stdlib"
 	"golang.org/x/crypto/bcrypt"
 	"golang.org/x/text/encoding/ianaindex"
-	"gopkg.in/yaml.v3"
 )
 
 var (
@@ -154,7 +153,7 @@ func Functions(baseDir string) map[string]function.Function {
 		"textdecodebase64": textDecodeBase64Func,
 		"textencodebase64": textEncodeBase64Func,
 		"urlencode":        urlEncodeFunc,
-		"yamldecode":       yamlDecodeFunc,
+		"yamldecode":       ctyyaml.YAMLDecodeFunc,
 		"yamlencode":       ctyyaml.YAMLEncodeFunc,
 
 		// Filesystem functions
@@ -835,20 +834,6 @@ var urlEncodeFunc = function.New(&function.Spec{
 	Type: function.StaticReturnType(cty.String),
 	Impl: func(args []cty.Value, retType cty.Type) (cty.Value, error) {
 		return cty.StringVal(url.QueryEscape(args[0].AsString())), nil
-	},
-})
-
-var yamlDecodeFunc = function.New(&function.Spec{
-	Params: []function.Parameter{
-		{Name: "string", Type: cty.String},
-	},
-	Type: function.StaticReturnType(cty.DynamicPseudoType),
-	Impl: func(args []cty.Value, retType cty.Type) (cty.Value, error) {
-		var data any
-		if err := yaml.Unmarshal([]byte(args[0].AsString()), &data); err != nil {
-			return cty.NilVal, err
-		}
-		return goToCty(data), nil
 	},
 })
 
@@ -1832,46 +1817,6 @@ func ctyToGo(val cty.Value) any {
 		return result
 	default:
 		return nil
-	}
-}
-
-// Helper to convert Go any to cty.Value
-func goToCty(val any) cty.Value {
-	if val == nil {
-		return cty.NullVal(cty.DynamicPseudoType)
-	}
-
-	switch v := val.(type) {
-	case string:
-		return cty.StringVal(v)
-	case int:
-		return cty.NumberIntVal(int64(v))
-	case int64:
-		return cty.NumberIntVal(v)
-	case float64:
-		return cty.NumberFloatVal(v)
-	case bool:
-		return cty.BoolVal(v)
-	case []any:
-		if len(v) == 0 {
-			return cty.ListValEmpty(cty.DynamicPseudoType)
-		}
-		vals := make([]cty.Value, len(v))
-		for i, item := range v {
-			vals[i] = goToCty(item)
-		}
-		return cty.TupleVal(vals)
-	case map[string]any:
-		if len(v) == 0 {
-			return cty.EmptyObjectVal
-		}
-		vals := make(map[string]cty.Value, len(v))
-		for k, item := range v {
-			vals[k] = goToCty(item)
-		}
-		return cty.ObjectVal(vals)
-	default:
-		return cty.NullVal(cty.DynamicPseudoType)
 	}
 }
 

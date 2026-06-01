@@ -1032,18 +1032,19 @@ func TestYAMLFunctions(t *testing.T) {
 	t.Run("yamlencode", func(t *testing.T) {
 		t.Parallel()
 		result := evalExpr(t, "/tmp", `yamlencode({a = "x", b = 2, c = [1, 2]})`)
-		// Like OpenTofu's go-cty-yaml encoder: keys and string scalars are
-		// quoted and block sequences stay un-indented under their key.
 		assert.Equal(t, "\"a\": \"x\"\n\"b\": 2\n\"c\":\n- 1\n- 2\n", result.AsString())
 	})
 
 	t.Run("yamldecode", func(t *testing.T) {
 		t.Parallel()
 		result := evalExpr(t, "/tmp", `yamldecode("a: 1\nb: 2\n").a`)
-		expected := cty.NumberIntVal(1)
-		if !result.RawEquals(expected) {
-			t.Errorf("Expected %s, got %s", expected.GoString(), result.GoString())
-		}
+		assert.True(t, result.RawEquals(cty.NumberIntVal(1)), "got %s", result.GoString())
+	})
+
+	t.Run("yamldecode timestamp", func(t *testing.T) {
+		t.Parallel()
+		result := evalExpr(t, "/tmp", `yamldecode("d: 2020-01-01").d`)
+		assert.Equal(t, cty.StringVal("2020-01-01T00:00:00Z"), result)
 	})
 }
 
