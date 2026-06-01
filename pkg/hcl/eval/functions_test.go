@@ -1031,12 +1031,10 @@ func TestYAMLFunctions(t *testing.T) {
 	t.Parallel()
 	t.Run("yamlencode", func(t *testing.T) {
 		t.Parallel()
-		result := evalExpr(t, "/tmp", `yamlencode({a = "x", b = 2})`)
-		s := result.AsString()
-		// YAML encoding should produce valid output
-		if len(s) == 0 {
-			t.Error("Expected non-empty YAML output")
-		}
+		result := evalExpr(t, "/tmp", `yamlencode({a = "x", b = 2, c = [1, 2]})`)
+		// Like OpenTofu's go-cty-yaml encoder: keys and string scalars are
+		// quoted and block sequences stay un-indented under their key.
+		assert.Equal(t, "\"a\": \"x\"\n\"b\": 2\n\"c\":\n- 1\n- 2\n", result.AsString())
 	})
 
 	t.Run("yamldecode", func(t *testing.T) {

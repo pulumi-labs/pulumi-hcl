@@ -51,6 +51,7 @@ import (
 	"github.com/pulumi/pulumi/sdk/v3/go/common/resource/asset"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/resource/urn"
 	"github.com/pulumi/pulumi/sdk/v3/go/property"
+	ctyyaml "github.com/zclconf/go-cty-yaml"
 	"github.com/zclconf/go-cty/cty"
 	"github.com/zclconf/go-cty/cty/convert"
 	"github.com/zclconf/go-cty/cty/function"
@@ -154,7 +155,7 @@ func Functions(baseDir string) map[string]function.Function {
 		"textencodebase64": textEncodeBase64Func,
 		"urlencode":        urlEncodeFunc,
 		"yamldecode":       yamlDecodeFunc,
-		"yamlencode":       yamlEncodeFunc,
+		"yamlencode":       ctyyaml.YAMLEncodeFunc,
 
 		// Filesystem functions
 		"abspath":    abspathFunc(baseDir),
@@ -848,24 +849,6 @@ var yamlDecodeFunc = function.New(&function.Spec{
 			return cty.NilVal, err
 		}
 		return goToCty(data), nil
-	},
-})
-
-var yamlEncodeFunc = function.New(&function.Spec{
-	Params: []function.Parameter{
-		{Name: "value", Type: cty.DynamicPseudoType},
-	},
-	Type: function.StaticReturnType(cty.String),
-	Impl: func(args []cty.Value, retType cty.Type) (cty.Value, error) {
-		if !args[0].IsWhollyKnown() {
-			return cty.UnknownVal(retType), nil
-		}
-		data := ctyToGo(args[0])
-		out, err := yaml.Marshal(data)
-		if err != nil {
-			return cty.NilVal, err
-		}
-		return cty.StringVal(string(out)), nil
 	},
 })
 
