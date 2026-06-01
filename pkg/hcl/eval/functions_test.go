@@ -50,6 +50,7 @@ func evalExpr(t *testing.T, baseDir, src string) cty.Value {
 }
 
 func TestStringFunctions(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name     string
 		expr     string
@@ -111,6 +112,7 @@ func TestStringFunctions(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			result := evalExpr(t, "/tmp", tt.expr)
 			if !result.RawEquals(tt.expected) {
 				t.Errorf("Expected %s, got %s", tt.expected.GoString(), result.GoString())
@@ -120,6 +122,7 @@ func TestStringFunctions(t *testing.T) {
 }
 
 func TestTemplateStringFunction(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name     string
 		expr     string
@@ -159,6 +162,7 @@ func TestTemplateStringFunction(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			result := evalExpr(t, "/tmp", tt.expr)
 			if !result.RawEquals(tt.expected) {
 				t.Errorf("Expected %s, got %s", tt.expected.GoString(), result.GoString())
@@ -168,6 +172,7 @@ func TestTemplateStringFunction(t *testing.T) {
 }
 
 func TestCollectionFunctions(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name     string
 		expr     string
@@ -310,6 +315,7 @@ func TestCollectionFunctions(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			result := evalExpr(t, "/tmp", tt.expr)
 			if !result.RawEquals(tt.expected) {
 				t.Errorf("Expected %s, got %s", tt.expected.GoString(), result.GoString())
@@ -319,6 +325,7 @@ func TestCollectionFunctions(t *testing.T) {
 }
 
 func TestNumericFunctions(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name     string
 		expr     string
@@ -339,6 +346,7 @@ func TestNumericFunctions(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			result := evalExpr(t, "/tmp", tt.expr)
 			if !result.RawEquals(tt.expected) {
 				t.Errorf("Expected %s, got %s", tt.expected.GoString(), result.GoString())
@@ -348,6 +356,7 @@ func TestNumericFunctions(t *testing.T) {
 }
 
 func TestEncodingFunctions(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name     string
 		expr     string
@@ -374,6 +383,7 @@ func TestEncodingFunctions(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			result := evalExpr(t, "/tmp", tt.expr)
 			if !result.RawEquals(tt.expected) {
 				t.Errorf("Expected %s, got %s", tt.expected.GoString(), result.GoString())
@@ -383,6 +393,7 @@ func TestEncodingFunctions(t *testing.T) {
 }
 
 func TestHashFunctions(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name     string
 		expr     string
@@ -400,6 +411,7 @@ func TestHashFunctions(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			result := evalExpr(t, "/tmp", tt.expr)
 			if !result.RawEquals(tt.expected) {
 				t.Errorf("Expected %s, got %s", tt.expected.GoString(), result.GoString())
@@ -409,6 +421,7 @@ func TestHashFunctions(t *testing.T) {
 }
 
 func TestRsaDecrypt(t *testing.T) {
+	t.Parallel()
 	// Generate a test RSA key pair
 	privateKey, err := rsa.GenerateKey(rand.Reader, 2048)
 	if err != nil {
@@ -464,6 +477,7 @@ func TestRsaDecrypt(t *testing.T) {
 }
 
 func TestRsaDecryptPKCS8(t *testing.T) {
+	t.Parallel()
 	// Generate a test RSA key pair
 	privateKey, err := rsa.GenerateKey(rand.Reader, 2048)
 	if err != nil {
@@ -521,6 +535,7 @@ func TestRsaDecryptPKCS8(t *testing.T) {
 }
 
 func TestRsaDecryptErrors(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name       string
 		ciphertext string
@@ -543,6 +558,7 @@ func TestRsaDecryptErrors(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			ctx := &hcl.EvalContext{
 				Functions: Functions("/tmp"),
 				Variables: map[string]cty.Value{
@@ -585,6 +601,7 @@ func findSubstring(s, substr string) bool {
 var _ = fmt.Sprintf
 
 func TestTypeFunctions(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name     string
 		expr     string
@@ -615,6 +632,7 @@ func TestTypeFunctions(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			result := evalExpr(t, "/tmp", tt.expr)
 			if !result.RawEquals(tt.expected) {
 				t.Errorf("Expected %s, got %s", tt.expected.GoString(), result.GoString())
@@ -628,6 +646,7 @@ func TestTypeFunctions(t *testing.T) {
 // all-empty-string call has no value to return and must fail rather than yield
 // null or an empty string.
 func TestCoalesceErrors(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name string
 		args []cty.Value
@@ -643,6 +662,7 @@ func TestCoalesceErrors(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			_, err := coalesceFunc.Call(tt.args)
 			assert.EqualError(t, err, "no non-null, non-empty-string arguments")
 		})
@@ -652,6 +672,7 @@ func TestCoalesceErrors(t *testing.T) {
 // TestSumEmptyList pins that `sum` of an empty list errors, as Terraform does,
 // rather than returning zero.
 func TestSumEmptyList(t *testing.T) {
+	t.Parallel()
 	_, err := sumFunc.Call([]cty.Value{cty.ListValEmpty(cty.Number)})
 	assert.EqualError(t, err, "cannot sum an empty list")
 }
@@ -660,13 +681,16 @@ func TestSumEmptyList(t *testing.T) {
 // typed-but-empty collection preserves the element type rather than collapsing
 // to `dynamic`.
 func TestToSetToListPreserveEmptyElementType(t *testing.T) {
+	t.Parallel()
 	t.Run("toset of empty list(string)", func(t *testing.T) {
+		t.Parallel()
 		got, err := toSetFunc.Call([]cty.Value{cty.ListValEmpty(cty.String)})
 		require.NoError(t, err)
 		assert.Equal(t, cty.SetValEmpty(cty.String), got)
 	})
 
 	t.Run("tolist of empty set(string)", func(t *testing.T) {
+		t.Parallel()
 		got, err := toListFunc.Call([]cty.Value{cty.SetValEmpty(cty.String)})
 		require.NoError(t, err)
 		assert.Equal(t, cty.ListValEmpty(cty.String), got)
@@ -748,6 +772,7 @@ func TestDateTimeFunctions(t *testing.T) {
 }
 
 func TestUUIDFunction(t *testing.T) {
+	t.Parallel()
 	result := evalExpr(t, "/tmp", `uuid()`)
 	s := result.AsString()
 
@@ -761,6 +786,7 @@ func TestUUIDFunction(t *testing.T) {
 }
 
 func TestUUIDV5Function(t *testing.T) {
+	t.Parallel()
 	result := evalExpr(t, "/tmp", `uuidv5("dns", "example.com")`)
 	expected := cty.StringVal("cfbff0d1-9375-5685-968c-48ce8b15ae17")
 
@@ -770,6 +796,7 @@ func TestUUIDV5Function(t *testing.T) {
 }
 
 func TestFileFunctions(t *testing.T) {
+	t.Parallel()
 	tmpDir := t.TempDir()
 
 	// Create test file
@@ -779,6 +806,7 @@ func TestFileFunctions(t *testing.T) {
 	}
 
 	t.Run("file", func(t *testing.T) {
+		t.Parallel()
 		result := evalExpr(t, tmpDir, `file("test.txt")`)
 		expected := cty.StringVal("hello world")
 		if !result.RawEquals(expected) {
@@ -787,6 +815,7 @@ func TestFileFunctions(t *testing.T) {
 	})
 
 	t.Run("filebase64", func(t *testing.T) {
+		t.Parallel()
 		result := evalExpr(t, tmpDir, `filebase64("test.txt")`)
 		expected := cty.StringVal("aGVsbG8gd29ybGQ=")
 		if !result.RawEquals(expected) {
@@ -795,6 +824,7 @@ func TestFileFunctions(t *testing.T) {
 	})
 
 	t.Run("fileexists true", func(t *testing.T) {
+		t.Parallel()
 		result := evalExpr(t, tmpDir, `fileexists("test.txt")`)
 		expected := cty.BoolVal(true)
 		if !result.RawEquals(expected) {
@@ -803,6 +833,7 @@ func TestFileFunctions(t *testing.T) {
 	})
 
 	t.Run("fileexists false", func(t *testing.T) {
+		t.Parallel()
 		result := evalExpr(t, tmpDir, `fileexists("nonexistent.txt")`)
 		expected := cty.BoolVal(false)
 		if !result.RawEquals(expected) {
@@ -817,6 +848,7 @@ func TestFileFunctions(t *testing.T) {
 	}
 
 	t.Run("jsondecode file", func(t *testing.T) {
+		t.Parallel()
 		result := evalExpr(t, tmpDir, `jsondecode(file("data.json")).name`)
 		expected := cty.StringVal("test")
 		if !result.RawEquals(expected) {
@@ -831,6 +863,7 @@ func TestFileFunctions(t *testing.T) {
 	}
 
 	t.Run("templatefile", func(t *testing.T) {
+		t.Parallel()
 		result := evalExpr(t, tmpDir, `templatefile("greeting.tpl", {name = "World"})`)
 		expected := cty.StringVal("Hello, World!")
 		if !result.RawEquals(expected) {
@@ -850,6 +883,7 @@ func TestFileFunctions(t *testing.T) {
 	}
 
 	t.Run("fileset", func(t *testing.T) {
+		t.Parallel()
 		result := evalExpr(t, tmpDir, `length(fileset("subdir", "*.txt"))`)
 		expected := cty.NumberIntVal(2)
 		if !result.RawEquals(expected) {
@@ -859,6 +893,7 @@ func TestFileFunctions(t *testing.T) {
 }
 
 func TestIPFunctions(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name     string
 		expr     string
@@ -898,6 +933,7 @@ func TestIPFunctions(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			result := evalExpr(t, "/tmp", tt.expr)
 			if !result.RawEquals(tt.expected) {
 				t.Errorf("Expected %s, got %s", tt.expected.GoString(), result.GoString())
@@ -907,7 +943,9 @@ func TestIPFunctions(t *testing.T) {
 }
 
 func TestYAMLFunctions(t *testing.T) {
+	t.Parallel()
 	t.Run("yamlencode", func(t *testing.T) {
+		t.Parallel()
 		result := evalExpr(t, "/tmp", `yamlencode({a = "x", b = 2})`)
 		s := result.AsString()
 		// YAML encoding should produce valid output
@@ -917,6 +955,7 @@ func TestYAMLFunctions(t *testing.T) {
 	})
 
 	t.Run("yamldecode", func(t *testing.T) {
+		t.Parallel()
 		result := evalExpr(t, "/tmp", `yamldecode("a: 1\nb: 2\n").a`)
 		expected := cty.NumberIntVal(1)
 		if !result.RawEquals(expected) {
@@ -931,6 +970,7 @@ func TestYAMLFunctions(t *testing.T) {
 // unknown leaf. go-cty's AllowUnknown:false only auto-lifts shallow unknowns,
 // so each function below is responsible for the deep check itself.
 func TestUnknownPropagation(t *testing.T) {
+	t.Parallel()
 	funcs := Functions("/tmp")
 
 	tests := []struct {
@@ -985,6 +1025,7 @@ func TestUnknownPropagation(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			fn, ok := funcs[tt.fn]
 			require.True(t, ok, "function %q not registered", tt.fn)
 
@@ -996,7 +1037,9 @@ func TestUnknownPropagation(t *testing.T) {
 }
 
 func TestAbspathAndBasename(t *testing.T) {
+	t.Parallel()
 	t.Run("basename", func(t *testing.T) {
+		t.Parallel()
 		result := evalExpr(t, "/tmp", `basename("/path/to/file.txt")`)
 		expected := cty.StringVal("file.txt")
 		if !result.RawEquals(expected) {
@@ -1005,6 +1048,7 @@ func TestAbspathAndBasename(t *testing.T) {
 	})
 
 	t.Run("dirname", func(t *testing.T) {
+		t.Parallel()
 		result := evalExpr(t, "/tmp", `dirname("/path/to/file.txt")`)
 		expected := cty.StringVal("/path/to")
 		if !result.RawEquals(expected) {
@@ -1013,6 +1057,7 @@ func TestAbspathAndBasename(t *testing.T) {
 	})
 
 	t.Run("pathexpand", func(t *testing.T) {
+		t.Parallel()
 		result := evalExpr(t, "/tmp", `pathexpand("~")`)
 		// Should expand to home directory, not be empty
 		if result.AsString() == "" || result.AsString() == "~" {
@@ -1021,6 +1066,7 @@ func TestAbspathAndBasename(t *testing.T) {
 	})
 
 	t.Run("abspath", func(t *testing.T) {
+		t.Parallel()
 		result := evalExpr(t, "/tmp", `abspath("test.txt")`)
 		expected := cty.StringVal("/tmp/test.txt")
 		if !result.RawEquals(expected) {

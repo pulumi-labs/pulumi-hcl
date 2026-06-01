@@ -69,18 +69,23 @@ func TestPropertiesOf(t *testing.T) {
 	}
 
 	t.Run("nil", func(t *testing.T) {
+		t.Parallel()
 		assert.Nil(t, propertiesOf(nil))
 	})
 	t.Run("object", func(t *testing.T) {
+		t.Parallel()
 		assert.Equal(t, objType.Properties, propertiesOf(objType))
 	})
 	t.Run("non-object", func(t *testing.T) {
+		t.Parallel()
 		assert.Nil(t, propertiesOf(schema.StringType))
 	})
 	t.Run("optional-object", func(t *testing.T) {
+		t.Parallel()
 		assert.Equal(t, objType.Properties, propertiesOf(&schema.OptionalType{ElementType: objType}))
 	})
 	t.Run("array-not-unwrapped", func(t *testing.T) {
+		t.Parallel()
 		assert.Nil(t, propertiesOf(&schema.ArrayType{ElementType: objType}))
 	})
 }
@@ -89,15 +94,19 @@ func TestElementTypeOf(t *testing.T) {
 	t.Parallel()
 
 	t.Run("nil", func(t *testing.T) {
+		t.Parallel()
 		assert.Nil(t, elementTypeOf(nil))
 	})
 	t.Run("map", func(t *testing.T) {
+		t.Parallel()
 		assert.Equal(t, schema.StringType, elementTypeOf(&schema.MapType{ElementType: schema.StringType}))
 	})
 	t.Run("array", func(t *testing.T) {
+		t.Parallel()
 		assert.Equal(t, schema.IntType, elementTypeOf(&schema.ArrayType{ElementType: schema.IntType}))
 	})
 	t.Run("non-container", func(t *testing.T) {
+		t.Parallel()
 		assert.Nil(t, elementTypeOf(schema.StringType))
 	})
 }

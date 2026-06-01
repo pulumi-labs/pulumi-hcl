@@ -24,6 +24,7 @@ import (
 )
 
 func TestParseBasicConfig(t *testing.T) {
+	t.Parallel()
 	src := []byte(`
 terraform {
   required_providers {
@@ -186,6 +187,7 @@ module "vpc" {
 }
 
 func TestParseProvisioners(t *testing.T) {
+	t.Parallel()
 	src := []byte(`
 resource "aws_instance" "web" {
   ami           = "ami-123"
@@ -499,6 +501,7 @@ terraform {
 }
 
 func TestParseProvisionerInvalidWhen(t *testing.T) {
+	t.Parallel()
 	src := []byte(`
 resource "aws_instance" "web" {
   provisioner "local-exec" {
@@ -514,6 +517,7 @@ resource "aws_instance" "web" {
 }
 
 func TestParseProvisionerInvalidOnFailure(t *testing.T) {
+	t.Parallel()
 	src := []byte(`
 resource "aws_instance" "web" {
   provisioner "local-exec" {
@@ -529,6 +533,7 @@ resource "aws_instance" "web" {
 }
 
 func TestParseMetaArguments(t *testing.T) {
+	t.Parallel()
 	src := []byte(`
 resource "aws_instance" "web" {
   count = 3
@@ -609,6 +614,7 @@ resource "aws_instance" "app" {
 }
 
 func TestParseProviderCallReserved(t *testing.T) {
+	t.Parallel()
 	src := []byte(`
 provider "call" {
   value = "x"

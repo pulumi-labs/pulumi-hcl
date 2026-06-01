@@ -60,6 +60,7 @@ func TestNearestHCLToken(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			got := nearestHCLToken(pkg, tt.hclToken, tt.isFunction)
 			require.Equal(t, tt.want, got)
 		})
@@ -99,6 +100,7 @@ func TestPulumiTokenToHCLForm(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			got := pulumiTokenToHCLForm(pkg, tt.token, tt.isFunction)
 			require.Equal(t, tt.want, got)
 		})

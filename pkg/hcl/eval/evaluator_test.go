@@ -33,6 +33,7 @@ func parseExpr(t *testing.T, src string) hcl.Expression {
 }
 
 func TestEvaluateString(t *testing.T) {
+	t.Parallel()
 	ctx := NewContext("/tmp", "/tmp", "", "", "")
 	ctx.SetVariable("name", cty.StringVal("test"))
 
@@ -50,6 +51,7 @@ func TestEvaluateString(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			expr := parseExpr(t, tt.expr)
 			result, diags := eval.EvaluateString(expr)
 			if diags.HasErrors() {
@@ -63,6 +65,7 @@ func TestEvaluateString(t *testing.T) {
 }
 
 func TestEvaluateInt(t *testing.T) {
+	t.Parallel()
 	ctx := NewContext("/tmp", "/tmp", "", "", "")
 	ctx.SetVariable("count", cty.NumberIntVal(5))
 
@@ -81,6 +84,7 @@ func TestEvaluateInt(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			expr := parseExpr(t, tt.expr)
 			result, diags := eval.EvaluateInt(expr)
 			if diags.HasErrors() {
@@ -94,6 +98,7 @@ func TestEvaluateInt(t *testing.T) {
 }
 
 func TestEvaluateBool(t *testing.T) {
+	t.Parallel()
 	ctx := NewContext("/tmp", "/tmp", "", "", "")
 	ctx.SetVariable("enabled", cty.BoolVal(true))
 
@@ -114,6 +119,7 @@ func TestEvaluateBool(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			expr := parseExpr(t, tt.expr)
 			result, diags := eval.EvaluateBool(expr)
 			if diags.HasErrors() {
@@ -127,6 +133,7 @@ func TestEvaluateBool(t *testing.T) {
 }
 
 func TestEvaluateCount(t *testing.T) {
+	t.Parallel()
 	ctx := NewContext("/tmp", "/tmp", "", "", "")
 	ctx.SetVariable("instance_count", cty.NumberIntVal(3))
 
@@ -149,6 +156,7 @@ func TestEvaluateCount(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			expr := parseExpr(t, tt.expr)
 			result, isBool, diags := eval.EvaluateCount(expr)
 			if tt.expectErr {
@@ -173,6 +181,7 @@ func TestEvaluateCount(t *testing.T) {
 // AsBigFloat panics on marked values; a non-sensitive mark (e.g. DepMark)
 // must be stripped first.
 func TestEvaluateCount_MarkedKnownValue(t *testing.T) {
+	t.Parallel()
 	ctx := NewContext("/tmp", "/tmp", "", "", "")
 	ctx.SetVariable("n", cty.NumberIntVal(3).WithMarks(
 		cty.NewValueMarks(DepMark("urn:pulumi:dev::p::aws:ec2/vpc:Vpc::test")),
@@ -188,6 +197,7 @@ func TestEvaluateCount_MarkedKnownValue(t *testing.T) {
 // ElementIterator panics on marked containers; a non-sensitive mark must
 // be stripped first.
 func TestEvaluateForEach_MarkedContainer(t *testing.T) {
+	t.Parallel()
 	ctx := NewContext("/tmp", "/tmp", "", "", "")
 	ctx.SetVariable("m", cty.MapVal(map[string]cty.Value{
 		"primary": cty.StringVal("p"),
@@ -202,6 +212,7 @@ func TestEvaluateForEach_MarkedContainer(t *testing.T) {
 }
 
 func TestEvaluateCountNil(t *testing.T) {
+	t.Parallel()
 	ctx := NewContext("/tmp", "/tmp", "", "", "")
 	eval := NewEvaluator(ctx)
 
@@ -218,10 +229,12 @@ func TestEvaluateCountNil(t *testing.T) {
 }
 
 func TestEvaluateForEach(t *testing.T) {
+	t.Parallel()
 	ctx := NewContext("/tmp", "/tmp", "", "", "")
 	eval := NewEvaluator(ctx)
 
 	t.Run("map", func(t *testing.T) {
+		t.Parallel()
 		expr := parseExpr(t, `{a = "x", b = "y"}`)
 		result, diags := eval.EvaluateForEach(expr)
 		if diags.HasErrors() {
@@ -236,6 +249,7 @@ func TestEvaluateForEach(t *testing.T) {
 	})
 
 	t.Run("set of strings", func(t *testing.T) {
+		t.Parallel()
 		expr := parseExpr(t, `toset(["a", "b", "c"])`)
 		result, diags := eval.EvaluateForEach(expr)
 		if diags.HasErrors() {
@@ -247,6 +261,7 @@ func TestEvaluateForEach(t *testing.T) {
 	})
 
 	t.Run("nil returns nil", func(t *testing.T) {
+		t.Parallel()
 		result, diags := eval.EvaluateForEach(nil)
 		if diags.HasErrors() {
 			t.Errorf("Unexpected error: %s", diags.Error())
@@ -257,6 +272,7 @@ func TestEvaluateForEach(t *testing.T) {
 	})
 
 	t.Run("list rejected", func(t *testing.T) {
+		t.Parallel()
 		expr := parseExpr(t, `["a", "b"]`)
 		_, diags := eval.EvaluateForEach(expr)
 		if !diags.HasErrors() {
@@ -266,6 +282,7 @@ func TestEvaluateForEach(t *testing.T) {
 }
 
 func TestContextVariables(t *testing.T) {
+	t.Parallel()
 	ctx := NewContext("/tmp", "/tmp", "", "", "")
 	ctx.SetVariable("name", cty.StringVal("test"))
 	ctx.SetVariable("count", cty.NumberIntVal(5))
@@ -284,6 +301,7 @@ func TestContextVariables(t *testing.T) {
 }
 
 func TestContextLocals(t *testing.T) {
+	t.Parallel()
 	ctx := NewContext("/tmp", "/tmp", "", "", "")
 	ctx.SetLocal("common_tags", cty.ObjectVal(map[string]cty.Value{
 		"Environment": cty.StringVal("dev"),
@@ -304,6 +322,7 @@ func TestContextLocals(t *testing.T) {
 }
 
 func TestContextCountIndex(t *testing.T) {
+	t.Parallel()
 	ctx := NewContext("/tmp", "/tmp", "", "", "")
 	ctx.SetCount(2)
 
@@ -320,6 +339,7 @@ func TestContextCountIndex(t *testing.T) {
 }
 
 func TestContextEach(t *testing.T) {
+	t.Parallel()
 	ctx := NewContext("/tmp", "/tmp", "", "", "")
 	ctx.SetEach(cty.StringVal("mykey"), cty.StringVal("myvalue"))
 
@@ -347,7 +367,9 @@ func TestContextEach(t *testing.T) {
 }
 
 func TestContextPath(t *testing.T) {
+	t.Parallel()
 	t.Run("root module yields '.'", func(t *testing.T) {
+		t.Parallel()
 		ctx := NewContext("/project/module", "/project/module", "", "", "")
 		eval := NewEvaluator(ctx)
 		result, diags := eval.EvaluateString(parseExpr(t, `path.module`))
@@ -360,6 +382,7 @@ func TestContextPath(t *testing.T) {
 	})
 
 	t.Run("nested module yields relative path from root", func(t *testing.T) {
+		t.Parallel()
 		ctx := NewContext("/project/modules/sub", "/project", "", "", "")
 		eval := NewEvaluator(ctx)
 		result, diags := eval.EvaluateString(parseExpr(t, `path.module`))
@@ -373,6 +396,7 @@ func TestContextPath(t *testing.T) {
 }
 
 func TestContextTerraform(t *testing.T) {
+	t.Parallel()
 	ctx := NewContext("/tmp", "/tmp", "production", "", "")
 
 	eval := NewEvaluator(ctx)
@@ -388,7 +412,9 @@ func TestContextTerraform(t *testing.T) {
 }
 
 func TestContextRangedResources(t *testing.T) {
+	t.Parallel()
 	t.Run("count resources are accessible by index", func(t *testing.T) {
+		t.Parallel()
 		ctx := NewContext("/tmp", "/tmp", "", "", "")
 		ctx.SetCountResource("aws_instance.web", 0, cty.ObjectVal(map[string]cty.Value{
 			"id": cty.StringVal("i-000"),
@@ -408,6 +434,7 @@ func TestContextRangedResources(t *testing.T) {
 	})
 
 	t.Run("for_each resources are accessible by key", func(t *testing.T) {
+		t.Parallel()
 		ctx := NewContext("/tmp", "/tmp", "", "", "")
 		ctx.SetEachResource("aws_instance.web", "east", cty.ObjectVal(map[string]cty.Value{
 			"id": cty.StringVal("i-east"),
@@ -423,6 +450,7 @@ func TestContextRangedResources(t *testing.T) {
 	})
 
 	t.Run("resource named with brackets is not confused with ranged", func(t *testing.T) {
+		t.Parallel()
 		ctx := NewContext("/tmp", "/tmp", "", "", "")
 		ctx.SetResource("aws_instance.foo[0]", cty.ObjectVal(map[string]cty.Value{
 			"id": cty.StringVal("i-literal"),
@@ -435,6 +463,7 @@ func TestContextRangedResources(t *testing.T) {
 	})
 
 	t.Run("single and ranged resources coexist under same type", func(t *testing.T) {
+		t.Parallel()
 		ctx := NewContext("/tmp", "/tmp", "", "", "")
 		ctx.SetResource("aws_instance.single", cty.ObjectVal(map[string]cty.Value{
 			"id": cty.StringVal("i-single"),
@@ -455,6 +484,7 @@ func TestContextRangedResources(t *testing.T) {
 }
 
 func TestContextClone(t *testing.T) {
+	t.Parallel()
 	ctx := NewContext("/tmp", "/tmp", "", "", "")
 	ctx.SetVariable("name", cty.StringVal("original"))
 
@@ -478,6 +508,7 @@ func TestContextClone(t *testing.T) {
 }
 
 func TestParseTraversal(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name              string
 		expr              string
@@ -518,6 +549,7 @@ func TestParseTraversal(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			expr := parseExpr(t, tt.expr)
 			traversals := expr.Variables()
 			if len(traversals) != 1 {
@@ -542,6 +574,7 @@ func TestParseTraversal(t *testing.T) {
 }
 
 func TestExtractDependencies(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name     string
 		expr     string
@@ -581,6 +614,7 @@ func TestExtractDependencies(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			expr := parseExpr(t, tt.expr)
 			deps := ExtractDependencies(expr)
 
@@ -598,6 +632,7 @@ func TestExtractDependencies(t *testing.T) {
 }
 
 func TestIsKnown(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name     string
 		value    cty.Value
@@ -614,6 +649,7 @@ func TestIsKnown(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			result := IsKnown(tt.value)
 			if result != tt.expected {
 				t.Errorf("Expected %v, got %v", tt.expected, result)
@@ -623,14 +659,17 @@ func TestIsKnown(t *testing.T) {
 }
 
 func TestMarkOutputLeaves(t *testing.T) {
+	t.Parallel()
 	mark := DepMark("urn:test::a")
 
 	t.Run("primitive marks at top", func(t *testing.T) {
+		t.Parallel()
 		out := MarkOutputLeaves(cty.StringVal("hello"), mark)
 		assert.True(t, out.HasMark(mark))
 	})
 
 	t.Run("object marks each leaf but not container", func(t *testing.T) {
+		t.Parallel()
 		obj := cty.ObjectVal(map[string]cty.Value{
 			"id":   cty.StringVal("xyz"),
 			"name": cty.StringVal("foo"),
@@ -642,6 +681,7 @@ func TestMarkOutputLeaves(t *testing.T) {
 	})
 
 	t.Run("list marks each element", func(t *testing.T) {
+		t.Parallel()
 		list := cty.ListVal([]cty.Value{cty.StringVal("a"), cty.StringVal("b")})
 		out := MarkOutputLeaves(list, mark)
 		assert.False(t, out.IsMarked())
@@ -652,6 +692,7 @@ func TestMarkOutputLeaves(t *testing.T) {
 	})
 
 	t.Run("nested objects mark every leaf", func(t *testing.T) {
+		t.Parallel()
 		nested := cty.ObjectVal(map[string]cty.Value{
 			"tags": cty.MapVal(map[string]cty.Value{
 				"Name": cty.StringVal("hi"),
@@ -663,6 +704,7 @@ func TestMarkOutputLeaves(t *testing.T) {
 	})
 
 	t.Run("empty containers untouched", func(t *testing.T) {
+		t.Parallel()
 		empty := cty.MapValEmpty(cty.String)
 		out := MarkOutputLeaves(empty, mark)
 		assert.False(t, out.IsMarked())
@@ -670,25 +712,30 @@ func TestMarkOutputLeaves(t *testing.T) {
 	})
 
 	t.Run("null and unknown leaves get marked", func(t *testing.T) {
+		t.Parallel()
 		assert.True(t, MarkOutputLeaves(cty.NullVal(cty.String), mark).HasMark(mark))
 		assert.True(t, MarkOutputLeaves(cty.UnknownVal(cty.String), mark).HasMark(mark))
 	})
 }
 
 func TestCollectDepURNs(t *testing.T) {
+	t.Parallel()
 	a := DepMark("urn:test::a")
 	b := DepMark("urn:test::b")
 
 	t.Run("no marks", func(t *testing.T) {
+		t.Parallel()
 		assert.Empty(t, CollectDepURNs(cty.StringVal("hi")))
 	})
 
 	t.Run("single leaf mark", func(t *testing.T) {
+		t.Parallel()
 		assert.Equal(t, []string{"urn:test::a"},
 			CollectDepURNs(cty.StringVal("hi").Mark(a)))
 	})
 
 	t.Run("nested distinct marks deduplicated and ordered first-seen", func(t *testing.T) {
+		t.Parallel()
 		// {x: marked(a), y: [marked(b), marked(a)]}
 		v := cty.ObjectVal(map[string]cty.Value{
 			"x": cty.StringVal("v").Mark(a),
@@ -702,11 +749,13 @@ func TestCollectDepURNs(t *testing.T) {
 	})
 
 	t.Run("ignores non-DepMark marks like SensitiveMark", func(t *testing.T) {
+		t.Parallel()
 		v := cty.StringVal("secret").Mark(SensitiveMark)
 		assert.Empty(t, CollectDepURNs(v))
 	})
 
 	t.Run("propagates through MarkOutputLeaves-marked container", func(t *testing.T) {
+		t.Parallel()
 		obj := MarkOutputLeaves(cty.ObjectVal(map[string]cty.Value{
 			"id": cty.StringVal("xyz"),
 		}), a)
