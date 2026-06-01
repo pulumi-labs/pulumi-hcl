@@ -175,7 +175,10 @@ func TestLanguage(t *testing.T) {
 
 	handle, err := rpcutil.ServeWithOptions(rpcutil.ServeOptions{
 		Init: func(srv *grpc.Server) error {
-			host, err := server.NewLanguageHost(engineAddress)
+			// Conformance fixtures use Pulumi semantics where explicitly
+			// declared providers are resources that must appear in the
+			// snapshot, so opt out of Terraform's lazy provider registration.
+			host, err := server.NewLanguageHost(engineAddress, server.WithAlwaysRegisterProviders())
 			if err != nil {
 				return err
 			}

@@ -352,6 +352,12 @@ type Engine struct {
 	// processProvider checks whether anything depends on a provider node
 	// before registering it).
 	graph *graph.Graph
+
+	// alwaysRegisterProviders forces every `provider` block to be registered
+	// as a resource even when nothing references it, bypassing Terraform's
+	// lazy provider-configure semantics. Test-only; see
+	// EngineOptions.AlwaysRegisterProviders.
+	alwaysRegisterProviders bool
 }
 
 // EngineOptions configures the engine.
@@ -394,6 +400,15 @@ type EngineOptions struct {
 	Packages map[string]workspace.PackageDescriptor
 
 	Parallel int
+
+	// AlwaysRegisterProviders forces every `provider` block to be registered
+	// as a resource even when no resource references it. This exists ONLY for
+	// the language conformance tests, whose Pulumi-semantics fixtures expect
+	// explicitly-declared providers to appear in the snapshot. Production runs
+	// must leave this false to preserve Terraform's lazy provider-configure
+	// behavior (an unused provider whose config would fail is never
+	// configured).
+	AlwaysRegisterProviders bool
 }
 
 // NewEngine creates a new execution engine.
@@ -428,6 +443,7 @@ func NewEngine(config *ast.Config, opts *EngineOptions) *Engine {
 		moduleInstances:         util.NewSyncMap[string, []*moduleInstance](),
 		parallel:                opts.Parallel,
 		failedNodes:             util.NewSyncMap[string, error](),
+		alwaysRegisterProviders: opts.AlwaysRegisterProviders,
 	}
 
 	return engine
@@ -782,7 +798,9 @@ func (e *Engine) processProvider(ctx context.Context, node *graph.Node) error {
 	// fail validate/configure. The graph already captures every real use
 	// as an in-edge to the provider node (explicit `provider = ...` refs
 	// and root implicit-default refs), so no dependents means no use.
-	if e.graph != nil && !e.graph.HasDependents(node.Key) {
+	// alwaysRegisterProviders (test-only) opts out so conformance fixtures
+	// see explicitly-declared providers in the snapshot.
+	if !e.alwaysRegisterProviders && e.graph != nil && !e.graph.HasDependents(node.Key) {
 		return nil
 	}
 

@@ -63,15 +63,34 @@ type LanguageHost struct {
 	pulumirpc.UnimplementedLanguageRuntimeServer
 	engine  pulumirpc.EngineClient
 	closers []io.Closer
+
+	// alwaysRegisterProviders forces every `provider` block to be registered
+	// as a resource. Test-only; set via WithAlwaysRegisterProviders.
+	alwaysRegisterProviders bool
 }
 
 // Ensure LanguageHost implements the interface.
 var _ pulumirpc.LanguageRuntimeServer = (*LanguageHost)(nil)
 
+// Option configures a LanguageHost.
+type Option func(*LanguageHost)
+
+// WithAlwaysRegisterProviders forces every `provider` block to be registered
+// as a resource even when no resource references it, bypassing Terraform's
+// lazy provider-configure semantics.
+//
+// This exists ONLY for the language conformance tests, whose Pulumi-semantics
+// fixtures declare explicit providers as resources and expect them in the
+// snapshot. Do not use it in production: it would configure unused providers
+// whose config is meant to be evaluated lazily.
+func WithAlwaysRegisterProviders() Option {
+	return func(h *LanguageHost) { h.alwaysRegisterProviders = true }
+}
+
 // NewLanguageHost creates a new HCL language host.
 //
 // The returned [LanguageHost] should be closed.
-func NewLanguageHost(engineAddress string) (*LanguageHost, error) {
+func NewLanguageHost(engineAddress string, opts ...Option) (*LanguageHost, error) {
 	engineConn, err := grpc.NewClient(
 		engineAddress,
 		grpc.WithTransportCredentials(insecure.NewCredentials()),
@@ -81,10 +100,14 @@ func NewLanguageHost(engineAddress string) (*LanguageHost, error) {
 		return nil, fmt.Errorf("connecting to engine: %w", err)
 	}
 
-	return &LanguageHost{
+	host := &LanguageHost{
 		engine:  pulumirpc.NewEngineClient(engineConn),
 		closers: []io.Closer{engineConn},
-	}, nil
+	}
+	for _, opt := range opts {
+		opt(host)
+	}
+	return host, nil
 }
 
 func (host *LanguageHost) Close() error {
@@ -426,19 +449,20 @@ func (host *LanguageHost) Run(
 
 	// Create and run the engine
 	engine := run.NewEngine(config, &run.EngineOptions{
-		ProjectName:        req.Project,
-		StackName:          req.Stack,
-		Organization:       req.Organization,
-		Config:             configMap,
-		ConfigSecretKeys:   req.ConfigSecretKeys,
-		DryRun:             req.DryRun,
-		ResourceMonitor:    resmon,
-		SchemaLoader:       schema.NewCachedLoader(loader),
-		ProviderInfoSource: providerInfoSource,
-		WorkDir:            req.Info.ProgramDirectory,
-		RootDir:            req.Info.RootDirectory,
-		Packages:           paramDescriptors,
-		Parallel:           int(req.Parallel),
+		ProjectName:             req.Project,
+		StackName:               req.Stack,
+		Organization:            req.Organization,
+		Config:                  configMap,
+		ConfigSecretKeys:        req.ConfigSecretKeys,
+		DryRun:                  req.DryRun,
+		ResourceMonitor:         resmon,
+		SchemaLoader:            schema.NewCachedLoader(loader),
+		ProviderInfoSource:      providerInfoSource,
+		WorkDir:                 req.Info.ProgramDirectory,
+		RootDir:                 req.Info.RootDirectory,
+		Packages:                paramDescriptors,
+		Parallel:                int(req.Parallel),
+		AlwaysRegisterProviders: host.alwaysRegisterProviders,
 	})
 
 	if err := engine.Run(ctx); err != nil {
