@@ -25,6 +25,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -151,39 +152,51 @@ func (host *LanguageHost) GetRequiredPackages(
 		required = config.Terraform.RequiredProviders
 	}
 
-	for _, alias := range usedProviders(ctx, config, req.Info.ProgramDirectory) {
-		if isBuiltinProvider(alias) {
-			continue
-		}
-		req := required[alias]
+	// Resolve every provider referenced anywhere in the module tree to its
+	// source, mirroring tofu: a provider declared in a child module is installed
+	// from its declared source (not the "hashicorp/<name>" default), providers
+	// sharing a source are installed once with their version constraints unioned
+	// (the terraform-provider plugin intersects them at resolve time, erroring on
+	// an empty intersection just as tofu does), and distinct sources are distinct
+	// installs.
+	tfSpecs, pulumiPkgs, aliases := collectRequirements(ctx, config, req.Info.ProgramDirectory)
 
+	for _, alias := range sortedKeys(aliases) {
 		// A local SDK descriptor (written by `pulumi package add`) is the most
 		// specific source of truth: it carries the base provider name and the
 		// parameterization that a `required_providers` entry alone lacks. Prefer
 		// it even for pulumi-sourced packages, whose parameterized form resolves
-		// to a base provider plus parameter rather than a plain dependency.
-		if info, ok := paramInfos[alias]; ok {
-			pkgs = append(pkgs, &pulumirpc.PackageDependency{
-				Name:             info.Name,
-				Version:          versionString(info.Version),
-				Kind:             "resource",
-				Parameterization: parameterizationProto(info.Parameterization),
-			})
+		// to a base provider plus parameter rather than a plain dependency. The
+		// raw source it shadows must not also be installed.
+		info, ok := paramInfos[alias]
+		if !ok {
 			continue
 		}
-
-		if req.IsPulumi() {
-			pkgs = append(pkgs, &pulumirpc.PackageDependency{
-				Name:    pulumiPackageName(alias, req.Source),
-				Version: req.Version,
-				Kind:    "resource",
-			})
-			continue
+		pkgs = append(pkgs, &pulumirpc.PackageDependency{
+			Name:             info.Name,
+			Version:          versionString(info.Version),
+			Kind:             "resource",
+			Parameterization: parameterizationProto(info.Parameterization),
+		})
+		root := required[alias]
+		delete(tfSpecs, tfProviderSource(alias, root))
+		if root.IsPulumi() {
+			delete(pulumiPkgs, pulumiPackageName(alias, root.Source))
 		}
+	}
 
-		params := []string{tfProviderSource(alias, req)}
-		if req != nil && req.Version != "" {
-			params = append(params, req.Version)
+	for _, name := range sortedKeys(pulumiPkgs) {
+		pkgs = append(pkgs, &pulumirpc.PackageDependency{
+			Name:    name,
+			Version: pulumiPkgs[name],
+			Kind:    "resource",
+		})
+	}
+
+	for _, source := range sortedKeys(tfSpecs) {
+		params := []string{source}
+		if constraint := tfSpecs[source].constraint(); constraint != "" {
+			params = append(params, constraint)
 		}
 		specs = append(specs, &pulumirpc.PackageSpec{
 			Source:     "terraform-provider",
@@ -299,47 +312,113 @@ func isBuiltinProvider(alias string) bool { return alias == "pulumi" }
 // (required_providers, provider blocks, resource/data type prefixes). A
 // non-empty workDir enables recursion through `module` blocks.
 func usedProviders(ctx context.Context, config *ast.Config, workDir string) []string {
-	set := map[string]struct{}{}
+	_, _, aliases := collectRequirements(ctx, config, workDir)
+	return sortedKeys(aliases)
+}
+
+// versionSet is an insertion-ordered, deduplicated set of version constraints
+// declared for one provider source. constraint() joins them the way tofu
+// renders a merged requirement (", "-separated), which the terraform-provider
+// plugin parses and intersects.
+type versionSet struct {
+	order []string
+	seen  map[string]struct{}
+}
+
+func (v *versionSet) add(constraint string) {
+	if constraint == "" {
+		return
+	}
+	if _, ok := v.seen[constraint]; ok {
+		return
+	}
+	v.seen[constraint] = struct{}{}
+	v.order = append(v.order, constraint)
+}
+
+func (v *versionSet) constraint() string { return strings.Join(v.order, ", ") }
+
+// collectRequirements walks config (recursing through `module` blocks when
+// workDir is non-empty) and resolves every provider it references to a
+// fully-qualified source, mirroring tofu's resolution. It returns:
+//   - tf: non-Pulumi sources mapped to the union of version constraints
+//     declared for them across the module tree;
+//   - pulumi: pulumi/<name>-sourced packages mapped to their version;
+//   - aliases: every provider local name referenced (the set usedProviders
+//     reports), builtins included.
+//
+// Each local name is resolved to its source within the module that uses it (its
+// own required_providers, else the "hashicorp/<name>" default), so a provider
+// declared only in a child module still resolves from its declared source.
+func collectRequirements(
+	ctx context.Context, config *ast.Config, workDir string,
+) (tf map[string]*versionSet, pulumi map[string]string, aliases map[string]struct{}) {
+	tf = map[string]*versionSet{}
+	pulumi = map[string]string{}
+	aliases = map[string]struct{}{}
 	var loader *modules.Loader
 	if workDir != "" && config != nil && len(config.Modules) > 0 {
 		loader = modules.NewLoader(ctx)
 	}
-	collectProviders(config, workDir, set, loader, map[string]struct{}{})
-	out := make([]string, 0, len(set))
-	for k := range set {
-		out = append(out, k)
-	}
-	sort.Strings(out)
-	return out
+	collectRequirementsRec(config, workDir, tf, pulumi, aliases, loader, map[string]struct{}{})
+	return tf, pulumi, aliases
 }
 
-// collectProviders fills set with provider names from config; recurses via
-// loader when non-nil. visited dedupes shared child modules.
-func collectProviders(
+func collectRequirementsRec(
 	config *ast.Config, workDir string,
-	set map[string]struct{}, loader *modules.Loader, visited map[string]struct{},
+	tf map[string]*versionSet, pulumi map[string]string, aliases map[string]struct{},
+	loader *modules.Loader, visited map[string]struct{},
 ) {
 	if config == nil {
 		return
 	}
-	var known []string
+	required := map[string]*ast.RequiredProvider{}
 	if config.Terraform != nil {
-		for alias := range config.Terraform.RequiredProviders {
-			set[alias] = struct{}{}
-			known = append(known, alias)
-		}
+		required = config.Terraform.RequiredProviders
+	}
+
+	// known scopes resource/data type splitting to the providers this module
+	// declares so that local names containing underscores (e.g. "snake_names")
+	// aren't mis-split at the first underscore. Undeclared (implicit) providers
+	// fall back to the first underscore-delimited segment inside PackageFromToken.
+	known := make([]string, 0, len(required)+len(config.Providers))
+	for alias := range required {
+		known = append(known, alias)
 	}
 	for _, p := range config.Providers {
-		set[p.Name] = struct{}{}
 		known = append(known, p.Name)
 	}
-	// Resolve resource/data types against the providers this config declares so
-	// that local names containing underscores (e.g. "snake_names") aren't
-	// mis-split at the first underscore. Undeclared (implicit) providers fall
-	// back to the first underscore-delimited segment inside PackageFromToken.
+
+	add := func(alias string) {
+		aliases[alias] = struct{}{}
+		if isBuiltinProvider(alias) {
+			return
+		}
+		req := required[alias]
+		if req.IsPulumi() {
+			pulumi[pulumiPackageName(alias, req.Source)] = req.Version
+			return
+		}
+		source := tfProviderSource(alias, req)
+		vs := tf[source]
+		if vs == nil {
+			vs = &versionSet{seen: map[string]struct{}{}}
+			tf[source] = vs
+		}
+		if req != nil {
+			vs.add(req.Version)
+		}
+	}
+
+	for alias := range required {
+		add(alias)
+	}
+	for _, p := range config.Providers {
+		add(p.Name)
+	}
 	addType := func(tfType string) {
 		if name, err := packages.PackageFromToken(known, tfType); err == nil && name != "" {
-			set[name] = struct{}{}
+			add(name)
 		}
 	}
 	for _, r := range config.Resources {
@@ -348,6 +427,7 @@ func collectProviders(
 	for _, d := range config.DataSources {
 		addType(d.Type)
 	}
+
 	if loader == nil {
 		return
 	}
@@ -358,16 +438,18 @@ func collectProviders(
 		loaded, err := loader.LoadModule(mod.Source, mod.Version, workDir)
 		if err != nil {
 			// `pulumi install` surfaces a concrete error later; don't block on it here.
-			logging.V(5).Infof("usedProviders: loading module %q: %v", mod.Source, err)
+			logging.V(5).Infof("collectRequirements: loading module %q: %v", mod.Source, err)
 			continue
 		}
 		if _, seen := visited[loaded.SourcePath]; seen {
 			continue
 		}
 		visited[loaded.SourcePath] = struct{}{}
-		collectProviders(loaded.Config, loaded.SourcePath, set, loader, visited)
+		collectRequirementsRec(loaded.Config, loaded.SourcePath, tf, pulumi, aliases, loader, visited)
 	}
 }
+
+func sortedKeys[K comparable, V any](m map[string]V) []string { return slices.Sorted(maps.Keys(m)) }
 
 // Run executes an HCL program.
 func (host *LanguageHost) Run(
