@@ -670,6 +670,14 @@ func TestToSetToListPreserveEmptyElementType(t *testing.T) {
 }
 
 func TestDateTimeFunctions(t *testing.T) {
+	t.Parallel()
+
+	is := func(v cty.Value) func(cty.Value) bool {
+		return func(o cty.Value) bool {
+			return v.Equals(o).True()
+		}
+	}
+
 	tests := []struct {
 		name  string
 		expr  string
@@ -687,39 +695,46 @@ func TestDateTimeFunctions(t *testing.T) {
 		{
 			"timeadd",
 			`timeadd("2023-01-01T00:00:00Z", "24h")`,
-			func(v cty.Value) bool {
-				return v.AsString() == "2023-01-02T00:00:00Z"
-			},
+			is(cty.StringVal("2023-01-02T00:00:00Z")),
 		},
 		{
 			"timecmp equal",
 			`timecmp("2023-01-01T00:00:00Z", "2023-01-01T00:00:00Z")`,
-			func(v cty.Value) bool {
-				bf := v.AsBigFloat()
-				i, _ := bf.Int64()
-				return i == 0
-			},
+			is(cty.NumberIntVal(0)),
 		},
 		{
 			"timecmp less",
 			`timecmp("2023-01-01T00:00:00Z", "2023-01-02T00:00:00Z")`,
-			func(v cty.Value) bool {
-				bf := v.AsBigFloat()
-				i, _ := bf.Int64()
-				return i == -1
-			},
+			is(cty.NumberIntVal(-1)),
 		},
 		{
 			"formatdate",
 			`formatdate("YYYY-MM-DD", "2023-06-15T12:30:00Z")`,
-			func(v cty.Value) bool {
-				return v.AsString() == "2023-06-15"
-			},
+			is(cty.StringVal("2023-06-15")),
+		},
+		{
+			// Lowercase h/hh is the 24-hour clock.
+			"formatdate 24-hour",
+			`formatdate("hh:mm:ss", "2023-06-15T13:05:07Z")`,
+			is(cty.StringVal("13:05:07")),
+		},
+		{
+			// Uppercase H/HH is the 12-hour clock.
+			"formatdate 12-hour",
+			`formatdate("HH AA", "2023-06-15T13:05:07Z")`,
+			is(cty.StringVal("01 PM")),
+		},
+		{
+			// ZZZZZ keeps the colon, ZZZZ drops it, and 'at' is a literal.
+			"formatdate timezone and literal",
+			`formatdate("ZZZZZ 'at' ZZZZ", "2023-06-15T13:05:07Z")`,
+			is(cty.StringVal("+00:00 at +0000")),
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			result := evalExpr(t, "/tmp", tt.expr)
 			if !tt.check(result) {
 				t.Errorf("Check failed for %s, got %s", tt.name, result.GoString())
