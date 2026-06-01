@@ -1,0 +1,6 @@
+kind: bug-fixes
+body: '`uuidv5` matches OpenTofu: only the lower-case namespace keywords (`dns`, `url`, `oid`, `x500`) are recognized, so an upper-case keyword like `DNS` is parsed as a literal UUID and rejected rather than aliasing to the namespace'
+time: 2026-06-01T20:30:00.000000+02:00
+custom:
+    Component: runtime
+    PR: "198"

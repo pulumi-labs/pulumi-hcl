@@ -1411,19 +1411,19 @@ var uuidv5Func = function.New(&function.Spec{
 
 		var ns uuid.UUID
 		switch nsStr {
-		case "dns", "DNS":
+		case "dns":
 			ns = uuid.NameSpaceDNS
-		case "url", "URL":
+		case "url":
 			ns = uuid.NameSpaceURL
-		case "oid", "OID":
+		case "oid":
 			ns = uuid.NameSpaceOID
-		case "x500", "X500":
+		case "x500":
 			ns = uuid.NameSpaceX500
 		default:
 			var err error
 			ns, err = uuid.Parse(nsStr)
 			if err != nil {
-				return cty.NilVal, fmt.Errorf("invalid namespace: %s", err)
+				return cty.NilVal, fmt.Errorf("uuidv5() doesn't support namespace %s (%w)", nsStr, err)
 			}
 		}
 

@@ -851,6 +851,15 @@ func TestUUIDV5Function(t *testing.T) {
 	}
 }
 
+// TestUUIDV5UppercaseNamespace pins that `uuidv5` rejects an upper-case
+// namespace keyword, as OpenTofu does: only the lower-case forms are recognized
+// as aliases, and `"DNS"` is instead parsed as a literal UUID and fails.
+func TestUUIDV5UppercaseNamespace(t *testing.T) {
+	t.Parallel()
+	_, err := uuidv5Func.Call([]cty.Value{cty.StringVal("DNS"), cty.StringVal("example.com")})
+	assert.EqualError(t, err, "uuidv5() doesn't support namespace DNS (invalid UUID length: 3)")
+}
+
 func TestFileFunctions(t *testing.T) {
 	t.Parallel()
 	tmpDir := t.TempDir()
