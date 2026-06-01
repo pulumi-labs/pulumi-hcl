@@ -1677,8 +1677,10 @@ func (g *generator) genLifecycleBlock(body *hclwrite.Body, opts *pcl.ResourceOpt
 			if !d.HasErrors() {
 				// TF expects a list. PCL's `replacementTrigger` is a single
 				// expression, so wrap it in a 1-element list.
-				attrs = append(attrs, attr{"replace_triggered_by",
-					hclwrite.TokensForTuple([]hclwrite.Tokens{tokens})})
+				attrs = append(attrs, attr{
+					"replace_triggered_by",
+					hclwrite.TokensForTuple([]hclwrite.Tokens{tokens}),
+				})
 			}
 		}
 	}

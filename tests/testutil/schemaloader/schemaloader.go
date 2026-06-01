@@ -80,7 +80,8 @@ func (m Mock) findByName(name string) (*schema.Package, bool) {
 func New(t interface {
 	require.TestingT
 	Context() context.Context
-}, schemas ...schema.PackageSpec) schema.ReferenceLoader {
+}, schemas ...schema.PackageSpec,
+) schema.ReferenceLoader {
 	loader := Mock{}
 	for _, spec := range schemas {
 		pkg, diag, err := schema.BindSpec(spec, loader, schema.ValidationOptions{})

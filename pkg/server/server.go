@@ -810,7 +810,7 @@ func (host *LanguageHost) GenerateProject(
 	programDir := req.TargetDirectory
 	if project.Main != "" {
 		programDir = filepath.Join(req.TargetDirectory, project.Main)
-		if err := os.MkdirAll(programDir, 0755); err != nil {
+		if err := os.MkdirAll(programDir, 0o755); err != nil {
 			return nil, fmt.Errorf("creating main directory: %w", err)
 		}
 
@@ -833,10 +833,10 @@ func (host *LanguageHost) GenerateProject(
 
 	for name, content := range files {
 		path := filepath.Join(programDir, name)
-		if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 			return nil, fmt.Errorf("creating directory for %s: %w", name, err)
 		}
-		if err := os.WriteFile(path, content, 0644); err != nil {
+		if err := os.WriteFile(path, content, 0o644); err != nil {
 			return nil, fmt.Errorf("writing %s: %w", name, err)
 		}
 	}
@@ -856,10 +856,10 @@ func (host *LanguageHost) GenerateProject(
 			continue
 		}
 		sdkDir := filepath.Join(programDir, "sdks", alias)
-		if err := os.MkdirAll(sdkDir, 0755); err != nil {
+		if err := os.MkdirAll(sdkDir, 0o755); err != nil {
 			return nil, fmt.Errorf("creating sdk dir for %s: %w", alias, err)
 		}
-		if err := os.WriteFile(filepath.Join(sdkDir, "hcl.sdk.json"), data, 0644); err != nil {
+		if err := os.WriteFile(filepath.Join(sdkDir, "hcl.sdk.json"), data, 0o644); err != nil {
 			return nil, fmt.Errorf("writing hcl.sdk.json for %s: %w", alias, err)
 		}
 	}
@@ -889,7 +889,7 @@ func (host *LanguageHost) GeneratePackage(
 	}
 	data = append(data, '\n')
 
-	if err := os.WriteFile(filepath.Join(req.Directory, "hcl.sdk.json"), data, 0644); err != nil {
+	if err := os.WriteFile(filepath.Join(req.Directory, "hcl.sdk.json"), data, 0o644); err != nil {
 		return nil, fmt.Errorf("writing hcl.sdk.json: %w", err)
 	}
 
@@ -951,7 +951,7 @@ func (host *LanguageHost) Pack(
 	// the same destination directory don't overwrite each other's files.
 	pkgName := filepath.Base(req.PackageDirectory)
 	artifactPath := filepath.Join(req.DestinationDirectory, pkgName+".sdk")
-	if err := os.MkdirAll(artifactPath, 0755); err != nil {
+	if err := os.MkdirAll(artifactPath, 0o755); err != nil {
 		return nil, fmt.Errorf("creating artifact directory: %w", err)
 	}
 

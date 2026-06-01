@@ -51,7 +51,7 @@ var ConnectionBlockSupersetSchema = &connectionSchema{
 			"port":                cty.Number,
 			"timeout":             cty.String,
 			"script_path":         cty.String,
-			"target_platform":    cty.String,
+			"target_platform":     cty.String,
 			"private_key":         cty.String,
 			"certificate":         cty.String,
 			"host_key":            cty.String,

@@ -1471,7 +1471,6 @@ func propertyValueToCtyWithMapping(path string, v property.Value, typ schema.Typ
 
 // PropertyValueToCty converts a Pulumi PropertyValue to a cty.Value.
 func PropertyValueToCty(pv property.Value) cty.Value {
-
 	if pv.Secret() {
 		return PropertyValueToCty(pv.WithSecret(false)).
 			WithMarks(cty.NewValueMarks(eval.SensitiveMark))

@@ -31,7 +31,6 @@ func TestGenerateProjectInlinesAdditionalKeys(t *testing.T) {
 	t.Parallel()
 
 	test := func(t *testing.T, projectJSON, expectedYAML string) {
-
 		sourceDir := t.TempDir()
 		require.NoError(t, os.WriteFile(filepath.Join(sourceDir, "main.pp"),
 			[]byte("output hello {\n    value = \"world\"\n}\n"), 0o600))
