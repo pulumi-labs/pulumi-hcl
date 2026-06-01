@@ -33,13 +33,14 @@ import (
 	"sync"
 
 	version "github.com/hashicorp/go-version"
+	regaddr "github.com/opentofu/registry-address/v2"
+	"github.com/opentofu/svchost"
+	"github.com/opentofu/svchost/disco"
 	"github.com/pulumi-labs/pulumi-hcl/pkg/hcl/ast"
 	"github.com/pulumi-labs/pulumi-hcl/pkg/hcl/parser"
 	"github.com/pulumi-labs/pulumi-hcl/vendored/getmodules"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/util/contract"
 )
-
-const defaultRegistryBaseURL = "https://registry.opentofu.org/v1/modules"
 
 // fetchMu serializes every PackageFetcher.FetchPackage call in the process.
 // The vendored getmodules package builds each PackageFetcher from a shallow
@@ -61,8 +62,9 @@ type Loader struct {
 
 	fetcher *getmodules.PackageFetcher
 
-	// registryBaseURL is overridable so tests can use an httptest.Server.
-	registryBaseURL string
+	// disco resolves a registry host to its modules.v1 endpoint via service
+	// discovery. Tests pre-seed it with an httptest.Server via ForceHostServices.
+	disco *disco.Disco
 }
 
 // LoadedModule represents a loaded and parsed module.
@@ -74,11 +76,11 @@ type LoadedModule struct {
 // NewLoader creates a new module loader.
 func NewLoader(ctx context.Context) *Loader {
 	return &Loader{
-		parser:          parser.NewParser(),
-		cache:           make(map[string]*LoadedModule),
-		cacheDir:        defaultCacheDir(),
-		fetcher:         getmodules.NewPackageFetcher(ctx, nil),
-		registryBaseURL: defaultRegistryBaseURL,
+		parser:   parser.NewParser(),
+		cache:    make(map[string]*LoadedModule),
+		cacheDir: defaultCacheDir(),
+		fetcher:  getmodules.NewPackageFetcher(ctx, nil),
+		disco:    disco.New(),
 	}
 }
 
@@ -253,7 +255,7 @@ func dirHasFiles(dir string) bool {
 }
 
 // resolveRegistrySource downloads a module via modules.v1. source is
-// namespace/name/provider with an optional ?version=…; versionConstraint
+// `[host/]namespace/name/provider` with an optional ?version=…; versionConstraint
 // takes precedence over the query string.
 func (l *Loader) resolveRegistrySource(source, versionConstraint string) (string, error) {
 	baseSource := source
@@ -266,19 +268,34 @@ func (l *Loader) resolveRegistrySource(source, versionConstraint string) (string
 		}
 	}
 
-	parts := strings.Split(baseSource, "/")
-	if len(parts) != 3 {
-		return "", fmt.Errorf("invalid registry source format: %s", source)
+	mod, err := regaddr.ParseModuleSource(baseSource)
+	if err != nil {
+		return "", fmt.Errorf("invalid registry source format %q: %w", source, err)
 	}
-	namespace, name, provider := parts[0], parts[1], parts[2]
+	pkg := mod.Package
 
-	downloadURL, err := l.getRegistryDownloadURL(namespace, name, provider, versionConstraint)
+	baseURL, err := l.registryBaseURLForHost(pkg.Host)
+	if err != nil {
+		return "", err
+	}
+
+	downloadURL, err := l.getRegistryDownloadURL(baseURL, pkg.Namespace, pkg.Name, pkg.TargetSystem, versionConstraint)
 	if err != nil {
 		return "", err
 	}
 
 	// Cache by the resolved URL so different version constraints don't collide.
 	return l.fetchRemote(downloadURL, "registry")
+}
+
+// registryBaseURLForHost resolves a registry host to its modules.v1 base URL
+// via service discovery.
+func (l *Loader) registryBaseURLForHost(host svchost.Hostname) (string, error) {
+	u, err := l.disco.DiscoverServiceURL(context.Background(), host, "modules.v1")
+	if err != nil {
+		return "", fmt.Errorf("discovering registry %q: %w", host, err)
+	}
+	return strings.TrimSuffix(u.String(), "/"), nil
 }
 
 type registryModuleVersion struct {
@@ -293,12 +310,7 @@ type registryModuleVersions struct {
 
 // getRegistryDownloadURL resolves a concrete download URL via the modules.v1
 // protocol. Empty versionConstraint means "highest published version".
-func (l *Loader) getRegistryDownloadURL(namespace, name, provider, versionConstraint string) (string, error) {
-	baseURL := l.registryBaseURL
-	if baseURL == "" {
-		baseURL = defaultRegistryBaseURL
-	}
-
+func (l *Loader) getRegistryDownloadURL(baseURL, namespace, name, provider, versionConstraint string) (string, error) {
 	chosen, err := l.selectRegistryVersion(baseURL, namespace, name, provider, versionConstraint)
 	if err != nil {
 		return "", err
@@ -406,23 +418,17 @@ func (l *Loader) selectRegistryVersion(baseURL, namespace, name, provider, versi
 	return candidates[0].Original(), nil
 }
 
-// isRegistrySource checks if a source looks like a Terraform Registry address
-// (namespace/name/provider). Subdomains/hostnames are filtered out by the
-// `.` check on the first segment.
+// isRegistrySource reports whether source is a Terraform Registry address
+// (`[host/]namespace/name/provider`). Detection is delegated to
+// opentofu/registry-address, which also rejects version-control hosts like
+// github.com so they fall through to the remote getter. The query string
+// (`?version=…`) is stripped first because registry addresses don't permit it.
 func isRegistrySource(source string) bool {
 	if idx := strings.Index(source, "?"); idx != -1 {
 		source = source[:idx]
 	}
-	parts := strings.Split(source, "/")
-	if len(parts) != 3 {
-		return false
-	}
-	for _, part := range parts {
-		if part == "" || strings.Contains(part, ":") {
-			return false
-		}
-	}
-	return !strings.Contains(parts[0], ".")
+	_, err := regaddr.ParseModuleSource(source)
+	return err == nil
 }
 
 func hashSource(source string) string {
