@@ -1,0 +1,6 @@
+kind: bug-fixes
+body: coelesce now treats the empty string like null
+time: 2026-06-01T14:14:39.375293+02:00
+custom:
+    Component: runtime
+    PR: "170"

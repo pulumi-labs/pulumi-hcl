@@ -110,7 +110,7 @@ func Functions(baseDir string) map[string]function.Function {
 		"alltrue":         allTrueFunc,
 		"anytrue":         anyTrueFunc,
 		"chunklist":       stdlib.ChunklistFunc,
-		"coalesce":        stdlib.CoalesceFunc,
+		"coalesce":        coalesceFunc,
 		"coalescelist":    stdlib.CoalesceListFunc,
 		"compact":         stdlib.CompactFunc,
 		"concat":          stdlib.ConcatFunc,
@@ -586,6 +586,49 @@ var oneFunc = function.New(&function.Spec{
 			return v, nil
 		}
 		return cty.NullVal(retType), nil
+	},
+})
+
+// coalesceFunc returns the first argument that is neither null nor an empty
+// string. cty's stdlib.CoalesceFunc only skips null, so it would return an empty
+// string where Terraform skips it. Other "zero" values (the number 0, empty
+// collections) are values in their own right and are returned as-is.
+var coalesceFunc = function.New(&function.Spec{
+	Params: []function.Parameter{},
+	VarParam: &function.Parameter{
+		Name:             "vals",
+		Type:             cty.DynamicPseudoType,
+		AllowUnknown:     true,
+		AllowDynamicType: true,
+		AllowNull:        true,
+	},
+	Type: func(args []cty.Value) (cty.Type, error) {
+		argTypes := make([]cty.Type, len(args))
+		for i, val := range args {
+			argTypes[i] = val.Type()
+		}
+		retType, _ := convert.UnifyUnsafe(argTypes)
+		if retType == cty.NilType {
+			return cty.NilType, fmt.Errorf("all arguments must have the same type")
+		}
+		return retType, nil
+	},
+	RefineResult: func(b *cty.RefinementBuilder) *cty.RefinementBuilder { return b.NotNull() },
+	Impl: func(args []cty.Value, retType cty.Type) (cty.Value, error) {
+		for _, argVal := range args {
+			argVal, _ = convert.Convert(argVal, retType)
+			if !argVal.IsKnown() {
+				return cty.UnknownVal(retType), nil
+			}
+			if argVal.IsNull() {
+				continue
+			}
+			if retType == cty.String && argVal.RawEquals(cty.StringVal("")) {
+				continue
+			}
+			return argVal, nil
+		}
+		return cty.NilVal, fmt.Errorf("no non-null, non-empty-string arguments")
 	},
 })
 
