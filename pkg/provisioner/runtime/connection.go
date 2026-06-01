@@ -54,7 +54,7 @@ func connectionDecodeSpec() hcldec.Spec {
 		"port":                {cty.Number, false},
 		"timeout":             {cty.String, false},
 		"script_path":         {cty.String, false},
-		"target_platform":    {cty.String, false},
+		"target_platform":     {cty.String, false},
 		"private_key":         {cty.String, false},
 		"certificate":         {cty.String, false},
 		"host_key":            {cty.String, false},

@@ -1353,7 +1353,7 @@ func TestEngine_SimpleModule(t *testing.T) {
 
 	// Create module directory
 	moduleDir := tmpDir + "/modules/vpc"
-	if err := os.MkdirAll(moduleDir, 0755); err != nil {
+	if err := os.MkdirAll(moduleDir, 0o755); err != nil {
 		t.Fatalf("creating module dir: %v", err)
 	}
 
@@ -1383,7 +1383,7 @@ output "cidr_block" {
   value = var.cidr
 }
 `
-	if err := os.WriteFile(moduleDir+"/main.tf", []byte(moduleMain), 0644); err != nil {
+	if err := os.WriteFile(moduleDir+"/main.tf", []byte(moduleMain), 0o644); err != nil {
 		t.Fatalf("writing module file: %v", err)
 	}
 
@@ -1398,7 +1398,7 @@ output "vpc_id" {
   value = module.vpc.vpc_id
 }
 `
-	if err := os.WriteFile(tmpDir+"/main.tf", []byte(rootMain), 0644); err != nil {
+	if err := os.WriteFile(tmpDir+"/main.tf", []byte(rootMain), 0o644); err != nil {
 		t.Fatalf("writing root file: %v", err)
 	}
 
@@ -1501,21 +1501,21 @@ func TestEngine_ModuleNameWithDot(t *testing.T) {
 	tmpDir := t.TempDir()
 
 	moduleDir := tmpDir + "/modules/vpc"
-	require.NoError(t, os.MkdirAll(moduleDir, 0755))
+	require.NoError(t, os.MkdirAll(moduleDir, 0o755))
 
 	moduleMain := `
 resource "aws_vpc" "main" {
   cidr_block = "10.0.0.0/16"
 }
 `
-	require.NoError(t, os.WriteFile(moduleDir+"/main.tf", []byte(moduleMain), 0644))
+	require.NoError(t, os.WriteFile(moduleDir+"/main.tf", []byte(moduleMain), 0o644))
 
 	rootMain := `
 module "vpc.primary" {
   source = "./modules/vpc"
 }
 `
-	require.NoError(t, os.WriteFile(tmpDir+"/main.tf", []byte(rootMain), 0644))
+	require.NoError(t, os.WriteFile(tmpDir+"/main.tf", []byte(rootMain), 0o644))
 
 	p := parser.NewParser()
 	config, diags := p.ParseDirectory(tmpDir)
@@ -1644,11 +1644,11 @@ func runSensitiveMetaArgTest(t *testing.T, rootMain string) error {
 	tmpDir := t.TempDir()
 
 	moduleDir := tmpDir + "/modules/m"
-	require.NoError(t, os.MkdirAll(moduleDir, 0755))
+	require.NoError(t, os.MkdirAll(moduleDir, 0o755))
 	require.NoError(t, os.WriteFile(moduleDir+"/main.tf", []byte(`
 output "name" { value = "leaf" }
-`), 0644))
-	require.NoError(t, os.WriteFile(tmpDir+"/main.tf", []byte(rootMain), 0644))
+`), 0o644))
+	require.NoError(t, os.WriteFile(tmpDir+"/main.tf", []byte(rootMain), 0o644))
 
 	p := parser.NewParser()
 	config, diags := p.ParseDirectory(tmpDir)
@@ -1757,10 +1757,10 @@ func TestEngine_ModuleCountMarkedKnown(t *testing.T) {
 
 	tmpDir := t.TempDir()
 	moduleDir := tmpDir + "/modules/m"
-	require.NoError(t, os.MkdirAll(moduleDir, 0755))
+	require.NoError(t, os.MkdirAll(moduleDir, 0o755))
 	require.NoError(t, os.WriteFile(moduleDir+"/main.tf", []byte(`
 output "name" { value = "leaf" }
-`), 0644))
+`), 0o644))
 	require.NoError(t, os.WriteFile(tmpDir+"/main.tf", []byte(`
 variable "n" {
   type    = number
@@ -1775,7 +1775,7 @@ module "m" {
   source = "./modules/m"
   count  = var.n + (test_resource.upstream.id != "" ? 0 : 0)
 }
-`), 0644))
+`), 0o644))
 
 	p := parser.NewParser()
 	config, diags := p.ParseDirectory(tmpDir)
@@ -1813,7 +1813,7 @@ func TestEngine_ModuleOutputRace(t *testing.T) {
 
 	// Create a module with many outputs to maximize scheduling contention.
 	moduleDir := tmpDir + "/modules/multi"
-	if err := os.MkdirAll(moduleDir, 0755); err != nil {
+	if err := os.MkdirAll(moduleDir, 0o755); err != nil {
 		t.Fatalf("creating module dir: %v", err)
 	}
 
@@ -1831,7 +1831,7 @@ output "out_f" { value = var.input }
 output "out_g" { value = var.input }
 output "out_h" { value = var.input }
 `
-	if err := os.WriteFile(moduleDir+"/main.tf", []byte(moduleMain), 0644); err != nil {
+	if err := os.WriteFile(moduleDir+"/main.tf", []byte(moduleMain), 0o644); err != nil {
 		t.Fatalf("writing module file: %v", err)
 	}
 
@@ -1841,7 +1841,7 @@ module "multi" {
   input  = "hello"
 }
 `
-	if err := os.WriteFile(tmpDir+"/main.tf", []byte(rootMain), 0644); err != nil {
+	if err := os.WriteFile(tmpDir+"/main.tf", []byte(rootMain), 0o644); err != nil {
 		t.Fatalf("writing root file: %v", err)
 	}
 
@@ -2528,7 +2528,7 @@ func TestEngine_ChildModuleResourceDependencies(t *testing.T) {
 	tmpDir := t.TempDir()
 
 	moduleDir := tmpDir + "/modules/child"
-	require.NoError(t, os.MkdirAll(moduleDir, 0755))
+	require.NoError(t, os.MkdirAll(moduleDir, 0o755))
 
 	moduleMain := `
 variable "parent" { type = string }
@@ -2542,7 +2542,7 @@ resource "test_resource" "second" {
   sibling_field = test_resource.first[0].id
 }
 `
-	require.NoError(t, os.WriteFile(moduleDir+"/main.tf", []byte(moduleMain), 0644))
+	require.NoError(t, os.WriteFile(moduleDir+"/main.tf", []byte(moduleMain), 0o644))
 
 	rootMain := `
 resource "test_resource" "upstream" {
@@ -2554,7 +2554,7 @@ module "child" {
   parent = test_resource.upstream.id
 }
 `
-	require.NoError(t, os.WriteFile(tmpDir+"/main.tf", []byte(rootMain), 0644))
+	require.NoError(t, os.WriteFile(tmpDir+"/main.tf", []byte(rootMain), 0o644))
 
 	p := parser.NewParser()
 	config, diags := p.ParseDirectory(tmpDir)

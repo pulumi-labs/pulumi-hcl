@@ -658,7 +658,6 @@ var entriesFunc = function.New(&function.Spec{
 		default:
 			return cty.NilType, fmt.Errorf("entries: expected a Map, Object or List")
 		}
-
 	},
 	Impl: func(args []cty.Value, retType cty.Type) (cty.Value, error) {
 		v := args[0]

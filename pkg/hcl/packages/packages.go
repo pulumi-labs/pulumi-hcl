@@ -302,7 +302,6 @@ func resolvePackage(ctx context.Context, loader schema.ReferenceLoader, descript
 		return nil, fmt.Errorf("unable to load schema from %s: %w", descriptor, err)
 	}
 	return pkg, nil
-
 }
 
 // ParameterizationAwareLoader wraps a schema.ReferenceLoader and enriches load

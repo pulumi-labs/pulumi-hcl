@@ -33,8 +33,8 @@ output "mask" {
 }
 `},
 			// OpenTofu line-wraps the diagnostic after "have a", so match only the
-		// portion that stays on a single rendered line in both runtimes.
-		ExpectErr: "IPv6 addresses cannot have a",
+			// portion that stays on a single rendered line in both runtimes.
+			ExpectErr: "IPv6 addresses cannot have a",
 		}},
 	})
 }

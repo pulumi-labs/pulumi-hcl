@@ -229,7 +229,7 @@ func (l *Loader) fetchRemote(source, kind string) (string, error) {
 		}
 	}
 
-	if err := os.MkdirAll(filepath.Dir(cacheDir), 0755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(cacheDir), 0o755); err != nil {
 		return "", fmt.Errorf("creating cache parent directory: %w", err)
 	}
 
@@ -237,7 +237,6 @@ func (l *Loader) fetchRemote(source, kind string) (string, error) {
 	fetchMu.Lock()
 	defer fetchMu.Unlock()
 	err = l.fetcher.FetchPackage(context.Background(), cacheDir, pkgAddr)
-
 	if err != nil {
 		contract.IgnoreError(os.RemoveAll(cacheDir))
 		return "", fmt.Errorf("fetching module from %q: %w", pkgAddr, err)

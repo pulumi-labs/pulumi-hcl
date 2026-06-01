@@ -857,7 +857,7 @@ func TestFileFunctions(t *testing.T) {
 
 	// Create test file
 	testFile := filepath.Join(tmpDir, "test.txt")
-	if err := os.WriteFile(testFile, []byte("hello world"), 0644); err != nil {
+	if err := os.WriteFile(testFile, []byte("hello world"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -899,7 +899,7 @@ func TestFileFunctions(t *testing.T) {
 
 	// Create JSON file
 	jsonFile := filepath.Join(tmpDir, "data.json")
-	if err := os.WriteFile(jsonFile, []byte(`{"name": "test", "count": 42}`), 0644); err != nil {
+	if err := os.WriteFile(jsonFile, []byte(`{"name": "test", "count": 42}`), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -914,7 +914,7 @@ func TestFileFunctions(t *testing.T) {
 
 	// Create template file
 	tmplFile := filepath.Join(tmpDir, "greeting.tpl")
-	if err := os.WriteFile(tmplFile, []byte("Hello, ${name}!"), 0644); err != nil {
+	if err := os.WriteFile(tmplFile, []byte("Hello, ${name}!"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -929,11 +929,11 @@ func TestFileFunctions(t *testing.T) {
 
 	// Create subdirectory with files
 	subDir := filepath.Join(tmpDir, "subdir")
-	if err := os.Mkdir(subDir, 0755); err != nil {
+	if err := os.Mkdir(subDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
 	for _, name := range []string{"a.txt", "b.txt", "c.json"} {
-		if err := os.WriteFile(filepath.Join(subDir, name), []byte("content"), 0644); err != nil {
+		if err := os.WriteFile(filepath.Join(subDir, name), []byte("content"), 0o644); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -960,33 +960,43 @@ func TestIPFunctions(t *testing.T) {
 		{"cidrhost neg two", `cidrhost("10.0.0.0/24", -2)`, cty.StringVal("10.0.0.254")},
 		{"cidrnetmask", `cidrnetmask("10.0.0.0/8")`, cty.StringVal("255.0.0.0")},
 		{"cidrsubnet v4", `cidrsubnet("10.0.0.0/8", 8, 2)`, cty.StringVal("10.2.0.0/16")},
-		{"cidrsubnet v6", `cidrsubnet("2600:1f14:315a:f400::/56", 8, 2)`,
-			cty.StringVal("2600:1f14:315a:f402::/64")},
+		{
+			"cidrsubnet v6", `cidrsubnet("2600:1f14:315a:f400::/56", 8, 2)`,
+			cty.StringVal("2600:1f14:315a:f402::/64"),
+		},
 		{"cidrsubnets count", `length(cidrsubnets("10.0.0.0/8", 8, 8, 8))`, cty.NumberIntVal(3)},
-		{"cidrsubnets v4 values", `cidrsubnets("10.0.0.0/8", 8, 8, 8)`,
+		{
+			"cidrsubnets v4 values", `cidrsubnets("10.0.0.0/8", 8, 8, 8)`,
 			cty.ListVal([]cty.Value{
 				cty.StringVal("10.0.0.0/16"),
 				cty.StringVal("10.1.0.0/16"),
 				cty.StringVal("10.2.0.0/16"),
-			})},
-		{"cidrsubnets v4 mixed bits", `cidrsubnets("10.0.0.0/8", 8, 4, 4)`,
+			}),
+		},
+		{
+			"cidrsubnets v4 mixed bits", `cidrsubnets("10.0.0.0/8", 8, 4, 4)`,
 			cty.ListVal([]cty.Value{
 				cty.StringVal("10.0.0.0/16"),
 				cty.StringVal("10.16.0.0/12"),
 				cty.StringVal("10.32.0.0/12"),
-			})},
-		{"cidrsubnets v6 values", `cidrsubnets("2600:1f14:315a:f400::/56", 8, 8, 8)`,
+			}),
+		},
+		{
+			"cidrsubnets v6 values", `cidrsubnets("2600:1f14:315a:f400::/56", 8, 8, 8)`,
 			cty.ListVal([]cty.Value{
 				cty.StringVal("2600:1f14:315a:f400::/64"),
 				cty.StringVal("2600:1f14:315a:f401::/64"),
 				cty.StringVal("2600:1f14:315a:f402::/64"),
-			})},
-		{"cidrsubnets v6 uneven bits", `cidrsubnets("2600:1f14:315a::/48", 16, 16, 16)`,
+			}),
+		},
+		{
+			"cidrsubnets v6 uneven bits", `cidrsubnets("2600:1f14:315a::/48", 16, 16, 16)`,
 			cty.ListVal([]cty.Value{
 				cty.StringVal("2600:1f14:315a::/64"),
 				cty.StringVal("2600:1f14:315a:1::/64"),
 				cty.StringVal("2600:1f14:315a:2::/64"),
-			})},
+			}),
+		},
 	}
 
 	for _, tt := range tests {

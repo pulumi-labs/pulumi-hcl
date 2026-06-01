@@ -25,7 +25,7 @@ import (
 )
 
 type Spec struct {
-	Type   string   // "local-exec" | "remote-exec" | "file"
+	Type   string // "local-exec" | "remote-exec" | "file"
 	Config hcl.Body
 	Conn   hcl.Body // nil for local-exec
 }

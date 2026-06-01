@@ -198,4 +198,3 @@ resource "simple_resource" "target" {
 		}},
 	})
 }
-

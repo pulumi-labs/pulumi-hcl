@@ -77,9 +77,9 @@ type Case struct {
 type StageMode int
 
 const (
-	StageApply StageMode = iota // `tofu apply` / `pulumi up`; default
-	StagePreview                // `tofu plan` / `pulumi preview`
-	StageDestroy                // `tofu destroy` / `pulumi destroy`
+	StageApply   StageMode = iota // `tofu apply` / `pulumi up`; default
+	StagePreview                  // `tofu plan` / `pulumi preview`
+	StageDestroy                  // `tofu destroy` / `pulumi destroy`
 )
 
 // Stage is one operation within a Case.

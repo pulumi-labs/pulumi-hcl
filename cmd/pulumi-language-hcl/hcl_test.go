@@ -450,7 +450,6 @@ resource target "test:index:Item" {
 		assert.Equal(t, "test:index:Item", target.Type)
 		assert.Equal(t, property.New("alpha-ref"), target.Inputs.Get("name"))
 	})
-
 }
 
 // TestStdLookupInlinedInForEachResource checks that a `std:index:*` function (which has a

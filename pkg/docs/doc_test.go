@@ -282,4 +282,3 @@ func bindTestPackage(t *testing.T, spec schema.PackageSpec) schema.PackageRefere
 	require.Empty(t, diags)
 	return pkg.Reference()
 }
-
