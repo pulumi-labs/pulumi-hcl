@@ -1,0 +1,6 @@
+kind: bug-fixes
+body: '`formatdate` matches Terraform: correct 24-hour vs 12-hour tokens, timezone tokens, and single-quoted literals'
+time: 2026-06-01T16:05:00.000000+02:00
+custom:
+    Component: runtime
+    PR: "175"

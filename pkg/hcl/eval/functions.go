@@ -168,7 +168,7 @@ func Functions(baseDir string) map[string]function.Function {
 		"templatefile": templateFileFunc(baseDir),
 
 		// Date and time functions
-		"formatdate": formatDateFunc,
+		"formatdate": stdlib.FormatDateFunc,
 		"timeadd":    timeAddFunc,
 		"timecmp":    timeCmpFunc,
 		"timestamp":  timestampFunc,
@@ -1110,59 +1110,6 @@ func renderTemplate(
 }
 
 // Date and time functions
-
-var formatDateFunc = function.New(&function.Spec{
-	Params: []function.Parameter{
-		{Name: "spec", Type: cty.String},
-		{Name: "timestamp", Type: cty.String},
-	},
-	Type: function.StaticReturnType(cty.String),
-	Impl: func(args []cty.Value, retType cty.Type) (cty.Value, error) {
-		spec := args[0].AsString()
-		ts := args[1].AsString()
-
-		t, err := time.Parse(time.RFC3339, ts)
-		if err != nil {
-			return cty.NilVal, fmt.Errorf("invalid timestamp: %s", err)
-		}
-
-		// Convert Terraform's date format spec to Go format
-		// Order matters - longer patterns must come before shorter ones
-		replacements := []struct {
-			from, to string
-		}{
-			{"YYYY", "2006"},
-			{"YY", "06"},
-			{"MMMM", "January"},
-			{"MMM", "Jan"},
-			{"MM", "01"},
-			{"DD", "02"},
-			{"EEEE", "Monday"},
-			{"EEE", "Mon"},
-			{"HH", "15"},
-			{"hh", "03"},
-			{"mm", "04"},
-			{"ss", "05"},
-			{"AA", "PM"},
-			{"aa", "pm"},
-			{"ZZZZ", "-07:00"},
-			{"ZZZ", "MST"},
-			{"Z", "-0700"},
-			// Single character replacements must come last
-			{"M", "1"},
-			{"D", "2"},
-			{"h", "3"},
-			{"m", "4"},
-			{"s", "5"},
-		}
-		result := spec
-		for _, r := range replacements {
-			result = strings.ReplaceAll(result, r.from, r.to)
-		}
-
-		return cty.StringVal(t.Format(result)), nil
-	},
-})
 
 var timeAddFunc = function.New(&function.Spec{
 	Params: []function.Parameter{
