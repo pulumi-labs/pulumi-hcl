@@ -252,14 +252,14 @@ data "archive_file" "lambda" {}
 	// archive) must be reported missing.
 	assert.Equal(t,
 		[]string{"archive", "aws"},
-		missingNonPulumiSDKs(cfg, nil, ""))
+		missingNonPulumiSDKs(t.Context(), cfg, nil, ""))
 
 	// Once both have SDKs, nothing is missing.
 	sdks := map[string]workspace.PackageDescriptor{
 		"aws":     {PluginDescriptor: workspace.PluginDescriptor{Name: "aws"}},
 		"archive": {PluginDescriptor: workspace.PluginDescriptor{Name: "archive"}},
 	}
-	assert.Empty(t, missingNonPulumiSDKs(cfg, sdks, ""))
+	assert.Empty(t, missingNonPulumiSDKs(t.Context(), cfg, sdks, ""))
 
 	// A pulumi-source provider needs no SDK even when it's only referenced
 	// by a resource type prefix.
@@ -276,7 +276,7 @@ resource "aws_s3_bucket" "b" {}
 `
 	cfgPulumi, diags := parser.NewParser().ParseSource("main.tf", []byte(pulumiSrc))
 	require.False(t, diags.HasErrors(), "diags: %v", diags)
-	assert.Empty(t, missingNonPulumiSDKs(cfgPulumi, nil, ""))
+	assert.Empty(t, missingNonPulumiSDKs(t.Context(), cfgPulumi, nil, ""))
 }
 
 func TestMissingNonPulumiSDKs_BuiltinProvider(t *testing.T) {
@@ -289,7 +289,7 @@ func TestMissingNonPulumiSDKs_BuiltinProvider(t *testing.T) {
 	cfg, diags := parser.NewParser().ParseSource("main.tf", []byte(src))
 	require.False(t, diags.HasErrors(), "diags: %v", diags)
 
-	assert.Empty(t, missingNonPulumiSDKs(cfg, nil, ""))
+	assert.Empty(t, missingNonPulumiSDKs(t.Context(), cfg, nil, ""))
 }
 
 // A provider local name that contains underscores (e.g. "snake_names") must
@@ -315,7 +315,7 @@ resource "snake_names_cool_module_some_resource" "first" {
 	cfg, diags := parser.NewParser().ParseSource("main.tf", []byte(src))
 	require.False(t, diags.HasErrors(), "diags: %v", diags)
 
-	assert.Empty(t, missingNonPulumiSDKs(cfg, nil, ""))
+	assert.Empty(t, missingNonPulumiSDKs(t.Context(), cfg, nil, ""))
 }
 
 // Implicit provider inside a child module must surface at the top — without
@@ -342,7 +342,7 @@ resource "aws_s3_bucket" "b" {}
 
 	assert.Equal(t,
 		[]string{"aws"},
-		missingNonPulumiSDKs(cfg, nil, dir))
+		missingNonPulumiSDKs(t.Context(), cfg, nil, dir))
 }
 
 // Same recursion via the module's `required_providers` block (no resources).
@@ -374,5 +374,5 @@ terraform {
 
 	assert.Equal(t,
 		[]string{"awscc"},
-		missingNonPulumiSDKs(cfg, nil, dir))
+		missingNonPulumiSDKs(t.Context(), cfg, nil, dir))
 }

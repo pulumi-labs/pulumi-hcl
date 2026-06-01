@@ -41,6 +41,15 @@ import (
 
 const defaultRegistryBaseURL = "https://registry.opentofu.org/v1/modules"
 
+// fetchMu serializes every PackageFetcher.FetchPackage call in the process.
+// The vendored getmodules package builds each PackageFetcher from a shallow
+// clone of a package-global getter table, so distinct fetchers — and thus
+// distinct Loaders — still share the same go-getter getter instances.
+// go-getter mutates those getters on every fetch, which upstream OpenTofu
+// only gets away with because it installs modules sequentially. We hold this
+// lock to enforce that same single-flight contract.
+var fetchMu sync.Mutex
+
 // Loader loads and parses module configurations.
 type Loader struct {
 	mu sync.Mutex
@@ -63,12 +72,12 @@ type LoadedModule struct {
 }
 
 // NewLoader creates a new module loader.
-func NewLoader() *Loader {
+func NewLoader(ctx context.Context) *Loader {
 	return &Loader{
 		parser:          parser.NewParser(),
 		cache:           make(map[string]*LoadedModule),
 		cacheDir:        defaultCacheDir(),
-		fetcher:         getmodules.NewPackageFetcher(context.Background(), nil),
+		fetcher:         getmodules.NewPackageFetcher(ctx, nil),
 		registryBaseURL: defaultRegistryBaseURL,
 	}
 }
@@ -222,7 +231,12 @@ func (l *Loader) fetchRemote(source, kind string) (string, error) {
 		return "", fmt.Errorf("creating cache parent directory: %w", err)
 	}
 
-	if err := l.fetcher.FetchPackage(context.Background(), cacheDir, pkgAddr); err != nil {
+	// Grab a **package** level lock on using **any** [getmodules.PackageFetcher].
+	fetchMu.Lock()
+	defer fetchMu.Unlock()
+	err = l.fetcher.FetchPackage(context.Background(), cacheDir, pkgAddr)
+
+	if err != nil {
 		contract.IgnoreError(os.RemoveAll(cacheDir))
 		return "", fmt.Errorf("fetching module from %q: %w", pkgAddr, err)
 	}

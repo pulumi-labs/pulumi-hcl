@@ -646,6 +646,8 @@ func TestTypeFunctions(t *testing.T) {
 // parse would stop at the '.' in "3.14" or the 'e' in "1e2" and silently return
 // a truncated integer.
 func TestToNumber(t *testing.T) {
+	t.Parallel()
+
 	tests := []struct {
 		name     string
 		expr     string
@@ -659,6 +661,8 @@ func TestToNumber(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
 			result := evalExpr(t, "/tmp", tt.expr)
 			assert.Equal(t, tt.expected, result)
 		})
@@ -668,6 +672,8 @@ func TestToNumber(t *testing.T) {
 // TestToNumberError pins that `tonumber` of a string that is not a decimal
 // number errors rather than returning a truncated value.
 func TestToNumberError(t *testing.T) {
+	t.Parallel()
+
 	_, err := toNumberFunc.Call([]cty.Value{cty.StringVal("12abc")})
 	assert.EqualError(t, err,
 		`cannot convert "12abc" to number; given string must be a decimal representation of a number`)
