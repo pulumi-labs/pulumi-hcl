@@ -317,27 +317,23 @@ func usedProviders(ctx context.Context, config *ast.Config, workDir string) []st
 	return sortedKeys(aliases)
 }
 
-// versionSet is an insertion-ordered, deduplicated set of version constraints
-// declared for one provider source. constraint() joins them the way tofu
-// renders a merged requirement (", "-separated), which the terraform-provider
-// plugin parses and intersects.
+// versionSet is a deduplicated set of version constraints declared for one
+// provider source. constraint() joins them in sorted order — so the emitted
+// spec is deterministic regardless of module-walk order — the way tofu renders
+// a merged requirement (", "-separated). The terraform-provider plugin parses
+// and intersects them, an order-independent operation.
 type versionSet struct {
-	order []string
-	seen  map[string]struct{}
+	seen map[string]struct{}
 }
 
 func (v *versionSet) add(constraint string) {
 	if constraint == "" {
 		return
 	}
-	if _, ok := v.seen[constraint]; ok {
-		return
-	}
 	v.seen[constraint] = struct{}{}
-	v.order = append(v.order, constraint)
 }
 
-func (v *versionSet) constraint() string { return strings.Join(v.order, ", ") }
+func (v *versionSet) constraint() string { return strings.Join(sortedKeys(v.seen), ", ") }
 
 // collectRequirements walks config (recursing through `module` blocks when
 // workDir is non-empty) and resolves every provider it references to a

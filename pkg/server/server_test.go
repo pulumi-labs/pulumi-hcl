@@ -312,10 +312,11 @@ terraform {
 	require.NoError(t, err)
 
 	assert.Empty(t, resp.Packages)
-	// Modules "a" and "b" are walked in declaration order, so the join is stable.
+	// Constraints are joined in sorted order, so the spec is deterministic
+	// regardless of module-walk order ("< 3.2" sorts before ">= 3.0").
 	assert.Equal(t, []*pulumirpc.PackageSpec{{
 		Source:     "terraform-provider",
-		Parameters: []string{"hashicorp/dns", ">= 3.0, < 3.2"},
+		Parameters: []string{"hashicorp/dns", "< 3.2, >= 3.0"},
 	}}, resp.Specs)
 }
 
