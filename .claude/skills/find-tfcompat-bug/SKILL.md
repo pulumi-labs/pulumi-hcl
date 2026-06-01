@@ -1,0 +1,205 @@
+---
+name: find-tfcompat-bug
+description: Find, prove, fix, and ship a single runtime divergence between OpenTofu and pulumi-hcl. Use when the user asks to "find another bug/mismatch", find a tfcompat mismatch, or hunt for behavior that differs from Terraform/OpenTofu.
+---
+
+# Find the next tfcompat bug
+
+Hunt one genuine runtime divergence between OpenTofu (`tofu apply`) and pulumi-hcl,
+prove it with a failing `tfcompat` test, fix the pulumi-hcl runtime to faithfully match
+OpenTofu, verify failing-before / passing-after, and ship it as its own PR.
+
+The divergence can be anywhere the two runtimes can disagree — an expression/function
+result (the L1 seam), or resource, module, provider, or lifecycle behavior (the L2
+seam). Functions are the easiest place to start, not the only place to look.
+
+Each invocation produces **exactly one** bug fix on its **own branch off master**
+with its own changelog entry and PR. Do not stack fixes.
+
+## Ground rules (from CLAUDE.md — do not violate)
+
+- **Confirm assumptions with research. Don't guess.** Verify every behavioral claim
+  against OpenTofu source, the cty stdlib source, the docs, or an empirical `tofu`
+  probe — never from memory. A backwards memory of token semantics has already burned
+  us once.
+- Faithfully match OpenTofu. The goal is parity, not "better". No hacks.
+- `git add` specific files only, never `git add .`. Don't touch staging the user left.
+- Don't self-attribute as commit co-author. Complete punctuation in commit bodies.
+- Commit / push / open PR only when the user asks (the find+fix+verify is automatic;
+  shipping waits for the modeled flow below, which the user has standing-approved for
+  this loop — confirm if unsure).
+
+## Source-of-truth locations
+
+The Go module cache root is !`go env GOPATH`/pkg/mod.
+
+- OpenTofu funcs: !`go env GOPATH`/pkg/mod/github.com/pulumi/opentofu@*/lang/funcs/*.go
+- OpenTofu binding map: .../opentofu@*/lang/functions.go
+- OpenTofu docs: .../opentofu@*/website/docs/language/functions/*.mdx
+- cty stdlib: !`go env GOPATH`/pkg/mod/github.com/zclconf/go-cty@*/cty/function/stdlib/
+- pulumi-hcl runtime: `pkg/hcl/` (expression eval, resource / module / provider handling)
+- pulumi-hcl function registry: `pkg/hcl/eval/functions.go`
+  (`func Functions(baseDir string)` at the top binds every name to its impl)
+- Function unit tests: `pkg/hcl/eval/functions_test.go`
+- tfcompat harness + `Case` type: `tests/testutil/tfcompat/harness.go`
+- Empirical probe: use the `tofu` on your PATH (!`which tofu`)
+
+## Step 1 — Build the runtime
+
+The tfcompat harness runs the real `pulumi-language-hcl` from `bin/`, which must be on
+PATH and rebuilt after any change to `pkg/`.
+
+```bash
+make build
+```
+
+Run all tests with `bin/` prepended: `PATH="$PWD/bin:$PATH" go test ...`.
+
+**Caching gotcha:** `go test` caches results and does NOT track the external
+`pulumi-language-hcl` binary on PATH. When verifying a tfcompat test fails-then-passes
+across a rebuild, you MUST pass `-count=1` or you'll get a stale PASS.
+
+## Step 2 — Find a candidate divergence
+
+Look for any input the two runtimes can evaluate differently. Two seams, easiest first:
+
+- **L1 — expression / function:** a function in `pkg/hcl/eval/functions.go` with a
+  **hand-rolled** `Impl` rather than a delegated `stdlib.*Func`. Hand-rolled impls are
+  where function divergences hide. Diff against the OpenTofu impl/docs, and where cheap,
+  probe both sides:
+
+  ```bash
+  # OpenTofu side — write a tiny main.tf and apply
+  echo 'output "x" { value = <expr> }' > /tmp/probe/main.tf
+  (cd /tmp/probe && tofu apply -auto-approve)
+  ```
+
+- **L2 — resource / module / lifecycle:** behavior around resources, modules,
+  providers, `count`/`for_each`, pre/postconditions, or the preview / destroy / replace
+  lifecycle. These exercise a provider (e.g. `providers.SimpleProvider`) — compare a
+  small program end-to-end through apply, and where relevant preview and destroy.
+
+Good hunting grounds: encoding/escaping funcs, numeric edge cases, empty-collection
+errors, date/time token tables, string normalization, unknowns in preview,
+precondition/postcondition error messages, replace/destroy lifecycle, module/provider
+passthrough. Look for: wrong error on edge input, precision loss, off-by-one token
+mapping, charset handling, escaping rules, a field that diverges only in state, an
+operation that succeeds on one path and errors on the other.
+
+**Observability caveat:** pulumi serializes stack-output numbers as `float64`. Integer
+precision past ~16 significant digits is lost on BOTH paths, so it cannot be exposed via
+output comparison. Don't build a case whose only difference is unobservable in outputs —
+reach for `AssertState`/`ExpectErr` (below), or prove it with a unit test, or pick a
+different bug.
+
+## Step 3 — Prove it with a failing test
+
+Name the case `l1_<name>` for an expression/function bug or `l2_<name>` for a
+resource/module/lifecycle bug, and create:
+
+- `tests/tfcompat/<l1|l2>_<name>_test.go`
+- `tests/tfcompat/testdata/cases/<l1|l2>_<name>/main.tf`
+
+Existing cases (pick a fresh name):
+!`ls tests/tfcompat/testdata/cases`
+
+The test (copy the Apache header from any sibling `_test.go`):
+
+```go
+// L1 — pure expression, no providers
+func TestL1<Name>(t *testing.T) {
+	t.Parallel()
+	tfcompat.RunCase(t, "l1_<name>", tfcompat.Case{})
+}
+
+// L2 — register the provider(s) the program uses
+func TestL2<Name>(t *testing.T) {
+	t.Parallel()
+	tfcompat.RunCase(t, "l2_<name>", tfcompat.Case{
+		Providers: []tfcompat.Provider{
+			{Name: "simple", Factory: providers.SimpleProvider},
+		},
+	})
+}
+```
+
+`RunCase` loads every file under `testdata/cases/<name>/` and runs it through both
+`tofu apply` and `pulumi up`, asserting identical stack outputs. For an L1 case the
+fixture is pure `locals` + `output` (one output per behavior). The `Case` struct gives
+you more knobs when outputs alone can't show the divergence:
+
+- `Providers` / `Config` — register TF providers / set input variables.
+- `AssertState` — assert on resource fields not reachable via outputs (e.g. `Protect`).
+- `Stages` + `Mode` (`StageApply` / `StagePreview` / `StageDestroy`) — drive preview or
+  destroy, or sequence multiple operations.
+- `Stage.ExpectErr` — require BOTH runtimes to fail with a matching error substring; the
+  way to prove an error-behavior divergence.
+
+Confirm the bug is real **on master before the fix**:
+
+```bash
+PATH="$PWD/bin:$PATH" go test ./tests/tfcompat/ -run 'Test(L1|L2)<Name>' -count=1 -v
+```
+
+It must FAIL, and the failure must show the genuine OpenTofu-vs-pulumi difference. If it
+passes, the bug isn't real (or isn't observable) — go back to Step 2.
+
+## Step 4 — Fix the divergence
+
+Edit the pulumi-hcl runtime to match OpenTofu. For a function, fix the `Impl` in
+`pkg/hcl/eval/functions.go` — and prefer delegating to the cty `stdlib.*Func` when
+OpenTofu itself binds that stdlib function (check the binding map); several bugs were
+hand-rolled reimplementations that should have been `stdlib.IndentFunc` /
+`stdlib.FormatDateFunc`. For an L2 bug the fix lives elsewhere under `pkg/hcl/`. Fix
+minimally and faithfully; run `go mod tidy` if you add a dependency.
+
+Add unit coverage next to the code you changed. For functions, add cases to
+`pkg/hcl/eval/functions_test.go`; note `evalExpr` calls `t.Fatalf` on diagnostics, so
+**error-path** cases must call `<fn>.Call(...)` directly rather than via `evalExpr`.
+
+## Step 5 — Verify failing-before / passing-after
+
+```bash
+make build
+PATH="$PWD/bin:$PATH" go test ./pkg/hcl/... -run '<UnitTest>' -count=1 -v
+PATH="$PWD/bin:$PATH" go test ./tests/tfcompat/ -run 'Test(L1|L2)<Name>' -count=1 -v
+```
+
+Both must now PASS (with `-count=1` — the rebuilt binary won't be picked up otherwise).
+
+## Step 6 — Changelog + branch + PR
+
+Model the flow on PR https://github.com/pulumi-labs/pulumi-hcl/pull/170 (the urlencode
+fix). Predict the next sequential PR number and use it for both the filename and the
+`PR` field.
+
+`.changes/unreleased/runtime-bug-fixes-<PR>.yaml`:
+
+```yaml
+kind: bug-fixes
+body: '`<thing>` matches OpenTofu: <one-line description of the corrected behavior>'
+time: <RFC3339 with +02:00 tz>
+custom:
+    Component: runtime
+    PR: "<PR>"
+```
+
+Say **OpenTofu**, not "Terraform" — OpenTofu is the runtime we compare against —
+and keep the `<thing>` (function or feature name) in backticks. Apply the same to
+the PR title: `` Match OpenTofu's `<thing>` behavior `` — OpenTofu (not Terraform),
+function name backtick-quoted.
+
+Then, on its **own branch off master** (not stacked on a prior fix):
+
+```bash
+git checkout master && git checkout -b iwahbe/fix-<name>
+# add the runtime file(s) you changed, the test pair, and the changelog — specific paths only
+git add <changed runtime file(s)> \
+        tests/tfcompat/<l1|l2>_<name>_test.go \
+        tests/tfcompat/testdata/cases/<l1|l2>_<name>/main.tf \
+        .changes/unreleased/runtime-bug-fixes-<PR>.yaml
+git commit   # complete-punctuation body, no self co-author
+gh pr create # like #170: describe the divergence, the fix, and the proof
+```
+
+Report the divergence, the fix, the verification results, and the PR URL.
