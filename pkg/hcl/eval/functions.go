@@ -618,13 +618,16 @@ var sumFunc = function.New(&function.Spec{
 	},
 	Type: function.StaticReturnType(cty.Number),
 	Impl: func(args []cty.Value, retType cty.Type) (cty.Value, error) {
-		sum := 0.0
-		for it := args[0].ElementIterator(); it.Next(); {
-			_, v := it.Element()
-			f, _ := v.AsBigFloat().Float64()
-			sum += f
+		if args[0].LengthInt() == 0 {
+			// Matching OpenTofu's behavior, we error on an empty list
+			return cty.NilVal, fmt.Errorf("cannot sum an empty list")
 		}
-		return cty.NumberFloatVal(sum), nil
+		elements := args[0].AsValueSlice()
+		sum := elements[0]
+		for _, v := range elements[1:] {
+			sum = sum.Add(v)
+		}
+		return sum, nil
 	},
 })
 
