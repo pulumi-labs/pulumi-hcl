@@ -762,6 +762,87 @@ variable "required_var" {
 	}
 }
 
+// TestEngine_ModuleNullableFalseNullInput covers a `nullable = false` child
+// module variable that receives `null` from its caller. With a default,
+// Terraform/OpenTofu substitute the default; without one, it is an error.
+func TestEngine_ModuleNullableFalseNullInput(t *testing.T) {
+	t.Parallel()
+
+	const childWithDefault = `
+variable "items" {
+  type     = list(string)
+  default  = ["a", "b"]
+  nullable = false
+}
+
+output "count" {
+  value = length(var.items)
+}
+`
+	const childNoDefault = `
+variable "items" {
+  type     = list(string)
+  nullable = false
+}
+
+output "count" {
+  value = length(var.items)
+}
+`
+	const rootMain = `
+module "child" {
+  source = "./modules/child"
+  items  = null
+}
+
+output "item_count" {
+  value = module.child.count
+}
+`
+
+	run := func(t *testing.T, childMain string) (*testutil.MockResourceMonitor, error) {
+		tmpDir := t.TempDir()
+		moduleDir := tmpDir + "/modules/child"
+		require.NoError(t, os.MkdirAll(moduleDir, 0o755))
+		require.NoError(t, os.WriteFile(moduleDir+"/main.tf", []byte(childMain), 0o644))
+		require.NoError(t, os.WriteFile(tmpDir+"/main.tf", []byte(rootMain), 0o644))
+
+		p := parser.NewParser()
+		config, diags := p.ParseDirectory(tmpDir)
+		require.False(t, diags.HasErrors(), "parse error: %s", diags.Error())
+
+		mock := &testutil.MockResourceMonitor{}
+		engine := run.NewEngine(t.Context(), config, &run.EngineOptions{
+			ProjectName:     "test-project",
+			StackName:       "dev",
+			ResourceMonitor: mock,
+			WorkDir:         tmpDir,
+			RootDir:         tmpDir,
+			SchemaLoader:    schemaloader.New(t, schema.PackageSpec{Name: "empty"}),
+		})
+		return mock, engine.Run(t.Context())
+	}
+
+	t.Run("with_default", func(t *testing.T) {
+		t.Parallel()
+
+		mock, err := run(t, childWithDefault)
+		require.NoError(t, err)
+
+		output, ok := mock.StackOutputs.GetOk("item_count")
+		require.True(t, ok, "expected item_count output")
+		assert.Equal(t, float64(2), output.AsNumber())
+	})
+
+	t.Run("no_default", func(t *testing.T) {
+		t.Parallel()
+
+		_, err := run(t, childNoDefault)
+		assert.EqualError(t, err, `variable "items" must not be set to null: `+
+			`it is declared with nullable = false and has no default`+"\ncontext canceled")
+	})
+}
+
 func TestEngine_VariableValidationPass(t *testing.T) {
 	t.Parallel()
 
