@@ -24,6 +24,9 @@ import (
 	"strings"
 	"testing"
 
+	regaddr "github.com/opentofu/registry-address/v2"
+	"github.com/opentofu/svchost"
+	"github.com/opentofu/svchost/disco"
 	"github.com/pulumi-labs/pulumi-hcl/pkg/hcl/parser"
 	"github.com/pulumi-labs/pulumi-hcl/vendored/getmodules"
 	"github.com/stretchr/testify/require"
@@ -88,14 +91,48 @@ func versionsPayload(vs []string) []map[string]string {
 	return out
 }
 
-func newTestLoader(t *testing.T, registryBaseURL string) *Loader {
+// newTestLoader builds a Loader whose default registry host resolves to
+// modulesV1BaseURL, standing in for the real modules.v1 endpoint.
+func newTestLoader(t *testing.T, modulesV1BaseURL string) *Loader {
 	t.Helper()
+	d := disco.New()
+	d.ForceHostServices(regaddr.DefaultModuleRegistryHost, map[string]any{
+		"modules.v1": modulesV1BaseURL + "/",
+	})
 	return &Loader{
-		parser:          parser.NewParser(),
-		cache:           map[string]*LoadedModule{},
-		cacheDir:        t.TempDir(),
-		fetcher:         getmodules.NewPackageFetcher(t.Context(), nil),
-		registryBaseURL: registryBaseURL,
+		parser:   parser.NewParser(),
+		cache:    map[string]*LoadedModule{},
+		cacheDir: t.TempDir(),
+		fetcher:  getmodules.NewPackageFetcher(t.Context(), nil),
+		disco:    d,
+	}
+}
+
+func TestIsRegistrySource(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		source string
+		want   bool
+	}{
+		{"cloudposse/label/null", true},
+		{"registry.terraform.io/cloudposse/label/null", true},
+		// Query strings are stripped before delegating to the parser.
+		{"app.terraform.io/my-org/vpc/aws?version=1.2.3", true},
+		// Reserved version-control hosts fall through to the remote getter.
+		{"github.com/hashicorp/consul/aws", false},
+		// A bare github address: "github.com" is not a valid namespace.
+		{"github.com/org/repo", false},
+		// A host without a dot is not a valid registry host.
+		{"localhost/org/name/aws", false},
+		{"too/many/slashes/here/now", false},
+		{"only/two", false},
+		{"bad ns/name/aws", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.source, func(t *testing.T) {
+			t.Parallel()
+			require.Equal(t, tc.want, isRegistrySource(tc.source))
+		})
 	}
 }
 
@@ -107,7 +144,7 @@ func TestGetRegistryDownloadURL_NoConstraintPicksLatest(t *testing.T) {
 		map[string]string{"4.2.0": "https://example.com/v420.tar.gz"})
 	l := newTestLoader(t, srv.URL)
 
-	got, err := l.getRegistryDownloadURL("acme", "thing", "aws", "")
+	got, err := l.getRegistryDownloadURL(srv.URL, "acme", "thing", "aws", "")
 	require.NoError(t, err)
 	require.Equal(t, "https://example.com/v420.tar.gz", got)
 	require.Equal(t, 1, reg.versionsHits)
@@ -121,7 +158,7 @@ func TestGetRegistryDownloadURL_ConstraintPicksHighestMatching(t *testing.T) {
 		map[string]string{"4.1.0": "https://example.com/v410.tar.gz"})
 	l := newTestLoader(t, srv.URL)
 
-	got, err := l.getRegistryDownloadURL("acme", "thing", "aws", "~> 4.0")
+	got, err := l.getRegistryDownloadURL(srv.URL, "acme", "thing", "aws", "~> 4.0")
 	require.NoError(t, err)
 	require.Equal(t, "https://example.com/v410.tar.gz", got)
 	require.Equal(t, 1, reg.downloadHits["4.1.0"])
@@ -134,7 +171,7 @@ func TestGetRegistryDownloadURL_ExactVersionPin(t *testing.T) {
 		map[string]string{"2.0.0": "https://example.com/v200.tar.gz"})
 	l := newTestLoader(t, srv.URL)
 
-	got, err := l.getRegistryDownloadURL("acme", "thing", "aws", "2.0.0")
+	got, err := l.getRegistryDownloadURL(srv.URL, "acme", "thing", "aws", "2.0.0")
 	require.NoError(t, err)
 	require.Equal(t, "https://example.com/v200.tar.gz", got)
 }
@@ -146,7 +183,7 @@ func TestGetRegistryDownloadURL_NoMatchingVersionErrors(t *testing.T) {
 		map[string]string{})
 	l := newTestLoader(t, srv.URL)
 
-	_, err := l.getRegistryDownloadURL("acme", "thing", "aws", "~> 99.0")
+	_, err := l.getRegistryDownloadURL(srv.URL, "acme", "thing", "aws", "~> 99.0")
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "no published version")
 	require.Contains(t, err.Error(), "~> 99.0")
@@ -181,7 +218,7 @@ func TestGetRegistryDownloadURL_OpenTofuStyle_JSONBody(t *testing.T) {
 	t.Cleanup(srv.Close)
 
 	l := newTestLoader(t, srv.URL)
-	got, err := l.getRegistryDownloadURL("acme", "thing", "aws", "")
+	got, err := l.getRegistryDownloadURL(srv.URL, "acme", "thing", "aws", "")
 	require.NoError(t, err)
 	require.Equal(t, wantURL, got)
 }
@@ -193,7 +230,7 @@ func TestGetRegistryDownloadURL_InvalidConstraintErrors(t *testing.T) {
 		map[string]string{"1.0.0": "https://example.com/x.tar.gz"})
 	l := newTestLoader(t, srv.URL)
 
-	_, err := l.getRegistryDownloadURL("acme", "thing", "aws", "not-a-constraint")
+	_, err := l.getRegistryDownloadURL(srv.URL, "acme", "thing", "aws", "not-a-constraint")
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "parsing version constraint")
 }
@@ -249,6 +286,57 @@ func TestLoadModule_VersionQueryStringStillSupported(t *testing.T) {
 	_, err := l.LoadModule("acme/thing/aws?version=3.0.0", "", t.TempDir())
 	require.NoError(t, err)
 	require.Equal(t, 1, reg.downloadHits["3.0.0"])
+}
+
+// TestLoadModule_HostQualifiedRegistrySource verifies that a source carrying an
+// explicit registry host (e.g. registry.terraform.io/...) is resolved against
+// that host's discovered modules.v1 endpoint rather than the hardcoded default
+// registry. ForceHostServices stands in for network service discovery.
+func TestLoadModule_HostQualifiedRegistrySource(t *testing.T) {
+	t.Parallel()
+
+	modTar := buildModuleTarGz(t, map[string]string{
+		"main.tf": `output "ok" { value = "host-qualified" }`,
+	})
+
+	tarSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/gzip")
+		_, _ = w.Write(modTar)
+	}))
+	t.Cleanup(tarSrv.Close)
+	tarURL := tarSrv.URL + "/m.tar.gz?archive=tar.gz"
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/v1/modules/myorg/widget/aws/versions", func(w http.ResponseWriter, _ *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"modules": []map[string]any{{"versions": versionsPayload([]string{"1.0.0"})}},
+		})
+	})
+	mux.HandleFunc("/v1/modules/myorg/widget/aws/1.0.0/download", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("X-Terraform-Get", tarURL)
+		w.WriteHeader(http.StatusNoContent)
+	})
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+
+	const host = "registry.example.com"
+	hostname, err := svchost.ForComparison(host)
+	require.NoError(t, err)
+	d := disco.New()
+	d.ForceHostServices(hostname, map[string]any{"modules.v1": srv.URL + "/v1/modules/"})
+
+	l := &Loader{
+		parser:   parser.NewParser(),
+		cache:    map[string]*LoadedModule{},
+		cacheDir: t.TempDir(),
+		fetcher:  getmodules.NewPackageFetcher(t.Context(), nil),
+		disco:    d,
+	}
+
+	loaded, err := l.LoadModule(host+"/myorg/widget/aws", "", t.TempDir())
+	require.NoError(t, err)
+	require.NotNil(t, loaded.Config)
+	require.Contains(t, loaded.Config.Outputs, "ok")
 }
 
 // buildModuleTarGz packs `files` (name → content) into a gzipped tar archive

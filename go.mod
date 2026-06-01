@@ -16,6 +16,8 @@ require (
 	github.com/hashicorp/terraform-plugin-go v0.31.0
 	github.com/hashicorp/terraform-plugin-mux v0.23.1
 	github.com/hashicorp/terraform-plugin-sdk/v2 v2.40.1
+	github.com/opentofu/registry-address/v2 v2.0.0-20250611143131-d0a99bd8acdd
+	github.com/opentofu/svchost v0.0.0-20250610175836-86c9e5e3d8c8
 	github.com/pulumi/providertest v0.7.0
 	github.com/pulumi/pulumi-terraform-bridge/v3 v3.129.2
 	github.com/pulumi/pulumi/pkg/v3 v3.242.1-0.20260522090831-62878b4ed028
