@@ -29,6 +29,7 @@ import (
 func ptr[T any](v T) *T { return &v }
 
 func TestBuildFromConfig(t *testing.T) {
+	t.Parallel()
 	src := []byte(`
 variable "name" {
   type = string
@@ -88,6 +89,7 @@ output "instance_id" {
 }
 
 func TestValidate(t *testing.T) {
+	t.Parallel()
 	g := NewGraph()
 
 	// Missing dependency
@@ -106,6 +108,7 @@ func TestValidate(t *testing.T) {
 // node that does not exist must report the source location of the offending
 // traversal, not just the unknown key.
 func TestValidateUnknownNodeReportsSourceLocation(t *testing.T) {
+	t.Parallel()
 	src := []byte(`resource "aws_s2_bucket" "example" {
   bucket = "${resource.fuzz.bucket}"
 }
@@ -136,7 +139,7 @@ func TestValidateUnknownNodeReportsSourceLocation(t *testing.T) {
 }
 
 func TestResourceExpander(t *testing.T) {
-	expander := NewResourceExpander()
+	t.Parallel()
 
 	node := &Node{
 		Key:  "aws_instance.web",
@@ -144,7 +147,8 @@ func TestResourceExpander(t *testing.T) {
 	}
 
 	t.Run("single instance", func(t *testing.T) {
-		result := expander.Expand(node)
+		t.Parallel()
+		result := NewResourceExpander().Expand(node)
 		if !result.IsSingle {
 			t.Error("Expected single instance")
 		}
@@ -157,6 +161,8 @@ func TestResourceExpander(t *testing.T) {
 	})
 
 	t.Run("count expansion", func(t *testing.T) {
+		t.Parallel()
+		expander := NewResourceExpander()
 		expander.SetCount("aws_instance.web", 3)
 		result := expander.Expand(node)
 		if result.IsSingle {
@@ -177,6 +183,8 @@ func TestResourceExpander(t *testing.T) {
 	})
 
 	t.Run("count zero", func(t *testing.T) {
+		t.Parallel()
+		expander := NewResourceExpander()
 		expander.SetCount("aws_instance.zero", 0)
 		zeroNode := &Node{Key: "aws_instance.zero", Type: NodeTypeResource}
 		result := expander.Expand(zeroNode)
@@ -189,13 +197,14 @@ func TestResourceExpander(t *testing.T) {
 	})
 
 	t.Run("for_each expansion", func(t *testing.T) {
-		expander2 := NewResourceExpander()
-		expander2.SetForEach("aws_instance.each", map[string]cty.Value{
+		t.Parallel()
+		expander := NewResourceExpander()
+		expander.SetForEach("aws_instance.each", map[string]cty.Value{
 			"a": cty.StringVal("value_a"),
 			"b": cty.StringVal("value_b"),
 		})
 		eachNode := &Node{Key: "aws_instance.each", Type: NodeTypeResource}
-		result := expander2.Expand(eachNode)
+		result := expander.Expand(eachNode)
 		if result.IsSingle {
 			t.Error("Should not be single instance")
 		}
@@ -216,6 +225,7 @@ func TestResourceExpander(t *testing.T) {
 }
 
 func TestParseInstanceKey(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		input       string
 		wantBase    string
@@ -250,6 +260,7 @@ func TestParseInstanceKey(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.input, func(t *testing.T) {
+			t.Parallel()
 			base, idx, key := ParseInstanceKey(tt.input)
 			if base != tt.wantBase {
 				t.Errorf("base: got %q, want %q", base, tt.wantBase)

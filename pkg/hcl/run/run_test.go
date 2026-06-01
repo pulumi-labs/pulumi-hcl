@@ -274,6 +274,8 @@ resource "aws_instance" "web" {
 	})
 
 	t.Run("missing dependency", func(t *testing.T) {
+		t.Parallel()
+
 		src := []byte(`
 resource "aws_instance" "web" {
   ami = nonexistent_resource.foo.id

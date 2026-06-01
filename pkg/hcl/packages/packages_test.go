@@ -59,6 +59,7 @@ func TestInvalidToken_Error(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			err := InvalidToken{token: tt.token, reason: tt.reason}
 			require.Equal(t, tt.expected, err.Error())
 		})
@@ -208,6 +209,7 @@ func TestResolveResource(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			res, err := ResolveResource(ctx, loader, tt.knownProviders, tt.token)
 
 			if tt.errAsInvalid {
@@ -396,6 +398,7 @@ func TestResolveFunction(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			fn, err := ResolveFunction(ctx, loader, tt.knownProviders, tt.token)
 
 			if tt.errAsInvalid {
