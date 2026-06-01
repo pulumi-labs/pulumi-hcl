@@ -715,6 +715,15 @@ func TestSumEmptyList(t *testing.T) {
 	assert.EqualError(t, err, "cannot sum an empty list")
 }
 
+// TestCidrHostOutOfRange pins that `cidrhost` errors when the host number does
+// not fit within the prefix's host bits, as OpenTofu does, rather than silently
+// overflowing into the network portion of the address.
+func TestCidrHostOutOfRange(t *testing.T) {
+	t.Parallel()
+	_, err := cidrHostFunc.Call([]cty.Value{cty.StringVal("10.0.0.0/24"), cty.NumberIntVal(256)})
+	assert.EqualError(t, err, "prefix of 24 does not accommodate a host numbered 256")
+}
+
 // TestToSetToListPreserveEmptyElementType pins that `toset` / `tolist` over a
 // typed-but-empty collection preserves the element type rather than collapsing
 // to `dynamic`.
@@ -938,6 +947,8 @@ func TestIPFunctions(t *testing.T) {
 		expected cty.Value
 	}{
 		{"cidrhost", `cidrhost("10.0.0.0/8", 5)`, cty.StringVal("10.0.0.5")},
+		{"cidrhost neg one", `cidrhost("10.0.0.0/24", -1)`, cty.StringVal("10.0.0.255")},
+		{"cidrhost neg two", `cidrhost("10.0.0.0/24", -2)`, cty.StringVal("10.0.0.254")},
 		{"cidrnetmask", `cidrnetmask("10.0.0.0/8")`, cty.StringVal("255.0.0.0")},
 		{"cidrsubnet v4", `cidrsubnet("10.0.0.0/8", 8, 2)`, cty.StringVal("10.2.0.0/16")},
 		{"cidrsubnet v6", `cidrsubnet("2600:1f14:315a:f400::/56", 8, 2)`,
