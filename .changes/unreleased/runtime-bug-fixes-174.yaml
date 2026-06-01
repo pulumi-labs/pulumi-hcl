@@ -1,0 +1,6 @@
+kind: bug-fixes
+body: '`textencodebase64` and `textdecodebase64` honor the named IANA encoding instead of always treating the bytes as UTF-8'
+time: 2026-06-01T15:30:00.000000+02:00
+custom:
+    Component: runtime
+    PR: "174"
