@@ -157,21 +157,26 @@ func (host *LanguageHost) GetRequiredPackages(
 		}
 		req := required[alias]
 
-		if req.IsPulumi() {
-			pkgs = append(pkgs, &pulumirpc.PackageDependency{
-				Name:    pulumiPackageName(alias, req.Source),
-				Version: req.Version,
-				Kind:    "resource",
-			})
-			continue
-		}
-
+		// A local SDK descriptor (written by `pulumi package add`) is the most
+		// specific source of truth: it carries the base provider name and the
+		// parameterization that a `required_providers` entry alone lacks. Prefer
+		// it even for pulumi-sourced packages, whose parameterized form resolves
+		// to a base provider plus parameter rather than a plain dependency.
 		if info, ok := paramInfos[alias]; ok {
 			pkgs = append(pkgs, &pulumirpc.PackageDependency{
 				Name:             info.Name,
 				Version:          versionString(info.Version),
 				Kind:             "resource",
 				Parameterization: parameterizationProto(info.Parameterization),
+			})
+			continue
+		}
+
+		if req.IsPulumi() {
+			pkgs = append(pkgs, &pulumirpc.PackageDependency{
+				Name:    pulumiPackageName(alias, req.Source),
+				Version: req.Version,
+				Kind:    "resource",
 			})
 			continue
 		}

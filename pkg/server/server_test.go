@@ -163,6 +163,65 @@ func TestGeneratePackageAndRunUseSameSdksDir(t *testing.T) {
 	}, resp.Packages[0])
 }
 
+// A parameterized package whose required_providers source is `pulumi/<name>`
+// must still be reported via its local SDK descriptor (base provider + para-
+// meterization), not as a plain pulumi dependency. The descriptor is the
+// authoritative source and must win over the pulumi-source classification.
+func TestGetRequiredPackages_ParameterizedPulumiSource(t *testing.T) {
+	t.Parallel()
+
+	projectDir := t.TempDir()
+
+	const alias = "subpackage"
+	sdkDir := filepath.Join(projectDir, "sdks", alias)
+	require.NoError(t, os.MkdirAll(sdkDir, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(sdkDir, "hcl.sdk.json"), []byte(`{
+		"Name": "parameterized",
+		"Kind": "resource",
+		"Version": "1.2.3",
+		"Parameterization": {
+			"Name": "subpackage",
+			"Version": "2.0.0",
+			"Value": "SGVsbG9Xb3JsZA=="
+		}
+	}`), 0o600))
+
+	program := `terraform {
+  required_providers {
+    subpackage = {
+      source  = "pulumi/subpackage"
+      version = "2.0.0"
+    }
+  }
+}
+
+resource "subpackage_hello_world" "example" {}
+`
+	require.NoError(t, os.WriteFile(filepath.Join(projectDir, "main.tf"), []byte(program), 0o600))
+
+	host := &LanguageHost{}
+	resp, err := host.GetRequiredPackages(t.Context(), &pulumirpc.GetRequiredPackagesRequest{
+		Info: &pulumirpc.ProgramInfo{
+			ProgramDirectory: projectDir,
+			RootDirectory:    projectDir,
+			EntryPoint:       ".",
+		},
+	})
+	require.NoError(t, err)
+
+	require.Len(t, resp.Packages, 1)
+	assert.Equal(t, &pulumirpc.PackageDependency{
+		Name:    "parameterized",
+		Version: "1.2.3",
+		Kind:    "resource",
+		Parameterization: &pulumirpc.PackageParameterization{
+			Name:    "subpackage",
+			Version: "2.0.0",
+			Value:   []byte("HelloWorld"),
+		},
+	}, resp.Packages[0])
+}
+
 // TestMissingNonPulumiSDKs_ImplicitProvider reproduces the tf_stack_test bug:
 // a program references `data "archive_file" ...` without declaring `archive`
 // in required_providers. The provider is *implicit* — its only mention is in
