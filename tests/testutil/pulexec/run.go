@@ -19,55 +19,51 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
-	"sync"
 	"testing"
 
+	"github.com/pulumi-labs/pulumi-hcl/pkg/server"
 	"github.com/pulumi/providertest/providers"
 	"github.com/pulumi/providertest/pulumitest"
 	"github.com/pulumi/providertest/pulumitest/optnewstack"
 	"github.com/pulumi/providertest/pulumitest/opttest"
-	"github.com/pulumi/pulumi/sdk/v3/go/auto/optdestroy"
 	"github.com/pulumi/pulumi-terraform-bridge/v3/pkg/tfbridge"
 	"github.com/pulumi/pulumi/sdk/v3/go/auto"
+	"github.com/pulumi/pulumi/sdk/v3/go/auto/optdestroy"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/apitype"
+	"github.com/pulumi/pulumi/sdk/v3/go/common/util/contract"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/util/rpcutil"
 	pulumirpc "github.com/pulumi/pulumi/sdk/v3/proto/go"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/grpc"
 )
 
-var (
-	buildHCLOnce sync.Once
-	hclBinDir    string
-	hclBuildErr  error
-)
-
-// ensureHCLLanguagePlugin builds pulumi-language-hcl once per test process and
-// returns the directory containing the binary so it can be prepended to PATH.
+// serveLanguageHost serves the pulumi-language-hcl runtime in-process on an
+// ephemeral port and returns that port. The engine attaches to it via
+// PULUMI_DEBUG_LANGUAGES instead of spawning the plugin binary, so the runtime
+// under test runs in the test process (no build step, debuggable, covered).
 //
-// We can't use t.TempDir here: the binary lives for the entire test process
-// across many tests, but t.TempDir is cleaned up when each test ends.
-func ensureHCLLanguagePlugin(t *testing.T) string {
+// The engine address is unknown at construction; it arrives per `pulumi`
+// invocation through the host's Handshake RPC. Each Driver gets its own host
+// so concurrent tests never share an engine connection.
+func serveLanguageHost(t *testing.T) int {
 	t.Helper()
-	buildHCLOnce.Do(func() {
-		dir, err := os.MkdirTemp("", "pulumi-language-hcl-*") //nolint:usetesting // binary outlives any single test
-		if err != nil {
-			hclBuildErr = fmt.Errorf("creating temp dir: %w", err)
-			return
-		}
-		bin := filepath.Join(dir, "pulumi-language-hcl")
-		cmd := exec.Command("go", "build", "-o", bin, "github.com/pulumi-labs/pulumi-hcl/cmd/pulumi-language-hcl")
-		out, err := cmd.CombinedOutput()
-		if err != nil {
-			hclBuildErr = fmt.Errorf("building pulumi-language-hcl: %w\n%s", err, out)
-			return
-		}
-		hclBinDir = dir
+	cancel := make(chan bool)
+	t.Cleanup(func() { close(cancel) })
+	handle, err := rpcutil.ServeWithOptions(rpcutil.ServeOptions{
+		Cancel: cancel,
+		Init: func(srv *grpc.Server) error {
+			host, err := server.NewLanguageHost("")
+			if err != nil {
+				return err
+			}
+			t.Cleanup(func() { contract.IgnoreClose(host) })
+			pulumirpc.RegisterLanguageRuntimeServer(srv, host)
+			return nil
+		},
 	})
-	require.NoError(t, hclBuildErr)
-	return hclBinDir
+	require.NoError(t, err)
+	return handle.Port
 }
 
 // Provider pairs a provider name with its bridged info.
@@ -96,7 +92,7 @@ type Driver struct {
 func NewDriver(t *testing.T, provs []Provider, config map[string]string) *Driver {
 	t.Helper()
 
-	binDir := ensureHCLLanguagePlugin(t)
+	hostPort := serveLanguageHost(t)
 	dir := t.TempDir()
 
 	provNames := make([]string, len(provs))
@@ -115,7 +111,7 @@ backend:
 
 	opts := append(make([]opttest.Option, 0, 5+len(provs)),
 		opttest.Env("PULUMI_DISABLE_AUTOMATIC_PLUGIN_ACQUISITION", "true"),
-		opttest.Env("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH")),
+		opttest.Env("PULUMI_DEBUG_LANGUAGES", fmt.Sprintf("hcl:%d", hostPort)),
 		opttest.TestInPlace(),
 		opttest.SkipInstall(),
 		// Cleanup destroy fails on prevent_destroy cases; temp dir is

@@ -89,25 +89,57 @@ func WithAlwaysRegisterProviders() Option {
 
 // NewLanguageHost creates a new HCL language host.
 //
+// engineAddress is the gRPC address of the engine. It may be empty when the
+// engine attaches to an already-running host via PULUMI_DEBUG_LANGUAGES: in
+// that mode the address is unknown at construction and arrives later through
+// the [LanguageHost.Handshake] RPC.
+//
 // The returned [LanguageHost] should be closed.
 func NewLanguageHost(engineAddress string, opts ...Option) (*LanguageHost, error) {
+	host := &LanguageHost{}
+	for _, opt := range opts {
+		opt(host)
+	}
+	if engineAddress != "" {
+		if err := host.connectEngine(engineAddress); err != nil {
+			return nil, err
+		}
+	}
+	return host, nil
+}
+
+// connectEngine dials the engine at engineAddress and records the connection
+// for later cleanup. It is called either at construction (spawn mode) or from
+// Handshake (attach mode).
+func (host *LanguageHost) connectEngine(engineAddress string) error {
 	engineConn, err := grpc.NewClient(
 		engineAddress,
 		grpc.WithTransportCredentials(insecure.NewCredentials()),
 		rpcutil.GrpcChannelOptions(),
 	)
 	if err != nil {
-		return nil, fmt.Errorf("connecting to engine: %w", err)
+		return fmt.Errorf("connecting to engine: %w", err)
 	}
+	host.engine = pulumirpc.NewEngineClient(engineConn)
+	host.closers = append(host.closers, engineConn)
+	return nil
+}
 
-	host := &LanguageHost{
-		engine:  pulumirpc.NewEngineClient(engineConn),
-		closers: []io.Closer{engineConn},
+// Handshake is the first RPC the engine sends when it attaches to an
+// already-running host (PULUMI_DEBUG_LANGUAGES). The engine address is not
+// known until this call, so the host establishes its engine connection here.
+// In spawn mode the engine never calls Handshake; the address is supplied to
+// NewLanguageHost as the binary's positional argument instead.
+func (host *LanguageHost) Handshake(
+	ctx context.Context, req *pulumirpc.LanguageHandshakeRequest,
+) (*pulumirpc.LanguageHandshakeResponse, error) {
+	if req.EngineAddress == "" {
+		return nil, errors.New("language handshake request must contain an engine address")
 	}
-	for _, opt := range opts {
-		opt(host)
+	if err := host.connectEngine(req.EngineAddress); err != nil {
+		return nil, err
 	}
-	return host, nil
+	return &pulumirpc.LanguageHandshakeResponse{}, nil
 }
 
 func (host *LanguageHost) Close() error {
