@@ -2144,7 +2144,7 @@ func (e *Engine) invokeDataSourceOnce(
 	var outputs property.Map
 	if !e.dryRun || !property.New(inputs).HasComputed() {
 		var err error
-		outputs, err = e.invokeFunction(ctx, invokeReq)
+		outputs, err = e.invokeFunction(ctx, ds.Type, invokeReq)
 		if err != nil {
 			return cty.NilVal, fmt.Errorf("invoking data source: %w", err)
 		}
@@ -2326,7 +2326,12 @@ func (e *Engine) callMethod(ctx context.Context, req CallRequest) (property.Map,
 }
 
 // invokeFunction invokes a Pulumi function (data source).
-func (e *Engine) invokeFunction(ctx context.Context, req InvokeRequest) (property.Map, error) {
+func (e *Engine) invokeFunction(ctx context.Context, tfType string, req InvokeRequest) (property.Map, error) {
+	req, err := lowerRemoteStateInvoke(tfType, req)
+	if err != nil {
+		return property.Map{}, err
+	}
+
 	if e.resmon == nil { // TODO: Remove this check
 		// No resource monitor - return empty outputs for testing
 		return property.Map{}, nil

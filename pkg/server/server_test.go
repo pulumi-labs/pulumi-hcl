@@ -20,6 +20,7 @@ import (
 	"testing"
 
 	"github.com/pulumi-labs/pulumi-hcl/pkg/hcl/parser"
+	"github.com/pulumi-labs/pulumi-hcl/pkg/hcl/run"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/workspace"
 	pulumirpc "github.com/pulumi/pulumi/sdk/v3/proto/go"
 	"github.com/stretchr/testify/assert"
@@ -516,4 +517,80 @@ terraform {
 	assert.Equal(t,
 		[]string{"awscc"},
 		missingNonPulumiSDKs(t.Context(), cfg, nil, dir))
+}
+
+// terraform_remote_state is served by the external pulumi-terraform package, so
+// it must be emitted as an installable dependency even though the `terraform`
+// alias is otherwise a builtin provider.
+func TestGetRequiredPackages_TerraformRemoteState(t *testing.T) {
+	t.Parallel()
+
+	projectDir := t.TempDir()
+	program := `data "terraform_remote_state" "rs" {
+  backend = "local"
+  config = {
+    path = "remote.tfstate"
+  }
+}
+`
+	require.NoError(t, os.WriteFile(filepath.Join(projectDir, "main.tf"), []byte(program), 0o600))
+
+	host := &LanguageHost{}
+	resp, err := host.GetRequiredPackages(t.Context(), &pulumirpc.GetRequiredPackagesRequest{
+		Info: &pulumirpc.ProgramInfo{
+			ProgramDirectory: projectDir,
+			RootDirectory:    projectDir,
+			EntryPoint:       ".",
+		},
+	})
+	require.NoError(t, err)
+
+	assert.Empty(t, resp.Specs)
+	require.Len(t, resp.Packages, 1)
+	assert.Equal(t, &pulumirpc.PackageDependency{
+		Name:    run.TerraformStatePackage,
+		Version: run.TerraformStatePackageVersion,
+		Kind:    "resource",
+	}, resp.Packages[0])
+}
+
+// terraform_remote_state nested in a module is still detected, so the
+// pulumi-terraform package is emitted.
+func TestGetRequiredPackages_TerraformRemoteStateInModule(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "main.tf"), []byte(`
+module "child" {
+  source = "./child"
+}
+`), 0o600))
+
+	childDir := filepath.Join(dir, "child")
+	require.NoError(t, os.MkdirAll(childDir, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(childDir, "main.tf"), []byte(`
+data "terraform_remote_state" "rs" {
+  backend = "local"
+  config = {
+    path = "remote.tfstate"
+  }
+}
+`), 0o600))
+
+	host := &LanguageHost{}
+	resp, err := host.GetRequiredPackages(t.Context(), &pulumirpc.GetRequiredPackagesRequest{
+		Info: &pulumirpc.ProgramInfo{
+			ProgramDirectory: dir,
+			RootDirectory:    dir,
+			EntryPoint:       ".",
+		},
+	})
+	require.NoError(t, err)
+
+	require.Len(t, resp.Packages, 1)
+	assert.Equal(t, &pulumirpc.PackageDependency{
+		Name:    run.TerraformStatePackage,
+		Version: run.TerraformStatePackageVersion,
+		Kind:    "resource",
+	}, resp.Packages[0])
 }

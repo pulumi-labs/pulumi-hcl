@@ -455,6 +455,11 @@ func collectRequirementsRec(
 	}
 	for _, d := range config.DataSources {
 		addType(d.Type)
+		// terraform_remote_state is served by the external pulumi-terraform
+		// package, not the builtin `terraform` provider that add() skips.
+		if d.Type == "terraform_remote_state" {
+			pulumi[run.TerraformStatePackage] = run.TerraformStatePackageVersion
+		}
 	}
 
 	if loader == nil {

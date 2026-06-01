@@ -32,6 +32,9 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.PULUMI_BOT_TOKEN }}
       - uses: opentofu/setup-opentofu@v2
+      # terraform_remote_state lowers to the pulumi-terraform getLocalReference
+      # invoke; the tfcompat harness disables plugin acquisition, so pre-install it.
+      - run: pulumi plugin install resource terraform 6.0.2
       - run: make test_cover
       - uses: codecov/codecov-action@v6
         with:

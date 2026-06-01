@@ -1,0 +1,6 @@
+kind: Improvements
+body: '`terraform_remote_state` with the `local` backend is now supported, read via the pulumi-terraform `getLocalReference` invoke (no installable TF provider plugin required)'
+time: 2026-06-01T20:30:00.000000+02:00
+custom:
+    Component: runtime
+    PR: "196"

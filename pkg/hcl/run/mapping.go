@@ -94,6 +94,9 @@ func (e *Engine) resolveResource(ctx context.Context, tfType string) (*pulumisch
 
 // resolveFunction mirrors resolveResource for TF data sources and functions.
 func (e *Engine) resolveFunction(ctx context.Context, tfType string) (*pulumischema.Function, error) {
+	if tfType == remoteStateType {
+		return terraformRemoteStateSchema(), nil
+	}
 	if info := e.providerInfoForType(ctx, tfType); info != nil {
 		if d, ok := info.DataSources[tfType]; ok && d != nil && string(d.Tok) != "" {
 			fn, err := e.loadFunctionByToken(ctx, info.Name, string(d.Tok))
