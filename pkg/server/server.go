@@ -16,6 +16,7 @@
 package server
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -449,7 +450,7 @@ func collectRequirementsRec(
 	}
 }
 
-func sortedKeys[K comparable, V any](m map[string]V) []string { return slices.Sorted(maps.Keys(m)) }
+func sortedKeys[K cmp.Ordered, V any](m map[K]V) []K { return slices.Sorted(maps.Keys(m)) }
 
 // Run executes an HCL program.
 func (host *LanguageHost) Run(
