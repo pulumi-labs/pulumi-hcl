@@ -32,6 +32,7 @@ import (
 	"encoding/pem"
 	"fmt"
 	"net"
+	"net/url"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -773,18 +774,7 @@ var urlEncodeFunc = function.New(&function.Spec{
 	},
 	Type: function.StaticReturnType(cty.String),
 	Impl: func(args []cty.Value, retType cty.Type) (cty.Value, error) {
-		// Simple URL encoding
-		s := args[0].AsString()
-		var result strings.Builder
-		for _, r := range s {
-			if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') ||
-				r == '-' || r == '_' || r == '.' || r == '~' {
-				result.WriteRune(r)
-			} else {
-				fmt.Fprintf(&result, "%%%02X", r)
-			}
-		}
-		return cty.StringVal(result.String()), nil
+		return cty.StringVal(url.QueryEscape(args[0].AsString())), nil
 	},
 })
 

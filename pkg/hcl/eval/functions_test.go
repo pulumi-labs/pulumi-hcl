@@ -351,8 +351,10 @@ func TestEncodingFunctions(t *testing.T) {
 		{"base64decode", `base64decode("aGVsbG8=")`, cty.StringVal("hello")},
 		{"jsonencode map", `jsonencode({a = 1})`, cty.StringVal(`{"a":1}`)},
 		{"jsondecode", `jsondecode("{\"a\":1}").a`, cty.NumberIntVal(1)},
-		// urlencode uses %20 for spaces (not + which is form-encoded)
-		{"urlencode", `urlencode("hello world")`, cty.StringVal("hello%20world")},
+		// urlencode applies query-string encoding: spaces become + and non-ASCII
+		// characters are percent-encoded as their UTF-8 bytes.
+		{"urlencode", `urlencode("hello world")`, cty.StringVal("hello+world")},
+		{"urlencode unicode", `urlencode("café")`, cty.StringVal("caf%C3%A9")},
 		// base64gzip - check it returns non-empty string
 		{"base64gzip", `base64gzip("hello") != ""`, cty.BoolVal(true)},
 		{"csvdecode length", `length(csvdecode("a,b\n1,2\n3,4"))`, cty.NumberIntVal(2)},
