@@ -38,7 +38,7 @@ func TestLowerRemoteStateInvoke(t *testing.T) {
 
 	t.Run("local backend translates config to invoke args", func(t *testing.T) {
 		t.Parallel()
-		got, err := lowerRemoteStateInvoke(remoteStateType, localReq)
+		got, _, err := lowerRemoteStateInvoke(remoteStateType, localReq)
 		require.NoError(t, err)
 		assert.Equal(t, InvokeRequest{
 			Token: localReferenceToken,
@@ -51,7 +51,7 @@ func TestLowerRemoteStateInvoke(t *testing.T) {
 
 	t.Run("remote backend defers to getRemoteReference", func(t *testing.T) {
 		t.Parallel()
-		got, err := lowerRemoteStateInvoke(remoteStateType, InvokeRequest{
+		got, _, err := lowerRemoteStateInvoke(remoteStateType, InvokeRequest{
 			Token: localReferenceToken,
 			Args: property.NewMap(map[string]property.Value{
 				"backend": property.New("remote"),
@@ -73,7 +73,7 @@ func TestLowerRemoteStateInvoke(t *testing.T) {
 
 	t.Run("unsupported backend is rejected", func(t *testing.T) {
 		t.Parallel()
-		_, err := lowerRemoteStateInvoke(remoteStateType, InvokeRequest{
+		_, _, err := lowerRemoteStateInvoke(remoteStateType, InvokeRequest{
 			Args: property.NewMap(map[string]property.Value{"backend": property.New("s3")}),
 		})
 		require.EqualError(t, err,
@@ -82,7 +82,7 @@ func TestLowerRemoteStateInvoke(t *testing.T) {
 
 	t.Run("config fields the local backend ignores are rejected", func(t *testing.T) {
 		t.Parallel()
-		_, err := lowerRemoteStateInvoke(remoteStateType, InvokeRequest{
+		_, _, err := lowerRemoteStateInvoke(remoteStateType, InvokeRequest{
 			Args: property.NewMap(map[string]property.Value{
 				"backend": property.New("local"),
 				"config": property.New(map[string]property.Value{
@@ -97,7 +97,7 @@ func TestLowerRemoteStateInvoke(t *testing.T) {
 
 	t.Run("config fields the remote backend ignores are rejected", func(t *testing.T) {
 		t.Parallel()
-		_, err := lowerRemoteStateInvoke(remoteStateType, InvokeRequest{
+		_, _, err := lowerRemoteStateInvoke(remoteStateType, InvokeRequest{
 			Args: property.NewMap(map[string]property.Value{
 				"backend": property.New("remote"),
 				"config": property.New(map[string]property.Value{
@@ -111,20 +111,34 @@ func TestLowerRemoteStateInvoke(t *testing.T) {
 				`(supported: hostname, organization, token, workspaces)`)
 	})
 
-	t.Run("defaults is rejected", func(t *testing.T) {
+	t.Run("defaults is returned for the result overlay", func(t *testing.T) {
 		t.Parallel()
-		_, err := lowerRemoteStateInvoke(remoteStateType, InvokeRequest{
+		defaultsVal := map[string]property.Value{"number": property.New(99.0)}
+		_, defaults, err := lowerRemoteStateInvoke(remoteStateType, InvokeRequest{
 			Args: property.NewMap(map[string]property.Value{
 				"backend":  property.New("local"),
-				"defaults": property.New(map[string]property.Value{"x": property.New("y")}),
+				"config":   property.New(map[string]property.Value{"path": property.New("state.tfstate")}),
+				"defaults": property.New(defaultsVal),
 			}),
 		})
-		require.EqualError(t, err, `terraform_remote_state: "defaults" is not supported`)
+		require.NoError(t, err)
+		assert.Equal(t, property.NewMap(defaultsVal), defaults)
+	})
+
+	t.Run("non-object defaults is rejected", func(t *testing.T) {
+		t.Parallel()
+		_, _, err := lowerRemoteStateInvoke(remoteStateType, InvokeRequest{
+			Args: property.NewMap(map[string]property.Value{
+				"backend":  property.New("local"),
+				"defaults": property.New("oops"),
+			}),
+		})
+		require.EqualError(t, err, `terraform_remote_state: "defaults" must be an object`)
 	})
 
 	t.Run("workspace combines with the workspaces prefix", func(t *testing.T) {
 		t.Parallel()
-		got, err := lowerRemoteStateInvoke(remoteStateType, InvokeRequest{
+		got, _, err := lowerRemoteStateInvoke(remoteStateType, InvokeRequest{
 			Args: property.NewMap(map[string]property.Value{
 				"backend":   property.New("remote"),
 				"workspace": property.New("prod"),
@@ -146,7 +160,7 @@ func TestLowerRemoteStateInvoke(t *testing.T) {
 
 	t.Run("workspace without a prefix is rejected", func(t *testing.T) {
 		t.Parallel()
-		_, err := lowerRemoteStateInvoke(remoteStateType, InvokeRequest{
+		_, _, err := lowerRemoteStateInvoke(remoteStateType, InvokeRequest{
 			Args: property.NewMap(map[string]property.Value{
 				"backend":   property.New("remote"),
 				"workspace": property.New("prod"),
@@ -159,7 +173,7 @@ func TestLowerRemoteStateInvoke(t *testing.T) {
 
 	t.Run("workspace=default with workspaces.name is allowed", func(t *testing.T) {
 		t.Parallel()
-		got, err := lowerRemoteStateInvoke(remoteStateType, InvokeRequest{
+		got, _, err := lowerRemoteStateInvoke(remoteStateType, InvokeRequest{
 			Args: property.NewMap(map[string]property.Value{
 				"backend":   property.New("remote"),
 				"workspace": property.New("default"),
@@ -181,7 +195,7 @@ func TestLowerRemoteStateInvoke(t *testing.T) {
 
 	t.Run("non-default workspace with workspaces.name is rejected", func(t *testing.T) {
 		t.Parallel()
-		_, err := lowerRemoteStateInvoke(remoteStateType, InvokeRequest{
+		_, _, err := lowerRemoteStateInvoke(remoteStateType, InvokeRequest{
 			Args: property.NewMap(map[string]property.Value{
 				"backend":   property.New("remote"),
 				"workspace": property.New("prod"),
@@ -197,7 +211,7 @@ func TestLowerRemoteStateInvoke(t *testing.T) {
 
 	t.Run("workspace is rejected on the local backend", func(t *testing.T) {
 		t.Parallel()
-		_, err := lowerRemoteStateInvoke(remoteStateType, InvokeRequest{
+		_, _, err := lowerRemoteStateInvoke(remoteStateType, InvokeRequest{
 			Args: property.NewMap(map[string]property.Value{
 				"backend":   property.New("local"),
 				"workspace": property.New("staging"),
@@ -209,8 +223,37 @@ func TestLowerRemoteStateInvoke(t *testing.T) {
 
 	t.Run("other data sources are untouched", func(t *testing.T) {
 		t.Parallel()
-		got, err := lowerRemoteStateInvoke("some_other_source", localReq)
+		got, _, err := lowerRemoteStateInvoke("some_other_source", localReq)
 		require.NoError(t, err)
 		assert.Equal(t, localReq, got)
+	})
+}
+
+func TestApplyRemoteStateDefaults(t *testing.T) {
+	t.Parallel()
+
+	ret := property.NewMap(map[string]property.Value{
+		"outputs": property.New(map[string]property.Value{
+			"greeting": property.New("hello"),
+		}),
+	})
+
+	t.Run("no defaults returns the result unchanged", func(t *testing.T) {
+		t.Parallel()
+		assert.Equal(t, ret, applyRemoteStateDefaults(property.Map{}, ret))
+	})
+
+	t.Run("defaults fill absent outputs and state wins on overlap", func(t *testing.T) {
+		t.Parallel()
+		defaults := property.NewMap(map[string]property.Value{
+			"greeting": property.New("DEFAULT"),
+			"number":   property.New(99.0),
+		})
+		assert.Equal(t, property.NewMap(map[string]property.Value{
+			"outputs": property.New(map[string]property.Value{
+				"greeting": property.New("hello"),
+				"number":   property.New(99.0),
+			}),
+		}), applyRemoteStateDefaults(defaults, ret))
 	})
 }

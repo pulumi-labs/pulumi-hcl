@@ -38,8 +38,8 @@ const (
 // terraformRemoteStateSchema is the synthetic schema terraform_remote_state
 // resolves to: the TF data source surface as inputs. lowerRemoteStateInvoke
 // selects the concrete pulumi-terraform invoke (local or remote) by backend and
-// translates the inputs to its arguments. The placeholder Token is always
-// overridden there.
+// translates the inputs to its arguments, and applyRemoteStateDefaults overlays
+// `defaults` on the result. The placeholder Token is always overridden there.
 func terraformRemoteStateSchema() *schema.Function {
 	opt := func(t schema.Type) schema.Type { return &schema.OptionalType{ElementType: t} }
 	return &schema.Function{
@@ -69,14 +69,21 @@ func terraformRemoteStateSchema() *schema.Function {
 // `<prefix><workspace>` (combined into the invoke's `workspaces.name`); with
 // config.workspaces.name only the implicit "default" workspace exists, so
 // `workspace` must be "default". It is unsupported on the local backend
-// (getLocalReference has no workspace input). `defaults` is unsupported.
-func lowerRemoteStateInvoke(tfType string, req InvokeRequest) (InvokeRequest, error) {
+// (getLocalReference has no workspace input).
+//
+// `defaults` is returned for applyRemoteStateDefaults to overlay on the invoke
+// result; it is the zero Map when absent.
+func lowerRemoteStateInvoke(tfType string, req InvokeRequest) (InvokeRequest, property.Map, error) {
 	if tfType != remoteStateType {
-		return req, nil
+		return req, property.Map{}, nil
 	}
 
+	var defaults property.Map
 	if v, ok := req.Args.GetOk("defaults"); ok && !v.IsNull() {
-		return req, fmt.Errorf("terraform_remote_state: %q is not supported", "defaults")
+		if !v.IsMap() {
+			return req, property.Map{}, fmt.Errorf("terraform_remote_state: %q must be an object", "defaults")
+		}
+		defaults = v.AsMap()
 	}
 
 	backend := ""
@@ -94,7 +101,7 @@ func lowerRemoteStateInvoke(tfType string, req InvokeRequest) (InvokeRequest, er
 	switch backend {
 	case "local":
 		if hasWorkspace {
-			return req, fmt.Errorf("terraform_remote_state: the local backend does not support the workspace attribute")
+			return req, property.Map{}, fmt.Errorf("terraform_remote_state: the local backend does not support the workspace attribute")
 		}
 		token = localReferenceToken
 		desc = "the local backend"
@@ -109,7 +116,7 @@ func lowerRemoteStateInvoke(tfType string, req InvokeRequest) (InvokeRequest, er
 			"workspaces":   "workspaces",
 		}
 	default:
-		return req, fmt.Errorf(
+		return req, property.Map{}, fmt.Errorf(
 			"terraform_remote_state: backend %q is not supported (supported backends: local, remote)", backend,
 		)
 	}
@@ -127,7 +134,7 @@ func lowerRemoteStateInvoke(tfType string, req InvokeRequest) (InvokeRequest, er
 	}
 	if len(unexpected) > 0 {
 		slices.Sort(unexpected)
-		return req, fmt.Errorf(
+		return req, property.Map{}, fmt.Errorf(
 			"terraform_remote_state: %s does not read config field(s) %v (supported: %s)",
 			desc, unexpected, strings.Join(slices.Sorted(maps.Keys(fields)), ", "),
 		)
@@ -140,23 +147,38 @@ func lowerRemoteStateInvoke(tfType string, req InvokeRequest) (InvokeRequest, er
 	if hasWorkspace {
 		ws, ok := args["workspaces"]
 		if !ok || !ws.IsMap() {
-			return req, fmt.Errorf("terraform_remote_state: workspace requires config.workspaces.prefix")
+			return req, property.Map{}, fmt.Errorf("terraform_remote_state: workspace requires config.workspaces.prefix")
 		}
 		switch wsMap := ws.AsMap(); {
 		case wsMap.Get("name").IsString():
 			if workspace != "default" {
-				return req, fmt.Errorf(
+				return req, property.Map{}, fmt.Errorf(
 					"terraform_remote_state: workspace %q is invalid with config.workspaces.name (only \"default\" is)", workspace,
 				)
 			}
 		case wsMap.Get("prefix").IsString():
 			args["workspaces"] = property.New(map[string]property.Value{"name": property.New(wsMap.Get("prefix").AsString() + workspace)})
 		default:
-			return req, fmt.Errorf("terraform_remote_state: workspace requires config.workspaces.prefix")
+			return req, property.Map{}, fmt.Errorf("terraform_remote_state: workspace requires config.workspaces.prefix")
 		}
 	}
 
 	req.Token = token
 	req.Args = property.NewMap(args)
-	return req, nil
+	return req, defaults, nil
+}
+
+// applyRemoteStateDefaults overlays the data source's `defaults` beneath the
+// outputs returned by the state-reference invoke: each default supplies the
+// value for an output the referenced state does not define, matching OpenTofu's
+// per-output fallback. ret is returned unchanged when there are no defaults.
+func applyRemoteStateDefaults(defaults, ret property.Map) property.Map {
+	if defaults.Len() == 0 {
+		return ret
+	}
+	merged := maps.Collect(defaults.All)
+	if out, ok := ret.GetOk("outputs"); ok && out.IsMap() {
+		maps.Insert(merged, out.AsMap().All)
+	}
+	return ret.Set("outputs", property.New(merged))
 }
