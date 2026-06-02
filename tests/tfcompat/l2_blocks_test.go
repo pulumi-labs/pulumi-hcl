@@ -45,6 +45,33 @@ func TestL2BlockMulti(t *testing.T) {
 	})
 }
 
+// TestL2BlockSet exercises a repeating TypeSet block. The bridge pluralizes
+// the name (`filter` -> `filters`), and the engine must map the singular TF
+// block name onto the plural Pulumi property — the divergence hit by real
+// modules using a `filter` block on `data.aws_ami` or a `parameter` block on
+// `aws_memorydb_parameter_group`.
+func TestL2BlockSet(t *testing.T) {
+	t.Parallel()
+	tfcompat.RunCase(t, "l2_block_set", tfcompat.Case{
+		Providers: []tfcompat.Provider{
+			{Name: "blocky", Factory: providers.BlockyProvider},
+		},
+	})
+}
+
+// TestL2DataBlockSet exercises a repeating TypeSet block on a data source,
+// the shape RaJiska/fck-nat uses (a `filter` block on `data.aws_ami`). The
+// bridge pluralizes the name to `filters` and the engine must map the singular
+// TF block name onto the plural Pulumi property on the data-source path.
+func TestL2DataBlockSet(t *testing.T) {
+	t.Parallel()
+	tfcompat.RunCase(t, "l2_data_block_set", tfcompat.Case{
+		Providers: []tfcompat.Provider{
+			{Name: "blocky", Factory: providers.BlockyProvider},
+		},
+	})
+}
+
 // TestL2BlockNested exercises a singular block containing a singular block.
 // Both flattenings are decided by the inner shim, which the recursive
 // BodyMapping must surface.
