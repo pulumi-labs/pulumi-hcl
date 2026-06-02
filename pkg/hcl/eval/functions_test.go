@@ -674,7 +674,7 @@ func TestToNumber(t *testing.T) {
 func TestToNumberError(t *testing.T) {
 	t.Parallel()
 
-	_, err := toNumberFunc.Call([]cty.Value{cty.StringVal("12abc")})
+	_, err := makeToFunc(cty.Number).Call([]cty.Value{cty.StringVal("12abc")})
 	assert.EqualError(t, err,
 		`cannot convert "12abc" to number; given string must be a decimal representation of a number`)
 }
@@ -740,17 +740,47 @@ func TestToSetToListPreserveEmptyElementType(t *testing.T) {
 	t.Parallel()
 	t.Run("toset of empty list(string)", func(t *testing.T) {
 		t.Parallel()
-		got, err := toSetFunc.Call([]cty.Value{cty.ListValEmpty(cty.String)})
-		require.NoError(t, err)
+		got := evalExpr(t, "/tmp", `toset(slice(tolist(["a"]), 0, 0))`)
 		assert.Equal(t, cty.SetValEmpty(cty.String), got)
 	})
 
 	t.Run("tolist of empty set(string)", func(t *testing.T) {
 		t.Parallel()
-		got, err := toListFunc.Call([]cty.Value{cty.SetValEmpty(cty.String)})
-		require.NoError(t, err)
+		got := evalExpr(t, "/tmp", `tolist(setsubtract(toset(["a"]), toset(["a"])))`)
 		assert.Equal(t, cty.ListValEmpty(cty.String), got)
 	})
+}
+
+// TestToCollectionUnify pins that `tolist` / `toset` / `tomap` unify the
+// element types of a tuple or object whose elements have differing types, as
+// OpenTofu does, rather than panicking on the mismatch. Number, string, and
+// bool all unify to string.
+func TestToCollectionUnify(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		expr     string
+		expected cty.Value
+	}{
+		{"tolist mixed", `tolist([1, "a", true])`, cty.ListVal([]cty.Value{
+			cty.StringVal("1"), cty.StringVal("a"), cty.StringVal("true"),
+		})},
+		{"toset mixed", `toset([3, "1", 2])`, cty.SetVal([]cty.Value{
+			cty.StringVal("1"), cty.StringVal("2"), cty.StringVal("3"),
+		})},
+		{"tomap mixed", `tomap({ a = 1, b = "x", c = true })`, cty.MapVal(map[string]cty.Value{
+			"a": cty.StringVal("1"), "b": cty.StringVal("x"), "c": cty.StringVal("true"),
+		})},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			result := evalExpr(t, "/tmp", tt.expr)
+			assert.Equal(t, tt.expected, result)
+		})
+	}
 }
 
 func TestDateTimeFunctions(t *testing.T) {
