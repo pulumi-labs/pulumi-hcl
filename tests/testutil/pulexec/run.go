@@ -20,6 +20,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/pulumi-labs/pulumi-hcl/pkg/server"
@@ -109,7 +110,8 @@ backend:
   url: file://` + filepath.Join(dir, "state") + "\n"
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "Pulumi.yaml"), []byte(pulumiYAML), 0o600))
 
-	opts := append(make([]opttest.Option, 0, 5+len(provs)),
+	opts := append(
+		make([]opttest.Option, 0, 5+len(provs)),
 		opttest.Env("PULUMI_DISABLE_AUTOMATIC_PLUGIN_ACQUISITION", "true"),
 		opttest.Env("PULUMI_DEBUG_LANGUAGES", fmt.Sprintf("hcl:%d", hostPort)),
 		opttest.TestInPlace(),
@@ -284,7 +286,8 @@ func (d *Driver) writeStubSDKs(t *testing.T) {
 		require.NoError(t, os.MkdirAll(sdkDir, 0o755))
 		desc := fmt.Sprintf(`{"name":%q,"kind":"resource"}`+"\n", name)
 		require.NoError(t, os.WriteFile(
-			filepath.Join(sdkDir, "hcl.sdk.json"), []byte(desc), 0o600))
+			filepath.Join(sdkDir, "hcl.sdk.json"), []byte(desc), 0o600,
+		))
 	}
 }
 
@@ -297,7 +300,7 @@ func removeProgramFiles(dir string) error {
 	}
 	for _, e := range entries {
 		name := e.Name()
-		if name == "Pulumi.yaml" || name == "state" {
+		if name == "state" || (strings.HasPrefix(name, "Pulumi.") && strings.HasSuffix(name, ".yaml")) {
 			continue
 		}
 		if err := os.RemoveAll(filepath.Join(dir, name)); err != nil {
