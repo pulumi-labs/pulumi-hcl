@@ -16,14 +16,18 @@ package run
 
 import (
 	"fmt"
+	"maps"
+	"slices"
+	"strings"
 
 	"github.com/pulumi/pulumi/pkg/v3/codegen/schema"
 	"github.com/pulumi/pulumi/sdk/v3/go/property"
 )
 
 const (
-	remoteStateType     = "terraform_remote_state"
-	localReferenceToken = "terraform:state:getLocalReference"
+	remoteStateType      = "terraform_remote_state"
+	localReferenceToken  = "terraform:state:getLocalReference"
+	remoteReferenceToken = "terraform:state:getRemoteReference"
 
 	// TerraformStatePackage / TerraformStatePackageVersion is the external
 	// pulumi-terraform package that provides the state-reference invokes.
@@ -32,9 +36,10 @@ const (
 )
 
 // terraformRemoteStateSchema is the synthetic schema terraform_remote_state
-// resolves to: the TF data source surface as inputs, backed by the
-// getLocalReference token. lowerRemoteStateInvoke translates the inputs to the
-// invoke's arguments.
+// resolves to: the TF data source surface as inputs. lowerRemoteStateInvoke
+// selects the concrete pulumi-terraform invoke (local or remote) by backend and
+// translates the inputs to its arguments. The placeholder Token is always
+// overridden there.
 func terraformRemoteStateSchema() *schema.Function {
 	opt := func(t schema.Type) schema.Type { return &schema.OptionalType{ElementType: t} }
 	return &schema.Function{
@@ -53,34 +58,105 @@ func terraformRemoteStateSchema() *schema.Function {
 	}
 }
 
-// lowerRemoteStateInvoke rewrites a terraform_remote_state invoke into the
-// pulumi-terraform getLocalReference invoke, mapping config.path and
-// config.workspace_dir onto path/workspaceDir. Only the local backend is
-// supported. It is a no-op for any other type.
+// lowerRemoteStateInvoke rewrites a terraform_remote_state invoke into the matching
+// pulumi-terraform state-reference invoke: the local backend uses getLocalReference
+// and the remote backend uses getRemoteReference. The pulumi-terraform package
+// serves no other backend, so any other backend is rejected; support can be added
+// as the package gains backends.
+//
+// On the remote backend the top-level `workspace` is resolved like OpenTofu's
+// remote backend: with config.workspaces.prefix the read workspace is
+// `<prefix><workspace>` (combined into the invoke's `workspaces.name`); with
+// config.workspaces.name only the implicit "default" workspace exists, so
+// `workspace` must be "default". It is unsupported on the local backend
+// (getLocalReference has no workspace input). `defaults` is unsupported.
 func lowerRemoteStateInvoke(tfType string, req InvokeRequest) (InvokeRequest, error) {
 	if tfType != remoteStateType {
 		return req, nil
+	}
+
+	if v, ok := req.Args.GetOk("defaults"); ok && !v.IsNull() {
+		return req, fmt.Errorf("terraform_remote_state: %q is not supported", "defaults")
 	}
 
 	backend := ""
 	if b, ok := req.Args.GetOk("backend"); ok && b.IsString() {
 		backend = b.AsString()
 	}
-	if backend != "local" {
+
+	workspace, hasWorkspace := "", false
+	if w, ok := req.Args.GetOk("workspace"); ok && w.IsString() {
+		workspace, hasWorkspace = w.AsString(), true
+	}
+
+	var token, desc string
+	var fields map[string]string // recognized config keys -> invoke argument names
+	switch backend {
+	case "local":
+		if hasWorkspace {
+			return req, fmt.Errorf("terraform_remote_state: the local backend does not support the workspace attribute")
+		}
+		token = localReferenceToken
+		desc = "the local backend"
+		fields = map[string]string{"path": "path", "workspace_dir": "workspaceDir"}
+	case "remote":
+		token = remoteReferenceToken
+		desc = fmt.Sprintf("backend %q", backend)
+		fields = map[string]string{
+			"organization": "organization",
+			"hostname":     "hostname",
+			"token":        "token",
+			"workspaces":   "workspaces",
+		}
+	default:
 		return req, fmt.Errorf(
-			"terraform_remote_state: only the %q backend is currently supported, got %q", "local", backend)
+			"terraform_remote_state: backend %q is not supported (supported backends: local, remote)", backend,
+		)
 	}
 
 	args := map[string]property.Value{}
+	var unexpected []string
 	if cfg, ok := req.Args.GetOk("config"); ok && cfg.IsMap() {
-		config := cfg.AsMap()
-		if p, ok := config.GetOk("path"); ok {
-			args["path"] = p
-		}
-		if w, ok := config.GetOk("workspace_dir"); ok {
-			args["workspaceDir"] = w
+		for k, v := range cfg.AsMap().All {
+			if argKey, ok := fields[k]; ok {
+				args[argKey] = v
+			} else {
+				unexpected = append(unexpected, k)
+			}
 		}
 	}
+	if len(unexpected) > 0 {
+		slices.Sort(unexpected)
+		return req, fmt.Errorf(
+			"terraform_remote_state: %s does not read config field(s) %v (supported: %s)",
+			desc, unexpected, strings.Join(slices.Sorted(maps.Keys(fields)), ", "),
+		)
+	}
+
+	// Resolve the top-level `workspace` the way OpenTofu's remote backend does:
+	//   - config.workspaces.prefix + workspace -> read `<prefix><workspace>`
+	//   - config.workspaces.name exposes only the implicit "default" workspace,
+	//     so workspace must be "default" (or absent); anything else is an error
+	if hasWorkspace {
+		ws, ok := args["workspaces"]
+		if !ok || !ws.IsMap() {
+			return req, fmt.Errorf("terraform_remote_state: workspace requires config.workspaces.prefix")
+		}
+		switch wsMap := ws.AsMap(); {
+		case wsMap.Get("name").IsString():
+			if workspace != "default" {
+				return req, fmt.Errorf(
+					"terraform_remote_state: workspace %q is invalid with config.workspaces.name (only \"default\" is)", workspace,
+				)
+			}
+		case wsMap.Get("prefix").IsString():
+			args["workspaces"] = property.New(map[string]property.Value{"name": property.New(wsMap.Get("prefix").AsString() + workspace)})
+		default:
+			return req, fmt.Errorf("terraform_remote_state: workspace requires config.workspaces.prefix")
+		}
+	}
+
+	req.Token = token
 	req.Args = property.NewMap(args)
 	return req, nil
 }

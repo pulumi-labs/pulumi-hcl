@@ -36,6 +36,10 @@ jobs:
       # invoke; the tfcompat harness disables plugin acquisition, so pre-install it.
       - run: pulumi plugin install resource terraform 6.0.2
       - run: make test_cover
+        env:
+          # Enable the live terraform_remote_state `remote` backend test.
+          TFE_ORGANIZATION: ${{ secrets.TFE_ORGANIZATION }}
+          TFE_TOKEN: ${{ secrets.TFE_TOKEN }}
       - uses: codecov/codecov-action@v6
         with:
           files: coverage.out

@@ -85,6 +85,10 @@ type Driver struct {
 	pt        *pulumitest.PulumiTest
 	dir       string
 	providers []string
+	// lastProgramFiles are the program-file paths written by the previous
+	// writeFiles call, removed before the next stage so a stage that drops a
+	// file doesn't inherit a stale copy.
+	lastProgramFiles []string
 }
 
 // NewDriver builds the project dir, attaches the bridged providers, and sets
@@ -109,7 +113,8 @@ backend:
   url: file://` + filepath.Join(dir, "state") + "\n"
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "Pulumi.yaml"), []byte(pulumiYAML), 0o600))
 
-	opts := append(make([]opttest.Option, 0, 5+len(provs)),
+	opts := append(
+		make([]opttest.Option, 0, 5+len(provs)),
 		opttest.Env("PULUMI_DISABLE_AUTOMATIC_PLUGIN_ACQUISITION", "true"),
 		opttest.Env("PULUMI_DEBUG_LANGUAGES", fmt.Sprintf("hcl:%d", hostPort)),
 		opttest.TestInPlace(),
@@ -150,7 +155,6 @@ func (d *Driver) Dir() string { return d.dir }
 func (d *Driver) Apply(t *testing.T, programFiles map[string]string) Result {
 	t.Helper()
 
-	require.NoError(t, removeProgramFiles(d.dir))
 	d.writeFiles(t, programFiles)
 
 	upResult := d.pt.Up(t)
@@ -181,7 +185,6 @@ func (d *Driver) Apply(t *testing.T, programFiles map[string]string) Result {
 func (d *Driver) TryApply(t *testing.T, programFiles map[string]string) (Result, error) {
 	t.Helper()
 
-	require.NoError(t, removeProgramFiles(d.dir))
 	d.writeFiles(t, programFiles)
 
 	var upResult auto.UpResult
@@ -224,7 +227,6 @@ func (d *Driver) TryApply(t *testing.T, programFiles map[string]string) (Result,
 func (d *Driver) Preview(t *testing.T, programFiles map[string]string) error {
 	t.Helper()
 
-	require.NoError(t, removeProgramFiles(d.dir))
 	d.writeFiles(t, programFiles)
 
 	cap := newCaptureT(t)
@@ -245,7 +247,6 @@ func (d *Driver) Preview(t *testing.T, programFiles map[string]string) error {
 func (d *Driver) Destroy(t *testing.T, programFiles map[string]string) error {
 	t.Helper()
 
-	require.NoError(t, removeProgramFiles(d.dir))
 	d.writeFiles(t, programFiles)
 
 	cap := newCaptureT(t)
@@ -263,10 +264,15 @@ func (d *Driver) Destroy(t *testing.T, programFiles map[string]string) error {
 
 func (d *Driver) writeFiles(t *testing.T, programFiles map[string]string) {
 	t.Helper()
+	for _, path := range d.lastProgramFiles {
+		require.NoError(t, os.RemoveAll(filepath.Join(d.dir, path)))
+	}
+	d.lastProgramFiles = d.lastProgramFiles[:0]
 	for path, content := range programFiles {
 		fullPath := filepath.Join(d.dir, path)
 		require.NoError(t, os.MkdirAll(filepath.Dir(fullPath), 0o755))
 		require.NoError(t, os.WriteFile(fullPath, []byte(content), 0o600))
+		d.lastProgramFiles = append(d.lastProgramFiles, path)
 	}
 	d.writeStubSDKs(t)
 }
@@ -284,27 +290,9 @@ func (d *Driver) writeStubSDKs(t *testing.T) {
 		require.NoError(t, os.MkdirAll(sdkDir, 0o755))
 		desc := fmt.Sprintf(`{"name":%q,"kind":"resource"}`+"\n", name)
 		require.NoError(t, os.WriteFile(
-			filepath.Join(sdkDir, "hcl.sdk.json"), []byte(desc), 0o600))
+			filepath.Join(sdkDir, "hcl.sdk.json"), []byte(desc), 0o600,
+		))
 	}
-}
-
-// removeProgramFiles deletes every regular file under dir except Pulumi.yaml
-// and entries inside the `state/` backend directory.
-func removeProgramFiles(dir string) error {
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		return err
-	}
-	for _, e := range entries {
-		name := e.Name()
-		if name == "Pulumi.yaml" || name == "state" {
-			continue
-		}
-		if err := os.RemoveAll(filepath.Join(dir, name)); err != nil {
-			return err
-		}
-	}
-	return nil
 }
 
 func startProvider(ctx context.Context, providerInfo tfbridge.ProviderInfo) (*rpcutil.ServeHandle, error) {
