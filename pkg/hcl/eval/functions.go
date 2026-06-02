@@ -38,6 +38,7 @@ import (
 	"reflect"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -202,10 +203,10 @@ func Functions(baseDir string) map[string]function.Function {
 		"nonsensitive": nonsensitiveFunc,
 		"sensitive":    sensitiveFunc,
 		"tobool":       toBoolFunc,
-		"tolist":       toListFunc,
-		"tomap":        toMapFunc,
-		"tonumber":     toNumberFunc,
-		"toset":        toSetFunc,
+		"tolist":       makeToFunc(cty.List(cty.DynamicPseudoType)),
+		"tomap":        makeToFunc(cty.Map(cty.DynamicPseudoType)),
+		"tonumber":     makeToFunc(cty.Number),
+		"toset":        makeToFunc(cty.Set(cty.DynamicPseudoType)),
 		"tostring":     toStringFunc,
 		"try":          tryfunc.TryFunc,
 		"type":         typeFunc,
@@ -1638,115 +1639,69 @@ var toBoolFunc = function.New(&function.Spec{
 	},
 })
 
-var toListFunc = function.New(&function.Spec{
-	Params: []function.Parameter{
-		{Name: "value", Type: cty.DynamicPseudoType},
-	},
-	Type: func(args []cty.Value) (cty.Type, error) {
-		ty := args[0].Type()
-		if ty.IsSetType() {
-			return cty.List(ty.ElementType()), nil
-		}
-		if ty.IsTupleType() {
-			// Find common type
-			return cty.List(cty.DynamicPseudoType), nil
-		}
-		return cty.List(cty.DynamicPseudoType), nil
-	},
-	Impl: func(args []cty.Value, retType cty.Type) (cty.Value, error) {
-		val := args[0]
-		if val.Type().IsListType() {
-			return val, nil
-		}
-		var vals []cty.Value
-		for it := val.ElementIterator(); it.Next(); {
-			_, v := it.Element()
-			vals = append(vals, v)
-		}
-		if len(vals) == 0 {
-			elemTy := cty.DynamicPseudoType
-			if retType.IsListType() {
-				elemTy = retType.ElementType()
+// makeToFunc constructs a "to..." conversion function like OpenTofu's
+// MakeToFunc. The argument passes through verbatim as cty.DynamicPseudoType and
+// the conversion to wantTy happens inside Type and Impl via the cty convert
+// package. Passing cty.List(cty.DynamicPseudoType) and friends means "list of
+// any single type", which causes cty to unify the element types of a tuple or
+// object rather than rejecting a mismatch.
+func makeToFunc(wantTy cty.Type) function.Function {
+	return function.New(&function.Spec{
+		Params: []function.Parameter{
+			{
+				Name:             "v",
+				Type:             cty.DynamicPseudoType,
+				AllowNull:        true,
+				AllowMarked:      true,
+				AllowDynamicType: true,
+			},
+		},
+		Type: func(args []cty.Value) (cty.Type, error) {
+			gotTy := args[0].Type()
+			if gotTy.Equals(wantTy) {
+				return wantTy, nil
 			}
-			return cty.ListValEmpty(elemTy), nil
-		}
-		return cty.ListVal(vals), nil
-	},
-})
-
-var toMapFunc = function.New(&function.Spec{
-	Params: []function.Parameter{
-		{Name: "value", Type: cty.DynamicPseudoType},
-	},
-	Type: function.StaticReturnType(cty.Map(cty.DynamicPseudoType)),
-	Impl: func(args []cty.Value, retType cty.Type) (cty.Value, error) {
-		val := args[0]
-		if val.Type().IsMapType() {
-			return val, nil
-		}
-		m := make(map[string]cty.Value)
-		for it := val.ElementIterator(); it.Next(); {
-			k, v := it.Element()
-			m[k.AsString()] = v
-		}
-		if len(m) == 0 {
-			return cty.MapValEmpty(cty.DynamicPseudoType), nil
-		}
-		return cty.MapVal(m), nil
-	},
-})
-
-var toNumberFunc = function.New(&function.Spec{
-	Params: []function.Parameter{
-		{Name: "value", Type: cty.DynamicPseudoType},
-	},
-	Type: function.StaticReturnType(cty.Number),
-	Impl: func(args []cty.Value, retType cty.Type) (cty.Value, error) {
-		ret, err := convert.Convert(args[0], cty.Number)
-		if err != nil {
-			val, _ := args[0].UnmarkDeep()
-			if val.Type() == cty.String && !val.IsNull() {
-				return cty.NilVal, fmt.Errorf(
-					"cannot convert %q to number; given string must be a decimal representation of a number",
-					val.AsString())
+			conv := convert.GetConversionUnsafe(args[0].Type(), wantTy)
+			if conv == nil {
+				switch {
+				case gotTy.IsTupleType() && wantTy.IsTupleType():
+					return cty.NilType, function.NewArgErrorf(0, "incompatible tuple type for conversion: %s", convert.MismatchMessage(gotTy, wantTy))
+				case gotTy.IsObjectType() && wantTy.IsObjectType():
+					return cty.NilType, function.NewArgErrorf(0, "incompatible object type for conversion: %s", convert.MismatchMessage(gotTy, wantTy))
+				default:
+					return cty.NilType, function.NewArgErrorf(0, "cannot convert %s to %s", gotTy.FriendlyName(), wantTy.FriendlyNameForConstraint())
+				}
 			}
-			return cty.NilVal, fmt.Errorf("cannot convert %s to number", val.Type().FriendlyName())
-		}
-		return ret, nil
-	},
-})
-
-var toSetFunc = function.New(&function.Spec{
-	Params: []function.Parameter{
-		{Name: "value", Type: cty.DynamicPseudoType},
-	},
-	Type: func(args []cty.Value) (cty.Type, error) {
-		ty := args[0].Type()
-		if ty.IsListType() {
-			return cty.Set(ty.ElementType()), nil
-		}
-		return cty.Set(cty.DynamicPseudoType), nil
-	},
-	Impl: func(args []cty.Value, retType cty.Type) (cty.Value, error) {
-		val := args[0]
-		if val.Type().IsSetType() {
-			return val, nil
-		}
-		var vals []cty.Value
-		for it := val.ElementIterator(); it.Next(); {
-			_, v := it.Element()
-			vals = append(vals, v)
-		}
-		if len(vals) == 0 {
-			elemTy := cty.DynamicPseudoType
-			if retType.IsSetType() {
-				elemTy = retType.ElementType()
+			return wantTy, nil
+		},
+		Impl: func(args []cty.Value, retType cty.Type) (cty.Value, error) {
+			ret, err := convert.Convert(args[0], retType)
+			if err != nil {
+				val, _ := args[0].UnmarkDeep()
+				gotTy := val.Type()
+				switch {
+				case args[0].HasMark(SensitiveMark):
+					return cty.NilVal, function.NewArgErrorf(0, "cannot convert this sensitive %s to %s", gotTy.FriendlyName(), wantTy.FriendlyNameForConstraint())
+				case gotTy == cty.String && wantTy == cty.Bool:
+					what := "string"
+					if !val.IsNull() {
+						what = strconv.Quote(val.AsString())
+					}
+					return cty.NilVal, function.NewArgErrorf(0, `cannot convert %s to bool; only the strings "true" or "false" are allowed`, what)
+				case gotTy == cty.String && wantTy == cty.Number:
+					what := "string"
+					if !val.IsNull() {
+						what = strconv.Quote(val.AsString())
+					}
+					return cty.NilVal, function.NewArgErrorf(0, `cannot convert %s to number; given string must be a decimal representation of a number`, what)
+				default:
+					return cty.NilVal, function.NewArgErrorf(0, "cannot convert %s to %s", gotTy.FriendlyName(), wantTy.FriendlyNameForConstraint())
+				}
 			}
-			return cty.SetValEmpty(elemTy), nil
-		}
-		return cty.SetVal(vals), nil
-	},
-})
+			return ret, nil
+		},
+	})
+}
 
 var toStringFunc = function.New(&function.Spec{
 	Params: []function.Parameter{

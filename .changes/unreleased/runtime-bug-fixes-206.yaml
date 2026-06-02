@@ -1,0 +1,7 @@
+kind: bug-fixes
+body: '`tolist`, `toset`, and `tomap` match OpenTofu: a tuple or object with differing
+    element types is unified to a common type instead of erroring.'
+time: 2026-06-02T14:30:00.000000+02:00
+custom:
+    Component: runtime
+    PR: "206"
