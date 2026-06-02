@@ -30,3 +30,12 @@ func TestL2TerraformRemoteState(t *testing.T) {
 	t.Parallel()
 	tfcompat.RunCase(t, "l2_terraform_remote_state", tfcompat.Case{})
 }
+
+// TestL2TerraformRemoteStateDefaults checks that terraform_remote_state's
+// `defaults` fills in outputs the referenced state omits while a present output
+// keeps its state value. OpenTofu merges defaults internally; pulumi-language-hcl
+// overlays them on the getLocalReference result. Both paths must agree.
+func TestL2TerraformRemoteStateDefaults(t *testing.T) {
+	t.Parallel()
+	tfcompat.RunCase(t, "l2_terraform_remote_state_defaults", tfcompat.Case{})
+}
