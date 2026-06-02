@@ -1,0 +1,8 @@
+kind: bug-fixes
+body: '`cidrhost`, `cidrnetmask`, `cidrsubnet`, and `cidrsubnets` match OpenTofu: IPv4
+    prefixes whose octets have leading zeros are accepted and interpreted as decimal
+    instead of erroring.'
+time: 2026-06-02T15:30:00.000000+02:00
+custom:
+    Component: runtime
+    PR: "209"

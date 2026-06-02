@@ -1005,8 +1005,18 @@ func TestIPFunctions(t *testing.T) {
 		{"cidrhost", `cidrhost("10.0.0.0/8", 5)`, cty.StringVal("10.0.0.5")},
 		{"cidrhost neg one", `cidrhost("10.0.0.0/24", -1)`, cty.StringVal("10.0.0.255")},
 		{"cidrhost neg two", `cidrhost("10.0.0.0/24", -2)`, cty.StringVal("10.0.0.254")},
+		{"cidrhost leading zeros", `cidrhost("010.001.0.0/24", 5)`, cty.StringVal("10.1.0.5")},
 		{"cidrnetmask", `cidrnetmask("10.0.0.0/8")`, cty.StringVal("255.0.0.0")},
+		{"cidrnetmask leading zeros", `cidrnetmask("010.001.0.0/24")`, cty.StringVal("255.255.255.0")},
 		{"cidrsubnet v4", `cidrsubnet("10.0.0.0/8", 8, 2)`, cty.StringVal("10.2.0.0/16")},
+		{"cidrsubnet leading zeros", `cidrsubnet("010.001.0.0/16", 8, 2)`, cty.StringVal("10.1.2.0/24")},
+		{
+			"cidrsubnets leading zeros", `cidrsubnets("010.001.0.0/16", 8, 8)`,
+			cty.ListVal([]cty.Value{
+				cty.StringVal("10.1.0.0/24"),
+				cty.StringVal("10.1.1.0/24"),
+			}),
+		},
 		{
 			"cidrsubnet v6", `cidrsubnet("2600:1f14:315a:f400::/56", 8, 2)`,
 			cty.StringVal("2600:1f14:315a:f402::/64"),

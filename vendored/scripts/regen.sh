@@ -26,6 +26,7 @@ VENDORED_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 COMMUNICATOR_DIR="$VENDORED_DIR/communicator"
 GETMODULES_DIR="$VENDORED_DIR/getmodules"
 COPY_DIR="$VENDORED_DIR/copy"
+IPADDR_DIR="$VENDORED_DIR/ipaddr"
 
 MODULE="github.com/pulumi-labs/pulumi-hcl"
 UPSTREAM_MODULE="github.com/opentofu/opentofu"
@@ -72,12 +73,14 @@ mkdir -p "$EXTRACT_ROOT"
 tar -xzf "$TARBALL" -C "$EXTRACT_ROOT" --strip-components=1 \
   "opentofu-$SHA/internal/communicator" \
   "opentofu-$SHA/internal/getmodules" \
-  "opentofu-$SHA/internal/copy"
+  "opentofu-$SHA/internal/copy" \
+  "opentofu-$SHA/internal/ipaddr"
 
 SRC="$EXTRACT_ROOT/internal/communicator"
 GETMODULES_SRC="$EXTRACT_ROOT/internal/getmodules"
 COPY_SRC="$EXTRACT_ROOT/internal/copy"
-for d in "$SRC" "$GETMODULES_SRC" "$COPY_SRC"; do
+IPADDR_SRC="$EXTRACT_ROOT/internal/ipaddr"
+for d in "$SRC" "$GETMODULES_SRC" "$COPY_SRC" "$IPADDR_SRC"; do
   if [[ ! -d "$d" ]]; then
     echo "error: expected $d to exist after extraction" >&2
     exit 1
@@ -133,6 +136,19 @@ mkdir -p "$COPY_DIR"
 cp -R "$COPY_SRC"/. "$COPY_DIR"/
 find "$COPY_DIR" -type f -name '*_test.go' -delete
 gofmt -w "$COPY_DIR"
+
+# ---------------------------------------------------------------------------
+# vendored/ipaddr: upstream internal/ipaddr verbatim. It is a self-contained
+# fork of a subset of the Go standard "net" package that retains the pre-Go-1.17
+# IPv4 parsing behavior (leading-zero octets are decimal, not rejected), which
+# the cidr* functions rely on for OpenTofu parity. It only imports the standard
+# library, so no import rewriting is needed.
+# ---------------------------------------------------------------------------
+rm -rf "$IPADDR_DIR"
+mkdir -p "$IPADDR_DIR"
+cp -R "$IPADDR_SRC"/. "$IPADDR_DIR"/
+find "$IPADDR_DIR" -type f -name '*_test.go' -delete
+gofmt -w "$IPADDR_DIR"
 
 # ---------------------------------------------------------------------------
 # vendored/getmodules: upstream internal/getmodules with the OCI getter
@@ -213,4 +229,5 @@ echo "regen: go build ./vendored/..." >&2
 comm_count=$(find "$COMMUNICATOR_DIR" -type f | wc -l | tr -d ' ')
 gm_count=$(find "$GETMODULES_DIR" -type f | wc -l | tr -d ' ')
 copy_count=$(find "$COPY_DIR" -type f | wc -l | tr -d ' ')
-echo "regen: wrote $comm_count files under vendored/communicator/, $gm_count under vendored/getmodules/, $copy_count under vendored/copy/" >&2
+ipaddr_count=$(find "$IPADDR_DIR" -type f | wc -l | tr -d ' ')
+echo "regen: wrote $comm_count files under vendored/communicator/, $gm_count under vendored/getmodules/, $copy_count under vendored/copy/, $ipaddr_count under vendored/ipaddr/" >&2

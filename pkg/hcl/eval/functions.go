@@ -48,6 +48,7 @@ import (
 	"github.com/hashicorp/hcl/v2/ext/customdecode"
 	"github.com/hashicorp/hcl/v2/ext/tryfunc"
 	"github.com/hashicorp/hcl/v2/hclsyntax"
+	"github.com/pulumi-labs/pulumi-hcl/vendored/ipaddr"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/resource/archive"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/resource/asset"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/resource/urn"
@@ -1450,7 +1451,7 @@ var cidrHostFunc = function.New(&function.Spec{
 		prefix := args[0].AsString()
 		hostnum, _ := args[1].AsBigFloat().Int(nil)
 
-		_, network, err := net.ParseCIDR(prefix)
+		_, network, err := ipaddr.ParseCIDR(prefix)
 		if err != nil {
 			return cty.NilVal, fmt.Errorf("invalid CIDR: %s", err)
 		}
@@ -1472,7 +1473,7 @@ var cidrNetmaskFunc = function.New(&function.Spec{
 	Impl: func(args []cty.Value, retType cty.Type) (cty.Value, error) {
 		prefix := args[0].AsString()
 
-		_, network, err := net.ParseCIDR(prefix)
+		_, network, err := ipaddr.ParseCIDR(prefix)
 		if err != nil {
 			return cty.NilVal, fmt.Errorf("invalid CIDR: %s", err)
 		}
@@ -1497,7 +1498,7 @@ var cidrSubnetFunc = function.New(&function.Spec{
 		newbits, _ := args[1].AsBigFloat().Int64()
 		netnum, _ := args[2].AsBigFloat().Int(nil)
 
-		_, network, err := net.ParseCIDR(args[0].AsString())
+		_, network, err := ipaddr.ParseCIDR(args[0].AsString())
 		if err != nil {
 			return cty.NilVal, fmt.Errorf("invalid CIDR: %s", err)
 		}
@@ -1524,7 +1525,7 @@ var cidrSubnetsFunc = function.New(&function.Spec{
 	},
 	Type: function.StaticReturnType(cty.List(cty.String)),
 	Impl: func(args []cty.Value, retType cty.Type) (cty.Value, error) {
-		_, network, err := net.ParseCIDR(args[0].AsString())
+		_, network, err := ipaddr.ParseCIDR(args[0].AsString())
 		if err != nil {
 			return cty.NilVal, function.NewArgErrorf(0, "invalid CIDR expression: %s", err)
 		}
