@@ -30,6 +30,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"encoding/pem"
+	"errors"
 	"fmt"
 	"net"
 	"net/url"
@@ -51,6 +52,7 @@ import (
 	"github.com/pulumi/pulumi/sdk/v3/go/common/resource/archive"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/resource/asset"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/resource/urn"
+	"github.com/pulumi/pulumi/sdk/v3/go/common/util/contract"
 	"github.com/pulumi/pulumi/sdk/v3/go/property"
 	ctyyaml "github.com/zclconf/go-cty-yaml"
 	"github.com/zclconf/go-cty/cty"
@@ -506,34 +508,66 @@ var matchkeysFunc = function.New(&function.Spec{
 		{Name: "searchset", Type: cty.List(cty.DynamicPseudoType)},
 	},
 	Type: func(args []cty.Value) (cty.Type, error) {
+		ty, _ := convert.UnifyUnsafe([]cty.Type{args[1].Type(), args[2].Type()})
+		if ty == cty.NilType {
+			return cty.NilType, errors.New("keys and searchset must be of the same type")
+		}
 		return args[0].Type(), nil
 	},
 	Impl: func(args []cty.Value, retType cty.Type) (cty.Value, error) {
+		if !args[0].IsKnown() {
+			return cty.UnknownVal(cty.List(retType.ElementType())), nil
+		}
+
+		if args[0].LengthInt() != args[1].LengthInt() {
+			return cty.ListValEmpty(retType.ElementType()), errors.New("length of keys and values should be equal")
+		}
+
 		values := args[0]
-		keys := args[1]
-		searchset := args[2]
 
-		searchMap := make(map[string]bool)
-		for it := searchset.ElementIterator(); it.Next(); {
-			_, v := it.Element()
-			searchMap[v.GoString()] = true
+		// keys and searchset must be unified to a common type before comparing,
+		// so that e.g. a numeric key can match a string search-set element. The
+		// Type function already verified that they unify, so converting each to
+		// the unified type cannot fail here.
+		ty, _ := convert.UnifyUnsafe([]cty.Type{args[1].Type(), args[2].Type()})
+		keys, err := convert.Convert(args[1], ty)
+		contract.AssertNoErrorf(err, "keys were verified to unify to %s in the type check", ty)
+		searchset, err := convert.Convert(args[2], ty)
+		contract.AssertNoErrorf(err, "searchset was verified to unify to %s in the type check", ty)
+
+		if searchset.LengthInt() == 0 {
+			return cty.ListValEmpty(retType.ElementType()), nil
 		}
 
-		var result []cty.Value
-		valIt := values.ElementIterator()
-		keyIt := keys.ElementIterator()
-		for valIt.Next() && keyIt.Next() {
-			_, v := valIt.Element()
-			_, k := keyIt.Element()
-			if searchMap[k.GoString()] {
-				result = append(result, v)
+		if !values.IsWhollyKnown() || !keys.IsWhollyKnown() {
+			return cty.UnknownVal(retType), nil
+		}
+
+		output := make([]cty.Value, 0)
+		i := 0
+		for it := keys.ElementIterator(); it.Next(); {
+			_, key := it.Element()
+			for iter := searchset.ElementIterator(); iter.Next(); {
+				_, search := iter.Element()
+				eq, err := stdlib.Equal(key, search)
+				if err != nil {
+					return cty.NilVal, err
+				}
+				if !eq.IsKnown() {
+					return cty.UnknownVal(retType), nil
+				}
+				if eq.True() {
+					output = append(output, values.Index(cty.NumberIntVal(int64(i))))
+					break
+				}
 			}
+			i++
 		}
 
-		if len(result) == 0 {
-			return cty.ListValEmpty(values.Type().ElementType()), nil
+		if len(output) == 0 {
+			return cty.ListValEmpty(retType.ElementType()), nil
 		}
-		return cty.ListVal(result), nil
+		return cty.ListVal(output), nil
 	},
 })
 

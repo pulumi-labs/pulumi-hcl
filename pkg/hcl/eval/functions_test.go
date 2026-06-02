@@ -783,6 +783,39 @@ func TestToCollectionUnify(t *testing.T) {
 	}
 }
 
+// TestMatchkeysTypeUnify pins that `matchkeys` unifies the element types of
+// `keys` and `searchset` before comparing, as OpenTofu does, so a numeric key
+// matches a string search-set element rather than being missed.
+func TestMatchkeysTypeUnify(t *testing.T) {
+	t.Parallel()
+	got := evalExpr(t, "/tmp", `matchkeys(["a", "b", "c"], [1, 2, 3], ["2"])`)
+	assert.Equal(t, cty.ListVal([]cty.Value{cty.StringVal("b")}), got)
+}
+
+// TestMatchkeysLengthMismatch pins that `matchkeys` errors when `keys` and
+// `values` have different lengths, as OpenTofu does, rather than silently
+// zipping to the shorter of the two.
+func TestMatchkeysLengthMismatch(t *testing.T) {
+	t.Parallel()
+	_, err := matchkeysFunc.Call([]cty.Value{
+		cty.ListVal([]cty.Value{cty.StringVal("a"), cty.StringVal("b")}),
+		cty.ListVal([]cty.Value{cty.StringVal("x")}),
+		cty.ListVal([]cty.Value{cty.StringVal("x")}),
+	})
+	assert.EqualError(t, err, "length of keys and values should be equal")
+}
+
+func TestMatchkeysUnknownSearchset(t *testing.T) {
+	t.Parallel()
+	got, err := matchkeysFunc.Call([]cty.Value{
+		cty.ListVal([]cty.Value{cty.StringVal("a"), cty.StringVal("b")}),
+		cty.ListVal([]cty.Value{cty.StringVal("x"), cty.StringVal("y")}),
+		cty.ListVal([]cty.Value{cty.UnknownVal(cty.String)}),
+	})
+	require.NoError(t, err)
+	assert.Equal(t, cty.UnknownVal(cty.List(cty.String)), got)
+}
+
 func TestDateTimeFunctions(t *testing.T) {
 	t.Parallel()
 
