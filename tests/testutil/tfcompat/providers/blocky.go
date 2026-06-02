@@ -33,11 +33,47 @@ import (
 //     The TF source writes one block per element.
 //   - `policy` is TypeList MaxItems=1 with a nested `rule` block (also
 //     MaxItems=1) → exercises nested singular-block flattening.
+//   - `filter` is TypeSet with no MaxItems → bridge keeps as a set of objects
+//     and pluralizes the name to `filters`. The TF source writes one block per
+//     element, mirroring the `filter` block in real providers (e.g. the
+//     `aws_ami` data source).
 //
 // Each value contributes to the resource's `summary` output, so tests can
 // assert the engine fed inputs through to the provider correctly.
 func BlockyProvider() *schema.Provider {
 	return &schema.Provider{
+		DataSourcesMap: map[string]*schema.Resource{
+			// blocky_image mirrors the `aws_ami` data source: a repeating
+			// TypeSet `filter` block the bridge pluralizes to `filters`.
+			"blocky_image": {
+				Schema: map[string]*schema.Schema{
+					"filter": {
+						Type:     schema.TypeSet,
+						Optional: true,
+						Elem: &schema.Resource{
+							Schema: map[string]*schema.Schema{
+								"name":   {Type: schema.TypeString, Required: true},
+								"values": {Type: schema.TypeString, Required: true},
+							},
+						},
+					},
+					"summary": {Type: schema.TypeString, Computed: true},
+				},
+				ReadContext: func(_ context.Context, d *schema.ResourceData, _ any) diag.Diagnostics {
+					d.SetId("blocky-image-id")
+					var filters []string
+					if set, ok := d.Get("filter").(*schema.Set); ok {
+						for _, f := range set.List() {
+							if m, ok := f.(map[string]any); ok {
+								filters = append(filters, fmt.Sprintf("%v=%v", m["name"], m["values"]))
+							}
+						}
+					}
+					sort.Strings(filters)
+					return diag.FromErr(d.Set("summary", "filters=["+strings.Join(filters, ",")+"]"))
+				},
+			},
+		},
 		ResourcesMap: map[string]*schema.Resource{
 			"blocky_thing": {
 				Schema: map[string]*schema.Schema{
@@ -85,6 +121,16 @@ func BlockyProvider() *schema.Provider {
 							},
 						},
 					},
+					"filter": {
+						Type:     schema.TypeSet,
+						Optional: true,
+						Elem: &schema.Resource{
+							Schema: map[string]*schema.Schema{
+								"name":   {Type: schema.TypeString, Required: true},
+								"values": {Type: schema.TypeString, Required: true},
+							},
+						},
+					},
 					"summary": {Type: schema.TypeString, Computed: true},
 				},
 				CreateContext: func(_ context.Context, d *schema.ResourceData, _ any) diag.Diagnostics {
@@ -125,6 +171,17 @@ func BlockyProvider() *schema.Provider {
 								}
 							}
 						}
+					}
+
+					if set, ok := d.Get("filter").(*schema.Set); ok && set.Len() > 0 {
+						var filters []string
+						for _, f := range set.List() {
+							if m, ok := f.(map[string]any); ok {
+								filters = append(filters, fmt.Sprintf("%v=%v", m["name"], m["values"]))
+							}
+						}
+						sort.Strings(filters)
+						parts = append(parts, "filters=["+strings.Join(filters, ",")+"]")
 					}
 
 					return diag.FromErr(d.Set("summary", strings.Join(parts, "|")))

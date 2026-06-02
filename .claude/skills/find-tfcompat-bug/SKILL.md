@@ -53,22 +53,7 @@ The Go module cache root is !`go env GOPATH`/pkg/mod.
 - tfcompat harness + `Case` type: `tests/testutil/tfcompat/harness.go`
 - Empirical probe: use the `tofu` on your PATH (!`which tofu`)
 
-## Step 1 — Build the runtime
-
-The tfcompat harness runs the real `pulumi-language-hcl` from `bin/`, which must be on
-PATH and rebuilt after any change to `pkg/`.
-
-```bash
-make build
-```
-
-Run all tests with `bin/` prepended: `PATH="$PWD/bin:$PATH" go test ...`.
-
-**Caching gotcha:** `go test` caches results and does NOT track the external
-`pulumi-language-hcl` binary on PATH. When verifying a tfcompat test fails-then-passes
-across a rebuild, you MUST pass `-count=1` or you'll get a stale PASS.
-
-## Step 2 — Find a candidate divergence
+## Step 1 — Find a candidate divergence
 
 Look for any input the two runtimes can evaluate differently. Two seams, easiest first:
 
@@ -107,7 +92,7 @@ output comparison. Don't build a case whose only difference is unobservable in o
 reach for `AssertState`/`ExpectErr` (below), or prove it with a unit test, or pick a
 different bug.
 
-## Step 3 — Prove it with a failing test
+## Step 2 — Prove it with a failing test
 
 Name the case `l1_<name>` for an expression/function bug or `l2_<name>` for a
 resource/module/lifecycle bug, and create:
@@ -167,7 +152,7 @@ PATH="$PWD/bin:$PATH" go test ./tests/tfcompat/ -run 'Test(L1|L2)<Name>' -count=
 It must FAIL, and the failure must show the genuine OpenTofu-vs-pulumi difference. If it
 passes, the bug isn't real (or isn't observable) — go back to Step 2.
 
-## Step 4 — Fix the divergence
+## Step 3 — Fix the divergence
 
 Edit the pulumi-hcl runtime to match OpenTofu. For a function, fix the `Impl` in
 `pkg/hcl/eval/functions.go` — and prefer delegating to the cty `stdlib.*Func` when
@@ -180,7 +165,7 @@ Add unit coverage next to the code you changed. For functions, add cases to
 `pkg/hcl/eval/functions_test.go`; note `evalExpr` calls `t.Fatalf` on diagnostics, so
 **error-path** cases must call `<fn>.Call(...)` directly rather than via `evalExpr`.
 
-## Step 5 — Verify failing-before / passing-after
+## Step 4 — Verify failing-before / passing-after
 
 ```bash
 make build
@@ -190,7 +175,7 @@ PATH="$PWD/bin:$PATH" go test ./tests/tfcompat/ -run 'Test(L1|L2)<Name>' -count=
 
 Both must now PASS (with `-count=1` — the rebuilt binary won't be picked up otherwise).
 
-## Step 6 — Sweep for related divergences before shipping
+## Step 5 — Sweep for related divergences before shipping
 
 **Before you open the PR, check whether the same root cause produces a sibling
 bug, and fix it in the same PR.** A divergence almost never lives alone: the same
@@ -216,7 +201,7 @@ into this PR and extend the one tfcompat case to cover both (one combined
 `yamldecode`). If a sibling is genuinely out of scope, say so explicitly in the
 PR body rather than leaving it silently unfixed.
 
-## Step 7 — Changelog + branch + PR
+## Step 6 — Changelog + branch + PR
 
 Model the flow on PR https://github.com/pulumi-labs/pulumi-hcl/pull/170 (the urlencode
 fix). Predict the next sequential PR number and use it for both the filename and the
