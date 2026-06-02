@@ -122,13 +122,16 @@ func TestLowerRemoteStateInvoke(t *testing.T) {
 		require.EqualError(t, err, `terraform_remote_state: "defaults" is not supported`)
 	})
 
-	t.Run("workspace threads into the remote workspaces arg", func(t *testing.T) {
+	t.Run("workspace combines with the workspaces prefix", func(t *testing.T) {
 		t.Parallel()
 		got, err := lowerRemoteStateInvoke(remoteStateType, InvokeRequest{
 			Args: property.NewMap(map[string]property.Value{
 				"backend":   property.New("remote"),
 				"workspace": property.New("prod"),
-				"config":    property.New(map[string]property.Value{"organization": property.New("acme")}),
+				"config": property.New(map[string]property.Value{
+					"organization": property.New("acme"),
+					"workspaces":   property.New(map[string]property.Value{"prefix": property.New("vpc-")}),
+				}),
 			}),
 		})
 		require.NoError(t, err)
@@ -136,12 +139,47 @@ func TestLowerRemoteStateInvoke(t *testing.T) {
 			Token: remoteReferenceToken,
 			Args: property.NewMap(map[string]property.Value{
 				"organization": property.New("acme"),
-				"workspaces":   property.New(map[string]property.Value{"name": property.New("prod")}),
+				"workspaces":   property.New(map[string]property.Value{"name": property.New("vpc-prod")}),
 			}),
 		}, got)
 	})
 
-	t.Run("workspace conflicts with config.workspaces", func(t *testing.T) {
+	t.Run("workspace without a prefix is rejected", func(t *testing.T) {
+		t.Parallel()
+		_, err := lowerRemoteStateInvoke(remoteStateType, InvokeRequest{
+			Args: property.NewMap(map[string]property.Value{
+				"backend":   property.New("remote"),
+				"workspace": property.New("prod"),
+				"config":    property.New(map[string]property.Value{"organization": property.New("acme")}),
+			}),
+		})
+		require.EqualError(t, err,
+			`terraform_remote_state: workspace requires config.workspaces.prefix`)
+	})
+
+	t.Run("workspace=default with workspaces.name is allowed", func(t *testing.T) {
+		t.Parallel()
+		got, err := lowerRemoteStateInvoke(remoteStateType, InvokeRequest{
+			Args: property.NewMap(map[string]property.Value{
+				"backend":   property.New("remote"),
+				"workspace": property.New("default"),
+				"config": property.New(map[string]property.Value{
+					"organization": property.New("acme"),
+					"workspaces":   property.New(map[string]property.Value{"name": property.New("staging")}),
+				}),
+			}),
+		})
+		require.NoError(t, err)
+		assert.Equal(t, InvokeRequest{
+			Token: remoteReferenceToken,
+			Args: property.NewMap(map[string]property.Value{
+				"organization": property.New("acme"),
+				"workspaces":   property.New(map[string]property.Value{"name": property.New("staging")}),
+			}),
+		}, got)
+	})
+
+	t.Run("non-default workspace with workspaces.name is rejected", func(t *testing.T) {
 		t.Parallel()
 		_, err := lowerRemoteStateInvoke(remoteStateType, InvokeRequest{
 			Args: property.NewMap(map[string]property.Value{
@@ -154,7 +192,7 @@ func TestLowerRemoteStateInvoke(t *testing.T) {
 			}),
 		})
 		require.EqualError(t, err,
-			`terraform_remote_state: workspace and config.workspaces are mutually exclusive`)
+			`terraform_remote_state: workspace "prod" is invalid with config.workspaces.name (only "default" is)`)
 	})
 
 	t.Run("workspace is rejected on the local backend", func(t *testing.T) {

@@ -19,6 +19,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"io"
+	"maps"
 	"net/http"
 	"os"
 	"os/exec"
@@ -32,40 +33,119 @@ import (
 )
 
 const (
-	// tfeHost is Terraform Cloud. The test targets TFC, not a self-hosted
-	// Terraform Enterprise, so the hostname is fixed.
 	tfeHost = "app.terraform.io"
 	// tfeTokenEnv is the TF_TOKEN_<host> credential variable the cloud backend
 	// reads to authenticate to tfeHost.
 	tfeTokenEnv = "TF_TOKEN_app_terraform_io"
 )
 
-// TestL2TerraformRemoteStateRemote reads a Terraform Cloud workspace's outputs
+// TestL2TerraformRemoteStateRemote reads Terraform Cloud workspace outputs
 // through terraform_remote_state's `remote` backend. It is a live test: it
-// creates and seeds a throwaway TFC workspace, drives both `tofu apply` (builtin
-// remote backend) and `pulumi up` (pulumi-terraform getRemoteReference) against
-// it, and asserts identical outputs. It is skipped unless TFE_ORGANIZATION and
-// TFE_TOKEN are set; the workspace name, organization, hostname, and token are
-// injected as config vars so nothing sensitive is committed.
+// creates and seeds throwaway TFC workspaces, then for every workspace-selection
+// permutation OpenTofu accepts drives both `tofu apply` (builtin remote backend)
+// and `pulumi up` (pulumi-terraform getRemoteReference) and asserts identical
+// outputs. It is skipped unless TFE_ORGANIZATION and TFE_TOKEN are set;
+// organization, hostname, token, and the workspace selectors are injected as
+// config vars so nothing sensitive is committed.
 func TestL2TerraformRemoteStateRemote(t *testing.T) {
 	t.Parallel()
 
 	org := getEnv(t, "TFE_ORGANIZATION")
 	token := getEnv(t, "TFE_TOKEN")
 
-	workspace := "pulumi-hcl-tfcompat-" + randomSuffix(t)
-	createRemoteWorkspace(t, org, token, workspace)
-	t.Cleanup(func() { deleteRemoteWorkspace(t, org, token, workspace) })
-	seedRemoteWorkspace(t, org, token, workspace)
+	base := "pulumi-hcl-tfcompat-" + randomSuffix(t)
+	nameWS := base + "-name"  // selected directly via workspaces.name
+	prefix := base + "-p-"    // selected via workspaces.prefix + workspace
+	prodWS := prefix + "prod" // == prefix + "prod"
+	for _, ws := range []string{nameWS, prodWS} {
+		createRemoteWorkspace(t, org, token, ws)
+		t.Cleanup(func() { deleteRemoteWorkspace(t, org, token, ws) })
+		seedRemoteWorkspace(t, org, token, ws)
+	}
 
-	tfcompat.RunCase(t, "l2_terraform_remote_state_remote", tfcompat.Case{
-		Config: map[string]string{
-			"org":       org,
-			"hostname":  tfeHost,
-			"token":     token,
-			"workspace": workspace,
+	withVars := func(extra map[string]string) map[string]string {
+		cfg := map[string]string{"org": org, "hostname": tfeHost, "token": token}
+		maps.Copy(cfg, extra)
+		return cfg
+	}
+
+	// Every permutation OpenTofu's remote backend accepts (verified live): a
+	// name-bound workspace with no top-level workspace or with the implicit
+	// "default", and a prefix-bound workspace selected by a top-level workspace.
+	cases := []struct {
+		name      string
+		dataBody  string // the body of the data block after `backend = "remote"`
+		extraVars []string
+		config    map[string]string
+	}{
+		{
+			name: "workspaces.name",
+			dataBody: `  config = {
+    organization = var.org
+    hostname     = var.hostname
+    token        = var.token
+    workspaces   = { name = var.name }
+  }`,
+			extraVars: []string{"name"},
+			config:    withVars(map[string]string{"name": nameWS}),
 		},
-	})
+		{
+			name: "workspaces.name with workspace=default",
+			dataBody: `  workspace = "default"
+  config = {
+    organization = var.org
+    hostname     = var.hostname
+    token        = var.token
+    workspaces   = { name = var.name }
+  }`,
+			extraVars: []string{"name"},
+			config:    withVars(map[string]string{"name": nameWS}),
+		},
+		{
+			name: "workspaces.prefix with workspace selector",
+			dataBody: `  workspace = var.workspace
+  config = {
+    organization = var.org
+    hostname     = var.hostname
+    token        = var.token
+    workspaces   = { prefix = var.prefix }
+  }`,
+			extraVars: []string{"prefix", "workspace"},
+			config:    withVars(map[string]string{"prefix": prefix, "workspace": "prod"}),
+		},
+	}
+
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			t.Parallel()
+			tfcompat.RunCase(t, "l2_terraform_remote_state_remote", tfcompat.Case{
+				Stages: []tfcompat.Stage{{Files: map[string]string{
+					"main.tf": remoteStateProgram(append([]string{"org", "hostname", "token"}, c.extraVars...), c.dataBody),
+				}}},
+				Config: c.config,
+			})
+		})
+	}
+}
+
+// remoteStateProgram builds a terraform_remote_state program that declares the
+// given string variables and uses dataBody as the data block's body (after
+// `backend = "remote"`), exposing the read greeting and number outputs.
+func remoteStateProgram(vars []string, dataBody string) string {
+	var b strings.Builder
+	for _, v := range vars {
+		fmt.Fprintf(&b, "variable %q { type = string }\n", v)
+	}
+	fmt.Fprintf(&b, `
+data "terraform_remote_state" "rs" {
+  backend = "remote"
+%s
+}
+
+output "greeting" { value = data.terraform_remote_state.rs.outputs.greeting }
+output "number"   { value = data.terraform_remote_state.rs.outputs.number }
+`, dataBody)
+	return b.String()
 }
 
 func getEnv(t *testing.T, env string) string {

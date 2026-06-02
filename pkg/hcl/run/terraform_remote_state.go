@@ -64,10 +64,12 @@ func terraformRemoteStateSchema() *schema.Function {
 // serves no other backend, so any other backend is rejected; support can be added
 // as the package gains backends.
 //
-// The top-level `workspace` attribute selects the remote workspace by name. It is
-// mutually exclusive with config.workspaces, and unsupported on the local backend
-// (getLocalReference has no workspace input). `defaults` is unsupported. The empty
-// workspace default is left to the provider.
+// On the remote backend the top-level `workspace` is resolved like OpenTofu's
+// remote backend: with config.workspaces.prefix the read workspace is
+// `<prefix><workspace>` (combined into the invoke's `workspaces.name`); with
+// config.workspaces.name only the implicit "default" workspace exists, so
+// `workspace` must be "default". It is unsupported on the local backend
+// (getLocalReference has no workspace input). `defaults` is unsupported.
 func lowerRemoteStateInvoke(tfType string, req InvokeRequest) (InvokeRequest, error) {
 	if tfType != remoteStateType {
 		return req, nil
@@ -110,7 +112,8 @@ func lowerRemoteStateInvoke(tfType string, req InvokeRequest) (InvokeRequest, er
 		}
 	default:
 		return req, fmt.Errorf(
-			"terraform_remote_state: backend %q is not supported (supported backends: local, remote)", backend)
+			"terraform_remote_state: backend %q is not supported (supported backends: local, remote)", backend,
+		)
 	}
 
 	args := map[string]property.Value{}
@@ -128,16 +131,31 @@ func lowerRemoteStateInvoke(tfType string, req InvokeRequest) (InvokeRequest, er
 		slices.Sort(unexpected)
 		return req, fmt.Errorf(
 			"terraform_remote_state: %s does not read config field(s) %v (supported: %s)",
-			desc, unexpected, strings.Join(slices.Sorted(maps.Keys(fields)), ", "))
+			desc, unexpected, strings.Join(slices.Sorted(maps.Keys(fields)), ", "),
+		)
 	}
 
-	// The remote backend's workspace can be named via the top-level `workspace`
-	// attribute or config.workspaces, but not both.
+	// Resolve the top-level `workspace` the way OpenTofu's remote backend does:
+	//   - config.workspaces.prefix + workspace -> read `<prefix><workspace>`
+	//   - config.workspaces.name exposes only the implicit "default" workspace,
+	//     so workspace must be "default" (or absent); anything else is an error
 	if hasWorkspace {
-		if _, ok := args["workspaces"]; ok {
-			return req, fmt.Errorf("terraform_remote_state: workspace and config.workspaces are mutually exclusive")
+		ws, ok := args["workspaces"]
+		if !ok || !ws.IsMap() {
+			return req, fmt.Errorf("terraform_remote_state: workspace requires config.workspaces.prefix")
 		}
-		args["workspaces"] = property.New(map[string]property.Value{"name": property.New(workspace)})
+		switch wsMap := ws.AsMap(); {
+		case wsMap.Get("name").IsString():
+			if workspace != "default" {
+				return req, fmt.Errorf(
+					"terraform_remote_state: workspace %q is invalid with config.workspaces.name (only \"default\" is)", workspace,
+				)
+			}
+		case wsMap.Get("prefix").IsString():
+			args["workspaces"] = property.New(map[string]property.Value{"name": property.New(wsMap.Get("prefix").AsString() + workspace)})
+		default:
+			return req, fmt.Errorf("terraform_remote_state: workspace requires config.workspaces.prefix")
+		}
 	}
 
 	req.Token = token
