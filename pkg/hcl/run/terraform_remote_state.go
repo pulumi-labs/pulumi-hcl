@@ -89,10 +89,8 @@ func lowerRemoteStateInvoke(tfType string, req InvokeRequest) (InvokeRequest, er
 		workspace, hasWorkspace = w.AsString(), true
 	}
 
-	// fields maps the chosen reference's recognized config keys to their invoke
-	// argument names; desc describes it for the error message.
 	var token, desc string
-	var fields map[string]string
+	var fields map[string]string // recognized config keys -> invoke argument names
 	switch backend {
 	case "local":
 		if hasWorkspace {

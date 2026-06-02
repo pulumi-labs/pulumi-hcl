@@ -264,8 +264,6 @@ func (d *Driver) Destroy(t *testing.T, programFiles map[string]string) error {
 
 func (d *Driver) writeFiles(t *testing.T, programFiles map[string]string) {
 	t.Helper()
-	// Remove the previous stage's program files so a stage that drops a file doesn't
-	// inherit a stale copy.
 	for _, path := range d.lastProgramFiles {
 		require.NoError(t, os.RemoveAll(filepath.Join(d.dir, path)))
 	}

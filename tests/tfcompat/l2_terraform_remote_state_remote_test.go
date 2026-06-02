@@ -54,9 +54,9 @@ func TestL2TerraformRemoteStateRemote(t *testing.T) {
 	token := getEnv(t, "TFE_TOKEN")
 
 	base := "pulumi-hcl-tfcompat-" + randomSuffix(t)
-	nameWS := base + "-name"  // selected directly via workspaces.name
-	prefix := base + "-p-"    // selected via workspaces.prefix + workspace
-	prodWS := prefix + "prod" // == prefix + "prod"
+	nameWS := base + "-name"
+	prefix := base + "-p-"
+	prodWS := prefix + "prod"
 	for _, ws := range []string{nameWS, prodWS} {
 		createRemoteWorkspace(t, org, token, ws)
 		t.Cleanup(func() { deleteRemoteWorkspace(t, org, token, ws) })
@@ -168,7 +168,6 @@ func randomSuffix(t *testing.T) string {
 	return hex.EncodeToString(b)
 }
 
-// tfeAPI issues a Terraform Cloud API request and returns the status code and body.
 func tfeAPI(t *testing.T, method, path, token, body string) (int, []byte) {
 	t.Helper()
 	var r io.Reader
@@ -187,8 +186,8 @@ func tfeAPI(t *testing.T, method, path, token, body string) (int, []byte) {
 	return resp.StatusCode, data
 }
 
-// createRemoteWorkspace creates a workspace with local execution mode, so the
-// seeding `tofu apply` runs locally and pushes its state to TFC.
+// createRemoteWorkspace uses local execution mode so the seeding `tofu apply`
+// runs locally and pushes its state to TFC.
 func createRemoteWorkspace(t *testing.T, org, token, name string) {
 	t.Helper()
 	body := fmt.Sprintf(`{"data":{"type":"workspaces","attributes":{"name":%q,"execution-mode":"local"}}}`, name)
@@ -204,8 +203,8 @@ func deleteRemoteWorkspace(t *testing.T, org, token, name string) {
 	}
 }
 
-// seedRemoteWorkspace applies a tiny config with known outputs to the workspace
-// via the cloud backend, so terraform_remote_state has a state version to read.
+// seedRemoteWorkspace gives the workspace a state version with known outputs
+// for terraform_remote_state to read.
 func seedRemoteWorkspace(t *testing.T, org, token, name string) {
 	t.Helper()
 	dir := t.TempDir()
