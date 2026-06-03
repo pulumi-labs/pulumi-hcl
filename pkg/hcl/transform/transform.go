@@ -885,6 +885,105 @@ func CtyToPropertyValue(val cty.Value) (property.Value, error) {
 	return ctyToPropertyValue(val)
 }
 
+// StripResourceURN recursively removes the synthetic `urn` attribute from
+// resource-reference objects so it doesn't leak into stack outputs. The engine
+// attaches a `urn` attribute to every managed-resource output object (alongside
+// the resource's real attributes) so that `id()`, `urn()`, `depends_on`, and
+// provider references can resolve. OpenTofu has no such attribute, so exposing a
+// whole resource (e.g. `output { value = aws_instance.web }`, or a `for_each`
+// resource referenced as a whole map) would otherwise produce an extra `urn`
+// key that `tofu apply` never emits.
+//
+// A resource-reference object is identified structurally: an object carrying
+// both an `id` attribute and a `urn` attribute whose value is a Pulumi URN
+// string (`urn:pulumi:`). A user-authored object that merely happens to contain
+// a `urn` key is left untouched.
+func StripResourceURN(val cty.Value) cty.Value {
+	if !val.IsKnown() || val.IsNull() {
+		return val
+	}
+	unmarked, marks := val.Unmark()
+	out := stripResourceURNUnmarked(unmarked)
+	if len(marks) > 0 {
+		out = out.WithMarks(marks)
+	}
+	return out
+}
+
+func stripResourceURNUnmarked(val cty.Value) cty.Value {
+	ty := val.Type()
+	switch {
+	case ty.IsObjectType():
+		if val.LengthInt() == 0 {
+			return val
+		}
+		drop := isResourceReferenceObject(val)
+		m := make(map[string]cty.Value, val.LengthInt())
+		for it := val.ElementIterator(); it.Next(); {
+			k, v := it.Element()
+			key := k.AsString()
+			if drop && key == "urn" {
+				continue
+			}
+			m[key] = StripResourceURN(v)
+		}
+		if len(m) == 0 {
+			return cty.EmptyObjectVal
+		}
+		return cty.ObjectVal(m)
+	case ty.IsMapType():
+		if val.LengthInt() == 0 {
+			return val
+		}
+		m := make(map[string]cty.Value, val.LengthInt())
+		for it := val.ElementIterator(); it.Next(); {
+			k, v := it.Element()
+			m[k.AsString()] = StripResourceURN(v)
+		}
+		return cty.MapVal(m)
+	case ty.IsListType() || ty.IsTupleType():
+		if val.LengthInt() == 0 {
+			return val
+		}
+		vs := make([]cty.Value, 0, val.LengthInt())
+		for it := val.ElementIterator(); it.Next(); {
+			_, v := it.Element()
+			vs = append(vs, StripResourceURN(v))
+		}
+		if ty.IsTupleType() {
+			return cty.TupleVal(vs)
+		}
+		return cty.ListVal(vs)
+	case ty.IsSetType():
+		if val.LengthInt() == 0 {
+			return val
+		}
+		vs := make([]cty.Value, 0, val.LengthInt())
+		for it := val.ElementIterator(); it.Next(); {
+			_, v := it.Element()
+			vs = append(vs, StripResourceURN(v))
+		}
+		return cty.SetVal(vs)
+	default:
+		return val
+	}
+}
+
+// isResourceReferenceObject reports whether val is a managed-resource output
+// object synthesized by the engine: it has both `id` and `urn` attributes and
+// the `urn` value is a Pulumi URN string.
+func isResourceReferenceObject(val cty.Value) bool {
+	ty := val.Type()
+	if !ty.HasAttribute("urn") || !ty.HasAttribute("id") {
+		return false
+	}
+	urnVal, _ := val.GetAttr("urn").Unmark()
+	if !urnVal.IsKnown() || urnVal.IsNull() || urnVal.Type() != cty.String {
+		return false
+	}
+	return strings.HasPrefix(urnVal.AsString(), "urn:pulumi:")
+}
+
 func ctyToPropertyValue(val cty.Value) (property.Value, error) {
 	// Handle sensitive-marked values by unwrapping, converting, and wrapping as secret.
 	if val.IsMarked() {

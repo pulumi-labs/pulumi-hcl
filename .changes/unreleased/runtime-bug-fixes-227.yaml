@@ -1,0 +1,6 @@
+kind: bug-fixes
+body: Don't leak the synthetic `urn` attribute when a whole resource is exposed in a stack output
+time: 2026-06-03T17:00:00.000000+02:00
+custom:
+    Component: runtime
+    PR: "227"

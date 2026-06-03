@@ -2902,6 +2902,11 @@ func (e *Engine) processOutput(_ context.Context, name string, output *ast.Outpu
 		return fmt.Errorf("evaluating output value: %s", diags.Error())
 	}
 
+	// Strip the synthetic `urn` attribute the engine attaches to resource
+	// objects; OpenTofu has no such attribute, so exposing a whole resource
+	// must not leak it into stack outputs.
+	val = transform.StripResourceURN(val)
+
 	// Convert to PropertyValue
 	pv, err := transform.CtyToPropertyValue(val)
 	if err != nil {

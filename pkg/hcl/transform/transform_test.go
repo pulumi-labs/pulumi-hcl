@@ -1490,3 +1490,77 @@ func TestSelectUnionMemberByConst_IntDiscriminator(t *testing.T) {
 	assert.Equal(t, []string{"1", "2"}, unrecognized.Allowed)
 	assert.Equal(t, "99", unrecognized.Actual)
 }
+
+func TestStripResourceURN(t *testing.T) {
+	t.Parallel()
+
+	resourceObj := func(urn string) cty.Value {
+		return cty.ObjectVal(map[string]cty.Value{
+			"id":        cty.StringVal("simple-id"),
+			"urn":       cty.StringVal(urn),
+			"input_one": cty.StringVal("hello"),
+		})
+	}
+	strippedObj := cty.ObjectVal(map[string]cty.Value{
+		"id":        cty.StringVal("simple-id"),
+		"input_one": cty.StringVal("hello"),
+	})
+
+	t.Run("single resource object drops urn", func(t *testing.T) {
+		t.Parallel()
+		got := StripResourceURN(resourceObj("urn:pulumi:test::p::simple:index/resource:Resource::r"))
+		assert.True(t, got.RawEquals(strippedObj))
+	})
+
+	t.Run("tuple of resource objects (count)", func(t *testing.T) {
+		t.Parallel()
+		got := StripResourceURN(cty.TupleVal([]cty.Value{
+			resourceObj("urn:pulumi:test::p::simple:index/resource:Resource::r-0"),
+			resourceObj("urn:pulumi:test::p::simple:index/resource:Resource::r-1"),
+		}))
+		assert.True(t, got.RawEquals(cty.TupleVal([]cty.Value{strippedObj, strippedObj})))
+	})
+
+	t.Run("object of resource objects (for_each)", func(t *testing.T) {
+		t.Parallel()
+		got := StripResourceURN(cty.ObjectVal(map[string]cty.Value{
+			"x": resourceObj("urn:pulumi:test::p::simple:index/resource:Resource::r-x"),
+			"y": resourceObj("urn:pulumi:test::p::simple:index/resource:Resource::r-y"),
+		}))
+		assert.True(t, got.RawEquals(cty.ObjectVal(map[string]cty.Value{
+			"x": strippedObj,
+			"y": strippedObj,
+		})))
+	})
+
+	t.Run("user object with literal urn key is preserved", func(t *testing.T) {
+		t.Parallel()
+		// No id attribute and the urn value is not a Pulumi URN, so this is a
+		// user-authored object, not a resource reference.
+		userObj := cty.ObjectVal(map[string]cty.Value{
+			"urn":  cty.StringVal("hello"),
+			"name": cty.StringVal("world"),
+		})
+		assert.True(t, StripResourceURN(userObj).RawEquals(userObj))
+	})
+
+	t.Run("object with id and non-pulumi urn is preserved", func(t *testing.T) {
+		t.Parallel()
+		obj := cty.ObjectVal(map[string]cty.Value{
+			"id":  cty.StringVal("x"),
+			"urn": cty.StringVal("not-a-pulumi-urn"),
+		})
+		assert.True(t, StripResourceURN(obj).RawEquals(obj))
+	})
+
+	t.Run("marks are preserved", func(t *testing.T) {
+		t.Parallel()
+		marked := resourceObj("urn:pulumi:test::p::simple:index/resource:Resource::r").
+			Mark(eval.SensitiveMark)
+		got := StripResourceURN(marked)
+		unmarked, marks := got.Unmark()
+		assert.True(t, unmarked.RawEquals(strippedObj))
+		_, isSensitive := marks[eval.SensitiveMark]
+		assert.True(t, isSensitive)
+	})
+}
