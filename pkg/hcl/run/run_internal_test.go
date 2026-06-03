@@ -17,7 +17,10 @@ package run
 import (
 	"testing"
 
+	"github.com/hashicorp/hcl/v2"
+	"github.com/pulumi-labs/pulumi-hcl/pkg/hcl/bridge"
 	"github.com/pulumi-labs/pulumi-hcl/pkg/hcl/eval"
+	"github.com/pulumi/pulumi/pkg/v3/codegen/schema"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/resource"
 	"github.com/pulumi/pulumi/sdk/v3/go/property"
 	"github.com/stretchr/testify/assert"
@@ -139,6 +142,91 @@ func TestConditionResultToBool(t *testing.T) {
 			}
 			assert.NoError(t, err)
 			assert.Equal(t, tt.want, got)
+		})
+	}
+}
+
+func TestFormatTraversalForIgnoreChanges(t *testing.T) {
+	t.Parallel()
+
+	// attr builds a relative traversal of attribute-name segments.
+	attr := func(names ...string) hcl.Traversal {
+		tr := make(hcl.Traversal, len(names))
+		for i, n := range names {
+			tr[i] = hcl.TraverseAttr{Name: n}
+		}
+		return tr
+	}
+	strIndex := func(base hcl.Traversal, key string) hcl.Traversal {
+		return append(base, hcl.TraverseIndex{Key: cty.StringVal(key)})
+	}
+
+	// props mirrors a Pulumi schema where the bridge applied the default
+	// snake→camel rename, including a nested object property.
+	props := []*schema.Property{
+		{Name: "inputOne"},
+		{Name: "tags"},
+		{Name: "networkConfig", Type: &schema.ArrayType{ElementType: &schema.ObjectType{
+			Properties: []*schema.Property{{Name: "subnetId"}},
+		}}},
+	}
+
+	// mapping carries an explicit (non-conventional) rename plus a nested block.
+	mapping := &bridge.BodyMapping{Fields: map[string]*bridge.FieldMapping{
+		"weird_name": {TFName: "weird_name", PulumiName: "niceName"},
+		"network_config": {TFName: "network_config", PulumiName: "networkConfig", TFBlock: true, Nested: &bridge.BodyMapping{Fields: map[string]*bridge.FieldMapping{
+			"subnet_id": {TFName: "subnet_id", PulumiName: "subnetId"},
+		}}},
+	}}
+
+	tests := []struct {
+		name      string
+		traversal hcl.Traversal
+		mapping   *bridge.BodyMapping
+		props     []*schema.Property
+		want      string
+	}{
+		{
+			name:      "convention rename via schema props",
+			traversal: attr("input_one"),
+			props:     props,
+			want:      "inputOne",
+		},
+		{
+			name:      "explicit rename via bridge mapping",
+			traversal: attr("weird_name"),
+			mapping:   mapping,
+			want:      "niceName",
+		},
+		{
+			name:      "map key passes through unchanged",
+			traversal: strIndex(attr("tags"), "input_one"),
+			props:     props,
+			want:      `tags["input_one"]`,
+		},
+		{
+			name:      "nested block field renamed via mapping",
+			traversal: attr("network_config", "subnet_id"),
+			mapping:   mapping,
+			want:      "networkConfig.subnetId",
+		},
+		{
+			name:      "nested object field renamed via schema props",
+			traversal: attr("network_config", "subnet_id"),
+			props:     props,
+			want:      "networkConfig.subnetId",
+		},
+		{
+			name:      "unknown name with no schema passes through",
+			traversal: attr("input_one"),
+			want:      "input_one",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			assert.Equal(t, tt.want, formatTraversalForIgnoreChanges(tt.traversal, tt.mapping, tt.props))
 		})
 	}
 }

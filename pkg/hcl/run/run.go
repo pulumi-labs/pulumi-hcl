@@ -1222,7 +1222,7 @@ func (e *Engine) registerResourceInstanceInContext(
 		}
 	}
 
-	opts, err := e.buildResourceOptionsInContext(res, evalCtx, parentURN, node.ModuleInfo)
+	opts, err := e.buildResourceOptionsInContext(res, instance, evalCtx, parentURN, node.ModuleInfo, resourceMapping, resSchema.InputProperties)
 	if err != nil {
 		return err
 	}
@@ -1332,9 +1332,10 @@ func (e *Engine) registerResourceInstanceInContext(
 
 // buildResourceOptionsInContext builds resource options using the provided eval context and parent URN.
 func (e *Engine) buildResourceOptionsInContext(
-	res *ast.Resource,
+	res *ast.Resource, instance *graph.ExpandedResource,
 	evalCtx *eval.Context, parentURN urn.URN,
-	modInfo *graph.ModuleInfo,
+	modInfo *graph.ModuleInfo, resourceMapping *bridge.BodyMapping,
+	inputProps []*schema.Property,
 ) (*ResourceOptions, error) {
 	opts := &ResourceOptions{}
 	opts.Parent = parentURN
@@ -1361,11 +1362,12 @@ func (e *Engine) buildResourceOptionsInContext(
 		if res.Lifecycle.PreventDestroy != nil && *res.Lifecycle.PreventDestroy {
 			opts.Protect = true
 		}
-		// ignore_changes maps to ignoreChanges
+		// ignore_changes maps to ignoreChanges. The traversal names are TF
+		// (snake_case) attribute names; the Pulumi engine matches ignoreChanges
+		// paths against Pulumi (camelCase) property names, so they must be
+		// translated through the bridge mapping first.
 		for _, ic := range res.Lifecycle.IgnoreChanges {
-			// ignore_changes can be relative traversals (just property names like "tags")
-			// or absolute traversals. FormatTraversalForIgnoreChanges handles both.
-			icStr := formatTraversalForIgnoreChanges(ic)
+			icStr := formatTraversalForIgnoreChanges(ic, resourceMapping, inputProps)
 			if icStr != "" {
 				opts.IgnoreChanges = append(opts.IgnoreChanges, icStr)
 			}
@@ -1809,23 +1811,36 @@ func (*Engine) extractModuleResourceName(
 	return modInstanceName + "-" + bareResourceName
 }
 
-// formatTraversalForIgnoreChanges formats a traversal for ignore_changes.
-// Handles both relative traversals (just "tags") and absolute ones.
-func formatTraversalForIgnoreChanges(traversal hcl.Traversal) string {
+// formatTraversalForIgnoreChanges formats an ignore_changes traversal into the
+// dotted/bracketed path the Pulumi engine expects, translating each TF
+// (snake_case) attribute segment to its Pulumi (camelCase) name. The Pulumi
+// engine matches ignoreChanges paths against Pulumi property names, so a TF
+// name like input_one must become inputOne. Index segments and keys into a
+// plain map (which have no schema field of their own) are passed through
+// verbatim.
+//
+// Translation prefers the bridge mapping (which captures explicit renames and
+// the block-vs-attribute shape) and falls back to the snake↔camel convention
+// against the Pulumi schema properties, mirroring how resource inputs are
+// mapped in transform.evalBlockWithSchema.
+func formatTraversalForIgnoreChanges(
+	traversal hcl.Traversal, mapping *bridge.BodyMapping, props []*schema.Property,
+) string {
 	if len(traversal) == 0 {
 		return ""
 	}
 
+	resolver := ignoreChangesNameResolver{mapping: mapping, props: props}
 	var buf strings.Builder
 	for i, step := range traversal {
 		switch s := step.(type) {
 		case hcl.TraverseRoot:
-			buf.WriteString(s.Name)
+			buf.WriteString(resolver.next(s.Name))
 		case hcl.TraverseAttr:
 			if i > 0 {
 				buf.WriteByte('.')
 			}
-			buf.WriteString(s.Name)
+			buf.WriteString(resolver.next(s.Name))
 		case hcl.TraverseIndex:
 			// Index traversals use bracket notation without a leading dot.
 			key := s.Key
@@ -1841,6 +1856,53 @@ func formatTraversalForIgnoreChanges(traversal hcl.Traversal) string {
 	}
 
 	return buf.String()
+}
+
+// ignoreChangesNameResolver walks an ignore_changes traversal, translating each
+// attribute segment from its TF name to its Pulumi name and descending into the
+// nested schema for the next segment.
+type ignoreChangesNameResolver struct {
+	mapping *bridge.BodyMapping
+	props   []*schema.Property
+}
+
+// next translates one TF attribute-name segment and advances the resolver to
+// the nested schema. An unknown name (or a key into a plain map) is returned
+// unchanged with the resolver cleared, so trailing map keys pass through.
+func (r *ignoreChangesNameResolver) next(tfName string) string {
+	if fm := r.mapping.Lookup(tfName); fm != nil {
+		if fm.TFBlock {
+			r.mapping, r.props = fm.Nested, nil
+		} else {
+			r.mapping, r.props = nil, nil
+		}
+		return fm.PulumiName
+	}
+	pulumiName, prop := transform.PulumiCaseFromSnakeCase(tfName, r.props)
+	if prop == nil {
+		r.mapping, r.props = nil, nil
+		return tfName
+	}
+	r.mapping, r.props = nil, objectProperties(prop.Type)
+	return pulumiName
+}
+
+// objectProperties returns the nested properties of an object-typed schema,
+// unwrapping array/map element types and optional wrappers, or nil when the
+// type has no named properties.
+func objectProperties(t schema.Type) []*schema.Property {
+	switch tt := t.(type) {
+	case *schema.ObjectType:
+		return tt.Properties
+	case *schema.ArrayType:
+		return objectProperties(tt.ElementType)
+	case *schema.MapType:
+		return objectProperties(tt.ElementType)
+	case *schema.OptionalType:
+		return objectProperties(tt.ElementType)
+	default:
+		return nil
+	}
 }
 
 // ResourceOptions contains resource registration options.

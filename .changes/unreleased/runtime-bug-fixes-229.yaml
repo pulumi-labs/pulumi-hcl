@@ -1,0 +1,6 @@
+kind: bug-fixes
+body: Translate `lifecycle.ignore_changes` attribute names to Pulumi property names
+time: 2026-06-03T16:54:19.000000+00:00
+custom:
+    Component: runtime
+    PR: "229"
