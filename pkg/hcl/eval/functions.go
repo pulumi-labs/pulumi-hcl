@@ -847,7 +847,10 @@ var transposeFunc = function.New(&function.Spec{
 
 // formatCtyPath renders a cty.Path in OpenTofu's HCL-like notation (e.g.
 // `["a"][1]`) so that argument-error messages match OpenTofu's
-// tfdiags.FormatCtyPath output.
+// tfdiags.FormatCtyPath output. It is reimplemented rather than imported
+// because OpenTofu's tfdiags package is not a module dependency, and pulling it
+// in (or vendoring it) to reach this self-contained 25-line helper would drag
+// in its transitive deps (hashicorp/errwrap, go-multierror, ...) for no benefit.
 func formatCtyPath(path cty.Path) string {
 	var buf strings.Builder
 	for _, step := range path {
