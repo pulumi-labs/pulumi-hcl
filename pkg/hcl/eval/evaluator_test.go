@@ -15,6 +15,8 @@
 package eval
 
 import (
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/hashicorp/hcl/v2"
@@ -34,7 +36,7 @@ func parseExpr(t *testing.T, src string) hcl.Expression {
 
 func TestEvaluateString(t *testing.T) {
 	t.Parallel()
-	ctx := NewContext("/tmp", "/tmp", "", "", "")
+	ctx := NewContext("/tmp", "/tmp", "/tmp", "", "", "")
 	ctx.SetVariable("name", cty.StringVal("test"))
 
 	eval := NewEvaluator(ctx)
@@ -66,7 +68,7 @@ func TestEvaluateString(t *testing.T) {
 
 func TestEvaluateInt(t *testing.T) {
 	t.Parallel()
-	ctx := NewContext("/tmp", "/tmp", "", "", "")
+	ctx := NewContext("/tmp", "/tmp", "/tmp", "", "", "")
 	ctx.SetVariable("count", cty.NumberIntVal(5))
 
 	eval := NewEvaluator(ctx)
@@ -99,7 +101,7 @@ func TestEvaluateInt(t *testing.T) {
 
 func TestEvaluateBool(t *testing.T) {
 	t.Parallel()
-	ctx := NewContext("/tmp", "/tmp", "", "", "")
+	ctx := NewContext("/tmp", "/tmp", "/tmp", "", "", "")
 	ctx.SetVariable("enabled", cty.BoolVal(true))
 
 	eval := NewEvaluator(ctx)
@@ -134,7 +136,7 @@ func TestEvaluateBool(t *testing.T) {
 
 func TestEvaluateCount(t *testing.T) {
 	t.Parallel()
-	ctx := NewContext("/tmp", "/tmp", "", "", "")
+	ctx := NewContext("/tmp", "/tmp", "/tmp", "", "", "")
 	ctx.SetVariable("instance_count", cty.NumberIntVal(3))
 
 	eval := NewEvaluator(ctx)
@@ -182,7 +184,7 @@ func TestEvaluateCount(t *testing.T) {
 // must be stripped first.
 func TestEvaluateCount_MarkedKnownValue(t *testing.T) {
 	t.Parallel()
-	ctx := NewContext("/tmp", "/tmp", "", "", "")
+	ctx := NewContext("/tmp", "/tmp", "/tmp", "", "", "")
 	ctx.SetVariable("n", cty.NumberIntVal(3).WithMarks(
 		cty.NewValueMarks(DepMark("urn:pulumi:dev::p::aws:ec2/vpc:Vpc::test")),
 	))
@@ -198,7 +200,7 @@ func TestEvaluateCount_MarkedKnownValue(t *testing.T) {
 // be stripped first.
 func TestEvaluateForEach_MarkedContainer(t *testing.T) {
 	t.Parallel()
-	ctx := NewContext("/tmp", "/tmp", "", "", "")
+	ctx := NewContext("/tmp", "/tmp", "/tmp", "", "", "")
 	ctx.SetVariable("m", cty.MapVal(map[string]cty.Value{
 		"primary": cty.StringVal("p"),
 	}).WithMarks(cty.NewValueMarks(DepMark("urn:pulumi:dev::p::aws:ec2/vpc:Vpc::test"))))
@@ -213,7 +215,7 @@ func TestEvaluateForEach_MarkedContainer(t *testing.T) {
 
 func TestEvaluateCountNil(t *testing.T) {
 	t.Parallel()
-	ctx := NewContext("/tmp", "/tmp", "", "", "")
+	ctx := NewContext("/tmp", "/tmp", "/tmp", "", "", "")
 	eval := NewEvaluator(ctx)
 
 	result, isBool, diags := eval.EvaluateCount(nil)
@@ -230,7 +232,7 @@ func TestEvaluateCountNil(t *testing.T) {
 
 func TestEvaluateForEach(t *testing.T) {
 	t.Parallel()
-	ctx := NewContext("/tmp", "/tmp", "", "", "")
+	ctx := NewContext("/tmp", "/tmp", "/tmp", "", "", "")
 	eval := NewEvaluator(ctx)
 
 	t.Run("map", func(t *testing.T) {
@@ -283,7 +285,7 @@ func TestEvaluateForEach(t *testing.T) {
 
 func TestContextVariables(t *testing.T) {
 	t.Parallel()
-	ctx := NewContext("/tmp", "/tmp", "", "", "")
+	ctx := NewContext("/tmp", "/tmp", "/tmp", "", "", "")
 	ctx.SetVariable("name", cty.StringVal("test"))
 	ctx.SetVariable("count", cty.NumberIntVal(5))
 
@@ -302,7 +304,7 @@ func TestContextVariables(t *testing.T) {
 
 func TestContextLocals(t *testing.T) {
 	t.Parallel()
-	ctx := NewContext("/tmp", "/tmp", "", "", "")
+	ctx := NewContext("/tmp", "/tmp", "/tmp", "", "", "")
 	ctx.SetLocal("common_tags", cty.ObjectVal(map[string]cty.Value{
 		"Environment": cty.StringVal("dev"),
 		"ManagedBy":   cty.StringVal("Pulumi"),
@@ -323,7 +325,7 @@ func TestContextLocals(t *testing.T) {
 
 func TestContextCountIndex(t *testing.T) {
 	t.Parallel()
-	ctx := NewContext("/tmp", "/tmp", "", "", "")
+	ctx := NewContext("/tmp", "/tmp", "/tmp", "", "", "")
 	ctx.SetCount(2)
 
 	eval := NewEvaluator(ctx)
@@ -340,7 +342,7 @@ func TestContextCountIndex(t *testing.T) {
 
 func TestContextEach(t *testing.T) {
 	t.Parallel()
-	ctx := NewContext("/tmp", "/tmp", "", "", "")
+	ctx := NewContext("/tmp", "/tmp", "/tmp", "", "", "")
 	ctx.SetEach(cty.StringVal("mykey"), cty.StringVal("myvalue"))
 
 	eval := NewEvaluator(ctx)
@@ -370,7 +372,7 @@ func TestContextPath(t *testing.T) {
 	t.Parallel()
 	t.Run("root module yields '.'", func(t *testing.T) {
 		t.Parallel()
-		ctx := NewContext("/project/module", "/project/module", "", "", "")
+		ctx := NewContext("/project/module", "/project/module", "/project/module", "", "", "")
 		eval := NewEvaluator(ctx)
 		result, diags := eval.EvaluateString(parseExpr(t, `path.module`))
 		assert.False(t, diags.HasErrors(), diags.Error())
@@ -383,7 +385,7 @@ func TestContextPath(t *testing.T) {
 
 	t.Run("nested module yields relative path from root", func(t *testing.T) {
 		t.Parallel()
-		ctx := NewContext("/project/modules/sub", "/project", "", "", "")
+		ctx := NewContext("/project/modules/sub", "/project", "/project", "", "", "")
 		eval := NewEvaluator(ctx)
 		result, diags := eval.EvaluateString(parseExpr(t, `path.module`))
 		assert.False(t, diags.HasErrors(), diags.Error())
@@ -395,9 +397,29 @@ func TestContextPath(t *testing.T) {
 	})
 }
 
+func TestContextFileResolvesAgainstRootModuleDir(t *testing.T) {
+	t.Parallel()
+
+	rootDir := t.TempDir()
+	modDir := filepath.Join(rootDir, "mod")
+	require.NoError(t, os.MkdirAll(modDir, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(modDir, "aux.txt"), []byte("hello\n"), 0o644))
+
+	ctx := NewContext(modDir, rootDir, rootDir, "", "", "")
+	eval := NewEvaluator(ctx)
+
+	modulePath, diags := eval.EvaluateString(parseExpr(t, `path.module`))
+	require.False(t, diags.HasErrors(), diags.Error())
+	require.Equal(t, "mod", modulePath)
+
+	hash, diags := eval.EvaluateString(parseExpr(t, `filesha256("${path.module}/aux.txt")`))
+	require.False(t, diags.HasErrors(), diags.Error())
+	assert.Equal(t, "5891b5b522d5df086d0ff0b110fbd9d21bb4fc7163af34d08286a2e846f6be03", hash)
+}
+
 func TestContextTerraform(t *testing.T) {
 	t.Parallel()
-	ctx := NewContext("/tmp", "/tmp", "production", "", "")
+	ctx := NewContext("/tmp", "/tmp", "/tmp", "production", "", "")
 
 	eval := NewEvaluator(ctx)
 
@@ -415,7 +437,7 @@ func TestContextRangedResources(t *testing.T) {
 	t.Parallel()
 	t.Run("count resources are accessible by index", func(t *testing.T) {
 		t.Parallel()
-		ctx := NewContext("/tmp", "/tmp", "", "", "")
+		ctx := NewContext("/tmp", "/tmp", "/tmp", "", "", "")
 		ctx.SetCountResource("aws_instance.web", 0, cty.ObjectVal(map[string]cty.Value{
 			"id": cty.StringVal("i-000"),
 		}))
@@ -435,7 +457,7 @@ func TestContextRangedResources(t *testing.T) {
 
 	t.Run("for_each resources are accessible by key", func(t *testing.T) {
 		t.Parallel()
-		ctx := NewContext("/tmp", "/tmp", "", "", "")
+		ctx := NewContext("/tmp", "/tmp", "/tmp", "", "", "")
 		ctx.SetEachResource("aws_instance.web", "east", cty.ObjectVal(map[string]cty.Value{
 			"id": cty.StringVal("i-east"),
 		}))
@@ -451,7 +473,7 @@ func TestContextRangedResources(t *testing.T) {
 
 	t.Run("resource named with brackets is not confused with ranged", func(t *testing.T) {
 		t.Parallel()
-		ctx := NewContext("/tmp", "/tmp", "", "", "")
+		ctx := NewContext("/tmp", "/tmp", "/tmp", "", "", "")
 		ctx.SetResource("aws_instance.foo[0]", cty.ObjectVal(map[string]cty.Value{
 			"id": cty.StringVal("i-literal"),
 		}))
@@ -464,7 +486,7 @@ func TestContextRangedResources(t *testing.T) {
 
 	t.Run("single and ranged resources coexist under same type", func(t *testing.T) {
 		t.Parallel()
-		ctx := NewContext("/tmp", "/tmp", "", "", "")
+		ctx := NewContext("/tmp", "/tmp", "/tmp", "", "", "")
 		ctx.SetResource("aws_instance.single", cty.ObjectVal(map[string]cty.Value{
 			"id": cty.StringVal("i-single"),
 		}))
@@ -485,7 +507,7 @@ func TestContextRangedResources(t *testing.T) {
 
 func TestContextClone(t *testing.T) {
 	t.Parallel()
-	ctx := NewContext("/tmp", "/tmp", "", "", "")
+	ctx := NewContext("/tmp", "/tmp", "/tmp", "", "", "")
 	ctx.SetVariable("name", cty.StringVal("original"))
 
 	clone := ctx.Clone()

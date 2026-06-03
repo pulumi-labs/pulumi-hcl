@@ -417,7 +417,7 @@ func NewEngine(ctx context.Context, config *ast.Config, opts *EngineOptions) *En
 	contract.Assertf(opts.WorkDir != "", "EngineOptions.WorkDir cannot be empty")
 	contract.Assertf(opts.RootDir != "", "EngineOptions.RootDir cannot be empty")
 
-	evalCtx := eval.NewContext(opts.WorkDir, opts.RootDir,
+	evalCtx := eval.NewContext(opts.WorkDir, opts.RootDir, opts.WorkDir,
 		opts.StackName, opts.ProjectName, opts.Organization)
 
 	engine := &Engine{
@@ -2580,7 +2580,7 @@ func (e *Engine) processModuleInit(ctx context.Context, node *graph.Node) error 
 		}
 
 		instCtx := eval.NewContext(
-			modInfo.SourcePath, e.workDir,
+			modInfo.SourcePath, e.workDir, e.workDir,
 			e.stackName, e.projectName, e.organization,
 		)
 
@@ -2607,7 +2607,7 @@ func (e *Engine) processModuleInit(ctx context.Context, node *graph.Node) error 
 				return fmt.Errorf("registering module component %s: %w", instPath.String(), err)
 			}
 			instCtx := eval.NewContext(
-				modInfo.SourcePath, e.workDir,
+				modInfo.SourcePath, e.workDir, e.workDir,
 				e.stackName, e.projectName, e.organization,
 			)
 			instCtx.SetCount(idx)
@@ -2639,7 +2639,7 @@ func (e *Engine) processModuleInit(ctx context.Context, node *graph.Node) error 
 			return fmt.Errorf("registering module component %s: %w", instPath.String(), err)
 		}
 		instCtx := eval.NewContext(
-			modInfo.SourcePath, e.workDir,
+			modInfo.SourcePath, e.workDir, e.workDir,
 			e.stackName, e.projectName, e.organization,
 		)
 		instCtx.SetEach(k, v)
