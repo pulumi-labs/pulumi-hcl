@@ -42,8 +42,8 @@ type Context struct {
 	// mu protects concurrent access to maps
 	mu sync.RWMutex
 
-	// baseDir is the base directory for file operations
-	baseDir string
+	// rootModuleDir is the directory of the root module (the program files).
+	rootModuleDir string
 
 	// variables contains input variable values (var.*)
 	variables map[string]cty.Value
@@ -132,11 +132,21 @@ type rangedInstance struct {
 	isEach  bool
 }
 
-// NewContext creates a new evaluation context. baseDir is the source dir of
-// the module owning this context; rootDir is the root program dir. The two
-// determine the Terraform-compatible path.* triple:
+// NewContext creates a new evaluation context from its three governing
+// directories:
 //
-//   - path.module: baseDir relative to rootDir (or "." when they're the same)
+//   - moduleDir:     the source dir of the module owning this context, used to
+//     derive path.module.
+//   - rootDir:       the dir path.cwd is taken from.
+//   - rootModuleDir: the dir of the root module (the program files), against
+//     which file functions resolve relative paths. It stays the same across
+//     child-module contexts so that a `"${path.module}/<file>"` argument
+//     locates the file the way OpenTofu does, rather than one directory too
+//     deep. For the root context it is the same as moduleDir.
+//
+// Those determine the Terraform-compatible path.* triple:
+//
+//   - path.module: moduleDir relative to rootDir (or "." when they're the same)
 //   - path.root:   always "." — the root module is the program dir
 //   - path.cwd:    rootDir as an absolute path. Terraform's path.cwd is the
 //     original working dir before any -chdir, which for `tofu apply` from
@@ -146,13 +156,13 @@ type rangedInstance struct {
 //
 // We match Terraform's convention so .tf written against Terraform sees the
 // same values when run via Pulumi.
-func NewContext(baseDir, rootDir, stack, project, organization string) *Context {
+func NewContext(moduleDir, rootDir, rootModuleDir, stack, project, organization string) *Context {
 	modulePath := "."
-	if baseDir != rootDir {
-		if rel, err := filepath.Rel(rootDir, baseDir); err == nil {
+	if moduleDir != rootDir {
+		if rel, err := filepath.Rel(rootDir, moduleDir); err == nil {
 			modulePath = rel
 		} else {
-			modulePath = baseDir
+			modulePath = moduleDir
 		}
 	}
 	cwd := rootDir
@@ -160,8 +170,7 @@ func NewContext(baseDir, rootDir, stack, project, organization string) *Context 
 		cwd = abs
 	}
 	return &Context{
-		baseDir: baseDir,
-
+		rootModuleDir:   rootModuleDir,
 		variables:       make(map[string]cty.Value),
 		locals:          make(map[string]cty.Value),
 		resources:       make(map[string]cty.Value),
@@ -485,7 +494,7 @@ func (c *Context) HCLContext() *hcl.EvalContext {
 
 	return &hcl.EvalContext{
 		Variables: vars,
-		Functions: Functions(c.baseDir),
+		Functions: Functions(c.rootModuleDir),
 	}
 }
 
@@ -530,7 +539,7 @@ func (c *Context) Clone() *Context {
 	}
 
 	clone := &Context{
-		baseDir:         c.baseDir,
+		rootModuleDir:   c.rootModuleDir,
 		variables:       maps.Clone(c.variables),
 		locals:          maps.Clone(c.locals),
 		resources:       maps.Clone(c.resources),
