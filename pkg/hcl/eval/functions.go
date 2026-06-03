@@ -626,10 +626,19 @@ var oneFunc = function.New(&function.Spec{
 	},
 	Impl: func(args []cty.Value, retType cty.Type) (cty.Value, error) {
 		list := args[0]
-		if list.LengthInt() == 0 {
+		// A set's length can be unknown even when the set itself is known,
+		// because unknown elements might collapse with known ones. Matching
+		// OpenTofu, defer to an unknown result rather than counting elements
+		// at face value (which would wrongly report "more than one element").
+		lenVal := list.Length()
+		if !lenVal.IsKnown() {
+			return cty.UnknownVal(retType), nil
+		}
+		l := list.LengthInt()
+		if l == 0 {
 			return cty.NullVal(retType), nil
 		}
-		if list.LengthInt() > 1 {
+		if l > 1 {
 			return cty.NilVal, fmt.Errorf("list has more than one element")
 		}
 		for it := list.ElementIterator(); it.Next(); {
