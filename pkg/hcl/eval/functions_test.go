@@ -787,6 +787,36 @@ func TestSumEmptyList(t *testing.T) {
 	assert.EqualError(t, err, "cannot sum an empty list")
 }
 
+// TestTransposeNull pins that `transpose` matches OpenTofu's graceful
+// argument errors when a list value is null or a list contains a null string,
+// rather than panicking inside the function implementation.
+func TestTransposeNull(t *testing.T) {
+	t.Parallel()
+
+	nullList := cty.MapVal(map[string]cty.Value{
+		"a": cty.NullVal(cty.List(cty.String)),
+	})
+	_, err := transposeFunc.Call([]cty.Value{nullList})
+	assert.EqualError(t, err, `cannot use null list for ["a"]`)
+
+	nullString := cty.MapVal(map[string]cty.Value{
+		"a": cty.ListVal([]cty.Value{cty.StringVal("x"), cty.NullVal(cty.String)}),
+	})
+	_, err = transposeFunc.Call([]cty.Value{nullString})
+	assert.EqualError(t, err, `cannot use null string for ["a"][1]`)
+}
+
+// TestTransposeUnknown pins that `transpose` returns an unknown value, matching
+// OpenTofu, when its input is not wholly known.
+func TestTransposeUnknown(t *testing.T) {
+	t.Parallel()
+	got, err := transposeFunc.Call([]cty.Value{
+		cty.UnknownVal(cty.Map(cty.List(cty.String))),
+	})
+	require.NoError(t, err)
+	assert.Equal(t, cty.UnknownVal(cty.Map(cty.List(cty.String))), got)
+}
+
 // TestOneUnknownLengthSet pins that `one` returns an unknown value, rather than
 // erroring, when given a set whose length is not yet known. The set is known but
 // contains an unknown element, so it could hold either one or two members once
