@@ -96,3 +96,49 @@ func TestProviderRefFromCty(t *testing.T) {
 		})
 	}
 }
+
+func TestConditionResultToBool(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		val     cty.Value
+		want    bool
+		wantErr string
+	}{
+		{name: "bool true", val: cty.True, want: true},
+		{name: "bool false", val: cty.False, want: false},
+		// OpenTofu converts the result to bool, so the strings "true"/"false"
+		// are valid condition results.
+		{name: "string true", val: cty.StringVal("true"), want: true},
+		{name: "string false", val: cty.StringVal("false"), want: false},
+		{
+			name:    "number is not convertible to bool",
+			val:     cty.NumberIntVal(1),
+			wantErr: "condition must be a boolean: bool required, but have number",
+		},
+		{
+			name:    "non-bool string is not convertible",
+			val:     cty.StringVal("yes"),
+			wantErr: "condition must be a boolean: a bool is required",
+		},
+		{
+			name:    "null is rejected",
+			val:     cty.NullVal(cty.Bool),
+			wantErr: "condition must return either true or false, not null",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got, err := conditionResultToBool(tt.val)
+			if tt.wantErr != "" {
+				assert.EqualError(t, err, tt.wantErr)
+				return
+			}
+			assert.NoError(t, err)
+			assert.Equal(t, tt.want, got)
+		})
+	}
+}

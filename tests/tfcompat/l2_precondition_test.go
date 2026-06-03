@@ -82,6 +82,37 @@ resource "simple_resource" "guarded" {
 	})
 }
 
+// TestL2Precondition_StringBoolCondition asserts that a precondition whose
+// condition evaluates to a string convertible to bool ("true"/"false") is
+// accepted on both runtimes, matching OpenTofu's bool-conversion of the result.
+func TestL2Precondition_StringBoolCondition(t *testing.T) {
+	t.Parallel()
+	tfcompat.RunCase(t, "l2_precondition_string_bool_condition", tfcompat.Case{
+		Providers: []tfcompat.Provider{
+			{Name: "simple", Factory: providers.SimpleProvider},
+		},
+		Stages: []tfcompat.Stage{{
+			Files: map[string]string{"main.tf": `
+variable "expected" {
+  type    = string
+  default = "ok"
+}
+
+resource "simple_resource" "guarded" {
+  input_one = "ok"
+
+  lifecycle {
+    precondition {
+      condition     = var.expected != "" ? "true" : "false"
+      error_message = "expected must not be empty"
+    }
+  }
+}
+`},
+		}},
+	})
+}
+
 // TestL2Precondition_UnknownDeferred covers TF's "known after apply" semantics
 // end-to-end: the dependent's precondition references the upstream's computed
 // output, which is unknown at preview (so both runtimes must defer cleanly)

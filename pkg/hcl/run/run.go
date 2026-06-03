@@ -681,13 +681,17 @@ func (e *Engine) processVariable(_ context.Context, node *graph.Node) error {
 		if diags.HasErrors() {
 			return fmt.Errorf("evaluating validation condition %d for variable %q: %s", i+1, varName, diags.Error())
 		}
-
-		if condVal.Type() != cty.Bool {
-			return fmt.Errorf("validation condition %d for variable %q must be boolean, got %s",
-				i+1, varName, condVal.Type().FriendlyName())
+		condVal, _ = condVal.Unmark()
+		if !condVal.IsKnown() {
+			continue
 		}
 
-		if condVal.False() {
+		condOK, err := conditionResultToBool(condVal)
+		if err != nil {
+			return fmt.Errorf("validation condition %d for variable %q: %s", i+1, varName, err)
+		}
+
+		if !condOK {
 			// Get error message
 			errMsgVal, diags := e.evaluator.EvaluateExpression(validation.ErrorMessage)
 			var errMsg string
@@ -3084,10 +3088,11 @@ func evaluatePostcondition(
 	if !condVal.IsKnown() {
 		return nil
 	}
-	if condVal.Type() != cty.Bool {
-		return fmt.Errorf("postcondition %d for %s: condition must be a boolean", index, resourceName)
+	ok, err := conditionResultToBool(condVal)
+	if err != nil {
+		return fmt.Errorf("postcondition %d for %s: %s", index, resourceName, err)
 	}
-	if condVal.True() {
+	if ok {
 		return nil
 	}
 	msgVal, msgDiags := rule.ErrorMessage.Value(selfCtx)
@@ -3102,6 +3107,22 @@ func evaluatePostcondition(
 	return fmt.Errorf("postcondition for %s: %s", resourceName, msg)
 }
 
+// conditionResultToBool mirrors OpenTofu's handling of a condition result
+// (variable validation, precondition, or postcondition). OpenTofu converts the
+// result to bool, so any value convertible to bool — notably the strings
+// "true"/"false" — is a valid condition value, not a type error. A null result
+// is rejected, matching OpenTofu's "must return either true or false, not null".
+func conditionResultToBool(v cty.Value) (bool, error) {
+	converted, err := ctyconvert.Convert(v, cty.Bool)
+	if err != nil {
+		return false, fmt.Errorf("condition must be a boolean: %s", err)
+	}
+	if converted.IsNull() {
+		return false, fmt.Errorf("condition must return either true or false, not null")
+	}
+	return converted.True(), nil
+}
+
 // evaluatePrecondition returns nil when the rule holds or its condition is
 // unknown (deferred), or a formatted error when it fails.
 func evaluatePrecondition(rule *ast.CheckRule, hclCtx *hcl.EvalContext, index int, resourceName string) error {
@@ -3113,10 +3134,11 @@ func evaluatePrecondition(rule *ast.CheckRule, hclCtx *hcl.EvalContext, index in
 	if !condVal.IsKnown() {
 		return nil
 	}
-	if condVal.Type() != cty.Bool {
-		return fmt.Errorf("precondition %d for %s: condition must be a boolean", index, resourceName)
+	ok, err := conditionResultToBool(condVal)
+	if err != nil {
+		return fmt.Errorf("precondition %d for %s: %s", index, resourceName, err)
 	}
-	if condVal.True() {
+	if ok {
 		return nil
 	}
 	msgVal, msgDiags := rule.ErrorMessage.Value(hclCtx)

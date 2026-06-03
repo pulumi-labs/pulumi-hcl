@@ -47,6 +47,33 @@ resource "simple_resource" "guarded" {
 	})
 }
 
+// TestL2Postcondition_StringBoolCondition asserts that a postcondition whose
+// condition evaluates to a string convertible to bool ("true"/"false") is
+// accepted on both runtimes, matching OpenTofu's bool-conversion of the result.
+func TestL2Postcondition_StringBoolCondition(t *testing.T) {
+	t.Parallel()
+	tfcompat.RunCase(t, "l2_postcondition_string_bool_condition", tfcompat.Case{
+		Providers: []tfcompat.Provider{
+			{Name: "simple", Factory: providers.SimpleProvider},
+		},
+		Stages: []tfcompat.Stage{{
+			Files: map[string]string{"main.tf": `
+resource "simple_resource" "guarded" {
+  input_one = "a"
+  input_two = false
+
+  lifecycle {
+    postcondition {
+      condition     = self.result == "a-false" ? "true" : "false"
+      error_message = "result must be a-false"
+    }
+  }
+}
+`},
+		}},
+	})
+}
+
 // TestL2Postcondition_Fail asserts a failing postcondition surfaces an error
 // on both runtimes with the configured message. Unlike preconditions, TF
 // still creates the resource — the postcondition fails the deployment after
