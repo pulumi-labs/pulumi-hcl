@@ -271,6 +271,72 @@ terraform {
 	}}, resp.Specs)
 }
 
+func TestGetRequiredPackages_TransitiveModuleSourceResolvedSDK(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "main.tf"), []byte(`
+module "child" {
+  source = "./child"
+}
+`), 0o600))
+
+	childDir := filepath.Join(dir, "child")
+	require.NoError(t, os.MkdirAll(childDir, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(childDir, "main.tf"), []byte(`
+terraform {
+  required_providers {
+    rollbar = {
+      source  = "rollbar/rollbar"
+      version = ">= 1.0"
+    }
+  }
+}
+`), 0o600))
+
+	// Mirror what `pulumi install` leaves behind: a local SDK resolving the
+	// rollbar spec to a parameterized terraform-provider package.
+	host := &LanguageHost{}
+	sdkDir := filepath.Join(dir, "sdks", "rollbar")
+	require.NoError(t, os.MkdirAll(sdkDir, 0o755))
+	_, err := host.GeneratePackage(t.Context(), &pulumirpc.GeneratePackageRequest{
+		Directory: sdkDir,
+		Schema: `{
+			"name": "rollbar",
+			"version": "1.17.0",
+			"parameterization": {
+				"baseProvider": {"name": "terraform-provider", "version": "0.0.1"},
+				"parameter": "aGVsbG8="
+			}
+		}`,
+	})
+	require.NoError(t, err)
+
+	resp, err := host.GetRequiredPackages(t.Context(), &pulumirpc.GetRequiredPackagesRequest{
+		Info: &pulumirpc.ProgramInfo{
+			ProgramDirectory: dir,
+			RootDirectory:    dir,
+			EntryPoint:       ".",
+		},
+	})
+	require.NoError(t, err)
+
+	// The local SDK resolves the provider, so it must be reported as a package
+	// and the now-redundant spec must be dropped — exactly as it is when the
+	// declaration lives in the root module.
+	assert.Equal(t, []*pulumirpc.PackageDependency{{
+		Name:    "terraform-provider",
+		Version: "0.0.1",
+		Kind:    "resource",
+		Parameterization: &pulumirpc.PackageParameterization{
+			Name:    "rollbar",
+			Version: "1.17.0",
+			Value:   []byte("hello"),
+		},
+	}}, resp.Packages)
+	assert.Empty(t, resp.Specs)
+}
+
 // TestGetRequiredPackages_SameSourceVersionIntersection mirrors tofu: two
 // modules requiring the same provider source are installed once, with their
 // version constraints unioned into one ", "-joined constraint. The
