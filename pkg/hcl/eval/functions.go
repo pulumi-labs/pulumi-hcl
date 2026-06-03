@@ -51,6 +51,7 @@ import (
 	"github.com/hashicorp/hcl/v2/ext/customdecode"
 	"github.com/hashicorp/hcl/v2/ext/tryfunc"
 	"github.com/hashicorp/hcl/v2/hclsyntax"
+	homedir "github.com/mitchellh/go-homedir"
 	"github.com/pulumi-labs/pulumi-hcl/vendored/ipaddr"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/resource/archive"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/resource/asset"
@@ -1000,15 +1001,8 @@ var pathExpandFunc = function.New(&function.Spec{
 	},
 	Type: function.StaticReturnType(cty.String),
 	Impl: func(args []cty.Value, retType cty.Type) (cty.Value, error) {
-		path := args[0].AsString()
-		if strings.HasPrefix(path, "~") {
-			home, err := os.UserHomeDir()
-			if err != nil {
-				return cty.NilVal, err
-			}
-			path = filepath.Join(home, path[1:])
-		}
-		return cty.StringVal(path), nil
+		homePath, err := homedir.Expand(args[0].AsString())
+		return cty.StringVal(homePath), err
 	},
 })
 
@@ -1022,6 +1016,21 @@ var basenameFunc = function.New(&function.Spec{
 	},
 })
 
+// resolveFilePath turns a path argument from one of the file* functions into a
+// concrete path on disk, matching OpenTofu's openFile: a leading `~` is expanded
+// to the user's home directory, a relative path is resolved against baseDir, and
+// the result is cleaned for the host OS.
+func resolveFilePath(baseDir, path string) (string, error) {
+	path, err := homedir.Expand(path)
+	if err != nil {
+		return "", fmt.Errorf("failed to expand ~: %w", err)
+	}
+	if !filepath.IsAbs(path) {
+		path = filepath.Join(baseDir, path)
+	}
+	return filepath.Clean(path), nil
+}
+
 func fileFunc(baseDir string) function.Function {
 	return function.New(&function.Spec{
 		Params: []function.Parameter{
@@ -1029,9 +1038,9 @@ func fileFunc(baseDir string) function.Function {
 		},
 		Type: function.StaticReturnType(cty.String),
 		Impl: func(args []cty.Value, retType cty.Type) (cty.Value, error) {
-			path := args[0].AsString()
-			if !filepath.IsAbs(path) {
-				path = filepath.Join(baseDir, path)
+			path, err := resolveFilePath(baseDir, args[0].AsString())
+			if err != nil {
+				return cty.NilVal, err
 			}
 			content, err := os.ReadFile(path)
 			if err != nil {
@@ -1049,12 +1058,40 @@ func fileExistsFunc(baseDir string) function.Function {
 		},
 		Type: function.StaticReturnType(cty.Bool),
 		Impl: func(args []cty.Value, retType cty.Type) (cty.Value, error) {
-			path := args[0].AsString()
-			if !filepath.IsAbs(path) {
-				path = filepath.Join(baseDir, path)
+			path, err := resolveFilePath(baseDir, args[0].AsString())
+			if err != nil {
+				return cty.NilVal, err
 			}
-			_, err := os.Stat(path)
-			return cty.BoolVal(err == nil), nil
+
+			fi, err := os.Stat(path)
+			if err != nil {
+				if os.IsNotExist(err) {
+					return cty.False, nil
+				}
+				return cty.NilVal, fmt.Errorf("failed to stat %s", path)
+			}
+
+			if fi.Mode().IsRegular() {
+				return cty.True, nil
+			}
+
+			// Match OpenTofu: anything that exists but is not a regular file
+			// (a directory, device node, pipe, socket, ...) is an error rather
+			// than a silent false.
+			fileType := fi.Mode().Type()
+			switch {
+			case (fileType & os.ModeDir) != 0:
+				err = fmt.Errorf("%s is a directory, not a file", path)
+			case (fileType & os.ModeDevice) != 0:
+				err = fmt.Errorf("%s is a device node, not a regular file", path)
+			case (fileType & os.ModeNamedPipe) != 0:
+				err = fmt.Errorf("%s is a named pipe, not a regular file", path)
+			case (fileType & os.ModeSocket) != 0:
+				err = fmt.Errorf("%s is a unix domain socket, not a regular file", path)
+			default:
+				err = fmt.Errorf("%s is not a regular file", path)
+			}
+			return cty.False, err
 		},
 	})
 }
@@ -1116,9 +1153,9 @@ func fileBase64Func(baseDir string) function.Function {
 		},
 		Type: function.StaticReturnType(cty.String),
 		Impl: func(args []cty.Value, retType cty.Type) (cty.Value, error) {
-			path := args[0].AsString()
-			if !filepath.IsAbs(path) {
-				path = filepath.Join(baseDir, path)
+			path, err := resolveFilePath(baseDir, args[0].AsString())
+			if err != nil {
+				return cty.NilVal, err
 			}
 			content, err := os.ReadFile(path)
 			if err != nil {
@@ -1144,9 +1181,9 @@ func templateFileFunc(baseDir string, nestedFuncs map[string]function.Function) 
 		Type: function.StaticReturnType(cty.String),
 		Impl: func(args []cty.Value, retType cty.Type) (cty.Value, error) {
 			path := args[0].AsString()
-			fullPath := path
-			if !filepath.IsAbs(fullPath) {
-				fullPath = filepath.Join(baseDir, fullPath)
+			fullPath, err := resolveFilePath(baseDir, path)
+			if err != nil {
+				return cty.NilVal, err
 			}
 			content, err := os.ReadFile(fullPath)
 			if err != nil {
@@ -1375,9 +1412,9 @@ func fileBase64Sha256Func(baseDir string) function.Function {
 		},
 		Type: function.StaticReturnType(cty.String),
 		Impl: func(args []cty.Value, retType cty.Type) (cty.Value, error) {
-			path := args[0].AsString()
-			if !filepath.IsAbs(path) {
-				path = filepath.Join(baseDir, path)
+			path, err := resolveFilePath(baseDir, args[0].AsString())
+			if err != nil {
+				return cty.NilVal, err
 			}
 			content, err := os.ReadFile(path)
 			if err != nil {
@@ -1396,9 +1433,9 @@ func fileBase64Sha512Func(baseDir string) function.Function {
 		},
 		Type: function.StaticReturnType(cty.String),
 		Impl: func(args []cty.Value, retType cty.Type) (cty.Value, error) {
-			path := args[0].AsString()
-			if !filepath.IsAbs(path) {
-				path = filepath.Join(baseDir, path)
+			path, err := resolveFilePath(baseDir, args[0].AsString())
+			if err != nil {
+				return cty.NilVal, err
 			}
 			content, err := os.ReadFile(path)
 			if err != nil {
@@ -1417,9 +1454,9 @@ func fileMd5Func(baseDir string) function.Function {
 		},
 		Type: function.StaticReturnType(cty.String),
 		Impl: func(args []cty.Value, retType cty.Type) (cty.Value, error) {
-			path := args[0].AsString()
-			if !filepath.IsAbs(path) {
-				path = filepath.Join(baseDir, path)
+			path, err := resolveFilePath(baseDir, args[0].AsString())
+			if err != nil {
+				return cty.NilVal, err
 			}
 			content, err := os.ReadFile(path)
 			if err != nil {
@@ -1438,9 +1475,9 @@ func fileSha1Func(baseDir string) function.Function {
 		},
 		Type: function.StaticReturnType(cty.String),
 		Impl: func(args []cty.Value, retType cty.Type) (cty.Value, error) {
-			path := args[0].AsString()
-			if !filepath.IsAbs(path) {
-				path = filepath.Join(baseDir, path)
+			path, err := resolveFilePath(baseDir, args[0].AsString())
+			if err != nil {
+				return cty.NilVal, err
 			}
 			content, err := os.ReadFile(path)
 			if err != nil {
@@ -1459,9 +1496,9 @@ func fileSha256Func(baseDir string) function.Function {
 		},
 		Type: function.StaticReturnType(cty.String),
 		Impl: func(args []cty.Value, retType cty.Type) (cty.Value, error) {
-			path := args[0].AsString()
-			if !filepath.IsAbs(path) {
-				path = filepath.Join(baseDir, path)
+			path, err := resolveFilePath(baseDir, args[0].AsString())
+			if err != nil {
+				return cty.NilVal, err
 			}
 			content, err := os.ReadFile(path)
 			if err != nil {
@@ -1480,9 +1517,9 @@ func fileSha512Func(baseDir string) function.Function {
 		},
 		Type: function.StaticReturnType(cty.String),
 		Impl: func(args []cty.Value, retType cty.Type) (cty.Value, error) {
-			path := args[0].AsString()
-			if !filepath.IsAbs(path) {
-				path = filepath.Join(baseDir, path)
+			path, err := resolveFilePath(baseDir, args[0].AsString())
+			if err != nil {
+				return cty.NilVal, err
 			}
 			content, err := os.ReadFile(path)
 			if err != nil {
