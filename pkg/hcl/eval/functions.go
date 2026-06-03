@@ -32,6 +32,7 @@ import (
 	"encoding/pem"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/url"
 	"os"
@@ -151,12 +152,14 @@ func Functions(baseDir string) map[string]function.Function {
 		"base64decode":     base64DecodeFunc,
 		"base64encode":     base64EncodeFunc,
 		"base64gzip":       base64GzipFunc,
+		"base64gunzip":     base64GunzipFunc,
 		"csvdecode":        stdlib.CSVDecodeFunc,
 		"jsondecode":       stdlib.JSONDecodeFunc,
 		"jsonencode":       stdlib.JSONEncodeFunc,
 		"textdecodebase64": textDecodeBase64Func,
 		"textencodebase64": textEncodeBase64Func,
 		"urlencode":        urlEncodeFunc,
+		"urldecode":        urlDecodeFunc,
 		"yamldecode":       ctyyaml.YAMLDecodeFunc,
 		"yamlencode":       ctyyaml.YAMLEncodeFunc,
 
@@ -195,10 +198,11 @@ func Functions(baseDir string) map[string]function.Function {
 		"uuidv5":           uuidv5Func,
 
 		// IP network functions
-		"cidrhost":    cidrHostFunc,
-		"cidrnetmask": cidrNetmaskFunc,
-		"cidrsubnet":  cidrSubnetFunc,
-		"cidrsubnets": cidrSubnetsFunc,
+		"cidrcontains": cidrContainsFunc,
+		"cidrhost":     cidrHostFunc,
+		"cidrnetmask":  cidrNetmaskFunc,
+		"cidrsubnet":   cidrSubnetFunc,
+		"cidrsubnets":  cidrSubnetsFunc,
 
 		// Type conversion functions
 		"can":          canFunc,
@@ -802,6 +806,30 @@ var base64GzipFunc = function.New(&function.Spec{
 	},
 })
 
+// base64GunzipFunc base64-decodes a string and then gunzips the result. It is
+// the inverse of base64GzipFunc.
+var base64GunzipFunc = function.New(&function.Spec{
+	Params: []function.Parameter{
+		{Name: "string", Type: cty.String},
+	},
+	Type: function.StaticReturnType(cty.String),
+	Impl: func(args []cty.Value, retType cty.Type) (cty.Value, error) {
+		decoded, err := base64.StdEncoding.DecodeString(args[0].AsString())
+		if err != nil {
+			return cty.NilVal, fmt.Errorf("failed to decode base64 data %q", args[0].AsString())
+		}
+		gzipReader, err := gzip.NewReader(bytes.NewReader(decoded))
+		if err != nil {
+			return cty.NilVal, fmt.Errorf("failed to gunzip bytestream: %w", err)
+		}
+		gunzipped, err := io.ReadAll(gzipReader)
+		if err != nil {
+			return cty.NilVal, fmt.Errorf("failed to read gunzip raw data: %w", err)
+		}
+		return cty.StringVal(string(gunzipped)), nil
+	},
+})
+
 // textDecodeBase64Func base64-decodes a string and then reinterprets the bytes
 // using the named IANA character encoding.
 var textDecodeBase64Func = function.New(&function.Spec{
@@ -870,6 +898,22 @@ var urlEncodeFunc = function.New(&function.Spec{
 	Type: function.StaticReturnType(cty.String),
 	Impl: func(args []cty.Value, retType cty.Type) (cty.Value, error) {
 		return cty.StringVal(url.QueryEscape(args[0].AsString())), nil
+	},
+})
+
+// urlDecodeFunc reverses query-string percent encoding. It is the inverse of
+// urlEncodeFunc, and like url.QueryUnescape it maps a literal "+" to a space.
+var urlDecodeFunc = function.New(&function.Spec{
+	Params: []function.Parameter{
+		{Name: "string", Type: cty.String},
+	},
+	Type: function.StaticReturnType(cty.String),
+	Impl: func(args []cty.Value, retType cty.Type) (cty.Value, error) {
+		query, err := url.QueryUnescape(args[0].AsString())
+		if err != nil {
+			return cty.NilVal, fmt.Errorf("failed to decode URL %q: %w", query, err)
+		}
+		return cty.StringVal(query), nil
 	},
 })
 
@@ -1474,6 +1518,50 @@ var rsaDecryptFunc = function.New(&function.Spec{
 })
 
 // IP network functions
+
+// cidrContainsFunc reports whether the IP address or prefix in its second
+// argument is contained within the prefix in its first argument.
+var cidrContainsFunc = function.New(&function.Spec{
+	Params: []function.Parameter{
+		{Name: "containing_prefix", Type: cty.String},
+		{Name: "contained_ip_or_prefix", Type: cty.String},
+	},
+	Type: function.StaticReturnType(cty.Bool),
+	Impl: func(args []cty.Value, retType cty.Type) (cty.Value, error) {
+		prefix := args[0].AsString()
+		addr := args[1].AsString()
+
+		_, containing, err := ipaddr.ParseCIDR(prefix)
+		if err != nil {
+			return cty.NilVal, err
+		}
+
+		// The second argument can be either a bare IP address or a CIDR prefix.
+		// Try it as an address first, and fall back to a prefix, in which case
+		// both ends of its range must be contained.
+		startIP := ipaddr.ParseIP(addr)
+		var endIP ipaddr.IP
+		if startIP == nil {
+			_, contained, err := ipaddr.ParseCIDR(addr)
+			if err != nil {
+				return cty.NilVal, fmt.Errorf("invalid IP address or prefix: %s", addr)
+			}
+			startIP, endIP = cidr.AddressRange(contained)
+		}
+
+		// Comparing across address families would silently return false, so
+		// reject it as an error to distinguish from a genuine non-containment.
+		if (startIP.To4() == nil) != (containing.IP.To4() == nil) {
+			return cty.NilVal, fmt.Errorf("address family mismatch: %s vs. %s", prefix, addr)
+		}
+
+		result := containing.Contains(startIP)
+		if endIP != nil {
+			result = result && containing.Contains(endIP)
+		}
+		return cty.BoolVal(result), nil
+	},
+})
 
 var cidrHostFunc = function.New(&function.Spec{
 	Params: []function.Parameter{

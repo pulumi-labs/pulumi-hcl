@@ -20,10 +20,9 @@ import (
 	"github.com/pulumi-labs/pulumi-hcl/tests/testutil/tfcompat"
 )
 
-// TestL1URLEncode exercises the `urlencode` built-in: both paths must apply
-// query-string encoding, turning spaces into `+` and percent-encoding non-ASCII
-// characters as their UTF-8 bytes.
-func TestL1URLEncode(t *testing.T) {
+// TestL1TextFunction exercises built-ins compared purely through their
+// string/scalar outputs.
+func TestL1TextFunction(t *testing.T) {
 	t.Parallel()
-	tfcompat.RunCase(t, "l1_urlencode", tfcompat.Case{})
+	tfcompat.RunCase(t, "l1_text_function", tfcompat.Case{})
 }

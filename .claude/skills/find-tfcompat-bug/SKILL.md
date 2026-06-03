@@ -203,37 +203,17 @@ PR body rather than leaving it silently unfixed.
 
 ## Step 6 — Changelog + branch + PR
 
-Model the flow on PR https://github.com/pulumi-labs/pulumi-hcl/pull/170 (the urlencode
-fix). Predict the next sequential PR number and use it for both the filename and the
-`PR` field.
+Consult the submit-pr skill for opening a PR.
 
-`.changes/unreleased/runtime-bug-fixes-<PR>.yaml`:
+When writing your PR & changelog:
 
-```yaml
-kind: bug-fixes
-body: '`<thing>` matches OpenTofu: <one-line description of the corrected behavior>'
-time: <RFC3339 with +02:00 tz>
-custom:
-    Component: runtime
-    PR: "<PR>"
-```
-
-Say **OpenTofu**, not "Terraform" — OpenTofu is the runtime we compare against —
-and keep the `<thing>` (function or feature name) in backticks. Apply the same to
-the PR title: `` Match OpenTofu's `<thing>` behavior `` — OpenTofu (not Terraform),
-function name backtick-quoted.
+- Say **OpenTofu**, not "Terraform" — OpenTofu is the runtime we compare against —
+- keep the `<thing>` (function or feature name) in backticks.
+- Apply the same rules to the PR title.
+- Keep the changelog `body` **terse** — a short phrase naming the change (e.g.
+  ``Add `base64gunzip`, `urldecode` and `cidrcontains` ``), not a sentence
+  explaining it. The divergence/fix narrative goes in the PR description.
 
 Then, on its **own branch off master** (not stacked on a prior fix):
-
-```bash
-git checkout master && git checkout -b iwahbe/fix-<name>
-# add the runtime file(s) you changed, the test pair, and the changelog — specific paths only
-git add <changed runtime file(s)> \
-        tests/tfcompat/<l1|l2>_<name>_test.go \
-        tests/tfcompat/testdata/cases/<l1|l2>_<name>/main.tf \
-        .changes/unreleased/runtime-bug-fixes-<PR>.yaml
-git commit   # complete-punctuation body, no self co-author
-gh pr create # like #170: describe the divergence, the fix, and the proof
-```
 
 Report the divergence, the fix, the verification results, and the PR URL.

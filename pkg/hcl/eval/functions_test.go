@@ -372,6 +372,12 @@ func TestEncodingFunctions(t *testing.T) {
 		{"urlencode unicode", `urlencode("café")`, cty.StringVal("caf%C3%A9")},
 		// base64gzip - check it returns non-empty string
 		{"base64gzip", `base64gzip("hello") != ""`, cty.BoolVal(true)},
+		// base64gunzip is the inverse of base64gzip, so the round trip is identity.
+		{"base64gunzip roundtrip", `base64gunzip(base64gzip("hello"))`, cty.StringVal("hello")},
+		// urldecode reverses urlencode; QueryUnescape also maps "+" to a space.
+		{"urldecode percent", `urldecode("a%20b%26c")`, cty.StringVal("a b&c")},
+		{"urldecode plus", `urldecode("x+y")`, cty.StringVal("x y")},
+		{"urldecode roundtrip", `urldecode(urlencode("café / a b"))`, cty.StringVal("café / a b")},
 		{"csvdecode length", `length(csvdecode("a,b\n1,2\n3,4"))`, cty.NumberIntVal(2)},
 		{"textencodebase64", `textencodebase64("hello", "UTF-8")`, cty.StringVal("aGVsbG8=")},
 		{"textdecodebase64", `textdecodebase64("aGVsbG8=", "UTF-8")`, cty.StringVal("hello")},
@@ -724,6 +730,17 @@ func TestCidrHostOutOfRange(t *testing.T) {
 	assert.EqualError(t, err, "prefix of 24 does not accommodate a host numbered 256")
 }
 
+// TestCidrContainsAddressFamilyMismatch pins that `cidrcontains` errors, rather
+// than silently returning false, when the prefix and the candidate address are
+// of different address families, matching OpenTofu.
+func TestCidrContainsAddressFamilyMismatch(t *testing.T) {
+	t.Parallel()
+	_, err := cidrContainsFunc.Call([]cty.Value{
+		cty.StringVal("10.0.0.0/8"), cty.StringVal("2001:db8::1"),
+	})
+	assert.EqualError(t, err, "address family mismatch: 10.0.0.0/8 vs. 2001:db8::1")
+}
+
 // TestCidrNetmaskIPv6 pins that `cidrnetmask` rejects an IPv6 prefix, as
 // OpenTofu does, rather than rendering the mask: a netmask is an IPv4-only
 // concept.
@@ -1035,6 +1052,11 @@ func TestIPFunctions(t *testing.T) {
 		expr     string
 		expected cty.Value
 	}{
+		{"cidrcontains ip in", `cidrcontains("10.0.0.0/8", "10.5.6.7")`, cty.True},
+		{"cidrcontains ip out", `cidrcontains("10.0.0.0/8", "192.168.1.1")`, cty.False},
+		{"cidrcontains prefix in", `cidrcontains("10.0.0.0/8", "10.1.0.0/16")`, cty.True},
+		{"cidrcontains prefix out", `cidrcontains("10.0.0.0/16", "10.1.0.0/16")`, cty.False},
+		{"cidrcontains v6 in", `cidrcontains("2001:db8::/32", "2001:db8:1::1")`, cty.True},
 		{"cidrhost", `cidrhost("10.0.0.0/8", 5)`, cty.StringVal("10.0.0.5")},
 		{"cidrhost neg one", `cidrhost("10.0.0.0/24", -1)`, cty.StringVal("10.0.0.255")},
 		{"cidrhost neg two", `cidrhost("10.0.0.0/24", -2)`, cty.StringVal("10.0.0.254")},
