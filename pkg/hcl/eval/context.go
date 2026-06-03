@@ -209,10 +209,18 @@ func (c *Context) SetLocal(name string, value cty.Value) {
 
 // SetResource sets a resource's output values.
 // The key should be "type.name" (e.g., "aws_instance.web").
+//
+// Synthetic attributes (the engine-injected `urn`, marked with SyntheticMark)
+// are stripped here so they're invisible to user-facing HCL — iterating the
+// resource object or serializing it into an output must match OpenTofu, which
+// has no such attribute. The unstripped object remains in the engine's
+// resourceOutputs store for internal consumers (`depends_on`, provider
+// references), and the per-leaf DepMark survives the strip so
+// `pulumiResourceName`/`pulumiResourceType` still recover the URN.
 func (c *Context) SetResource(key string, value cty.Value) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	c.resources[key] = value
+	c.resources[key] = StripSyntheticAttributes(value)
 }
 
 // SetCountResource stores a resource instance from count expansion.
@@ -221,7 +229,7 @@ func (c *Context) SetCountResource(baseKey string, index int, value cty.Value) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.rangedResources[baseKey] = append(c.rangedResources[baseKey], rangedInstance{
-		value: value, index: index, isCount: true,
+		value: StripSyntheticAttributes(value), index: index, isCount: true,
 	})
 }
 
@@ -231,7 +239,7 @@ func (c *Context) SetEachResource(baseKey string, eachKey string, value cty.Valu
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.rangedResources[baseKey] = append(c.rangedResources[baseKey], rangedInstance{
-		value: value, eachKey: eachKey, isEach: true,
+		value: StripSyntheticAttributes(value), eachKey: eachKey, isEach: true,
 	})
 }
 

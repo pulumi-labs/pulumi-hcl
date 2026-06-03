@@ -123,6 +123,15 @@ func (e *Evaluator) EvaluateBody(body hcl.Body) (map[string]cty.Value, hcl.Diagn
 // SensitiveMark is the cty value mark applied to sensitive values.
 const SensitiveMark = "sensitive"
 
+// SyntheticMark is the cty value mark applied to attributes that pulumi-hcl
+// injects onto a resource-reference object but that have no OpenTofu
+// equivalent (e.g. the `urn` attribute consumed by `pulumiResourceName`,
+// `pulumiResourceType`, `depends_on`, and provider references). Such
+// attributes must remain on the in-context resource object so those consumers
+// resolve, but must be stripped from values serialized into stack outputs,
+// where OpenTofu would never emit them.
+const SyntheticMark = "pulumi-synthetic"
+
 // DepMark records the URN of a Pulumi resource a value transitively depends
 // on. Marks ride along with values through cty expression evaluation, so the
 // per-property dep set is just the union of DepMarks on the converted value
@@ -202,6 +211,82 @@ func markUnmarkedOutputLeaves(val cty.Value, mark any) cty.Value {
 		return cty.TupleVal(vs)
 	default:
 		return val.Mark(mark)
+	}
+}
+
+// StripSyntheticAttributes recursively removes object attributes whose value
+// carries SyntheticMark. These are pulumi-injected attributes (e.g. a
+// resource's `urn`) that have no OpenTofu equivalent and must not be visible to
+// user-facing HCL — neither when iterating a resource object (for-expressions,
+// keys, values, splat) nor when serializing it into a stack output. All other
+// marks (DepMark, SensitiveMark) are preserved so dependency tracking and
+// sensitivity continue to flow.
+func StripSyntheticAttributes(val cty.Value) cty.Value {
+	if val.IsNull() || !val.IsKnown() {
+		return val
+	}
+	unmarked, marks := val.Unmark()
+	out := stripSyntheticAttributesUnmarked(unmarked)
+	if len(marks) > 0 {
+		out = out.WithMarks(marks)
+	}
+	return out
+}
+
+func stripSyntheticAttributesUnmarked(val cty.Value) cty.Value {
+	ty := val.Type()
+	switch {
+	case ty.IsObjectType():
+		if val.LengthInt() == 0 {
+			return val
+		}
+		m := make(map[string]cty.Value, val.LengthInt())
+		for it := val.ElementIterator(); it.Next(); {
+			k, v := it.Element()
+			if v.HasMark(SyntheticMark) {
+				continue
+			}
+			m[k.AsString()] = StripSyntheticAttributes(v)
+		}
+		if len(m) == 0 {
+			return cty.EmptyObjectVal
+		}
+		return cty.ObjectVal(m)
+	case ty.IsMapType():
+		if val.LengthInt() == 0 {
+			return val
+		}
+		m := make(map[string]cty.Value, val.LengthInt())
+		for it := val.ElementIterator(); it.Next(); {
+			k, v := it.Element()
+			m[k.AsString()] = StripSyntheticAttributes(v)
+		}
+		return cty.MapVal(m)
+	case ty.IsListType() || ty.IsTupleType():
+		if val.LengthInt() == 0 {
+			return val
+		}
+		vs := make([]cty.Value, 0, val.LengthInt())
+		for it := val.ElementIterator(); it.Next(); {
+			_, v := it.Element()
+			vs = append(vs, StripSyntheticAttributes(v))
+		}
+		if ty.IsTupleType() {
+			return cty.TupleVal(vs)
+		}
+		return cty.ListVal(vs)
+	case ty.IsSetType():
+		if val.LengthInt() == 0 {
+			return val
+		}
+		vs := make([]cty.Value, 0, val.LengthInt())
+		for it := val.ElementIterator(); it.Next(); {
+			_, v := it.Element()
+			vs = append(vs, StripSyntheticAttributes(v))
+		}
+		return cty.SetVal(vs)
+	default:
+		return val
 	}
 }
 

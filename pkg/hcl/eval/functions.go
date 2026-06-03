@@ -2093,13 +2093,31 @@ var (
 
 // Pulumi-specific functions
 
-// pulumiResourceNameFunc returns the logical name of a Pulumi resource by extracting it from the
-// resource's URN. The argument must be a resource reference (an object with a "urn" attribute).
+// resourceURNFromValue extracts a resource reference's own URN. The synthetic
+// `urn` attribute is no longer exposed on resource objects (it would leak into
+// user-facing iteration and stack outputs), so the URN is recovered from the
+// DepMark the engine stamps on every leaf of a resource's output object. A
+// resource reference therefore carries exactly one DepMark — its own URN. The
+// AllowMarked parameter must be set so the marks reach this code.
+func resourceURNFromValue(fnName string, res cty.Value) (string, error) {
+	if !res.Type().IsObjectType() {
+		return "", fmt.Errorf("%s: argument must be a resource reference", fnName)
+	}
+	urns := CollectDepURNs(res)
+	if len(urns) != 1 {
+		return "", fmt.Errorf("%s: argument must be a resource reference", fnName)
+	}
+	return urns[0], nil
+}
+
+// pulumiResourceNameFunc returns the logical name of a Pulumi resource by
+// extracting it from the resource's URN.
 var pulumiResourceNameFunc = function.New(&function.Spec{
 	Params: []function.Parameter{
 		{
-			Name: "resource",
-			Type: cty.DynamicPseudoType,
+			Name:        "resource",
+			Type:        cty.DynamicPseudoType,
+			AllowMarked: true,
 		},
 	},
 	Type: function.StaticReturnType(cty.String),
@@ -2108,14 +2126,11 @@ var pulumiResourceNameFunc = function.New(&function.Spec{
 		if !res.IsKnown() {
 			return cty.UnknownVal(cty.String), nil
 		}
-		if !res.Type().IsObjectType() || !res.Type().HasAttribute("urn") {
-			return cty.NilVal, fmt.Errorf("pulumiResourceName: argument must be a resource reference")
+		urnStr, err := resourceURNFromValue("pulumiResourceName", res)
+		if err != nil {
+			return cty.NilVal, err
 		}
-		urnVal := res.GetAttr("urn")
-		if !urnVal.IsKnown() {
-			return cty.UnknownVal(cty.String), nil
-		}
-		name, _, err := splitURN(urnVal.AsString())
+		name, _, err := splitURN(urnStr)
 		if err != nil {
 			return cty.NilVal, fmt.Errorf("pulumiResourceName: %w", err)
 		}
@@ -2123,13 +2138,14 @@ var pulumiResourceNameFunc = function.New(&function.Spec{
 	},
 })
 
-// pulumiResourceTypeFunc returns the type token of a Pulumi resource by extracting it from the
-// resource's URN. The argument must be a resource reference (an object with a "urn" attribute).
+// pulumiResourceTypeFunc returns the type token of a Pulumi resource by
+// extracting it from the resource's URN.
 var pulumiResourceTypeFunc = function.New(&function.Spec{
 	Params: []function.Parameter{
 		{
-			Name: "resource",
-			Type: cty.DynamicPseudoType,
+			Name:        "resource",
+			Type:        cty.DynamicPseudoType,
+			AllowMarked: true,
 		},
 	},
 	Type: function.StaticReturnType(cty.String),
@@ -2138,14 +2154,11 @@ var pulumiResourceTypeFunc = function.New(&function.Spec{
 		if !res.IsKnown() {
 			return cty.UnknownVal(cty.String), nil
 		}
-		if !res.Type().IsObjectType() || !res.Type().HasAttribute("urn") {
-			return cty.NilVal, fmt.Errorf("pulumiResourceType: argument must be a resource reference")
+		urnStr, err := resourceURNFromValue("pulumiResourceType", res)
+		if err != nil {
+			return cty.NilVal, err
 		}
-		urnVal := res.GetAttr("urn")
-		if !urnVal.IsKnown() {
-			return cty.UnknownVal(cty.String), nil
-		}
-		_, typeToken, err := splitURN(urnVal.AsString())
+		_, typeToken, err := splitURN(urnStr)
 		if err != nil {
 			return cty.NilVal, fmt.Errorf("pulumiResourceType: %w", err)
 		}

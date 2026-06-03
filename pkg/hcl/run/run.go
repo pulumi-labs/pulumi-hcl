@@ -1034,6 +1034,11 @@ func (e *Engine) registerProviderInContext(
 	} else {
 		outputObj["id"] = cty.StringVal(providerID)
 	}
+	// Providers are resource references that `provider = X.alias` resolves
+	// through the eval context, so their `urn` must stay visible (it is not
+	// marked synthetic). Unlike a managed resource, a provider can't be
+	// referenced as a value in HCL, so there's no user-facing iteration to leak
+	// into.
 	outputObj["urn"] = cty.StringVal(resp.URN)
 
 	e.resourceOutputs.Set(node.Key, eval.MarkOutputLeaves(cty.ObjectVal(outputObj), eval.DepMark(resp.URN)))
@@ -1288,7 +1293,7 @@ func (e *Engine) registerResourceInstanceInContext(
 	} else {
 		outputObj["id"] = cty.StringVal(id)
 	}
-	outputObj["urn"] = cty.StringVal(urn)
+	outputObj["urn"] = cty.StringVal(urn).Mark(eval.SyntheticMark)
 
 	markedOutputs := eval.MarkOutputLeaves(cty.ObjectVal(outputObj), eval.DepMark(urn))
 
@@ -2902,10 +2907,10 @@ func (e *Engine) processOutput(_ context.Context, name string, output *ast.Outpu
 		return fmt.Errorf("evaluating output value: %s", diags.Error())
 	}
 
-	// Strip the synthetic `urn` attribute the engine attaches to resource
-	// objects; OpenTofu has no such attribute, so exposing a whole resource
-	// must not leak it into stack outputs.
-	val = transform.StripResourceURN(val)
+	// Resource objects reach outputs through the eval context, which already
+	// drops engine-injected synthetic attributes (the `urn`). Strip again here
+	// as a safety net against any exposure path that bypasses the context.
+	val = eval.StripSyntheticAttributes(val)
 
 	// Convert to PropertyValue
 	pv, err := transform.CtyToPropertyValue(val)
