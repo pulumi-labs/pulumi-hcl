@@ -195,6 +195,13 @@ func TestCollectionFunctions(t *testing.T) {
 		// lookup
 		{"lookup found", `lookup({a = "x", b = "y"}, "a", "default")`, cty.StringVal("x")},
 		{"lookup default", `lookup({a = "x"}, "b", "default")`, cty.StringVal("default")},
+		// On the map path the default is converted to the element type, just
+		// like OpenTofu.
+		{"lookup map default num to string", `lookup(tomap({a = "1"}), "missing", 30)`, cty.StringVal("30")},
+		{"lookup map default string to num", `lookup(tomap({a = 1}), "missing", "80")`, cty.NumberIntVal(80)},
+		{"lookup map default bool to string", `lookup(tomap({a = "x"}), "missing", true)`, cty.StringVal("true")},
+		// On the object path the default keeps its own type.
+		{"lookup object default unconverted", `lookup({a = "x"}, "missing", 30)`, cty.NumberIntVal(30)},
 
 		// contains
 		{"contains true", `contains(["a", "b"], "a")`, cty.BoolVal(true)},
