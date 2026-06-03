@@ -1414,6 +1414,58 @@ func TestUnknownPropagation(t *testing.T) {
 	}
 }
 
+// TestLengthMarkPropagation mirrors OpenTofu's LengthFunc, which carries the
+// argument's marks onto the returned count for every supported type. The tuple
+// and object branches build the count themselves, so they must reapply the
+// marks; the string/list/map branches delegate to helpers that already
+// preserve them.
+func TestLengthMarkPropagation(t *testing.T) {
+	t.Parallel()
+	funcs := Functions("/tmp")
+	length := funcs["length"]
+
+	tests := []struct {
+		name string
+		arg  cty.Value
+		want cty.Value
+	}{
+		{
+			name: "tuple",
+			arg:  cty.TupleVal([]cty.Value{cty.StringVal("a"), cty.StringVal("b"), cty.StringVal("c")}).Mark(SensitiveMark),
+			want: cty.NumberIntVal(3).Mark(SensitiveMark),
+		},
+		{
+			name: "object",
+			arg:  cty.ObjectVal(map[string]cty.Value{"a": cty.NumberIntVal(1), "b": cty.NumberIntVal(2)}).Mark(SensitiveMark),
+			want: cty.NumberIntVal(2).Mark(SensitiveMark),
+		},
+		{
+			name: "string",
+			arg:  cty.StringVal("hello").Mark(SensitiveMark),
+			want: cty.NumberIntVal(5).Mark(SensitiveMark),
+		},
+		{
+			name: "list",
+			arg:  cty.ListVal([]cty.Value{cty.StringVal("a"), cty.StringVal("b")}).Mark(SensitiveMark),
+			want: cty.NumberIntVal(2).Mark(SensitiveMark),
+		},
+		{
+			name: "map",
+			arg:  cty.MapVal(map[string]cty.Value{"a": cty.StringVal("1")}).Mark(SensitiveMark),
+			want: cty.NumberIntVal(1).Mark(SensitiveMark),
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got, err := length.Call([]cty.Value{tt.arg})
+			require.NoError(t, err)
+			assert.Equal(t, tt.want, got)
+		})
+	}
+}
+
 func TestAbspathAndBasename(t *testing.T) {
 	t.Parallel()
 	t.Run("basename", func(t *testing.T) {
