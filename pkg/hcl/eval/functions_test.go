@@ -730,6 +730,33 @@ func TestSumEmptyList(t *testing.T) {
 	assert.EqualError(t, err, "cannot sum an empty list")
 }
 
+// TestOneUnknownLengthSet pins that `one` returns an unknown value, rather than
+// erroring, when given a set whose length is not yet known. The set is known but
+// contains an unknown element, so it could hold either one or two members once
+// resolved. OpenTofu defers to an unknown result here; counting the elements at
+// face value would wrongly report "more than one element".
+func TestOneUnknownLengthSet(t *testing.T) {
+	t.Parallel()
+	set := cty.SetVal([]cty.Value{cty.UnknownVal(cty.String), cty.StringVal("fixed")})
+	got, err := oneFunc.Call([]cty.Value{set})
+	require.NoError(t, err)
+	assert.Equal(t, cty.UnknownVal(cty.String), got)
+}
+
+// TestOneSingleElement pins that `one` returns the sole element of a one-element
+// collection, and TestOneTooMany that it errors on more than one known element.
+func TestOneSingleElement(t *testing.T) {
+	t.Parallel()
+	got, err := oneFunc.Call([]cty.Value{cty.SetVal([]cty.Value{cty.StringVal("solo")})})
+	require.NoError(t, err)
+	assert.Equal(t, cty.StringVal("solo"), got)
+
+	_, err = oneFunc.Call([]cty.Value{cty.SetVal([]cty.Value{
+		cty.StringVal("a"), cty.StringVal("b"),
+	})})
+	assert.EqualError(t, err, "list has more than one element")
+}
+
 // TestCidrHostOutOfRange pins that `cidrhost` errors when the host number does
 // not fit within the prefix's host bits, as OpenTofu does, rather than silently
 // overflowing into the network portion of the address.
