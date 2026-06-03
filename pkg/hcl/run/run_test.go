@@ -698,6 +698,51 @@ output "region_value" {
 	}
 }
 
+func TestEngine_VariableDefaultCoercedToType(t *testing.T) {
+	t.Parallel()
+
+	// A variable's `default` is coerced to its declared `type` exactly like a
+	// supplied value: a list(string) default written with non-string elements
+	// becomes a list of strings, matching OpenTofu.
+	src := []byte(`
+variable "lst" {
+  type    = list(string)
+  default = ["a", 1, true]
+}
+
+output "lst_value" {
+  value = var.lst
+}
+`)
+
+	p := parser.NewParser()
+	config, diags := p.ParseSource("test.hcl", src)
+	if diags.HasErrors() {
+		t.Fatalf("parse error: %s", diags.Error())
+	}
+
+	mock := &testutil.MockResourceMonitor{}
+	engine := run.NewEngine(t.Context(), config, &run.EngineOptions{
+		ProjectName:     "test-project",
+		StackName:       "dev",
+		ResourceMonitor: mock,
+		WorkDir:         t.TempDir(),
+		RootDir:         t.TempDir(),
+		SchemaLoader:    schemaloader.New(t, schema.PackageSpec{Name: "aws"}),
+	})
+
+	err := engine.Run(t.Context())
+	require.NoError(t, err)
+
+	lstOutput, ok := mock.StackOutputs.GetOk("lst_value")
+	require.True(t, ok, "expected lst_value output")
+	assert.Equal(t, property.New([]property.Value{
+		property.New("a"),
+		property.New("1"),
+		property.New("true"),
+	}), lstOutput)
+}
+
 func TestEngine_VariableRequired(t *testing.T) {
 	t.Parallel()
 
