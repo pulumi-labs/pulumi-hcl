@@ -77,6 +77,11 @@ func TestStringFunctions(t *testing.T) {
 
 		// replace
 		{"replace", `replace("hello world", "world", "there")`, cty.StringVal("hello there")},
+		{"replace regex", `replace("hello world", "/o./", "X")`, cty.StringVal("hellXwXld")},
+		{"replace regex anchored", `replace("foo bar foo", "/^foo/", "Z")`, cty.StringVal("Z bar foo")},
+		{"replace regex class", `replace("a1b2c3", "/[0-9]/", "_")`, cty.StringVal("a_b_c_")},
+		{"replace regex inner slashes", `replace("a/b/c", "/b/", "X")`, cty.StringVal("a/X/c")},
+		{"replace literal dot", `replace("a.b.c", ".", "-")`, cty.StringVal("a-b-c")},
 
 		// substr
 		{"substr", `substr("hello", 0, 3)`, cty.StringVal("hel")},
@@ -689,6 +694,18 @@ func TestToNumber(t *testing.T) {
 			assert.Equal(t, tt.expected, result)
 		})
 	}
+}
+
+// TestReplaceInvalidRegex pins that `replace` with a slash-wrapped pattern that
+// is not a valid regular expression errors, matching OpenTofu rather than
+// silently treating the pattern as a literal substring.
+func TestReplaceInvalidRegex(t *testing.T) {
+	t.Parallel()
+
+	_, err := replaceFunc.Call([]cty.Value{
+		cty.StringVal("abc"), cty.StringVal("/(/"), cty.StringVal("Z"),
+	})
+	assert.EqualError(t, err, "error parsing regexp: missing closing ): `(`")
 }
 
 // TestToNumberError pins that `tonumber` of a string that is not a decimal

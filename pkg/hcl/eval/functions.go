@@ -100,7 +100,7 @@ func Functions(baseDir string) map[string]function.Function {
 		"lower":       stdlib.LowerFunc,
 		"regex":       stdlib.RegexFunc,
 		"regexall":    stdlib.RegexAllFunc,
-		"replace":     stdlib.ReplaceFunc,
+		"replace":     replaceFunc,
 		"split":       stdlib.SplitFunc,
 		"strrev":      stdlib.ReverseFunc,
 		"substr":      stdlib.SubstrFunc,
@@ -281,6 +281,35 @@ var canFunc = function.New(&function.Spec{
 })
 
 // String functions
+
+// replaceFunc matches OpenTofu's `replace`, which interprets a search string
+// wrapped in forward slashes as a regular expression. The cty stdlib
+// ReplaceFunc only performs literal substring replacement, so binding to it
+// would silently drop the regexp form.
+var replaceFunc = function.New(&function.Spec{
+	Params: []function.Parameter{
+		{Name: "str", Type: cty.String},
+		{Name: "substr", Type: cty.String},
+		{Name: "replace", Type: cty.String},
+	},
+	Type: function.StaticReturnType(cty.String),
+	Impl: func(args []cty.Value, retType cty.Type) (cty.Value, error) {
+		str := args[0].AsString()
+		substr := args[1].AsString()
+		replace := args[2].AsString()
+
+		if len(substr) > 1 && substr[0] == '/' && substr[len(substr)-1] == '/' {
+			re, err := regexp.Compile(substr[1 : len(substr)-1])
+			if err != nil {
+				return cty.UnknownVal(cty.String), err
+			}
+
+			return cty.StringVal(re.ReplaceAllString(str, replace)), nil
+		}
+
+		return cty.StringVal(strings.ReplaceAll(str, substr, replace)), nil
+	},
+})
 
 var startsWithFunc = function.New(&function.Spec{
 	Params: []function.Parameter{

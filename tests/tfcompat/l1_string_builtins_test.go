@@ -20,9 +20,9 @@ import (
 	"github.com/pulumi-labs/pulumi-hcl/tests/testutil/tfcompat"
 )
 
-// TestL1TextFunction exercises built-ins compared purely through their
-// string/scalar outputs.
-func TestL1TextFunction(t *testing.T) {
+// TestL1StringBuiltins exercises string and scalar built-ins compared purely
+// through their outputs.
+func TestL1StringBuiltins(t *testing.T) {
 	t.Parallel()
-	tfcompat.RunCase(t, "l1_text_function", tfcompat.Case{})
+	tfcompat.RunCase(t, "l1_string_builtins", tfcompat.Case{})
 }
