@@ -7,6 +7,7 @@ Third-party code copied verbatim from upstream projects.
 | Path | Upstream | License |
 | ---- | -------- | ------- |
 | `communicator/` | [`opentofu/opentofu`](https://github.com/opentofu/opentofu) `internal/communicator/` | MPL-2.0 |
+| `ipaddr/` | [`opentofu/opentofu`](https://github.com/opentofu/opentofu) `internal/ipaddr/` | BSD-3-Clause (Go Authors) |
 
 ## Pinned revision
 
@@ -43,3 +44,7 @@ modification you make to those files (including hand-edits, which you should
 not be making) must stay MPL-2.0. New files outside `vendored/` are
 Apache-2.0 like the rest of the project. The MPL-2.0 license text is in
 `LICENSE-MPL-2.0`; attribution is in `NOTICE`.
+
+Files under `ipaddr/` are a fork of the Go standard library and remain under
+the BSD-3-Clause license of the Go Authors; that license and patent grant are
+carried in `ipaddr/LICENSE` and `ipaddr/PATENTS` and must be preserved.
