@@ -209,7 +209,7 @@ func Functions(baseDir string) map[string]function.Function {
 		"issensitive":  issensitiveFunc,
 		"nonsensitive": nonsensitiveFunc,
 		"sensitive":    sensitiveFunc,
-		"tobool":       toBoolFunc,
+		"tobool":       makeToFunc(cty.Bool),
 		"tolist":       makeToFunc(cty.List(cty.DynamicPseudoType)),
 		"tomap":        makeToFunc(cty.Map(cty.DynamicPseudoType)),
 		"tonumber":     makeToFunc(cty.Number),
@@ -1737,31 +1737,6 @@ var issensitiveFunc = function.New(&function.Spec{
 	},
 })
 
-var toBoolFunc = function.New(&function.Spec{
-	Params: []function.Parameter{
-		{Name: "value", Type: cty.DynamicPseudoType},
-	},
-	Type: function.StaticReturnType(cty.Bool),
-	Impl: func(args []cty.Value, retType cty.Type) (cty.Value, error) {
-		val := args[0]
-		if val.Type() == cty.Bool {
-			return val, nil
-		}
-		if val.Type() == cty.String {
-			s := val.AsString()
-			switch strings.ToLower(s) {
-			case "true", "1", "yes", "on":
-				return cty.True, nil
-			case "false", "0", "no", "off":
-				return cty.False, nil
-			default:
-				return cty.NilVal, fmt.Errorf("cannot convert %q to bool", s)
-			}
-		}
-		return cty.NilVal, fmt.Errorf("cannot convert %s to bool", val.Type().FriendlyName())
-	},
-})
-
 // makeToFunc constructs a "to..." conversion function like OpenTofu's
 // MakeToFunc. The argument passes through verbatim as cty.DynamicPseudoType and
 // the conversion to wantTy happens inside Type and Impl via the cty convert
@@ -1828,11 +1803,14 @@ func makeToFunc(wantTy cty.Type) function.Function {
 
 var toStringFunc = function.New(&function.Spec{
 	Params: []function.Parameter{
-		{Name: "value", Type: cty.DynamicPseudoType},
+		{Name: "value", Type: cty.DynamicPseudoType, AllowNull: true, AllowDynamicType: true},
 	},
 	Type: function.StaticReturnType(cty.String),
 	Impl: func(args []cty.Value, retType cty.Type) (cty.Value, error) {
 		val := args[0]
+		if val.IsNull() {
+			return cty.NullVal(cty.String), nil
+		}
 		switch val.Type() {
 		case cty.String:
 			return val, nil
