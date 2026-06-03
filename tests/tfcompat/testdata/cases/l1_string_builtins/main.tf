@@ -115,3 +115,28 @@ output "cidrcontains_prefix_out" {
 output "cidrcontains_v6_in" {
   value = cidrcontains("2001:db8::/32", "2001:db8:1::1")
 }
+
+# `replace` treats a search string wrapped in forward slashes as a regular
+# expression and replaces every match; any other search string is matched
+# literally. The slash-wrapped cases (including one whose inner pattern is a
+# bare character) exercise the regexp form, while the final case pins the
+# literal fall-back where `.` matches only an actual dot.
+output "replace_regex" {
+  value = replace("hello world", "/o./", "X")
+}
+
+output "replace_regex_anchored" {
+  value = replace("foo bar foo", "/^foo/", "Z")
+}
+
+output "replace_regex_class" {
+  value = replace("a1b2c3", "/[0-9]/", "_")
+}
+
+output "replace_regex_inner_slashes" {
+  value = replace("a/b/c", "/b/", "X")
+}
+
+output "replace_literal_dot" {
+  value = replace("a.b.c", ".", "-")
+}
