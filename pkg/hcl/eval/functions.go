@@ -1763,7 +1763,14 @@ var cidrSubnetsFunc = function.New(&function.Spec{
 
 var nonsensitiveFunc = function.New(&function.Spec{
 	Params: []function.Parameter{
-		{Name: "value", Type: cty.DynamicPseudoType, AllowMarked: true},
+		{
+			Name:             "value",
+			Type:             cty.DynamicPseudoType,
+			AllowUnknown:     true,
+			AllowNull:        true,
+			AllowMarked:      true,
+			AllowDynamicType: true,
+		},
 	},
 	Type: func(args []cty.Value) (cty.Type, error) {
 		val, _ := args[0].Unmark()
@@ -1781,23 +1788,43 @@ var nonsensitiveFunc = function.New(&function.Spec{
 
 var sensitiveFunc = function.New(&function.Spec{
 	Params: []function.Parameter{
-		{Name: "value", Type: cty.DynamicPseudoType},
+		{
+			Name:             "value",
+			Type:             cty.DynamicPseudoType,
+			AllowUnknown:     true,
+			AllowNull:        true,
+			AllowMarked:      true,
+			AllowDynamicType: true,
+		},
 	},
 	Type: func(args []cty.Value) (cty.Type, error) {
 		return args[0].Type(), nil
 	},
 	Impl: func(args []cty.Value, retType cty.Type) (cty.Value, error) {
-		// Mark as sensitive (cty supports this via marks)
-		return args[0].Mark("sensitive"), nil
+		return args[0].Mark(SensitiveMark), nil
 	},
 })
 
 var issensitiveFunc = function.New(&function.Spec{
 	Params: []function.Parameter{
-		{Name: "value", Type: cty.DynamicPseudoType, AllowMarked: true},
+		{
+			Name:             "value",
+			Type:             cty.DynamicPseudoType,
+			AllowUnknown:     true,
+			AllowNull:        true,
+			AllowMarked:      true,
+			AllowDynamicType: true,
+		},
 	},
 	Type: function.StaticReturnType(cty.Bool),
 	Impl: func(args []cty.Value, retType cty.Type) (cty.Value, error) {
+		if !args[0].IsKnown() {
+			// An unknown value's sensitivity is not yet finalized: an
+			// expression like `var.cond ? sensitive("a") : "b"` only
+			// resolves its mark once var.cond is known. Match OpenTofu and
+			// report an unknown bool rather than committing to an answer.
+			return cty.UnknownVal(cty.Bool), nil
+		}
 		return cty.BoolVal(args[0].HasMark(SensitiveMark)), nil
 	},
 })

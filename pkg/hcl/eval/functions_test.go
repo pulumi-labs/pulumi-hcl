@@ -663,6 +663,39 @@ func TestTypeFunctions(t *testing.T) {
 	}
 }
 
+// TestSensitiveFuncsNull pins that `sensitive`, `nonsensitive`, and
+// `issensitive` accept a null argument like OpenTofu, whose parameters all
+// declare AllowNull. The funcs are called directly because a null argument
+// would otherwise be rejected by cty before the impl ever runs.
+func TestSensitiveFuncsNull(t *testing.T) {
+	t.Parallel()
+
+	null := cty.NullVal(cty.String)
+
+	sens, err := sensitiveFunc.Call([]cty.Value{null})
+	require.NoError(t, err)
+	assert.Equal(t, null.Mark(SensitiveMark), sens)
+
+	nonsens, err := nonsensitiveFunc.Call([]cty.Value{sens})
+	require.NoError(t, err)
+	assert.Equal(t, null, nonsens)
+
+	is, err := issensitiveFunc.Call([]cty.Value{null})
+	require.NoError(t, err)
+	assert.Equal(t, cty.False, is)
+}
+
+// TestIsSensitiveUnknown pins that `issensitive` of an unknown value returns an
+// unknown bool rather than committing to an answer: the value's sensitivity is
+// not finalized until the value itself is known. Matches OpenTofu.
+func TestIsSensitiveUnknown(t *testing.T) {
+	t.Parallel()
+
+	is, err := issensitiveFunc.Call([]cty.Value{cty.UnknownVal(cty.String)})
+	require.NoError(t, err)
+	assert.Equal(t, cty.UnknownVal(cty.Bool), is)
+}
+
 // TestToNumber pins that `tonumber` parses the whole string as a decimal
 // number rather than truncating at the first non-digit character. A `%d`-style
 // parse would stop at the '.' in "3.14" or the 'e' in "1e2" and silently return

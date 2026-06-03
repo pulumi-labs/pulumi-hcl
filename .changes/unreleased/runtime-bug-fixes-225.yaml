@@ -1,0 +1,6 @@
+kind: bug-fixes
+body: '`sensitive`, `nonsensitive`, and `issensitive` accept a null argument to match OpenTofu instead of erroring.'
+time: 2026-06-03T18:10:00.000000+02:00
+custom:
+    Component: runtime
+    PR: "225"
