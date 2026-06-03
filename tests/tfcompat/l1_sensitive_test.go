@@ -20,10 +20,10 @@ import (
 	"github.com/pulumi-labs/pulumi-hcl/tests/testutil/tfcompat"
 )
 
-// TestL1SensitiveNull exercises `sensitive` with a null argument. OpenTofu
-// declares the parameter with AllowNull, so `sensitive(null)` succeeds; both
-// runtimes must accept it rather than erroring on the null argument.
-func TestL1SensitiveNull(t *testing.T) {
+// TestL1Sensitive exercises `sensitive`, `nonsensitive`, and `issensitive`
+// with a null argument. OpenTofu declares their parameters with AllowNull, so
+// a null argument succeeds; both runtimes must accept it rather than erroring.
+func TestL1Sensitive(t *testing.T) {
 	t.Parallel()
-	tfcompat.RunCase(t, "l1_sensitive_null", tfcompat.Case{})
+	tfcompat.RunCase(t, "l1_sensitive", tfcompat.Case{})
 }
