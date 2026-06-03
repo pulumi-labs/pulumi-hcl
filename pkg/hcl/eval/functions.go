@@ -457,7 +457,34 @@ var lookupFunc = function.New(&function.Spec{
 		AllowUnknown:     true,
 		AllowDynamicType: true,
 	},
-	Type: function.StaticReturnType(cty.DynamicPseudoType),
+	Type: func(args []cty.Value) (cty.Type, error) {
+		ty := args[0].Type()
+		switch {
+		case ty.IsObjectType():
+			if !args[1].IsKnown() {
+				return cty.DynamicPseudoType, nil
+			}
+			key := args[1].AsString()
+			if ty.HasAttribute(key) {
+				return args[0].GetAttr(key).Type(), nil
+			} else if len(args) == 3 {
+				// The default's own type is returned for objects, since an
+				// object's attributes need not share a single element type.
+				return args[2].Type(), nil
+			}
+			return cty.NilType, function.NewArgErrorf(0, "the given object has no attribute %q", key)
+		case ty.IsMapType():
+			if len(args) == 3 {
+				if _, err := convert.Convert(args[2], ty.ElementType()); err != nil {
+					return cty.NilType, function.NewArgErrorf(2,
+						"the default value must have the same type as the map elements")
+				}
+			}
+			return ty.ElementType(), nil
+		default:
+			return cty.NilType, function.NewArgErrorf(0, "lookup() requires a map as the first argument")
+		}
+	},
 	Impl: func(args []cty.Value, retType cty.Type) (cty.Value, error) {
 		m := args[0]
 		key := args[1].AsString()
@@ -474,9 +501,12 @@ var lookupFunc = function.New(&function.Spec{
 			}
 		}
 
-		// Return the default value, if any
-		if len(args) > 2 {
-			return args[2], nil
+		// The key is absent. Return the default converted to the return type,
+		// matching OpenTofu: for a map this is the element type, so a default
+		// of a different type is coerced (e.g. 30 into a map(string) yields the
+		// string "30").
+		if len(args) == 3 {
+			return convert.Convert(args[2], retType)
 		}
 
 		return cty.NilVal, fmt.Errorf("key %q not found", key)

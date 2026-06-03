@@ -1,0 +1,6 @@
+kind: bug-fixes
+body: '`lookup`: when a key is absent from a map, the returned default is converted to the map''s element type'
+time: 2026-06-03T12:00:00.000000+02:00
+custom:
+    Component: runtime
+    PR: "217"
