@@ -6,6 +6,7 @@ require (
 	github.com/apparentlymart/go-cidr v1.1.0
 	github.com/apparentlymart/go-shquot v0.0.1
 	github.com/blang/semver v3.5.1+incompatible
+	github.com/bmatcuk/doublestar/v4 v4.6.0
 	github.com/google/uuid v1.6.0
 	github.com/hashicorp/go-cty v1.5.0
 	github.com/hashicorp/go-getter v1.8.6
