@@ -379,6 +379,13 @@ func TestEncodingFunctions(t *testing.T) {
 		{"urlencode unicode", `urlencode("café")`, cty.StringVal("caf%C3%A9")},
 		// base64gzip - check it returns non-empty string
 		{"base64gzip", `base64gzip("hello") != ""`, cty.BoolVal(true)},
+		// base64gzip pins OpenTofu's exact byte-for-byte output: OpenTofu flushes
+		// the gzip writer before closing, emitting an empty sync-flush block.
+		{
+			"base64gzip exact",
+			`base64gzip("hello world this is a test string")`,
+			cty.StringVal("H4sIAAAAAAAA/8pIzcnJVyjPL8pJUSjJyCxWyCxWSFQoSS0uUSguKcrMSwcAAAD//wEAAP//d4eoGCEAAAA="),
+		},
 		// base64gunzip is the inverse of base64gzip, so the round trip is identity.
 		{"base64gunzip roundtrip", `base64gunzip(base64gzip("hello"))`, cty.StringVal("hello")},
 		// urldecode reverses urlencode; QueryUnescape also maps "+" to a space.

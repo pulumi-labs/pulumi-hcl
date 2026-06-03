@@ -85,6 +85,13 @@ output "base64gunzip_roundtrip" {
   value = base64gunzip(base64gzip("Hello, OpenTofu!"))
 }
 
+# The raw `base64gzip` output is itself observable: OpenTofu flushes the gzip
+# writer before closing it, which emits an empty sync-flush block, so the exact
+# base64 string must match byte for byte rather than only round-tripping.
+output "base64gzip_raw" {
+  value = base64gzip("hello world this is a test string")
+}
+
 # `cidrcontains` reports whether the IP address or prefix in its second argument
 # falls within the containing prefix in its first. An IP argument is contained
 # when it lies inside the prefix; a prefix argument is contained only when both
