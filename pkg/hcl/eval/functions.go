@@ -799,6 +799,11 @@ var base64GzipFunc = function.New(&function.Spec{
 		if _, err := w.Write([]byte(args[0].AsString())); err != nil {
 			return cty.NilVal, err
 		}
+		// OpenTofu flushes before closing, emitting an empty sync-flush block;
+		// matching it keeps the base64 output byte-for-byte identical.
+		if err := w.Flush(); err != nil {
+			return cty.NilVal, err
+		}
 		if err := w.Close(); err != nil {
 			return cty.NilVal, err
 		}
