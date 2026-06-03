@@ -1,0 +1,6 @@
+kind: bug-fixes
+body: A provider declared only in a child module no longer leaves an unresolved package spec after its local SDK is installed, so `pulumi preview` succeeds instead of reporting "unresolved package spec(s)"
+time: 2026-06-03T14:55:00.000000+02:00
+custom:
+    Component: language-host
+    PR: "216"

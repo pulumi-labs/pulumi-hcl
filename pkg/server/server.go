@@ -180,11 +180,6 @@ func (host *LanguageHost) GetRequiredPackages(
 	var pkgs []*pulumirpc.PackageDependency
 	var specs []*pulumirpc.PackageSpec
 
-	required := map[string]*ast.RequiredProvider{}
-	if config.Terraform != nil {
-		required = config.Terraform.RequiredProviders
-	}
-
 	// Resolve every provider referenced anywhere in the module tree to its
 	// source, mirroring tofu: a provider declared in a child module is installed
 	// from its declared source (not the "hashicorp/<name>" default), providers
@@ -211,10 +206,10 @@ func (host *LanguageHost) GetRequiredPackages(
 			Kind:             "resource",
 			Parameterization: parameterizationProto(info.Parameterization),
 		})
-		root := required[alias]
-		delete(tfSpecs, tfProviderSource(alias, root))
-		if root.IsPulumi() {
-			delete(pulumiPkgs, pulumiPackageName(alias, root.Source))
+		req := aliases[alias]
+		delete(tfSpecs, tfProviderSource(alias, req))
+		if req.IsPulumi() {
+			delete(pulumiPkgs, pulumiPackageName(alias, req.Source))
 		}
 	}
 
@@ -381,10 +376,10 @@ func (v *versionSet) constraint() string { return strings.Join(sortedKeys(v.seen
 // declared only in a child module still resolves from its declared source.
 func collectRequirements(
 	ctx context.Context, config *ast.Config, workDir string,
-) (tf map[string]*versionSet, pulumi map[string]string, aliases map[string]struct{}) {
+) (tf map[string]*versionSet, pulumi map[string]string, aliases map[string]*ast.RequiredProvider) {
 	tf = map[string]*versionSet{}
 	pulumi = map[string]string{}
-	aliases = map[string]struct{}{}
+	aliases = map[string]*ast.RequiredProvider{}
 	var loader *modules.Loader
 	if workDir != "" && config != nil && len(config.Modules) > 0 {
 		loader = modules.NewLoader(ctx)
@@ -395,7 +390,7 @@ func collectRequirements(
 
 func collectRequirementsRec(
 	config *ast.Config, workDir string,
-	tf map[string]*versionSet, pulumi map[string]string, aliases map[string]struct{},
+	tf map[string]*versionSet, pulumi map[string]string, aliases map[string]*ast.RequiredProvider,
 	loader *modules.Loader, visited map[string]struct{},
 ) {
 	if config == nil {
@@ -419,11 +414,13 @@ func collectRequirementsRec(
 	}
 
 	add := func(alias string) {
-		aliases[alias] = struct{}{}
+		req := required[alias]
+		if _, seen := aliases[alias]; !seen || req != nil {
+			aliases[alias] = req
+		}
 		if isBuiltinProvider(alias) {
 			return
 		}
-		req := required[alias]
 		if req.IsPulumi() {
 			pulumi[pulumiPackageName(alias, req.Source)] = req.Version
 			return
