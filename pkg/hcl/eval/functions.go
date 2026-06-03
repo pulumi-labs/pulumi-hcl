@@ -415,15 +415,16 @@ var lengthFunc = function.New(&function.Spec{
 	Impl: func(args []cty.Value, retType cty.Type) (cty.Value, error) {
 		v := args[0]
 		ty := v.Type()
+		marks := v.Marks()
 		switch {
 		case ty == cty.DynamicPseudoType:
-			return cty.UnknownVal(cty.Number), nil
+			return cty.UnknownVal(cty.Number).WithMarks(marks), nil
 		case ty == cty.String:
 			return stdlib.Strlen(v)
 		case ty.IsTupleType():
-			return cty.NumberIntVal(int64(len(ty.TupleElementTypes()))), nil
+			return cty.NumberIntVal(int64(len(ty.TupleElementTypes()))).WithMarks(marks), nil
 		case ty.IsObjectType():
-			return cty.NumberIntVal(int64(len(ty.AttributeTypes()))), nil
+			return cty.NumberIntVal(int64(len(ty.AttributeTypes()))).WithMarks(marks), nil
 		case ty.IsListType(), ty.IsMapType(), ty.IsSetType():
 			return v.Length(), nil
 		default:
