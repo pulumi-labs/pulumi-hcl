@@ -32,6 +32,7 @@ import (
 // contents and existence booleans, neither of which embeds a machine-specific
 // path, so the comparison is stable across hosts.
 func TestL1FileTilde(t *testing.T) {
+	t.Parallel()
 	home, err := os.UserHomeDir()
 	require.NoError(t, err)
 

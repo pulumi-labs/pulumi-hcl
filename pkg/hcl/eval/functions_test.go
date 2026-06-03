@@ -1093,6 +1093,7 @@ func TestFileFunctions(t *testing.T) {
 // fix these functions treated `~` as a literal path segment relative to baseDir
 // and so failed to find a file OpenTofu reads successfully.
 func TestFileTildeExpansion(t *testing.T) {
+	t.Parallel()
 	home, err := os.UserHomeDir()
 	require.NoError(t, err)
 
@@ -1109,21 +1110,25 @@ func TestFileTildeExpansion(t *testing.T) {
 	tildePath := fmt.Sprintf("~/%s", name)
 
 	t.Run("file", func(t *testing.T) {
+		t.Parallel()
 		got := evalExpr(t, baseDir, fmt.Sprintf("file(%q)", tildePath))
 		assert.Equal(t, cty.StringVal("hi"), got)
 	})
 
 	t.Run("filebase64", func(t *testing.T) {
+		t.Parallel()
 		got := evalExpr(t, baseDir, fmt.Sprintf("filebase64(%q)", tildePath))
 		assert.Equal(t, cty.StringVal(base64.StdEncoding.EncodeToString([]byte("hi"))), got)
 	})
 
 	t.Run("fileexists", func(t *testing.T) {
+		t.Parallel()
 		got := evalExpr(t, baseDir, fmt.Sprintf("fileexists(%q)", tildePath))
 		assert.Equal(t, cty.True, got)
 	})
 
 	t.Run("filemd5", func(t *testing.T) {
+		t.Parallel()
 		got := evalExpr(t, baseDir, fmt.Sprintf("filemd5(%q)", tildePath))
 		assert.Equal(t, evalExpr(t, baseDir, `md5("hi")`), got)
 	})
@@ -1133,6 +1138,7 @@ func TestFileTildeExpansion(t *testing.T) {
 // is a directory rather than a regular file, matching OpenTofu. This is an
 // error path, so it calls the function directly rather than via evalExpr.
 func TestFileExistsDirectory(t *testing.T) {
+	t.Parallel()
 	baseDir := t.TempDir()
 	dir := filepath.Join(baseDir, "adir")
 	require.NoError(t, os.Mkdir(dir, 0o755))
