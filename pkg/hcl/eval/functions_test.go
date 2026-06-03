@@ -1054,6 +1054,53 @@ func TestFileFunctions(t *testing.T) {
 	})
 }
 
+// TestFilesetGlob exercises fileset's glob semantics against OpenTofu: the `**`
+// operator recurses, directories are excluded, and paths use forward slashes.
+func TestFilesetGlob(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+
+	for _, p := range []string{
+		"top.txt",
+		"nested/mid.txt",
+		"nested/deep/low.txt",
+		"nested/note.md",
+	} {
+		full := filepath.Join(root, filepath.FromSlash(p))
+		require.NoError(t, os.MkdirAll(filepath.Dir(full), 0o755))
+		require.NoError(t, os.WriteFile(full, []byte("x"), 0o644))
+	}
+
+	t.Run("recursive matches files at every depth", func(t *testing.T) {
+		t.Parallel()
+		result := evalExpr(t, root, `fileset(".", "**")`)
+		assert.Equal(t, cty.SetVal([]cty.Value{
+			cty.StringVal("nested/deep/low.txt"),
+			cty.StringVal("nested/mid.txt"),
+			cty.StringVal("nested/note.md"),
+			cty.StringVal("top.txt"),
+		}), result)
+	})
+
+	t.Run("recursive with extension filter", func(t *testing.T) {
+		t.Parallel()
+		result := evalExpr(t, root, `fileset(".", "**/*.txt")`)
+		assert.Equal(t, cty.SetVal([]cty.Value{
+			cty.StringVal("nested/deep/low.txt"),
+			cty.StringVal("nested/mid.txt"),
+			cty.StringVal("top.txt"),
+		}), result)
+	})
+
+	t.Run("single star excludes directories", func(t *testing.T) {
+		t.Parallel()
+		result := evalExpr(t, root, `fileset(".", "*")`)
+		assert.Equal(t, cty.SetVal([]cty.Value{
+			cty.StringVal("top.txt"),
+		}), result)
+	})
+}
+
 func TestIPFunctions(t *testing.T) {
 	t.Parallel()
 	tests := []struct {

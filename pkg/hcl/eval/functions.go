@@ -45,6 +45,7 @@ import (
 	"time"
 
 	"github.com/apparentlymart/go-cidr/cidr"
+	"github.com/bmatcuk/doublestar/v4"
 	"github.com/google/uuid"
 	"github.com/hashicorp/hcl/v2"
 	"github.com/hashicorp/hcl/v2/ext/customdecode"
@@ -1057,14 +1058,34 @@ func filesetFunc(baseDir string) function.Function {
 			if !filepath.IsAbs(path) {
 				path = filepath.Join(baseDir, path)
 			}
-			matches, err := filepath.Glob(filepath.Join(path, pattern))
+
+			// Join the path to the glob pattern, while ensuring the full
+			// pattern is canonical for the host OS. The joined path is
+			// automatically cleaned during this operation.
+			pattern = filepath.Join(path, pattern)
+
+			matches, err := doublestar.FilepathGlob(pattern)
 			if err != nil {
-				return cty.NilVal, err
+				return cty.NilVal, fmt.Errorf("failed to glob pattern %s: %w", pattern, err)
 			}
-			vals := make([]cty.Value, len(matches))
-			for i, m := range matches {
-				rel, _ := filepath.Rel(path, m)
-				vals[i] = cty.StringVal(rel)
+
+			var vals []cty.Value
+			for _, match := range matches {
+				fi, err := os.Stat(match)
+				if err != nil {
+					return cty.NilVal, fmt.Errorf("failed to stat %s: %w", match, err)
+				}
+
+				if !fi.Mode().IsRegular() {
+					continue
+				}
+
+				rel, err := filepath.Rel(path, match)
+				if err != nil {
+					return cty.NilVal, fmt.Errorf("failed to trim path of match %s: %w", match, err)
+				}
+
+				vals = append(vals, cty.StringVal(filepath.ToSlash(rel)))
 			}
 			if len(vals) == 0 {
 				return cty.SetValEmpty(cty.String), nil
