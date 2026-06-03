@@ -620,6 +620,8 @@ func TestTypeFunctions(t *testing.T) {
 		{"tonumber", `tonumber("42")`, cty.NumberIntVal(42)},
 		{"tobool true", `tobool("true")`, cty.BoolVal(true)},
 		{"tobool false", `tobool("false")`, cty.BoolVal(false)},
+		{"tobool null", `tobool(null)`, cty.NullVal(cty.Bool)},
+		{"tostring null", `tostring(null)`, cty.NullVal(cty.String)},
 		{"tolist", `length(tolist(toset(["a", "b"])))`, cty.NumberIntVal(2)},
 		{"toset", `length(toset(["a", "b", "a"]))`, cty.NumberIntVal(2)},
 		{"tomap", `tomap({a = "x"}).a`, cty.StringVal("x")},
