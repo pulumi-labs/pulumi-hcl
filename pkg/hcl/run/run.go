@@ -1043,7 +1043,7 @@ func (e *Engine) registerProviderInContext(
 	// into.
 	outputObj["urn"] = cty.StringVal(string(resp.URN))
 
-	e.resourceOutputs.Set(node.Key, eval.MarkOutputLeaves(cty.ObjectVal(outputObj), eval.DepMark(resp.URN)))
+	e.resourceOutputs.Set(node.Key, cty.ObjectVal(outputObj).Mark(eval.DepMark(resp.URN)))
 
 	// Top-level un-aliased provider blocks become the default provider for
 	// resources of the same package that don't set `provider` explicitly.
@@ -1051,7 +1051,7 @@ func (e *Engine) registerProviderInContext(
 		e.defaultProviders.Set(provider.Name, string(resp.URN)+"::"+providerID)
 	}
 
-	markedProviderOutputs := eval.MarkOutputLeaves(cty.ObjectVal(outputObj), eval.DepMark(resp.URN))
+	markedProviderOutputs := cty.ObjectVal(outputObj).Mark(eval.DepMark(resp.URN))
 	if node.ModuleInfo != nil {
 		// Strip prefix for module-internal references
 		bareKey := strings.TrimPrefix(node.Key, node.ModuleInfo.Prefix())
@@ -1297,7 +1297,7 @@ func (e *Engine) registerResourceInstanceInContext(
 	}
 	outputObj["urn"] = cty.StringVal(string(urn)).Mark(eval.SyntheticMark)
 
-	markedOutputs := eval.MarkOutputLeaves(cty.ObjectVal(outputObj), eval.DepMark(urn))
+	markedOutputs := cty.ObjectVal(outputObj).Mark(eval.DepMark(urn))
 
 	e.resourceOutputs.Set(instance.Key, markedOutputs)
 
@@ -2064,14 +2064,12 @@ func (e *Engine) invokeDataSourceOnce(
 ) (cty.Value, error) {
 	hclCtx := evalCtx.HCLContext()
 
-	var depMarks []any
-	seen := make(map[string]bool)
+	depMarks := cty.ValueMarks{}
 	addURN := func(urn string) {
-		if urn == "" || seen[urn] {
+		if urn == "" {
 			return
 		}
-		seen[urn] = true
-		depMarks = append(depMarks, eval.DepMark(urn))
+		depMarks[eval.DepMark(urn)] = struct{}{}
 	}
 
 	dataSourceMapping := e.dataSourceBodyMapping(ctx, ds.Type)
@@ -2174,11 +2172,7 @@ func (e *Engine) invokeDataSourceOnce(
 		return cty.NilVal, fmt.Errorf("converting function outputs to HCL types: %w", err)
 	}
 
-	for _, m := range depMarks {
-		ctyOutputs = eval.MarkOutputLeaves(ctyOutputs, m)
-	}
-
-	return ctyOutputs, nil
+	return ctyOutputs.WithMarks(depMarks), nil
 }
 
 // processCall processes a call block (method invocation on a resource).

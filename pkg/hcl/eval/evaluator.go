@@ -18,6 +18,7 @@ import (
 	"fmt"
 
 	"github.com/hashicorp/hcl/v2"
+	"github.com/pulumi/pulumi/sdk/v3/go/common/resource/urn"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/util/contract"
 	"github.com/zclconf/go-cty/cty"
 	"github.com/zclconf/go-cty/cty/convert"
@@ -43,86 +44,6 @@ func (e *Evaluator) Evaluate(expr hcl.Expression) (cty.Value, hcl.Diagnostics) {
 	return expr.Value(e.ctx.HCLContext())
 }
 
-// EvaluateAs evaluates an expression and converts the result to the specified type.
-func (e *Evaluator) EvaluateAs(expr hcl.Expression, targetType cty.Type) (cty.Value, hcl.Diagnostics) {
-	val, diags := e.Evaluate(expr)
-	if diags.HasErrors() {
-		return cty.NilVal, diags
-	}
-
-	val, _ = val.UnmarkDeep()
-
-	converted, err := convert.Convert(val, targetType)
-	if err != nil {
-		diags = append(diags, &hcl.Diagnostic{
-			Severity: hcl.DiagError,
-			Summary:  "Type conversion error",
-			Detail:   fmt.Sprintf("Cannot convert %s to %s: %s", val.Type().FriendlyName(), targetType.FriendlyName(), err),
-			Subject:  expr.Range().Ptr(),
-		})
-		return cty.NilVal, diags
-	}
-
-	return converted, diags
-}
-
-// EvaluateString evaluates an expression expecting a string result.
-func (e *Evaluator) EvaluateString(expr hcl.Expression) (string, hcl.Diagnostics) {
-	val, diags := e.EvaluateAs(expr, cty.String)
-	if diags.HasErrors() {
-		return "", diags
-	}
-	if val.IsNull() {
-		return "", nil
-	}
-	return val.AsString(), diags
-}
-
-// EvaluateInt evaluates an expression expecting an integer result.
-func (e *Evaluator) EvaluateInt(expr hcl.Expression) (int, hcl.Diagnostics) {
-	val, diags := e.EvaluateAs(expr, cty.Number)
-	if diags.HasErrors() {
-		return 0, diags
-	}
-	if val.IsNull() {
-		return 0, nil
-	}
-	bf := val.AsBigFloat()
-	i64, _ := bf.Int64()
-	return int(i64), diags
-}
-
-// EvaluateBool evaluates an expression expecting a boolean result.
-func (e *Evaluator) EvaluateBool(expr hcl.Expression) (bool, hcl.Diagnostics) {
-	val, diags := e.EvaluateAs(expr, cty.Bool)
-	if diags.HasErrors() {
-		return false, diags
-	}
-	if val.IsNull() {
-		return false, nil
-	}
-	return val.True(), diags
-}
-
-// EvaluateBody evaluates all attributes in an HCL body.
-func (e *Evaluator) EvaluateBody(body hcl.Body) (map[string]cty.Value, hcl.Diagnostics) {
-	attrs, diags := body.JustAttributes()
-	if diags.HasErrors() {
-		return nil, diags
-	}
-
-	result := make(map[string]cty.Value)
-	for name, attr := range attrs {
-		val, valDiags := e.Evaluate(attr.Expr)
-		diags = append(diags, valDiags...)
-		if !valDiags.HasErrors() {
-			result[name] = val
-		}
-	}
-
-	return result, diags
-}
-
 // SensitiveMark is the cty value mark applied to sensitive values.
 const SensitiveMark = "sensitive"
 
@@ -137,83 +58,7 @@ const SyntheticMark = "pulumi-synthetic"
 // on. Marks ride along with values through cty expression evaluation, so the
 // per-property dep set is just the union of DepMarks on the converted value
 // — no parallel static analysis of expressions is needed.
-type DepMark string
-
-// MarkOutputLeaves attaches mark to every leaf (primitive, null, unknown,
-// capsule). Containers stay unmarked because cty's container ops
-// (ElementIterator, LengthInt, AsValueMap) panic on marked inputs;
-// per-leaf marks still propagate through GetAttr and indexing.
-func MarkOutputLeaves(val cty.Value, mark any) cty.Value {
-	// Strip pre-existing marks before recursing — see the type comment
-	// above for why we can't iterate a marked container — then re-apply.
-	val, preMarks := val.Unmark()
-	out := markUnmarkedOutputLeaves(val, mark)
-	if len(preMarks) > 0 {
-		out = out.WithMarks(preMarks)
-	}
-	return out
-}
-
-func markUnmarkedOutputLeaves(val cty.Value, mark any) cty.Value {
-	if val.IsNull() || !val.IsKnown() {
-		return val.Mark(mark)
-	}
-	ty := val.Type()
-	switch {
-	case ty.IsObjectType():
-		if val.LengthInt() == 0 {
-			return val
-		}
-		m := make(map[string]cty.Value, val.LengthInt())
-		for it := val.ElementIterator(); it.Next(); {
-			k, v := it.Element()
-			m[k.AsString()] = MarkOutputLeaves(v, mark)
-		}
-		return cty.ObjectVal(m)
-	case ty.IsMapType():
-		if val.LengthInt() == 0 {
-			return val
-		}
-		m := make(map[string]cty.Value, val.LengthInt())
-		for it := val.ElementIterator(); it.Next(); {
-			k, v := it.Element()
-			m[k.AsString()] = MarkOutputLeaves(v, mark)
-		}
-		return cty.MapVal(m)
-	case ty.IsListType():
-		if val.LengthInt() == 0 {
-			return val
-		}
-		vs := make([]cty.Value, 0, val.LengthInt())
-		for it := val.ElementIterator(); it.Next(); {
-			_, v := it.Element()
-			vs = append(vs, MarkOutputLeaves(v, mark))
-		}
-		return cty.ListVal(vs)
-	case ty.IsSetType():
-		if val.LengthInt() == 0 {
-			return val
-		}
-		vs := make([]cty.Value, 0, val.LengthInt())
-		for it := val.ElementIterator(); it.Next(); {
-			_, v := it.Element()
-			vs = append(vs, MarkOutputLeaves(v, mark))
-		}
-		return cty.SetVal(vs)
-	case ty.IsTupleType():
-		if val.LengthInt() == 0 {
-			return val
-		}
-		vs := make([]cty.Value, 0, val.LengthInt())
-		for it := val.ElementIterator(); it.Next(); {
-			_, v := it.Element()
-			vs = append(vs, MarkOutputLeaves(v, mark))
-		}
-		return cty.TupleVal(vs)
-	default:
-		return val.Mark(mark)
-	}
-}
+type DepMark urn.URN
 
 // stripSyntheticAttributes recursively removes object attributes whose value
 // carries SyntheticMark.

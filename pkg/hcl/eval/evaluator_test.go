@@ -25,6 +25,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/zclconf/go-cty/cty"
+	"github.com/zclconf/go-cty/cty/convert"
 )
 
 func parseExpr(t *testing.T, src string) hcl.Expression {
@@ -35,104 +36,30 @@ func parseExpr(t *testing.T, src string) hcl.Expression {
 	return expr
 }
 
-func TestEvaluateString(t *testing.T) {
-	t.Parallel()
-	ctx := NewContext("/tmp", "/tmp", "/tmp", "", "", "")
-	ctx.SetVariable("name", cty.StringVal("test"))
-
-	eval := NewEvaluator(ctx)
-
-	tests := []struct {
-		name     string
-		expr     string
-		expected string
-	}{
-		{"literal", `"hello"`, "hello"},
-		{"variable", `var.name`, "test"},
-		{"interpolation", `"Hello, ${var.name}!"`, "Hello, test!"},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-			expr := parseExpr(t, tt.expr)
-			result, diags := eval.EvaluateString(expr)
-			if diags.HasErrors() {
-				t.Errorf("Unexpected error: %s", diags.Error())
-			}
-			if result != tt.expected {
-				t.Errorf("Expected %q, got %q", tt.expected, result)
-			}
-		})
-	}
+// evalString evaluates expr and returns its string value, unmarking deps
+// the way a downstream string read would.
+func evalString(t *testing.T, e *Evaluator, expr hcl.Expression) string {
+	t.Helper()
+	val, diags := e.Evaluate(expr)
+	require.Empty(t, diags)
+	val, _ = val.UnmarkDeep()
+	val, err := convert.Convert(val, cty.String)
+	require.NoError(t, err)
+	require.False(t, val.IsNull())
+	return val.AsString()
 }
 
-func TestEvaluateInt(t *testing.T) {
-	t.Parallel()
-	ctx := NewContext("/tmp", "/tmp", "/tmp", "", "", "")
-	ctx.SetVariable("count", cty.NumberIntVal(5))
-
-	eval := NewEvaluator(ctx)
-
-	tests := []struct {
-		name     string
-		expr     string
-		expected int
-	}{
-		{"literal", `42`, 42},
-		{"variable", `var.count`, 5},
-		{"arithmetic", `var.count + 10`, 15},
-		{"multiply", `var.count * 2`, 10},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-			expr := parseExpr(t, tt.expr)
-			result, diags := eval.EvaluateInt(expr)
-			if diags.HasErrors() {
-				t.Errorf("Unexpected error: %s", diags.Error())
-			}
-			if result != tt.expected {
-				t.Errorf("Expected %d, got %d", tt.expected, result)
-			}
-		})
-	}
-}
-
-func TestEvaluateBool(t *testing.T) {
-	t.Parallel()
-	ctx := NewContext("/tmp", "/tmp", "/tmp", "", "", "")
-	ctx.SetVariable("enabled", cty.BoolVal(true))
-
-	eval := NewEvaluator(ctx)
-
-	tests := []struct {
-		name     string
-		expr     string
-		expected bool
-	}{
-		{"true literal", `true`, true},
-		{"false literal", `false`, false},
-		{"variable", `var.enabled`, true},
-		{"negation", `!var.enabled`, false},
-		{"comparison", `1 < 2`, true},
-		{"equality", `1 == 1`, true},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-			expr := parseExpr(t, tt.expr)
-			result, diags := eval.EvaluateBool(expr)
-			if diags.HasErrors() {
-				t.Errorf("Unexpected error: %s", diags.Error())
-			}
-			if result != tt.expected {
-				t.Errorf("Expected %v, got %v", tt.expected, result)
-			}
-		})
-	}
+// evalInt evaluates expr and returns its integer value.
+func evalInt(t *testing.T, e *Evaluator, expr hcl.Expression) int {
+	t.Helper()
+	val, diags := e.Evaluate(expr)
+	require.Empty(t, diags)
+	val, _ = val.UnmarkDeep()
+	val, err := convert.Convert(val, cty.Number)
+	require.NoError(t, err)
+	require.False(t, val.IsNull())
+	i64, _ := val.AsBigFloat().Int64()
+	return int(i64)
 }
 
 func TestEvaluateCount(t *testing.T) {
@@ -294,13 +221,7 @@ func TestContextVariables(t *testing.T) {
 
 	// Test var.name
 	expr := parseExpr(t, `var.name`)
-	result, diags := eval.EvaluateString(expr)
-	if diags.HasErrors() {
-		t.Errorf("Unexpected error: %s", diags.Error())
-	}
-	if result != "test" {
-		t.Errorf("Expected 'test', got %q", result)
-	}
+	assert.Equal(t, "test", evalString(t, eval, expr))
 }
 
 func TestContextLocals(t *testing.T) {
@@ -315,13 +236,7 @@ func TestContextLocals(t *testing.T) {
 
 	// Test local.common_tags.Environment
 	expr := parseExpr(t, `local.common_tags.Environment`)
-	result, diags := eval.EvaluateString(expr)
-	if diags.HasErrors() {
-		t.Errorf("Unexpected error: %s", diags.Error())
-	}
-	if result != "dev" {
-		t.Errorf("Expected 'dev', got %q", result)
-	}
+	assert.Equal(t, "dev", evalString(t, eval, expr))
 }
 
 func TestContextCountIndex(t *testing.T) {
@@ -330,12 +245,8 @@ func TestContextCountIndex(t *testing.T) {
 	ctx.SetCount(2)
 
 	eval := NewEvaluator(ctx)
-
 	expr := parseExpr(t, `count.index`)
-	result, diags := eval.EvaluateInt(expr)
-	if diags.HasErrors() {
-		t.Errorf("Unexpected error: %s", diags.Error())
-	}
+	result := evalInt(t, eval, expr)
 	if result != 2 {
 		t.Errorf("Expected 2, got %d", result)
 	}
@@ -349,24 +260,10 @@ func TestContextEach(t *testing.T) {
 	eval := NewEvaluator(ctx)
 
 	// Test each.key
-	keyExpr := parseExpr(t, `each.key`)
-	keyResult, diags := eval.EvaluateString(keyExpr)
-	if diags.HasErrors() {
-		t.Errorf("Unexpected error: %s", diags.Error())
-	}
-	if keyResult != "mykey" {
-		t.Errorf("Expected 'mykey', got %q", keyResult)
-	}
+	assert.Equal(t, "mykey", evalString(t, eval, parseExpr(t, `each.key`)))
 
 	// Test each.value
-	valExpr := parseExpr(t, `each.value`)
-	valResult, diags := eval.EvaluateString(valExpr)
-	if diags.HasErrors() {
-		t.Errorf("Unexpected error: %s", diags.Error())
-	}
-	if valResult != "myvalue" {
-		t.Errorf("Expected 'myvalue', got %q", valResult)
-	}
+	assert.Equal(t, "myvalue", evalString(t, eval, parseExpr(t, `each.value`)))
 }
 
 func TestContextPath(t *testing.T) {
@@ -375,26 +272,16 @@ func TestContextPath(t *testing.T) {
 		t.Parallel()
 		ctx := NewContext("/project/module", "/project/module", "/project/module", "", "", "")
 		eval := NewEvaluator(ctx)
-		result, diags := eval.EvaluateString(parseExpr(t, `path.module`))
-		assert.False(t, diags.HasErrors(), diags.Error())
-		assert.Equal(t, ".", result)
-
-		result, diags = eval.EvaluateString(parseExpr(t, `path.root`))
-		assert.False(t, diags.HasErrors(), diags.Error())
-		assert.Equal(t, ".", result)
+		assert.Equal(t, ".", evalString(t, eval, parseExpr(t, `path.module`)))
+		assert.Equal(t, ".", evalString(t, eval, parseExpr(t, `path.root`)))
 	})
 
 	t.Run("nested module yields relative path from root", func(t *testing.T) {
 		t.Parallel()
 		ctx := NewContext("/project/modules/sub", "/project", "/project", "", "", "")
 		eval := NewEvaluator(ctx)
-		result, diags := eval.EvaluateString(parseExpr(t, `path.module`))
-		assert.False(t, diags.HasErrors(), diags.Error())
-		assert.Equal(t, "modules/sub", result)
-
-		result, diags = eval.EvaluateString(parseExpr(t, `path.root`))
-		assert.False(t, diags.HasErrors(), diags.Error())
-		assert.Equal(t, ".", result)
+		assert.Equal(t, "modules/sub", evalString(t, eval, parseExpr(t, `path.module`)))
+		assert.Equal(t, ".", evalString(t, eval, parseExpr(t, `path.root`)))
 	})
 }
 
@@ -409,13 +296,9 @@ func TestContextFileResolvesAgainstRootModuleDir(t *testing.T) {
 	ctx := NewContext(modDir, rootDir, rootDir, "", "", "")
 	eval := NewEvaluator(ctx)
 
-	modulePath, diags := eval.EvaluateString(parseExpr(t, `path.module`))
-	require.False(t, diags.HasErrors(), diags.Error())
-	require.Equal(t, "mod", modulePath)
-
-	hash, diags := eval.EvaluateString(parseExpr(t, `filesha256("${path.module}/aux.txt")`))
-	require.False(t, diags.HasErrors(), diags.Error())
-	assert.Equal(t, "5891b5b522d5df086d0ff0b110fbd9d21bb4fc7163af34d08286a2e846f6be03", hash)
+	require.Equal(t, "mod", evalString(t, eval, parseExpr(t, `path.module`)))
+	assert.Equal(t, "5891b5b522d5df086d0ff0b110fbd9d21bb4fc7163af34d08286a2e846f6be03",
+		evalString(t, eval, parseExpr(t, `filesha256("${path.module}/aux.txt")`)))
 }
 
 func TestContextTerraform(t *testing.T) {
@@ -425,13 +308,7 @@ func TestContextTerraform(t *testing.T) {
 	eval := NewEvaluator(ctx)
 
 	expr := parseExpr(t, `pulumi.stack`)
-	result, diags := eval.EvaluateString(expr)
-	if diags.HasErrors() {
-		t.Errorf("Unexpected error: %s", diags.Error())
-	}
-	if result != "production" {
-		t.Errorf("Expected 'production', got %q", result)
-	}
+	assert.Equal(t, "production", evalString(t, eval, expr))
 }
 
 func TestContextRangedResources(t *testing.T) {
@@ -447,13 +324,8 @@ func TestContextRangedResources(t *testing.T) {
 		}))
 
 		eval := NewEvaluator(ctx)
-		result, diags := eval.EvaluateString(parseExpr(t, `aws_instance.web[0].id`))
-		require.False(t, diags.HasErrors(), diags.Error())
-		assert.Equal(t, "i-000", result)
-
-		result, diags = eval.EvaluateString(parseExpr(t, `aws_instance.web[1].id`))
-		require.False(t, diags.HasErrors(), diags.Error())
-		assert.Equal(t, "i-001", result)
+		assert.Equal(t, "i-000", evalString(t, eval, parseExpr(t, `aws_instance.web[0].id`)))
+		assert.Equal(t, "i-001", evalString(t, eval, parseExpr(t, `aws_instance.web[1].id`)))
 	})
 
 	t.Run("for_each resources are accessible by key", func(t *testing.T) {
@@ -467,9 +339,7 @@ func TestContextRangedResources(t *testing.T) {
 		}))
 
 		eval := NewEvaluator(ctx)
-		result, diags := eval.EvaluateString(parseExpr(t, `aws_instance.web["east"].id`))
-		require.False(t, diags.HasErrors(), diags.Error())
-		assert.Equal(t, "i-east", result)
+		assert.Equal(t, "i-east", evalString(t, eval, parseExpr(t, `aws_instance.web["east"].id`)))
 	})
 
 	t.Run("resource named with brackets is not confused with ranged", func(t *testing.T) {
@@ -497,13 +367,8 @@ func TestContextRangedResources(t *testing.T) {
 		}))
 
 		eval := NewEvaluator(ctx)
-		result, diags := eval.EvaluateString(parseExpr(t, `aws_instance.single.id`))
-		require.False(t, diags.HasErrors(), diags.Error())
-		assert.Equal(t, "i-single", result)
-
-		result, diags = eval.EvaluateString(parseExpr(t, `aws_instance.multi[0].id`))
-		require.False(t, diags.HasErrors(), diags.Error())
-		assert.Equal(t, "i-multi-0", result)
+		assert.Equal(t, "i-single", evalString(t, eval, parseExpr(t, `aws_instance.single.id`)))
+		assert.Equal(t, "i-multi-0", evalString(t, eval, parseExpr(t, `aws_instance.multi[0].id`)))
 	})
 }
 
@@ -518,17 +383,11 @@ func TestContextClone(t *testing.T) {
 	// Original should be unchanged
 	origEval := NewEvaluator(ctx)
 	expr := parseExpr(t, `var.name`)
-	result, _ := origEval.EvaluateString(expr)
-	if result != "original" {
-		t.Errorf("Original context was modified, expected 'original', got %q", result)
-	}
+	assert.Equal(t, "original", evalString(t, origEval, expr))
 
 	// Clone should have new value
 	cloneEval := NewEvaluator(clone)
-	cloneResult, _ := cloneEval.EvaluateString(expr)
-	if cloneResult != "cloned" {
-		t.Errorf("Clone should have 'cloned', got %q", cloneResult)
-	}
+	assert.Equal(t, "cloned", evalString(t, cloneEval, expr))
 }
 
 func TestParseTraversal(t *testing.T) {
@@ -682,66 +541,6 @@ func TestIsKnown(t *testing.T) {
 	}
 }
 
-func TestMarkOutputLeaves(t *testing.T) {
-	t.Parallel()
-	mark := DepMark("urn:test::a")
-
-	t.Run("primitive marks at top", func(t *testing.T) {
-		t.Parallel()
-		out := MarkOutputLeaves(cty.StringVal("hello"), mark)
-		assert.True(t, out.HasMark(mark))
-	})
-
-	t.Run("object marks each leaf but not container", func(t *testing.T) {
-		t.Parallel()
-		obj := cty.ObjectVal(map[string]cty.Value{
-			"id":   cty.StringVal("xyz"),
-			"name": cty.StringVal("foo"),
-		})
-		out := MarkOutputLeaves(obj, mark)
-		assert.False(t, out.IsMarked(), "container itself should be unmarked")
-		assert.True(t, out.GetAttr("id").HasMark(mark))
-		assert.True(t, out.GetAttr("name").HasMark(mark))
-	})
-
-	t.Run("list marks each element", func(t *testing.T) {
-		t.Parallel()
-		list := cty.ListVal([]cty.Value{cty.StringVal("a"), cty.StringVal("b")})
-		out := MarkOutputLeaves(list, mark)
-		assert.False(t, out.IsMarked())
-		for it := out.ElementIterator(); it.Next(); {
-			_, v := it.Element()
-			assert.True(t, v.HasMark(mark))
-		}
-	})
-
-	t.Run("nested objects mark every leaf", func(t *testing.T) {
-		t.Parallel()
-		nested := cty.ObjectVal(map[string]cty.Value{
-			"tags": cty.MapVal(map[string]cty.Value{
-				"Name": cty.StringVal("hi"),
-			}),
-		})
-		out := MarkOutputLeaves(nested, mark)
-		name := out.GetAttr("tags").Index(cty.StringVal("Name"))
-		assert.True(t, name.HasMark(mark))
-	})
-
-	t.Run("empty containers untouched", func(t *testing.T) {
-		t.Parallel()
-		empty := cty.MapValEmpty(cty.String)
-		out := MarkOutputLeaves(empty, mark)
-		assert.False(t, out.IsMarked())
-		assert.True(t, out.RawEquals(empty))
-	})
-
-	t.Run("null and unknown leaves get marked", func(t *testing.T) {
-		t.Parallel()
-		assert.True(t, MarkOutputLeaves(cty.NullVal(cty.String), mark).HasMark(mark))
-		assert.True(t, MarkOutputLeaves(cty.UnknownVal(cty.String), mark).HasMark(mark))
-	})
-}
-
 func TestCollectDepURNs(t *testing.T) {
 	t.Parallel()
 	a := DepMark("urn:test::a")
@@ -778,12 +577,12 @@ func TestCollectDepURNs(t *testing.T) {
 		assert.Empty(t, CollectDepURNs(v))
 	})
 
-	t.Run("propagates through MarkOutputLeaves-marked container", func(t *testing.T) {
+	t.Run("propagates through marked container", func(t *testing.T) {
 		t.Parallel()
-		obj := MarkOutputLeaves(cty.ObjectVal(map[string]cty.Value{
+		obj := cty.ObjectVal(map[string]cty.Value{
 			"id": cty.StringVal("xyz"),
-		}), a)
-		// User-facing read of the marked leaf:
+		}).Mark(a)
+		// GetAttr propagates the container's mark to the attribute.
 		idAttr := obj.GetAttr("id")
 		assert.Equal(t, []string{"urn:test::a"}, CollectDepURNs(idAttr))
 	})
@@ -792,19 +591,20 @@ func TestCollectDepURNs(t *testing.T) {
 func TestStripSyntheticAttributes(t *testing.T) {
 	t.Parallel()
 
-	// resourceObj mirrors how the engine builds a resource output object: every
-	// leaf carries DepMark(urn), and the synthetic `urn` attribute carries
-	// SyntheticMark on top of that.
+	// resourceObj mirrors how the engine builds a resource output object: the
+	// container carries DepMark(urn), and the synthetic `urn` attribute carries
+	// SyntheticMark.
 	resourceObj := func(urn string) cty.Value {
-		return MarkOutputLeaves(cty.ObjectVal(map[string]cty.Value{
+		return cty.ObjectVal(map[string]cty.Value{
 			"id":        cty.StringVal("simple-id"),
 			"urn":       cty.StringVal(urn).WithMarks(cty.NewValueMarks(SyntheticMark)),
 			"input_one": cty.StringVal("hello"),
-		}), DepMark(urn))
+		}).Mark(DepMark(urn))
 	}
 
 	// keysOf returns the sorted attribute names of an object.
 	keysOf := func(v cty.Value) []string {
+		v, _ = v.Unmark()
 		var keys []string
 		for it := v.ElementIterator(); it.Next(); {
 			k, _ := it.Element()
