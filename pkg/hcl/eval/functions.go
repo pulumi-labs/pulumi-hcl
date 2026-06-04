@@ -26,7 +26,6 @@ import (
 	"crypto/sha512"
 	"crypto/x509"
 	"encoding/base64"
-	"encoding/csv"
 	"encoding/hex"
 	"encoding/json"
 	"encoding/pem"
@@ -1894,7 +1893,7 @@ var nonsensitiveFunc = function.New(&function.Spec{
 	},
 	Impl: func(args []cty.Value, retType cty.Type) (cty.Value, error) {
 		val, marks := args[0].Unmark()
-		delete(marks, "sensitive")
+		delete(marks, SensitiveMark)
 		if len(marks) == 0 {
 			return val, nil
 		}
@@ -2083,13 +2082,6 @@ func ctyToGo(val cty.Value) any {
 		return nil
 	}
 }
-
-// Ensure these are used (to avoid import errors)
-var (
-	_ = regexp.MustCompile
-	_ = json.Marshal
-	_ = csv.NewReader
-)
 
 // Pulumi-specific functions
 

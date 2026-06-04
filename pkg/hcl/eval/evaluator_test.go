@@ -795,21 +795,11 @@ func TestStripSyntheticAttributes(t *testing.T) {
 	// leaf carries DepMark(urn), and the synthetic `urn` attribute carries
 	// SyntheticMark on top of that.
 	resourceObj := func(urn string) cty.Value {
-		obj := MarkOutputLeaves(cty.ObjectVal(map[string]cty.Value{
+		return MarkOutputLeaves(cty.ObjectVal(map[string]cty.Value{
 			"id":        cty.StringVal("simple-id"),
-			"urn":       cty.StringVal(urn),
+			"urn":       cty.StringVal(urn).WithMarks(cty.NewValueMarks(SyntheticMark)),
 			"input_one": cty.StringVal("hello"),
 		}), DepMark(urn))
-		// Re-apply SyntheticMark to the urn leaf, as the injection site does.
-		m := make(map[string]cty.Value)
-		for it := obj.ElementIterator(); it.Next(); {
-			k, v := it.Element()
-			if k.AsString() == "urn" {
-				v = v.Mark(SyntheticMark)
-			}
-			m[k.AsString()] = v
-		}
-		return cty.ObjectVal(m)
 	}
 
 	// keysOf returns the sorted attribute names of an object.
@@ -826,7 +816,7 @@ func TestStripSyntheticAttributes(t *testing.T) {
 	t.Run("single resource object drops synthetic urn", func(t *testing.T) {
 		t.Parallel()
 		urn := "urn:pulumi:test::p::simple:index/resource:Resource::r"
-		got := StripSyntheticAttributes(resourceObj(urn))
+		got := stripSyntheticAttributes(resourceObj(urn))
 		assert.Equal(t, []string{"id", "input_one"}, keysOf(got))
 		// DepMark survives so pulumiResourceName/Type can recover the URN.
 		assert.Equal(t, []string{urn}, CollectDepURNs(got))
@@ -834,7 +824,7 @@ func TestStripSyntheticAttributes(t *testing.T) {
 
 	t.Run("tuple of resource objects (count)", func(t *testing.T) {
 		t.Parallel()
-		got := StripSyntheticAttributes(cty.TupleVal([]cty.Value{
+		got := stripSyntheticAttributes(cty.TupleVal([]cty.Value{
 			resourceObj("urn:pulumi:test::p::simple:index/resource:Resource::r-0"),
 			resourceObj("urn:pulumi:test::p::simple:index/resource:Resource::r-1"),
 		}))
@@ -846,7 +836,7 @@ func TestStripSyntheticAttributes(t *testing.T) {
 
 	t.Run("object of resource objects (for_each)", func(t *testing.T) {
 		t.Parallel()
-		got := StripSyntheticAttributes(cty.ObjectVal(map[string]cty.Value{
+		got := stripSyntheticAttributes(cty.ObjectVal(map[string]cty.Value{
 			"x": resourceObj("urn:pulumi:test::p::simple:index/resource:Resource::r-x"),
 			"y": resourceObj("urn:pulumi:test::p::simple:index/resource:Resource::r-y"),
 		}))
@@ -862,14 +852,14 @@ func TestStripSyntheticAttributes(t *testing.T) {
 			"urn":  cty.StringVal("hello"),
 			"name": cty.StringVal("world"),
 		})
-		assert.True(t, StripSyntheticAttributes(userObj).RawEquals(userObj))
+		assert.True(t, stripSyntheticAttributes(userObj).RawEquals(userObj))
 	})
 
 	t.Run("sensitive mark on container is preserved", func(t *testing.T) {
 		t.Parallel()
 		marked := resourceObj("urn:pulumi:test::p::simple:index/resource:Resource::r").
 			Mark(SensitiveMark)
-		got := StripSyntheticAttributes(marked)
+		got := stripSyntheticAttributes(marked)
 		unmarked, marks := got.Unmark()
 		assert.Equal(t, []string{"id", "input_one"}, keysOf(unmarked))
 		_, isSensitive := marks[SensitiveMark]

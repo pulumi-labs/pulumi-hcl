@@ -63,7 +63,9 @@ Requires `tofu` on `PATH` (or set `TF_COMMAND_OVERRIDE=terraform`).
 - `l2_*` — provider code is exercised (resources, data sources, computed
   outputs).
 
-Mirrors `pulumi-converter-terraform/tests/conformance/`.
+Tests should be named after the noun under test, not the behavior under test. For example,
+to test that variable defaults are applied correctly, we the test might be called
+`l1_var`, not `l1_var_defaults_applied`.
 
 ## Scope
 

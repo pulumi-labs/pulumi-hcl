@@ -18,6 +18,7 @@ import (
 	"fmt"
 
 	"github.com/hashicorp/hcl/v2"
+	"github.com/pulumi/pulumi/sdk/v3/go/common/util/contract"
 	"github.com/zclconf/go-cty/cty"
 	"github.com/zclconf/go-cty/cty/convert"
 )
@@ -125,11 +126,9 @@ const SensitiveMark = "sensitive"
 
 // SyntheticMark is the cty value mark applied to attributes that pulumi-hcl
 // injects onto a resource-reference object but that have no OpenTofu
-// equivalent (e.g. the `urn` attribute consumed by `pulumiResourceName`,
-// `pulumiResourceType`, `depends_on`, and provider references). Such
-// attributes must remain on the in-context resource object so those consumers
-// resolve, but must be stripped from values serialized into stack outputs,
-// where OpenTofu would never emit them.
+// equivalent.
+//
+// In general, they are not user visable.
 const SyntheticMark = "pulumi-synthetic"
 
 // DepMark records the URN of a Pulumi resource a value transitively depends
@@ -214,116 +213,45 @@ func markUnmarkedOutputLeaves(val cty.Value, mark any) cty.Value {
 	}
 }
 
-// StripSyntheticAttributes recursively removes object attributes whose value
-// carries SyntheticMark. These are pulumi-injected attributes (e.g. a
-// resource's `urn`) that have no OpenTofu equivalent and must not be visible to
-// user-facing HCL — neither when iterating a resource object (for-expressions,
-// keys, values, splat) nor when serializing it into a stack output. All other
-// marks (DepMark, SensitiveMark) are preserved so dependency tracking and
-// sensitivity continue to flow.
-func StripSyntheticAttributes(val cty.Value) cty.Value {
-	if val.IsNull() || !val.IsKnown() {
-		return val
-	}
-	unmarked, marks := val.Unmark()
-	out := stripSyntheticAttributesUnmarked(unmarked)
-	if len(marks) > 0 {
-		out = out.WithMarks(marks)
-	}
-	return out
-}
-
-func stripSyntheticAttributesUnmarked(val cty.Value) cty.Value {
-	ty := val.Type()
-	switch {
-	case ty.IsObjectType():
-		if val.LengthInt() == 0 {
-			return val
+// stripSyntheticAttributes recursively removes object attributes whose value
+// carries SyntheticMark.
+func stripSyntheticAttributes(val cty.Value) cty.Value {
+	out, err := cty.Transform(val, func(_ cty.Path, val cty.Value) (cty.Value, error) {
+		if !val.IsKnown() || val.IsNull() || !val.Type().IsObjectType() {
+			return val, nil
 		}
-		m := make(map[string]cty.Value, val.LengthInt())
-		for it := val.ElementIterator(); it.Next(); {
-			k, v := it.Element()
+		val, marks := val.Unmark()
+		attrs := make(map[string]cty.Value, val.LengthInt())
+		for k := range val.Type().AttributeTypes() {
+			v := val.GetAttr(k)
 			if v.HasMark(SyntheticMark) {
 				continue
 			}
-			m[k.AsString()] = StripSyntheticAttributes(v)
+			attrs[k] = v
 		}
-		if len(m) == 0 {
-			return cty.EmptyObjectVal
-		}
-		return cty.ObjectVal(m)
-	case ty.IsMapType():
-		if val.LengthInt() == 0 {
-			return val
-		}
-		m := make(map[string]cty.Value, val.LengthInt())
-		for it := val.ElementIterator(); it.Next(); {
-			k, v := it.Element()
-			m[k.AsString()] = StripSyntheticAttributes(v)
-		}
-		return cty.MapVal(m)
-	case ty.IsListType() || ty.IsTupleType():
-		if val.LengthInt() == 0 {
-			return val
-		}
-		vs := make([]cty.Value, 0, val.LengthInt())
-		for it := val.ElementIterator(); it.Next(); {
-			_, v := it.Element()
-			vs = append(vs, StripSyntheticAttributes(v))
-		}
-		if ty.IsTupleType() {
-			return cty.TupleVal(vs)
-		}
-		return cty.ListVal(vs)
-	case ty.IsSetType():
-		if val.LengthInt() == 0 {
-			return val
-		}
-		vs := make([]cty.Value, 0, val.LengthInt())
-		for it := val.ElementIterator(); it.Next(); {
-			_, v := it.Element()
-			vs = append(vs, StripSyntheticAttributes(v))
-		}
-		return cty.SetVal(vs)
-	default:
-		return val
-	}
+		return cty.ObjectVal(attrs).WithMarks(marks), nil
+	})
+	contract.AssertNoErrorf(err, "an error was never returned from cty.Transform")
+	return out
 }
 
 // CollectDepURNs returns every distinct URN carried by a DepMark anywhere
-// in val's value tree, in first-seen order.
+// in val's value tree.
 func CollectDepURNs(val cty.Value) []string {
 	var urns []string
 	seen := make(map[string]bool)
-	var walk func(cty.Value)
-	walk = func(v cty.Value) {
-		if v.IsMarked() {
-			inner, marks := v.Unmark()
-			for m := range marks {
-				dm, ok := m.(DepMark)
-				if !ok {
-					continue
-				}
-				s := string(dm)
-				if !seen[s] {
-					seen[s] = true
-					urns = append(urns, s)
-				}
-			}
-			v = inner
+	_, marks := val.UnmarkDeep()
+	for m := range marks {
+		dm, ok := m.(DepMark)
+		if !ok {
+			continue
 		}
-		if v.IsNull() || !v.IsKnown() {
-			return
-		}
-		ty := v.Type()
-		if ty.IsObjectType() || ty.IsMapType() || ty.IsListType() || ty.IsTupleType() || ty.IsSetType() {
-			for it := v.ElementIterator(); it.Next(); {
-				_, elem := it.Element()
-				walk(elem)
-			}
+		s := string(dm)
+		if !seen[s] {
+			seen[s] = true
+			urns = append(urns, s)
 		}
 	}
-	walk(val)
 	return urns
 }
 

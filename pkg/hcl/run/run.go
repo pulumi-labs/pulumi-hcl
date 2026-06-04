@@ -2907,11 +2907,6 @@ func (e *Engine) processOutput(_ context.Context, name string, output *ast.Outpu
 		return fmt.Errorf("evaluating output value: %s", diags.Error())
 	}
 
-	// Resource objects reach outputs through the eval context, which already
-	// drops engine-injected synthetic attributes (the `urn`). Strip again here
-	// as a safety net against any exposure path that bypasses the context.
-	val = eval.StripSyntheticAttributes(val)
-
 	// Convert to PropertyValue
 	pv, err := transform.CtyToPropertyValue(val)
 	if err != nil {

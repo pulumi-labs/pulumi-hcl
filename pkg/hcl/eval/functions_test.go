@@ -1541,7 +1541,7 @@ func TestPulumiResourceNameType(t *testing.T) {
 	urn := "urn:pulumi:stack::project::simple:index/resource:Resource::web"
 	// A resource reference as user code sees it: the synthetic `urn` attribute
 	// has been stripped, but every leaf still carries DepMark(urn).
-	resourceRef := StripSyntheticAttributes(MarkOutputLeaves(cty.ObjectVal(map[string]cty.Value{
+	resourceRef := stripSyntheticAttributes(MarkOutputLeaves(cty.ObjectVal(map[string]cty.Value{
 		"id":        cty.StringVal("i-123"),
 		"urn":       cty.StringVal(urn).Mark(SyntheticMark),
 		"input_one": cty.StringVal("hello"),
