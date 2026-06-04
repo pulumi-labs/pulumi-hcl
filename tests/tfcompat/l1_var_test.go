@@ -22,8 +22,8 @@ import (
 
 // A root variable's `default` whose literal element/attribute types differ from
 // the declared `type` (e.g. list(string) default written as [1, true]) must be
-// coerced to the type constraint, matching OpenTofu. Stack outputs must match.
-func TestL1VarDefaultCoerce(t *testing.T) {
+// coerced to the type constraint. Stack outputs must match.
+func TestL1Var(t *testing.T) {
 	t.Parallel()
-	tfcompat.RunCase(t, "l1_var_default_coerce", tfcompat.Case{})
+	tfcompat.RunCase(t, "l1_var", tfcompat.Case{})
 }
