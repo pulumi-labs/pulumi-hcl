@@ -27,10 +27,7 @@ jobs:
           go-version-file: go.mod
       - uses: pulumi/actions@v7
         with:
-          # Change to dev once #23330 merges
-          pulumi-version: pr#23330
-        env:
-          GITHUB_TOKEN: ${{ secrets.PULUMI_BOT_TOKEN }}
+          pulumi-version: dev
       - uses: opentofu/setup-opentofu@v2
       # terraform_remote_state lowers to the pulumi-terraform getLocalReference
       # invoke; the tfcompat harness disables plugin acquisition, so pre-install it.
