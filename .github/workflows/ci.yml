@@ -32,6 +32,13 @@ jobs:
       # terraform_remote_state lowers to the pulumi-terraform getLocalReference
       # invoke; the tfcompat harness disables plugin acquisition, so pre-install it.
       - run: pulumi plugin install resource terraform 6.0.2
+      # The harness runs the language runtime in-process via PULUMI_DEBUG_LANGUAGES,
+      # but the engine still resolves and installs the `hcl` language plugin before
+      # attaching. Acquisition is disabled in-test, so pre-install it from cache;
+      # otherwise concurrent cases each race to download it and hit GitHub rate limits.
+      - run: pulumi plugin install language hcl --server github://api.github.com/pulumi-labs/pulumi-hcl
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       - run: make test_cover
         env:
           # Enable the live terraform_remote_state `remote` backend test.
