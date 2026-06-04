@@ -1,0 +1,6 @@
+kind: bug-fixes
+body: 'Fix `transpose` panic on null list and string elements'
+time: 2026-06-03T19:00:00.000000+02:00
+custom:
+    Component: runtime
+    PR: "228"
