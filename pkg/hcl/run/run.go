@@ -666,6 +666,14 @@ func (e *Engine) processVariable(_ context.Context, node *graph.Node) error {
 		val = v.TypeDefaults.Apply(val)
 	}
 
+	if valueSource != "environment" && valueSource != "config" &&
+		v.TypeConstraint != cty.NilType && v.TypeConstraint != cty.DynamicPseudoType &&
+		!val.IsNull() && val.IsKnown() {
+		if converted, err := ctyconvert.Convert(val, v.TypeConstraint); err == nil {
+			val = converted
+		}
+	}
+
 	// Handle sensitive marking
 	if v.Sensitive || isSecret {
 		val = val.Mark(eval.SensitiveMark)
