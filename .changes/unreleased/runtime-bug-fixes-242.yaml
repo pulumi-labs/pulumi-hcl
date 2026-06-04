@@ -1,0 +1,6 @@
+kind: bug-fixes
+body: terraform_data.input is now optional
+time: 2026-06-04T13:17:35.081723+02:00
+custom:
+    Component: runtime
+    PR: "242"
