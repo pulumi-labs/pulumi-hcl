@@ -703,7 +703,7 @@ func TestEngine_VariableDefaultCoercedToType(t *testing.T) {
 
 	// A variable's `default` is coerced to its declared `type` exactly like a
 	// supplied value: a list(string) default written with non-string elements
-	// becomes a list of strings, matching OpenTofu.
+	// becomes a list of strings.
 	src := []byte(`
 variable "lst" {
   type    = list(string)

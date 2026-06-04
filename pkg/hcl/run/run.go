@@ -666,11 +666,6 @@ func (e *Engine) processVariable(_ context.Context, node *graph.Node) error {
 		val = v.TypeDefaults.Apply(val)
 	}
 
-	// Coerce the value to the declared type constraint. The env/config string
-	// source was already converted above; this covers a default (or any other
-	// non-string source) whose literal type differs from the constraint, e.g. a
-	// list(string) default written as [1, true] must become ["1", "true"] —
-	// matching OpenTofu, which converts every variable value to its type.
 	if valueSource != "environment" && valueSource != "config" &&
 		v.TypeConstraint != cty.NilType && v.TypeConstraint != cty.DynamicPseudoType &&
 		!val.IsNull() && val.IsKnown() {

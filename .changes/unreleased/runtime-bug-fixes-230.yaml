@@ -1,5 +1,5 @@
 kind: bug-fixes
-body: Coerce a `variable` `default` to its declared `type` like OpenTofu
+body: Coerce a `variable` `default` to its declared `type`
 time: 2026-06-03T19:30:00.000000+02:00
 custom:
     Component: runtime
