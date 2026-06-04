@@ -507,6 +507,20 @@ func (g *Graph) resourceDeps(resource *ast.Resource, prefix string) []pdag.Node 
 	for _, dep := range g.exprDeps(resource.Provider, prefix) {
 		seen[dep] = true
 	}
+	// A bare `provider = name` reference (no alias) is a single-segment
+	// traversal, which exprDeps drops because it carries no attribute after the
+	// root. Depend on the named provider node directly so this resource is
+	// ordered after it. Aliased (`name.alias`) and call-based (`call.x.y`)
+	// provider expressions have further segments and are already resolved by
+	// exprDeps above.
+	if resource.Provider != nil {
+		if vars := resource.Provider.Variables(); len(vars) == 1 && len(vars[0]) == 1 {
+			name := vars[0].RootName()
+			g.recordRef(prefix+name, vars[0].SourceRange())
+			_, idx := g.newNode(prefix + name)
+			seen[idx] = true
+		}
+	}
 	for _, traversal := range resource.Providers {
 		if dep := formatTraversal(traversal); dep != "" {
 			g.recordRef(prefix+dep, traversal.SourceRange())

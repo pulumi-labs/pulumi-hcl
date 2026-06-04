@@ -1,0 +1,6 @@
+kind: bug-fixes
+body: Resolve a `provider` meta-argument that references a provider by its bare local name (`provider = aws`), not just `provider = aws.alias`
+time: 2026-06-04T13:40:42.000000+00:00
+custom:
+    Component: runtime
+    PR: "239"
