@@ -146,7 +146,27 @@ func TestConditionResultToBool(t *testing.T) {
 	}
 }
 
-func TestFormatTraversalForIgnoreChanges(t *testing.T) {
+// ignoreChangesSchema is shared by the attribute-path translation tests: a
+// Pulumi schema where the bridge applied the default snake→camel rename
+// (including a nested object property) plus a mapping with an explicit rename.
+func ignoreChangesSchema() (*bridge.BodyMapping, []*schema.Property) {
+	props := []*schema.Property{
+		{Name: "inputOne"},
+		{Name: "tags"},
+		{Name: "networkConfig", Type: &schema.ArrayType{ElementType: &schema.ObjectType{
+			Properties: []*schema.Property{{Name: "subnetId"}},
+		}}},
+	}
+	mapping := &bridge.BodyMapping{Fields: map[string]*bridge.FieldMapping{
+		"weird_name": {TFName: "weird_name", PulumiName: "niceName"},
+		"network_config": {TFName: "network_config", PulumiName: "networkConfig", TFBlock: true, Nested: &bridge.BodyMapping{Fields: map[string]*bridge.FieldMapping{
+			"subnet_id": {TFName: "subnet_id", PulumiName: "subnetId"},
+		}}},
+	}}
+	return mapping, props
+}
+
+func TestTranslateAttrPathTraversal(t *testing.T) {
 	t.Parallel()
 
 	// attr builds a relative traversal of attribute-name segments.
@@ -161,23 +181,7 @@ func TestFormatTraversalForIgnoreChanges(t *testing.T) {
 		return append(base, hcl.TraverseIndex{Key: cty.StringVal(key)})
 	}
 
-	// props mirrors a Pulumi schema where the bridge applied the default
-	// snake→camel rename, including a nested object property.
-	props := []*schema.Property{
-		{Name: "inputOne"},
-		{Name: "tags"},
-		{Name: "networkConfig", Type: &schema.ArrayType{ElementType: &schema.ObjectType{
-			Properties: []*schema.Property{{Name: "subnetId"}},
-		}}},
-	}
-
-	// mapping carries an explicit (non-conventional) rename plus a nested block.
-	mapping := &bridge.BodyMapping{Fields: map[string]*bridge.FieldMapping{
-		"weird_name": {TFName: "weird_name", PulumiName: "niceName"},
-		"network_config": {TFName: "network_config", PulumiName: "networkConfig", TFBlock: true, Nested: &bridge.BodyMapping{Fields: map[string]*bridge.FieldMapping{
-			"subnet_id": {TFName: "subnet_id", PulumiName: "subnetId"},
-		}}},
-	}}
+	mapping, props := ignoreChangesSchema()
 
 	tests := []struct {
 		name      string
@@ -189,6 +193,12 @@ func TestFormatTraversalForIgnoreChanges(t *testing.T) {
 		{
 			name:      "convention rename via schema props",
 			traversal: attr("input_one"),
+			props:     props,
+			want:      "inputOne",
+		},
+		{
+			name:      "already-Pulumi name passes through",
+			traversal: attr("inputOne"),
 			props:     props,
 			want:      "inputOne",
 		},
@@ -226,7 +236,39 @@ func TestFormatTraversalForIgnoreChanges(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			assert.Equal(t, tt.want, formatTraversalForIgnoreChanges(tt.traversal, tt.mapping, tt.props))
+			assert.Equal(t, tt.want, translateAttrPathTraversal(tt.traversal, tt.mapping, tt.props))
+		})
+	}
+}
+
+// TestTranslateAttrPathString covers the string-path translation used by the
+// pulumi-block options replace_on_changes, hide_diffs, and
+// additional_secret_outputs. A TF-convention path is translated to the Pulumi
+// name; a path already in Pulumi form passes through unchanged.
+func TestTranslateAttrPathString(t *testing.T) {
+	t.Parallel()
+
+	mapping, props := ignoreChangesSchema()
+
+	tests := []struct {
+		name    string
+		path    string
+		mapping *bridge.BodyMapping
+		props   []*schema.Property
+		want    string
+	}{
+		{name: "snake_case translated via schema props", path: "input_one", props: props, want: "inputOne"},
+		{name: "already-Pulumi name passes through", path: "inputOne", props: props, want: "inputOne"},
+		{name: "explicit rename via bridge mapping", path: "weird_name", mapping: mapping, want: "niceName"},
+		{name: "nested path translated via schema props", path: "network_config.subnet_id", props: props, want: "networkConfig.subnetId"},
+		{name: "unknown name with no schema passes through", path: "input_one", want: "input_one"},
+		{name: "empty path", path: "", want: ""},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			assert.Equal(t, tt.want, translateAttrPathString(tt.path, tt.mapping, tt.props))
 		})
 	}
 }

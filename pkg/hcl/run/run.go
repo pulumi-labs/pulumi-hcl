@@ -1367,7 +1367,7 @@ func (e *Engine) buildResourceOptionsInContext(
 		// paths against Pulumi (camelCase) property names, so they must be
 		// translated through the bridge mapping first.
 		for _, ic := range res.Lifecycle.IgnoreChanges {
-			icStr := formatTraversalForIgnoreChanges(ic, resourceMapping, inputProps)
+			icStr := translateAttrPathTraversal(ic, resourceMapping, inputProps)
 			if icStr != "" {
 				opts.IgnoreChanges = append(opts.IgnoreChanges, icStr)
 			}
@@ -1515,7 +1515,8 @@ func (e *Engine) buildResourceOptionsInContext(
 			for it.Next() {
 				_, elem := it.Element()
 				if elem.Type() == cty.String {
-					opts.AdditionalSecretOutputs = append(opts.AdditionalSecretOutputs, elem.AsString())
+					opts.AdditionalSecretOutputs = append(opts.AdditionalSecretOutputs,
+						translateAttrPathString(elem.AsString(), resourceMapping, inputProps))
 				}
 			}
 		}
@@ -1552,11 +1553,16 @@ func (e *Engine) buildResourceOptionsInContext(
 		}
 	}
 
-	// Handle hide_diffs - property paths (already in camelCase)
-	opts.HideDiffs = append(opts.HideDiffs, res.HideDiff...)
-
-	// Handle replace_on_changes - property paths (already in camelCase)
-	opts.ReplaceOnChanges = append(opts.ReplaceOnChanges, res.ReplaceOnChanges...)
+	// hide_diffs and replace_on_changes name properties of this resource by
+	// their attribute path. Like ignore_changes, the path may be written in TF
+	// (snake_case) convention and must be translated to the Pulumi property
+	// name the engine expects; a path already in Pulumi form passes through.
+	for _, p := range res.HideDiff {
+		opts.HideDiffs = append(opts.HideDiffs, translateAttrPathString(p, resourceMapping, inputProps))
+	}
+	for _, p := range res.ReplaceOnChanges {
+		opts.ReplaceOnChanges = append(opts.ReplaceOnChanges, translateAttrPathString(p, resourceMapping, inputProps))
+	}
 
 	// `lifecycle { replace_triggered_by = [a, b, ...] }` evaluates each
 	// expression and feeds the result to RegisterResource as the
@@ -1811,26 +1817,27 @@ func (*Engine) extractModuleResourceName(
 	return modInstanceName + "-" + bareResourceName
 }
 
-// formatTraversalForIgnoreChanges formats an ignore_changes traversal into the
-// dotted/bracketed path the Pulumi engine expects, translating each TF
-// (snake_case) attribute segment to its Pulumi (camelCase) name. The Pulumi
-// engine matches ignoreChanges paths against Pulumi property names, so a TF
-// name like input_one must become inputOne. Index segments and keys into a
-// plain map (which have no schema field of their own) are passed through
-// verbatim.
+// translateAttrPathTraversal formats an attribute-path traversal (e.g. an
+// ignore_changes entry) into the dotted/bracketed path the Pulumi engine
+// expects, translating each TF (snake_case) attribute segment to its Pulumi
+// (camelCase) name. The Pulumi engine matches these paths against Pulumi
+// property names, so a TF name like input_one must become inputOne. Index
+// segments and keys into a plain map (which have no schema field of their own)
+// are passed through verbatim.
 //
 // Translation prefers the bridge mapping (which captures explicit renames and
 // the block-vs-attribute shape) and falls back to the snake↔camel convention
 // against the Pulumi schema properties, mirroring how resource inputs are
-// mapped in transform.evalBlockWithSchema.
-func formatTraversalForIgnoreChanges(
+// mapped in transform.evalBlockWithSchema. A name that is already in Pulumi
+// form passes through unchanged, so paths authored in either convention work.
+func translateAttrPathTraversal(
 	traversal hcl.Traversal, mapping *bridge.BodyMapping, props []*schema.Property,
 ) string {
 	if len(traversal) == 0 {
 		return ""
 	}
 
-	resolver := ignoreChangesNameResolver{mapping: mapping, props: props}
+	resolver := attrPathNameResolver{mapping: mapping, props: props}
 	var buf strings.Builder
 	for i, step := range traversal {
 		switch s := step.(type) {
@@ -1858,10 +1865,29 @@ func formatTraversalForIgnoreChanges(
 	return buf.String()
 }
 
-// ignoreChangesNameResolver walks an ignore_changes traversal, translating each
-// attribute segment from its TF name to its Pulumi name and descending into the
-// nested schema for the next segment.
-type ignoreChangesNameResolver struct {
+// translateAttrPathString translates a dotted attribute path (e.g. a
+// replace_on_changes / hide_diffs / additional_secret_outputs entry) the same
+// way translateAttrPathTraversal does for a traversal. Each `.`-separated
+// segment is translated through the bridge mapping or the snake↔camel
+// convention; a path already in Pulumi form passes through unchanged. Bracketed
+// index segments are not expected here (these options name properties of the
+// current resource), so the path is split on `.` only.
+func translateAttrPathString(path string, mapping *bridge.BodyMapping, props []*schema.Property) string {
+	if path == "" {
+		return ""
+	}
+	resolver := attrPathNameResolver{mapping: mapping, props: props}
+	segments := strings.Split(path, ".")
+	for i, seg := range segments {
+		segments[i] = resolver.next(seg)
+	}
+	return strings.Join(segments, ".")
+}
+
+// attrPathNameResolver walks an attribute path, translating each attribute
+// segment from its TF name to its Pulumi name and descending into the nested
+// schema for the next segment.
+type attrPathNameResolver struct {
 	mapping *bridge.BodyMapping
 	props   []*schema.Property
 }
@@ -1869,7 +1895,7 @@ type ignoreChangesNameResolver struct {
 // next translates one TF attribute-name segment and advances the resolver to
 // the nested schema. An unknown name (or a key into a plain map) is returned
 // unchanged with the resolver cleared, so trailing map keys pass through.
-func (r *ignoreChangesNameResolver) next(tfName string) string {
+func (r *attrPathNameResolver) next(tfName string) string {
 	if fm := r.mapping.Lookup(tfName); fm != nil {
 		if fm.TFBlock {
 			r.mapping, r.props = fm.Nested, nil

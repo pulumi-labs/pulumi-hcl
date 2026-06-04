@@ -2549,3 +2549,57 @@ resource web "aws:index:Instance" {
 	assert.Equal(t, "aws:index:Instance", mock.RegisteredResources[1].Type)
 	assert.Equal(t, "web", mock.RegisteredResources[1].Name)
 }
+
+// TestReplaceOnChangesPathTranslated verifies that a `pulumi { }` block's
+// replace_on_changes, written with the TF (snake_case) attribute name, reaches
+// the engine as the Pulumi property name. The engine matches replace_on_changes
+// paths against Pulumi property names, so without the translation `input_one`
+// would never match `inputOne` and the option would be silently ineffective.
+func TestReplaceOnChangesPathTranslated(t *testing.T) {
+	t.Parallel()
+
+	src := `resource "test_resource" "r" {
+  input_one = "a"
+
+  pulumi {
+    replace_on_changes = ["input_one"]
+  }
+}`
+
+	testSchema := schema.PackageSpec{
+		Name:    "test",
+		Version: "1.0.0",
+		Resources: map[string]schema.ResourceSpec{
+			"test:index:Resource": {
+				InputProperties: map[string]schema.PropertySpec{
+					"inputOne": {TypeSpec: schema.TypeSpec{Type: "string"}},
+				},
+				ObjectTypeSpec: schema.ObjectTypeSpec{
+					Properties: map[string]schema.PropertySpec{
+						"inputOne": {TypeSpec: schema.TypeSpec{Type: "string"}},
+					},
+				},
+			},
+		},
+	}
+	loader := schemaloader.New(t, testSchema)
+
+	hclParser := parser.NewParser()
+	config, hclDiags := hclParser.ParseSource("main.tf", []byte(src))
+	require.False(t, hclDiags.HasErrors(), hclDiags.Error())
+
+	mock := &testutil.MockResourceMonitor{}
+	engine := hclrun.NewEngine(t.Context(), config, &hclrun.EngineOptions{
+		ProjectName:     "test-project",
+		StackName:       "dev",
+		ResourceMonitor: mock,
+		WorkDir:         t.TempDir(),
+		RootDir:         t.TempDir(),
+		SchemaLoader:    loader,
+	})
+	require.NoError(t, engine.Run(t.Context()))
+
+	require.Len(t, mock.RegisteredResources, 2)
+	assert.Equal(t, "test:index:Resource", mock.RegisteredResources[1].Type)
+	assert.Equal(t, []string{"inputOne"}, mock.RegisteredResources[1].ReplaceOnChanges)
+}
