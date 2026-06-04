@@ -48,6 +48,7 @@ import (
 	pulumiencoding "github.com/pulumi/pulumi/sdk/v3/go/common/encoding"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/resource"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/resource/plugin"
+	"github.com/pulumi/pulumi/sdk/v3/go/common/resource/urn"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/util/contract"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/util/fsutil"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/util/logging"
@@ -1149,7 +1150,7 @@ func (r *resourceMonitorAdapter) RegisterResource(
 		PropertyDependencies:       propDeps,
 		Provider:                   req.Provider,
 		Providers:                  req.Providers,
-		Parent:                     req.Parent,
+		Parent:                     string(req.Parent),
 		IgnoreChanges:              req.IgnoreChanges,
 		Aliases:                    aliases,
 		AcceptSecrets:              true,
@@ -1215,7 +1216,7 @@ func (r *resourceMonitorAdapter) RegisterResource(
 	}
 
 	return &run.RegisterResourceResponse{
-		URN:     resp.Urn,
+		URN:     urn.URN(resp.Urn),
 		ID:      resp.Id,
 		Outputs: resource.FromResourcePropertyMap(outputs),
 	}, nil
@@ -1270,7 +1271,7 @@ func (r *resourceMonitorAdapter) Invoke(
 // RegisterResourceOutputs registers outputs on a resource (used for stack outputs).
 func (r *resourceMonitorAdapter) RegisterResourceOutputs(
 	ctx context.Context,
-	urn string,
+	urn urn.URN,
 	outputs property.Map,
 ) error {
 	// Convert outputs to protobuf struct
@@ -1281,7 +1282,7 @@ func (r *resourceMonitorAdapter) RegisterResourceOutputs(
 
 	// Call the resource monitor
 	_, err = r.monitorClient.RegisterResourceOutputs(ctx, &pulumirpc.RegisterResourceOutputsRequest{
-		Urn:     urn,
+		Urn:     string(urn),
 		Outputs: outputsStruct,
 	})
 	if err != nil {

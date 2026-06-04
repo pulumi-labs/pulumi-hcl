@@ -26,6 +26,7 @@ import (
 	pulumiSchema "github.com/pulumi/pulumi/pkg/v3/codegen/schema"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/resource"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/resource/plugin"
+	"github.com/pulumi/pulumi/sdk/v3/go/common/resource/urn"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/util/contract"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/util/logging"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/util/rpcutil"
@@ -282,7 +283,7 @@ func (p *HCLProvider) Construct(ctx context.Context, req *pulumirpc.ConstructReq
 	}
 
 	return &pulumirpc.ConstructResponse{
-		Urn:               componentURN,
+		Urn:               string(componentURN),
 		State:             outputsStruct,
 		StateDependencies: buildStateDependencies(outputsStruct),
 	}, nil
@@ -331,7 +332,7 @@ type constructResourceMonitor struct {
 	customTimeouts          *pulumirpc.ConstructRequest_CustomTimeouts
 	replacementTrigger      *structpb.Value
 
-	componentURN string
+	componentURN urn.URN
 	outputs      property.Map
 }
 
@@ -379,9 +380,9 @@ func (m *constructResourceMonitor) RegisterResource(
 		if err != nil {
 			return nil, err
 		}
-		m.componentURN = resp.Urn
+		m.componentURN = urn.URN(resp.Urn)
 		return &run.RegisterResourceResponse{
-			URN: resp.Urn,
+			URN: urn.URN(resp.Urn),
 			ID:  resp.Id,
 		}, nil
 	}
@@ -411,7 +412,7 @@ func (m *constructResourceMonitor) RegisterResource(
 		Name:                name,
 		Custom:              req.Custom,
 		Object:              inputs,
-		Parent:              parent,
+		Parent:              string(parent),
 		Dependencies:        req.Dependencies,
 		Provider:            req.Provider,
 		Protect:             &req.Protect,
@@ -434,7 +435,7 @@ func (m *constructResourceMonitor) RegisterResource(
 	}
 
 	return &run.RegisterResourceResponse{
-		URN:     resp.Urn,
+		URN:     urn.URN(resp.Urn),
 		ID:      resp.Id,
 		Outputs: resource.FromResourcePropertyMap(outputs),
 	}, nil
@@ -443,7 +444,7 @@ func (m *constructResourceMonitor) RegisterResource(
 // RegisterResourceOutputs registers resource outputs.
 func (m *constructResourceMonitor) RegisterResourceOutputs(
 	ctx context.Context,
-	urn string,
+	urn urn.URN,
 	outputs property.Map,
 ) error {
 	// Track outputs for the component
@@ -460,7 +461,7 @@ func (m *constructResourceMonitor) RegisterResourceOutputs(
 	}
 
 	_, err = m.client.RegisterResourceOutputs(ctx, &pulumirpc.RegisterResourceOutputsRequest{
-		Urn:     urn,
+		Urn:     string(urn),
 		Outputs: outputsStruct,
 	})
 	return err

@@ -439,10 +439,10 @@ func TestContextRangedResources(t *testing.T) {
 	t.Run("count resources are accessible by index", func(t *testing.T) {
 		t.Parallel()
 		ctx := NewContext("/tmp", "/tmp", "/tmp", "", "", "")
-		ctx.SetCountResource("aws_instance.web", 0, cty.ObjectVal(map[string]cty.Value{
+		ctx.SetCountResource("aws_instance.web", 0, "", cty.ObjectVal(map[string]cty.Value{
 			"id": cty.StringVal("i-000"),
 		}))
-		ctx.SetCountResource("aws_instance.web", 1, cty.ObjectVal(map[string]cty.Value{
+		ctx.SetCountResource("aws_instance.web", 1, "", cty.ObjectVal(map[string]cty.Value{
 			"id": cty.StringVal("i-001"),
 		}))
 
@@ -459,10 +459,10 @@ func TestContextRangedResources(t *testing.T) {
 	t.Run("for_each resources are accessible by key", func(t *testing.T) {
 		t.Parallel()
 		ctx := NewContext("/tmp", "/tmp", "/tmp", "", "", "")
-		ctx.SetEachResource("aws_instance.web", "east", cty.ObjectVal(map[string]cty.Value{
+		ctx.SetEachResource("aws_instance.web", "east", "", cty.ObjectVal(map[string]cty.Value{
 			"id": cty.StringVal("i-east"),
 		}))
-		ctx.SetEachResource("aws_instance.web", "west", cty.ObjectVal(map[string]cty.Value{
+		ctx.SetEachResource("aws_instance.web", "west", "", cty.ObjectVal(map[string]cty.Value{
 			"id": cty.StringVal("i-west"),
 		}))
 
@@ -475,23 +475,24 @@ func TestContextRangedResources(t *testing.T) {
 	t.Run("resource named with brackets is not confused with ranged", func(t *testing.T) {
 		t.Parallel()
 		ctx := NewContext("/tmp", "/tmp", "/tmp", "", "", "")
-		ctx.SetResource("aws_instance.foo[0]", cty.ObjectVal(map[string]cty.Value{
+		ctx.SetResource("aws_instance.foo[0]", "", cty.ObjectVal(map[string]cty.Value{
 			"id": cty.StringVal("i-literal"),
 		}))
 
 		hclCtx := ctx.HCLContext()
 		awsInst := hclCtx.Variables["aws_instance"]
 		attr := awsInst.GetAttr("foo[0]")
+		attr, _ = attr.UnmarkDeep()
 		assert.Equal(t, "i-literal", attr.GetAttr("id").AsString())
 	})
 
 	t.Run("single and ranged resources coexist under same type", func(t *testing.T) {
 		t.Parallel()
 		ctx := NewContext("/tmp", "/tmp", "/tmp", "", "", "")
-		ctx.SetResource("aws_instance.single", cty.ObjectVal(map[string]cty.Value{
+		ctx.SetResource("aws_instance.single", "", cty.ObjectVal(map[string]cty.Value{
 			"id": cty.StringVal("i-single"),
 		}))
-		ctx.SetCountResource("aws_instance.multi", 0, cty.ObjectVal(map[string]cty.Value{
+		ctx.SetCountResource("aws_instance.multi", 0, "", cty.ObjectVal(map[string]cty.Value{
 			"id": cty.StringVal("i-multi-0"),
 		}))
 

@@ -26,6 +26,7 @@ import (
 	"github.com/pulumi-labs/pulumi-hcl/tests/testutil"
 	"github.com/pulumi-labs/pulumi-hcl/tests/testutil/schemaloader"
 	"github.com/pulumi/pulumi/pkg/v3/codegen/schema"
+	"github.com/pulumi/pulumi/sdk/v3/go/common/resource/urn"
 	"github.com/pulumi/pulumi/sdk/v3/go/property"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -103,6 +104,185 @@ resource "aws_instance" "web" {
 	if req.Inputs.Get("instanceType").AsString() != "test" {
 		t.Errorf("expected instanceType 'test', got %v", req.Inputs.Get("instanceType"))
 	}
+}
+
+func TestEngine_PulumiResourceNameRejectsWrappedResource(t *testing.T) {
+	t.Parallel()
+
+	src := []byte(`
+resource "aws_instance" "web" {
+  ami = "ami-12345"
+}
+
+output "name" {
+  value = pulumiResourceName({ key = aws_instance.web })
+}
+`)
+
+	p := parser.NewParser()
+	config, diags := p.ParseSource("test.hcl", src)
+	require.Empty(t, diags)
+
+	mock := &testutil.MockResourceMonitor{}
+	engine := run.NewEngine(t.Context(), config, &run.EngineOptions{
+		ProjectName:     "test-project",
+		StackName:       "dev",
+		ResourceMonitor: mock,
+		WorkDir:         t.TempDir(),
+		RootDir:         t.TempDir(),
+		SchemaLoader: schemaloader.New(t, schema.PackageSpec{
+			Name: "aws",
+			Resources: map[string]schema.ResourceSpec{
+				"aws:index:Instance": {
+					InputProperties: map[string]schema.PropertySpec{
+						"ami": {TypeSpec: schema.TypeSpec{Type: "string"}},
+					},
+					ObjectTypeSpec: schema.ObjectTypeSpec{
+						Properties: map[string]schema.PropertySpec{
+							"ami": {TypeSpec: schema.TypeSpec{Type: "string"}},
+						},
+					},
+				},
+			},
+		}),
+	})
+
+	err := engine.Run(t.Context())
+	require.Error(t, err, "pulumiResourceName on an object wrapping a resource should be rejected")
+	require.ErrorContains(t, err, "must be a resource reference")
+}
+
+func TestEngine_PulumiResourceNameCountAndForEach(t *testing.T) {
+	t.Parallel()
+
+	// pulumiResourceName must resolve on an individual instance of a count or
+	// for_each resource, addressed by index or key.
+	src := []byte(`
+resource "aws_instance" "counted" {
+  count = 2
+  ami   = "ami-${count.index}"
+}
+
+resource "aws_instance" "mapped" {
+  for_each = toset(["a", "b"])
+  ami      = "ami-${each.key}"
+}
+
+output "count_name" {
+  value = pulumiResourceName(aws_instance.counted[1])
+}
+
+output "each_name" {
+  value = pulumiResourceName(aws_instance.mapped["a"])
+}
+`)
+
+	p := parser.NewParser()
+	config, diags := p.ParseSource("test.hcl", src)
+	require.Empty(t, diags)
+
+	mock := &testutil.MockResourceMonitor{}
+	engine := run.NewEngine(t.Context(), config, &run.EngineOptions{
+		ProjectName:     "test-project",
+		StackName:       "dev",
+		ResourceMonitor: mock,
+		WorkDir:         t.TempDir(),
+		RootDir:         t.TempDir(),
+		SchemaLoader: schemaloader.New(t, schema.PackageSpec{
+			Name: "aws",
+			Resources: map[string]schema.ResourceSpec{
+				"aws:index:Instance": {
+					InputProperties: map[string]schema.PropertySpec{
+						"ami": {TypeSpec: schema.TypeSpec{Type: "string"}},
+					},
+					ObjectTypeSpec: schema.ObjectTypeSpec{
+						Properties: map[string]schema.PropertySpec{
+							"ami": {TypeSpec: schema.TypeSpec{Type: "string"}},
+						},
+					},
+				},
+			},
+		}),
+	})
+
+	require.NoError(t, engine.Run(t.Context()))
+
+	countName, ok := mock.StackOutputs.GetOk("count_name")
+	require.True(t, ok, "expected count_name output")
+	require.Equal(t, "counted-1", countName.AsString())
+
+	eachName, ok := mock.StackOutputs.GetOk("each_name")
+	require.True(t, ok, "expected each_name output")
+	require.Equal(t, "mapped-a", eachName.AsString())
+}
+
+func TestEngine_PulumiResourceNamePreviewUnknown(t *testing.T) {
+	t.Parallel()
+
+	// During preview a resource's computed attributes (id) are unknown, so the
+	// resource value carries unknowns. resourceValue hashes that value and
+	// pulumiResourceName re-hashes it to confirm identity — both must tolerate
+	// unknown values rather than panic, and the name (from the known URN) still
+	// resolves. The result feeds another resource's input so it is observable in
+	// preview via the registration.
+	src := []byte(`
+resource "aws_instance" "web" {
+  ami = "ami-12345"
+}
+
+resource "aws_instance" "named" {
+  ami = pulumiResourceName(aws_instance.web)
+}
+`)
+
+	p := parser.NewParser()
+	config, diags := p.ParseSource("test.hcl", src)
+	require.Empty(t, diags)
+
+	mock := &testutil.MockResourceMonitor{
+		DryRun: true,
+		RegisterResourceHandler: func(ctx context.Context, req run.RegisterResourceRequest) (*run.RegisterResourceResponse, error) {
+			return &run.RegisterResourceResponse{
+				URN:     urn.URN("urn:pulumi:test::project::" + req.Type + "::" + req.Name),
+				ID:      "", // unknown id during preview
+				Outputs: req.Inputs,
+			}, nil
+		},
+	}
+	engine := run.NewEngine(t.Context(), config, &run.EngineOptions{
+		ProjectName:     "test-project",
+		StackName:       "dev",
+		ResourceMonitor: mock,
+		WorkDir:         t.TempDir(),
+		RootDir:         t.TempDir(),
+		DryRun:          true,
+		SchemaLoader: schemaloader.New(t, schema.PackageSpec{
+			Name: "aws",
+			Resources: map[string]schema.ResourceSpec{
+				"aws:index:Instance": {
+					InputProperties: map[string]schema.PropertySpec{
+						"ami": {TypeSpec: schema.TypeSpec{Type: "string"}},
+					},
+					ObjectTypeSpec: schema.ObjectTypeSpec{
+						Properties: map[string]schema.PropertySpec{
+							"ami": {TypeSpec: schema.TypeSpec{Type: "string"}},
+						},
+					},
+				},
+			},
+		}),
+	})
+
+	require.NoError(t, engine.Run(t.Context()))
+
+	var named *run.RegisterResourceRequest
+	for i := range mock.RegisteredResources {
+		if mock.RegisteredResources[i].Name == "named" {
+			named = &mock.RegisteredResources[i]
+		}
+	}
+	require.NotNil(t, named, "named resource should register")
+	require.Equal(t, "web", named.Inputs.Get("ami").AsString())
 }
 
 func TestEngine_LocalsAndVariables(t *testing.T) {
@@ -1150,7 +1330,7 @@ resource "test_resource" "dependent" {
 		DryRun: true,
 		RegisterResourceHandler: func(ctx context.Context, req run.RegisterResourceRequest) (*run.RegisterResourceResponse, error) {
 			return &run.RegisterResourceResponse{
-				URN:     "urn:pulumi:test::project::" + req.Type + "::" + req.Name,
+				URN:     urn.URN("urn:pulumi:test::project::" + req.Type + "::" + req.Name),
 				ID:      "",
 				Outputs: req.Inputs,
 			}, nil
@@ -1830,7 +2010,7 @@ module "m" {
 		DryRun: true,
 		RegisterResourceHandler: func(ctx context.Context, req run.RegisterResourceRequest) (*run.RegisterResourceResponse, error) {
 			return &run.RegisterResourceResponse{
-				URN:     "urn:pulumi:test::project::" + req.Type + "::" + req.Name,
+				URN:     urn.URN("urn:pulumi:test::project::" + req.Type + "::" + req.Name),
 				ID:      "",
 				Outputs: req.Inputs,
 			}, nil
@@ -2260,7 +2440,7 @@ func TestEngine_HetListOutputRoundTrip(t *testing.T) {
 
 	monitor := &testutil.MockResourceMonitor{
 		RegisterResourceHandler: func(ctx context.Context, req run.RegisterResourceRequest) (*run.RegisterResourceResponse, error) {
-			urn := "urn:pulumi:test::project::" + req.Type + "::" + req.Name
+			urn := urn.URN("urn:pulumi:test::project::" + req.Type + "::" + req.Name)
 			if req.Type == "test:index:HetList" {
 				return &run.RegisterResourceResponse{
 					URN: urn,

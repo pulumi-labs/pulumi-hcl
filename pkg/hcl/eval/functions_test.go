@@ -1534,39 +1534,3 @@ func TestAbspathAndBasename(t *testing.T) {
 		}
 	})
 }
-
-func TestPulumiResourceNameType(t *testing.T) {
-	t.Parallel()
-
-	urn := "urn:pulumi:stack::project::simple:index/resource:Resource::web"
-	// A resource reference as user code sees it: the synthetic `urn` attribute
-	// has been stripped, but every leaf still carries DepMark(urn).
-	resourceRef := stripSyntheticAttributes(MarkOutputLeaves(cty.ObjectVal(map[string]cty.Value{
-		"id":        cty.StringVal("i-123"),
-		"urn":       cty.StringVal(urn).Mark(SyntheticMark),
-		"input_one": cty.StringVal("hello"),
-	}), DepMark(urn)))
-
-	t.Run("name from DepMark", func(t *testing.T) {
-		t.Parallel()
-		got, err := pulumiResourceNameFunc.Call([]cty.Value{resourceRef})
-		require.NoError(t, err)
-		assert.Equal(t, cty.StringVal("web"), got)
-	})
-
-	t.Run("type from DepMark", func(t *testing.T) {
-		t.Parallel()
-		got, err := pulumiResourceTypeFunc.Call([]cty.Value{resourceRef})
-		require.NoError(t, err)
-		assert.Equal(t, cty.StringVal("simple:index/resource:Resource"), got)
-	})
-
-	t.Run("user object without a DepMark is rejected", func(t *testing.T) {
-		t.Parallel()
-		_, err := pulumiResourceNameFunc.Call([]cty.Value{cty.ObjectVal(map[string]cty.Value{
-			"urn":  cty.StringVal("hello"),
-			"name": cty.StringVal("world"),
-		})})
-		require.ErrorContains(t, err, "must be a resource reference")
-	})
-}

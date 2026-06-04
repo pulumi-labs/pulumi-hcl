@@ -40,6 +40,8 @@ import (
 	"github.com/pulumi-labs/pulumi-hcl/pkg/util"
 	"github.com/pulumi/pulumi/pkg/v3/codegen/schema"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/resource"
+	"github.com/pulumi/pulumi/sdk/v3/go/common/resource/urn"
+	"github.com/pulumi/pulumi/sdk/v3/go/common/tokens"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/util/contract"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/workspace"
 	"github.com/pulumi/pulumi/sdk/v3/go/property"
@@ -70,7 +72,7 @@ type ResourceMonitor interface {
 	Call(ctx context.Context, req CallRequest) (*CallResponse, error)
 
 	// RegisterResourceOutputs registers outputs on a resource (used for stack outputs).
-	RegisterResourceOutputs(ctx context.Context, urn string, outputs property.Map) error
+	RegisterResourceOutputs(ctx context.Context, urn urn.URN, outputs property.Map) error
 
 	// CheckPulumiVersion checks if the Pulumi CLI version satisfies the given version range.
 	CheckPulumiVersion(ctx context.Context, versionRange string) error
@@ -149,7 +151,7 @@ type RegisterResourceRequest struct {
 	Aliases                 []Alias
 	Provider                string
 	Providers               map[string]string // Map from package name to provider reference (urn::id)
-	Parent                  string
+	Parent                  urn.URN
 	DeleteBeforeReplace     bool
 	DeleteBeforeReplaceDef  bool // True if DeleteBeforeReplace was explicitly set
 	CustomTimeouts          *CustomTimeouts
@@ -170,7 +172,7 @@ type RegisterResourceRequest struct {
 
 // RegisterResourceResponse contains the result of registering a resource.
 type RegisterResourceResponse struct {
-	URN     string
+	URN     urn.URN
 	ID      string
 	Outputs property.Map
 }
@@ -211,7 +213,7 @@ type moduleInstance struct {
 	// any. Path.LogicalName() is the canonical Pulumi component name.
 	Path    modulepath.Path
 	EvalCtx *eval.Context        // per-instance evaluation context
-	URN     string               // component URN
+	URN     urn.URN              // component URN
 	Index   *int                 // count index (nil if not using count)
 	EachKey *cty.Value           // for_each key (nil if not using for_each)
 	EachVal *cty.Value           // for_each value (nil if not using for_each)
@@ -306,7 +308,7 @@ type Engine struct {
 	stackOutputs map[string]property.Value
 
 	// stackURN is the URN of the root stack resource.
-	stackURN string
+	stackURN urn.URN
 
 	// projectName is the current project name.
 	projectName string
@@ -893,7 +895,7 @@ func providerExprKey(expr hcl.Expression) string {
 
 func (e *Engine) registerProviderInContext(
 	ctx context.Context, node *graph.Node, provider *ast.Provider,
-	evalCtx *eval.Context, parentURN string, modInst *moduleInstance,
+	evalCtx *eval.Context, parentURN urn.URN, modInst *moduleInstance,
 ) error {
 	typeToken := "pulumi:providers:" + provider.Name
 
@@ -1039,23 +1041,23 @@ func (e *Engine) registerProviderInContext(
 	// marked synthetic). Unlike a managed resource, a provider can't be
 	// referenced as a value in HCL, so there's no user-facing iteration to leak
 	// into.
-	outputObj["urn"] = cty.StringVal(resp.URN)
+	outputObj["urn"] = cty.StringVal(string(resp.URN))
 
 	e.resourceOutputs.Set(node.Key, eval.MarkOutputLeaves(cty.ObjectVal(outputObj), eval.DepMark(resp.URN)))
 
 	// Top-level un-aliased provider blocks become the default provider for
 	// resources of the same package that don't set `provider` explicitly.
 	if provider.Alias == "" && node.ModuleInfo == nil && providerID != "" {
-		e.defaultProviders.Set(provider.Name, resp.URN+"::"+providerID)
+		e.defaultProviders.Set(provider.Name, string(resp.URN)+"::"+providerID)
 	}
 
 	markedProviderOutputs := eval.MarkOutputLeaves(cty.ObjectVal(outputObj), eval.DepMark(resp.URN))
 	if node.ModuleInfo != nil {
 		// Strip prefix for module-internal references
 		bareKey := strings.TrimPrefix(node.Key, node.ModuleInfo.Prefix())
-		evalCtx.SetResource(bareKey, markedProviderOutputs)
+		evalCtx.SetResource(bareKey, resp.URN, markedProviderOutputs)
 	} else {
-		evalCtx.SetResource(node.Key, markedProviderOutputs)
+		evalCtx.SetResource(node.Key, resp.URN, markedProviderOutputs)
 	}
 
 	return nil
@@ -1079,7 +1081,7 @@ func (e *Engine) processResource(ctx context.Context, node *graph.Node) error {
 
 func (e *Engine) processResourceInContext(
 	ctx context.Context, node *graph.Node, res *ast.Resource,
-	evalCtx *eval.Context, parentURN string, modInst *moduleInstance,
+	evalCtx *eval.Context, parentURN urn.URN, modInst *moduleInstance,
 ) error {
 	resSchema, err := e.resolveResource(ctx, res.Type)
 	if err != nil {
@@ -1141,7 +1143,7 @@ func (e *Engine) processResourceInContext(
 		} else {
 			empty = cty.EmptyObjectVal
 		}
-		evalCtx.SetResource(baseKey, empty)
+		evalCtx.SetResource(baseKey, "", empty)
 	}
 
 	return nil
@@ -1155,7 +1157,7 @@ func (e *Engine) registerResourceInstanceInContext(
 	resSchema *schema.Resource,
 	instance *graph.ExpandedResource,
 	evalCtx *eval.Context,
-	parentURN string,
+	parentURN urn.URN,
 	modInst *moduleInstance,
 ) error {
 	if instance.Index != nil {
@@ -1220,7 +1222,7 @@ func (e *Engine) registerResourceInstanceInContext(
 		}
 	}
 
-	opts, err := e.buildResourceOptionsInContext(res, instance, evalCtx, parentURN, node.ModuleInfo)
+	opts, err := e.buildResourceOptionsInContext(res, evalCtx, parentURN, node.ModuleInfo)
 	if err != nil {
 		return err
 	}
@@ -1293,7 +1295,7 @@ func (e *Engine) registerResourceInstanceInContext(
 	} else {
 		outputObj["id"] = cty.StringVal(id)
 	}
-	outputObj["urn"] = cty.StringVal(urn).Mark(eval.SyntheticMark)
+	outputObj["urn"] = cty.StringVal(string(urn)).Mark(eval.SyntheticMark)
 
 	markedOutputs := eval.MarkOutputLeaves(cty.ObjectVal(outputObj), eval.DepMark(urn))
 
@@ -1311,18 +1313,18 @@ func (e *Engine) registerResourceInstanceInContext(
 		if node.ModuleInfo != nil {
 			baseKey = strings.TrimPrefix(baseKey, node.ModuleInfo.Prefix())
 		}
-		evalCtx.SetCountResource(baseKey, *instance.Index, markedOutputs)
+		evalCtx.SetCountResource(baseKey, *instance.Index, urn, markedOutputs)
 	} else if instance.EachKey != nil {
 		baseKey := instance.OriginalKey
 		if node.ModuleInfo != nil {
 			baseKey = strings.TrimPrefix(baseKey, node.ModuleInfo.Prefix())
 		}
-		evalCtx.SetEachResource(baseKey, instance.EachKey.AsString(), markedOutputs)
+		evalCtx.SetEachResource(baseKey, instance.EachKey.AsString(), urn, markedOutputs)
 	} else if node.ModuleInfo != nil {
 		bareKey := strings.TrimPrefix(instance.Key, node.ModuleInfo.Prefix())
-		evalCtx.SetResource(bareKey, markedOutputs)
+		evalCtx.SetResource(bareKey, urn, markedOutputs)
 	} else {
-		evalCtx.SetResource(instance.Key, markedOutputs)
+		evalCtx.SetResource(instance.Key, urn, markedOutputs)
 	}
 
 	return nil
@@ -1330,8 +1332,8 @@ func (e *Engine) registerResourceInstanceInContext(
 
 // buildResourceOptionsInContext builds resource options using the provided eval context and parent URN.
 func (e *Engine) buildResourceOptionsInContext(
-	res *ast.Resource, instance *graph.ExpandedResource,
-	evalCtx *eval.Context, parentURN string,
+	res *ast.Resource,
+	evalCtx *eval.Context, parentURN urn.URN,
 	modInfo *graph.ModuleInfo,
 ) (*ResourceOptions, error) {
 	opts := &ResourceOptions{}
@@ -1387,8 +1389,8 @@ func (e *Engine) buildResourceOptionsInContext(
 		depKey := graph.FormatTraversal(res.ResourceParent)
 		if depKey != "" {
 			if outputs, ok := e.resourceOutputs.Get(resPrefix + depKey); ok {
-				if urn := ctyAsString(outputs.GetAttr("urn")); urn != "" {
-					opts.Parent = urn
+				if parentURN := ctyAsString(outputs.GetAttr("urn")); parentURN != "" {
+					opts.Parent = urn.URN(parentURN) // TODO: Don't look at attrs for this
 				}
 			}
 		}
@@ -1852,7 +1854,7 @@ type ResourceOptions struct {
 	Aliases                 []Alias
 	Provider                string
 	Providers               map[string]string // Map from package name to provider reference (urn::id)
-	Parent                  string
+	Parent                  urn.URN
 	DeleteBeforeReplace     bool
 	DeleteBeforeReplaceDef  bool // True if DeleteBeforeReplace was explicitly set
 	CustomTimeouts          *CustomTimeouts
@@ -1881,7 +1883,7 @@ func (e *Engine) registerResource(
 	name string,
 	inputs property.Map,
 	opts *ResourceOptions,
-) (string, string, property.Map, error) {
+) (urn.URN, string, property.Map, error) {
 	inputs = lowerTerraformDataInputs(tfType, inputs, opts)
 
 	// Register with the resource monitor
@@ -2877,10 +2879,10 @@ func (e *Engine) registerComponentResource(
 	name string,
 	inputs property.Map,
 	opts *ResourceOptions,
-) (string, string, property.Map, error) {
+) (urn.URN, string, property.Map, error) {
 	if e.resmon == nil {
-		urn := fmt.Sprintf("urn:pulumi:%s::%s::%s::%s",
-			e.stackName, e.projectName, typeToken, name)
+		urn := urn.New(tokens.QName(e.stackName), tokens.PackageName(e.projectName),
+			"", tokens.Type(typeToken), name)
 		return urn, "", inputs, nil
 	}
 

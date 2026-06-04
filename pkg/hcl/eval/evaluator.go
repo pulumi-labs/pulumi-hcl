@@ -50,6 +50,8 @@ func (e *Evaluator) EvaluateAs(expr hcl.Expression, targetType cty.Type) (cty.Va
 		return cty.NilVal, diags
 	}
 
+	val, _ = val.UnmarkDeep()
+
 	converted, err := convert.Convert(val, targetType)
 	if err != nil {
 		diags = append(diags, &hcl.Diagnostic{
@@ -428,109 +430,6 @@ func ParseTraversal(traversal hcl.Traversal) (namespace string, parts []string) 
 	}
 
 	return namespace, parts
-}
-
-// ResolveReference resolves a reference traversal to its value.
-func (e *Evaluator) ResolveReference(traversal hcl.Traversal) (cty.Value, hcl.Diagnostics) {
-	var diags hcl.Diagnostics
-
-	if len(traversal) == 0 {
-		return cty.NilVal, hcl.Diagnostics{{
-			Severity: hcl.DiagError,
-			Summary:  "Empty reference",
-			Detail:   "Reference traversal is empty.",
-		}}
-	}
-
-	// Use the HCL context to resolve
-	ctx := e.ctx.HCLContext()
-	rootName := traversal.RootName()
-
-	val, ok := ctx.Variables[rootName]
-	if !ok {
-		return cty.NilVal, hcl.Diagnostics{{
-			Severity: hcl.DiagError,
-			Summary:  "Unknown reference",
-			Detail:   fmt.Sprintf("Reference to unknown value %q.", rootName),
-			Subject:  traversal.SourceRange().Ptr(),
-		}}
-	}
-
-	// Apply remaining traversal steps
-	for i := 1; i < len(traversal); i++ {
-		step := traversal[i]
-		var newVal cty.Value
-		var err error
-
-		switch s := step.(type) {
-		case hcl.TraverseAttr:
-			if val.Type().IsObjectType() || val.Type().IsMapType() {
-				if val.Type().IsObjectType() {
-					if val.Type().HasAttribute(s.Name) {
-						newVal = val.GetAttr(s.Name)
-					} else {
-						return cty.NilVal, hcl.Diagnostics{{
-							Severity: hcl.DiagError,
-							Summary:  "Unknown attribute",
-							Detail:   fmt.Sprintf("Object has no attribute %q.", s.Name),
-							Subject:  &s.SrcRange,
-						}}
-					}
-				} else {
-					idx := cty.StringVal(s.Name)
-					if val.HasIndex(idx).True() {
-						newVal = val.Index(idx)
-					} else {
-						return cty.NilVal, hcl.Diagnostics{{
-							Severity: hcl.DiagError,
-							Summary:  "Unknown key",
-							Detail:   fmt.Sprintf("Map has no key %q.", s.Name),
-							Subject:  &s.SrcRange,
-						}}
-					}
-				}
-			} else {
-				return cty.NilVal, hcl.Diagnostics{{
-					Severity: hcl.DiagError,
-					Summary:  "Invalid attribute access",
-					Detail:   fmt.Sprintf("Cannot access attribute on %s.", val.Type().FriendlyName()),
-					Subject:  &s.SrcRange,
-				}}
-			}
-
-		case hcl.TraverseIndex:
-			idx := s.Key
-			if val.HasIndex(idx).True() {
-				newVal = val.Index(idx)
-			} else {
-				return cty.NilVal, hcl.Diagnostics{{
-					Severity: hcl.DiagError,
-					Summary:  "Invalid index",
-					Detail:   fmt.Sprintf("Index %s out of range.", idx.GoString()),
-					Subject:  &s.SrcRange,
-				}}
-			}
-
-		default:
-			return cty.NilVal, hcl.Diagnostics{{
-				Severity: hcl.DiagError,
-				Summary:  "Unsupported traversal",
-				Detail:   fmt.Sprintf("Unsupported traversal step type: %T", step),
-			}}
-		}
-
-		if err != nil {
-			return cty.NilVal, hcl.Diagnostics{{
-				Severity: hcl.DiagError,
-				Summary:  "Traversal error",
-				Detail:   err.Error(),
-			}}
-		}
-
-		val = newVal
-	}
-
-	return val, diags
 }
 
 // ExtractDependencies extracts all resource/data/module dependencies from an expression.
