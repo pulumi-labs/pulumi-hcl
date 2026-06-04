@@ -66,6 +66,10 @@ func terraformDataSchema() *schema.Resource {
 // (yielding a new id), which the engine's replacement trigger does — while a
 // plain input change is an in-place update with a stable id. Its dependencies
 // are already folded into DependsOn, so the property-level entry is dropped too.
+//
+// input is optional in terraform_data but required by Stash, so an omitted input
+// is supplied as an explicit null: Stash stores it and mirrors it back as a null
+// output, matching terraform_data used purely for its triggers_replace lifecycle.
 func lowerTerraformDataInputs(resType string, inputs property.Map, opts *ResourceOptions) property.Map {
 	if resType != terraformDataType {
 		return inputs
@@ -75,6 +79,9 @@ func lowerTerraformDataInputs(resType string, inputs property.Map, opts *Resourc
 		inputs = inputs.Delete("triggers_replace")
 	}
 	delete(opts.PropertyDependencies, "triggers_replace")
+	if _, ok := inputs.GetOk("input"); !ok {
+		inputs = inputs.Set("input", property.New(property.Null))
+	}
 	return inputs
 }
 
