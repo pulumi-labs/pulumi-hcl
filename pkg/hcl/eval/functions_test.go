@@ -787,9 +787,9 @@ func TestSumEmptyList(t *testing.T) {
 	assert.EqualError(t, err, "cannot sum an empty list")
 }
 
-// TestTransposeNull pins that `transpose` matches OpenTofu's graceful
-// argument errors when a list value is null or a list contains a null string,
-// rather than panicking inside the function implementation.
+// TestTransposeNull pins that `transpose` returns a graceful argument error,
+// rather than panicking inside the function implementation, when a list value
+// is null or a list contains a null string.
 func TestTransposeNull(t *testing.T) {
 	t.Parallel()
 
@@ -806,8 +806,8 @@ func TestTransposeNull(t *testing.T) {
 	assert.EqualError(t, err, `cannot use null string for ["a"][1]`)
 }
 
-// TestTransposeUnknown pins that `transpose` returns an unknown value, matching
-// OpenTofu, when its input is not wholly known.
+// TestTransposeUnknown pins that `transpose` returns an unknown value when its
+// input is not wholly known.
 func TestTransposeUnknown(t *testing.T) {
 	t.Parallel()
 	got, err := transposeFunc.Call([]cty.Value{

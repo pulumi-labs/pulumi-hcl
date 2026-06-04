@@ -20,9 +20,10 @@ import (
 	"github.com/pulumi-labs/pulumi-hcl/tests/testutil/tfcompat"
 )
 
-// TestL1Transpose_NullElement asserts that `transpose` rejects a null list and a
-// null string element with OpenTofu's graceful argument error, rather than
-// panicking inside the function implementation as pulumi-hcl previously did.
+// TestL1Transpose_NullElement asserts that both runtimes reject a null list and
+// a null string element passed to `transpose` with the same graceful argument
+// error, rather than panicking inside the function implementation as pulumi-hcl
+// previously did.
 func TestL1Transpose_NullElement(t *testing.T) {
 	t.Parallel()
 	tfcompat.RunCase(t, "l1_transpose", tfcompat.Case{

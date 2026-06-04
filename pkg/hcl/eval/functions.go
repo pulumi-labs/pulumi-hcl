@@ -52,6 +52,7 @@ import (
 	"github.com/hashicorp/hcl/v2/ext/tryfunc"
 	"github.com/hashicorp/hcl/v2/hclsyntax"
 	"github.com/pulumi-labs/pulumi-hcl/vendored/ipaddr"
+	"github.com/pulumi/opentofu/tfdiags"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/resource/archive"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/resource/asset"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/resource/urn"
@@ -815,13 +816,13 @@ var transposeFunc = function.New(&function.Spec{
 			keyPath := path.Index(k)
 			if v.IsNull() {
 				return cty.DynamicVal, function.NewArgErrorf(0,
-					"cannot use null list for %s", formatCtyPath(keyPath))
+					"cannot use null list for %s", tfdiags.FormatCtyPath(keyPath))
 			}
 			for vit := v.ElementIterator(); vit.Next(); {
 				idx, val := vit.Element()
 				if val.IsNull() {
 					return cty.DynamicVal, function.NewArgErrorf(0,
-						"cannot use null string for %s", formatCtyPath(keyPath.Index(idx)))
+						"cannot use null string for %s", tfdiags.FormatCtyPath(keyPath.Index(idx)))
 				}
 				valStr := val.AsString()
 				result[valStr] = append(result[valStr], key)
@@ -844,39 +845,6 @@ var transposeFunc = function.New(&function.Spec{
 		return cty.MapVal(ctyResult), nil
 	},
 })
-
-// formatCtyPath renders a cty.Path in OpenTofu's HCL-like notation (e.g.
-// `["a"][1]`) so that argument-error messages match OpenTofu's
-// tfdiags.FormatCtyPath output. It is reimplemented rather than imported
-// because OpenTofu's tfdiags package is not a module dependency, and pulling it
-// in (or vendoring it) to reach this self-contained 25-line helper would drag
-// in its transitive deps (hashicorp/errwrap, go-multierror, ...) for no benefit.
-func formatCtyPath(path cty.Path) string {
-	var buf strings.Builder
-	for _, step := range path {
-		switch ts := step.(type) {
-		case cty.GetAttrStep:
-			fmt.Fprintf(&buf, ".%s", ts.Name)
-		case cty.IndexStep:
-			buf.WriteByte('[')
-			key := ts.Key
-			switch {
-			case key.IsNull():
-				buf.WriteString("null")
-			case !key.IsKnown():
-				buf.WriteString("(not yet known)")
-			case key.Type() == cty.Number:
-				buf.WriteString(key.AsBigFloat().Text('g', -1))
-			case key.Type() == cty.String:
-				buf.WriteString(strconv.Quote(key.AsString()))
-			default:
-				buf.WriteString("...")
-			}
-			buf.WriteByte(']')
-		}
-	}
-	return buf.String()
-}
 
 // Encoding functions
 
