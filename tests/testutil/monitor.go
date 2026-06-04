@@ -20,6 +20,7 @@ import (
 	"sync"
 
 	"github.com/pulumi-labs/pulumi-hcl/pkg/hcl/run"
+	"github.com/pulumi/pulumi/sdk/v3/go/common/resource/urn"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/workspace"
 	"github.com/pulumi/pulumi/sdk/v3/go/property"
 )
@@ -30,7 +31,7 @@ type MockResourceMonitor struct {
 	RegisteredResources []run.RegisterResourceRequest
 	InvokedFunctions    []run.InvokeRequest
 	StackOutputs        property.Map
-	stackURN            string
+	stackURN            urn.URN
 	hooks               map[string]registeredHook
 
 	// DryRun mirrors engine preview mode: hooks with OnDryRun=false are skipped.
@@ -50,16 +51,16 @@ type registeredHook struct {
 
 func (m *MockResourceMonitor) RegisterResource(ctx context.Context, req run.RegisterResourceRequest) (*run.RegisterResourceResponse, error) {
 	m.mu.Lock()
-	urn := "urn:pulumi:test::project::" + req.Type + "::" + req.Name
+	resURN := urn.URN("urn:pulumi:test::project::" + req.Type + "::" + req.Name)
 	if req.Type == "pulumi:pulumi:Stack" {
-		m.stackURN = urn
+		m.stackURN = resURN
 	}
 	hooks := m.hooks
 	m.mu.Unlock()
 
 	// The mock has no state, so every registration is treated as a create.
 	args := &run.ResourceHookArgs{
-		URN:       urn,
+		URN:       string(resURN),
 		Name:      req.Name,
 		Type:      req.Type,
 		NewInputs: req.Inputs,
@@ -81,7 +82,7 @@ func (m *MockResourceMonitor) RegisterResource(ctx context.Context, req run.Regi
 		resp, err = handler(ctx, req)
 	} else {
 		resp = &run.RegisterResourceResponse{
-			URN:     urn,
+			URN:     urn.URN(resURN),
 			ID:      req.Name + "-id",
 			Outputs: req.Inputs,
 		}
@@ -135,7 +136,7 @@ func (m *MockResourceMonitor) Invoke(ctx context.Context, req run.InvokeRequest)
 	}, nil
 }
 
-func (m *MockResourceMonitor) RegisterResourceOutputs(ctx context.Context, urn string, outputs property.Map) error {
+func (m *MockResourceMonitor) RegisterResourceOutputs(ctx context.Context, urn urn.URN, outputs property.Map) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if urn == m.stackURN {

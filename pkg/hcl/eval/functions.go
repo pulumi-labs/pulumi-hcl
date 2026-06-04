@@ -26,7 +26,6 @@ import (
 	"crypto/sha512"
 	"crypto/x509"
 	"encoding/base64"
-	"encoding/csv"
 	"encoding/hex"
 	"encoding/json"
 	"encoding/pem"
@@ -1894,7 +1893,7 @@ var nonsensitiveFunc = function.New(&function.Spec{
 	},
 	Impl: func(args []cty.Value, retType cty.Type) (cty.Value, error) {
 		val, marks := args[0].Unmark()
-		delete(marks, "sensitive")
+		delete(marks, SensitiveMark)
 		if len(marks) == 0 {
 			return val, nil
 		}
@@ -2084,81 +2083,51 @@ func ctyToGo(val cty.Value) any {
 	}
 }
 
-// Ensure these are used (to avoid import errors)
-var (
-	_ = regexp.MustCompile
-	_ = json.Marshal
-	_ = csv.NewReader
-)
-
 // Pulumi-specific functions
 
-// pulumiResourceNameFunc returns the logical name of a Pulumi resource by extracting it from the
-// resource's URN. The argument must be a resource reference (an object with a "urn" attribute).
-var pulumiResourceNameFunc = function.New(&function.Spec{
-	Params: []function.Parameter{
-		{
-			Name: "resource",
-			Type: cty.DynamicPseudoType,
-		},
-	},
-	Type: function.StaticReturnType(cty.String),
-	Impl: func(args []cty.Value, retType cty.Type) (cty.Value, error) {
-		res := args[0]
-		if !res.IsKnown() {
-			return cty.UnknownVal(cty.String), nil
-		}
-		if !res.Type().IsObjectType() || !res.Type().HasAttribute("urn") {
-			return cty.NilVal, fmt.Errorf("pulumiResourceName: argument must be a resource reference")
-		}
-		urnVal := res.GetAttr("urn")
-		if !urnVal.IsKnown() {
-			return cty.UnknownVal(cty.String), nil
-		}
-		name, _, err := splitURN(urnVal.AsString())
-		if err != nil {
-			return cty.NilVal, fmt.Errorf("pulumiResourceName: %w", err)
-		}
-		return cty.StringVal(name), nil
-	},
+// pulumiResourceNameFunc returns the logical name of a Pulumi resource by
+// extracting it from the resource's URN.
+var pulumiResourceNameFunc = resourceUrnFuncHelper("pulumiResourceName", func(u urn.URN) (cty.Value, error) {
+	return cty.StringVal(u.Name()), nil
 })
 
-// pulumiResourceTypeFunc returns the type token of a Pulumi resource by extracting it from the
-// resource's URN. The argument must be a resource reference (an object with a "urn" attribute).
-var pulumiResourceTypeFunc = function.New(&function.Spec{
-	Params: []function.Parameter{
-		{
-			Name: "resource",
-			Type: cty.DynamicPseudoType,
-		},
-	},
-	Type: function.StaticReturnType(cty.String),
-	Impl: func(args []cty.Value, retType cty.Type) (cty.Value, error) {
-		res := args[0]
-		if !res.IsKnown() {
-			return cty.UnknownVal(cty.String), nil
-		}
-		if !res.Type().IsObjectType() || !res.Type().HasAttribute("urn") {
-			return cty.NilVal, fmt.Errorf("pulumiResourceType: argument must be a resource reference")
-		}
-		urnVal := res.GetAttr("urn")
-		if !urnVal.IsKnown() {
-			return cty.UnknownVal(cty.String), nil
-		}
-		_, typeToken, err := splitURN(urnVal.AsString())
-		if err != nil {
-			return cty.NilVal, fmt.Errorf("pulumiResourceType: %w", err)
-		}
-		return cty.StringVal(typeToken), nil
-	},
+// pulumiResourceTypeFunc returns the type token of a Pulumi resource by
+// extracting it from the resource's URN.
+var pulumiResourceTypeFunc = resourceUrnFuncHelper("pulumiResourceType", func(u urn.URN) (cty.Value, error) {
+	return cty.StringVal(u.Type().String()), nil
 })
 
-func splitURN(u string) (name, typeToken string, err error) {
-	urn := urn.URN(u)
-	if !urn.IsValid() {
-		return "", "", fmt.Errorf("invalid Pulumi URN: %q", urn)
-	}
-	return urn.Name(), string(urn.Type()), nil
+func resourceUrnFuncHelper(fnName string, f func(urn.URN) (cty.Value, error)) function.Function {
+	return function.New(&function.Spec{
+		Params: []function.Parameter{
+			{
+				Name:        "resource",
+				Type:        cty.DynamicPseudoType,
+				AllowMarked: true,
+			},
+		},
+		Type: function.StaticReturnType(cty.String),
+		Impl: func(args []cty.Value, retType cty.Type) (cty.Value, error) {
+			res := args[0]
+			if !res.IsKnown() {
+				return cty.UnknownVal(cty.String), nil
+			}
+			_, marks := res.Unmark()
+			hashable, _ := res.UnmarkDeep()
+			hash := hashable.Hash()
+			for m := range marks {
+				rP, ok := m.(resourceMark)
+				if !ok {
+					continue
+				}
+
+				if rP.resHash == hash {
+					return f(rP.urn)
+				}
+			}
+			return cty.NilVal, fmt.Errorf("%s: argument must be a resource reference", fnName)
+		},
+	})
 }
 
 // Asset and archive functions

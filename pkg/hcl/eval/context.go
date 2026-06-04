@@ -22,6 +22,7 @@ import (
 	"sync"
 
 	"github.com/hashicorp/hcl/v2"
+	"github.com/pulumi/pulumi/sdk/v3/go/common/resource/urn"
 	"github.com/zclconf/go-cty/cty"
 )
 
@@ -207,31 +208,42 @@ func (c *Context) SetLocal(name string, value cty.Value) {
 	c.locals[name] = value
 }
 
+type resourceMark struct {
+	urn     urn.URN
+	resHash int
+}
+
+func resourceValue(urn urn.URN, value cty.Value) cty.Value {
+	r := stripSyntheticAttributes(value)
+	hashable, _ := r.UnmarkDeep()
+	return r.Mark(resourceMark{urn, hashable.Hash()})
+}
+
 // SetResource sets a resource's output values.
 // The key should be "type.name" (e.g., "aws_instance.web").
-func (c *Context) SetResource(key string, value cty.Value) {
+func (c *Context) SetResource(key string, urn urn.URN, value cty.Value) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	c.resources[key] = value
+	c.resources[key] = resourceValue(urn, value)
 }
 
 // SetCountResource stores a resource instance from count expansion.
 // baseKey is the resource key without the index suffix (e.g., "type.name").
-func (c *Context) SetCountResource(baseKey string, index int, value cty.Value) {
+func (c *Context) SetCountResource(baseKey string, index int, urn urn.URN, value cty.Value) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.rangedResources[baseKey] = append(c.rangedResources[baseKey], rangedInstance{
-		value: value, index: index, isCount: true,
+		value: resourceValue(urn, value), index: index, isCount: true,
 	})
 }
 
 // SetEachResource stores a resource instance from for_each expansion.
 // baseKey is the resource key without the each key suffix (e.g., "type.name").
-func (c *Context) SetEachResource(baseKey string, eachKey string, value cty.Value) {
+func (c *Context) SetEachResource(baseKey string, eachKey string, urn urn.URN, value cty.Value) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.rangedResources[baseKey] = append(c.rangedResources[baseKey], rangedInstance{
-		value: value, eachKey: eachKey, isEach: true,
+		value: resourceValue(urn, value), eachKey: eachKey, isEach: true,
 	})
 }
 

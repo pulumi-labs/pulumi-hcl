@@ -17,6 +17,7 @@ package eval
 import (
 	"os"
 	"path/filepath"
+	"sort"
 	"testing"
 
 	"github.com/hashicorp/hcl/v2"
@@ -438,10 +439,10 @@ func TestContextRangedResources(t *testing.T) {
 	t.Run("count resources are accessible by index", func(t *testing.T) {
 		t.Parallel()
 		ctx := NewContext("/tmp", "/tmp", "/tmp", "", "", "")
-		ctx.SetCountResource("aws_instance.web", 0, cty.ObjectVal(map[string]cty.Value{
+		ctx.SetCountResource("aws_instance.web", 0, "", cty.ObjectVal(map[string]cty.Value{
 			"id": cty.StringVal("i-000"),
 		}))
-		ctx.SetCountResource("aws_instance.web", 1, cty.ObjectVal(map[string]cty.Value{
+		ctx.SetCountResource("aws_instance.web", 1, "", cty.ObjectVal(map[string]cty.Value{
 			"id": cty.StringVal("i-001"),
 		}))
 
@@ -458,10 +459,10 @@ func TestContextRangedResources(t *testing.T) {
 	t.Run("for_each resources are accessible by key", func(t *testing.T) {
 		t.Parallel()
 		ctx := NewContext("/tmp", "/tmp", "/tmp", "", "", "")
-		ctx.SetEachResource("aws_instance.web", "east", cty.ObjectVal(map[string]cty.Value{
+		ctx.SetEachResource("aws_instance.web", "east", "", cty.ObjectVal(map[string]cty.Value{
 			"id": cty.StringVal("i-east"),
 		}))
-		ctx.SetEachResource("aws_instance.web", "west", cty.ObjectVal(map[string]cty.Value{
+		ctx.SetEachResource("aws_instance.web", "west", "", cty.ObjectVal(map[string]cty.Value{
 			"id": cty.StringVal("i-west"),
 		}))
 
@@ -474,23 +475,24 @@ func TestContextRangedResources(t *testing.T) {
 	t.Run("resource named with brackets is not confused with ranged", func(t *testing.T) {
 		t.Parallel()
 		ctx := NewContext("/tmp", "/tmp", "/tmp", "", "", "")
-		ctx.SetResource("aws_instance.foo[0]", cty.ObjectVal(map[string]cty.Value{
+		ctx.SetResource("aws_instance.foo[0]", "", cty.ObjectVal(map[string]cty.Value{
 			"id": cty.StringVal("i-literal"),
 		}))
 
 		hclCtx := ctx.HCLContext()
 		awsInst := hclCtx.Variables["aws_instance"]
 		attr := awsInst.GetAttr("foo[0]")
+		attr, _ = attr.UnmarkDeep()
 		assert.Equal(t, "i-literal", attr.GetAttr("id").AsString())
 	})
 
 	t.Run("single and ranged resources coexist under same type", func(t *testing.T) {
 		t.Parallel()
 		ctx := NewContext("/tmp", "/tmp", "/tmp", "", "", "")
-		ctx.SetResource("aws_instance.single", cty.ObjectVal(map[string]cty.Value{
+		ctx.SetResource("aws_instance.single", "", cty.ObjectVal(map[string]cty.Value{
 			"id": cty.StringVal("i-single"),
 		}))
-		ctx.SetCountResource("aws_instance.multi", 0, cty.ObjectVal(map[string]cty.Value{
+		ctx.SetCountResource("aws_instance.multi", 0, "", cty.ObjectVal(map[string]cty.Value{
 			"id": cty.StringVal("i-multi-0"),
 		}))
 
@@ -784,5 +786,84 @@ func TestCollectDepURNs(t *testing.T) {
 		// User-facing read of the marked leaf:
 		idAttr := obj.GetAttr("id")
 		assert.Equal(t, []string{"urn:test::a"}, CollectDepURNs(idAttr))
+	})
+}
+
+func TestStripSyntheticAttributes(t *testing.T) {
+	t.Parallel()
+
+	// resourceObj mirrors how the engine builds a resource output object: every
+	// leaf carries DepMark(urn), and the synthetic `urn` attribute carries
+	// SyntheticMark on top of that.
+	resourceObj := func(urn string) cty.Value {
+		return MarkOutputLeaves(cty.ObjectVal(map[string]cty.Value{
+			"id":        cty.StringVal("simple-id"),
+			"urn":       cty.StringVal(urn).WithMarks(cty.NewValueMarks(SyntheticMark)),
+			"input_one": cty.StringVal("hello"),
+		}), DepMark(urn))
+	}
+
+	// keysOf returns the sorted attribute names of an object.
+	keysOf := func(v cty.Value) []string {
+		var keys []string
+		for it := v.ElementIterator(); it.Next(); {
+			k, _ := it.Element()
+			keys = append(keys, k.AsString())
+		}
+		sort.Strings(keys)
+		return keys
+	}
+
+	t.Run("single resource object drops synthetic urn", func(t *testing.T) {
+		t.Parallel()
+		urn := "urn:pulumi:test::p::simple:index/resource:Resource::r"
+		got := stripSyntheticAttributes(resourceObj(urn))
+		assert.Equal(t, []string{"id", "input_one"}, keysOf(got))
+		// DepMark survives so pulumiResourceName/Type can recover the URN.
+		assert.Equal(t, []string{urn}, CollectDepURNs(got))
+	})
+
+	t.Run("tuple of resource objects (count)", func(t *testing.T) {
+		t.Parallel()
+		got := stripSyntheticAttributes(cty.TupleVal([]cty.Value{
+			resourceObj("urn:pulumi:test::p::simple:index/resource:Resource::r-0"),
+			resourceObj("urn:pulumi:test::p::simple:index/resource:Resource::r-1"),
+		}))
+		for it := got.ElementIterator(); it.Next(); {
+			_, v := it.Element()
+			assert.Equal(t, []string{"id", "input_one"}, keysOf(v))
+		}
+	})
+
+	t.Run("object of resource objects (for_each)", func(t *testing.T) {
+		t.Parallel()
+		got := stripSyntheticAttributes(cty.ObjectVal(map[string]cty.Value{
+			"x": resourceObj("urn:pulumi:test::p::simple:index/resource:Resource::r-x"),
+			"y": resourceObj("urn:pulumi:test::p::simple:index/resource:Resource::r-y"),
+		}))
+		assert.Equal(t, []string{"x", "y"}, keysOf(got))
+		assert.Equal(t, []string{"id", "input_one"}, keysOf(got.GetAttr("x")))
+	})
+
+	t.Run("user object with literal urn key is preserved", func(t *testing.T) {
+		t.Parallel()
+		// The urn value carries no SyntheticMark, so this is a user-authored
+		// object and must be returned untouched.
+		userObj := cty.ObjectVal(map[string]cty.Value{
+			"urn":  cty.StringVal("hello"),
+			"name": cty.StringVal("world"),
+		})
+		assert.True(t, stripSyntheticAttributes(userObj).RawEquals(userObj))
+	})
+
+	t.Run("sensitive mark on container is preserved", func(t *testing.T) {
+		t.Parallel()
+		marked := resourceObj("urn:pulumi:test::p::simple:index/resource:Resource::r").
+			Mark(SensitiveMark)
+		got := stripSyntheticAttributes(marked)
+		unmarked, marks := got.Unmark()
+		assert.Equal(t, []string{"id", "input_one"}, keysOf(unmarked))
+		_, isSensitive := marks[SensitiveMark]
+		assert.True(t, isSensitive)
 	})
 }

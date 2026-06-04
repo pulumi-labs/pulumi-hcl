@@ -18,6 +18,7 @@ import (
 	"fmt"
 
 	"github.com/hashicorp/hcl/v2"
+	"github.com/pulumi/pulumi/sdk/v3/go/common/util/contract"
 	"github.com/zclconf/go-cty/cty"
 	"github.com/zclconf/go-cty/cty/convert"
 )
@@ -48,6 +49,8 @@ func (e *Evaluator) EvaluateAs(expr hcl.Expression, targetType cty.Type) (cty.Va
 	if diags.HasErrors() {
 		return cty.NilVal, diags
 	}
+
+	val, _ = val.UnmarkDeep()
 
 	converted, err := convert.Convert(val, targetType)
 	if err != nil {
@@ -122,6 +125,13 @@ func (e *Evaluator) EvaluateBody(body hcl.Body) (map[string]cty.Value, hcl.Diagn
 
 // SensitiveMark is the cty value mark applied to sensitive values.
 const SensitiveMark = "sensitive"
+
+// SyntheticMark is the cty value mark applied to attributes that pulumi-hcl
+// injects onto a resource-reference object but that have no OpenTofu
+// equivalent.
+//
+// In general, they are not user visable.
+const SyntheticMark = "pulumi-synthetic"
 
 // DepMark records the URN of a Pulumi resource a value transitively depends
 // on. Marks ride along with values through cty expression evaluation, so the
@@ -205,40 +215,45 @@ func markUnmarkedOutputLeaves(val cty.Value, mark any) cty.Value {
 	}
 }
 
+// stripSyntheticAttributes recursively removes object attributes whose value
+// carries SyntheticMark.
+func stripSyntheticAttributes(val cty.Value) cty.Value {
+	out, err := cty.Transform(val, func(_ cty.Path, val cty.Value) (cty.Value, error) {
+		if !val.IsKnown() || val.IsNull() || !val.Type().IsObjectType() {
+			return val, nil
+		}
+		val, marks := val.Unmark()
+		attrs := make(map[string]cty.Value, val.LengthInt())
+		for k := range val.Type().AttributeTypes() {
+			v := val.GetAttr(k)
+			if v.HasMark(SyntheticMark) {
+				continue
+			}
+			attrs[k] = v
+		}
+		return cty.ObjectVal(attrs).WithMarks(marks), nil
+	})
+	contract.AssertNoErrorf(err, "an error was never returned from cty.Transform")
+	return out
+}
+
 // CollectDepURNs returns every distinct URN carried by a DepMark anywhere
-// in val's value tree, in first-seen order.
+// in val's value tree.
 func CollectDepURNs(val cty.Value) []string {
 	var urns []string
 	seen := make(map[string]bool)
-	var walk func(cty.Value)
-	walk = func(v cty.Value) {
-		if v.IsMarked() {
-			inner, marks := v.Unmark()
-			for m := range marks {
-				dm, ok := m.(DepMark)
-				if !ok {
-					continue
-				}
-				s := string(dm)
-				if !seen[s] {
-					seen[s] = true
-					urns = append(urns, s)
-				}
-			}
-			v = inner
+	_, marks := val.UnmarkDeep()
+	for m := range marks {
+		dm, ok := m.(DepMark)
+		if !ok {
+			continue
 		}
-		if v.IsNull() || !v.IsKnown() {
-			return
-		}
-		ty := v.Type()
-		if ty.IsObjectType() || ty.IsMapType() || ty.IsListType() || ty.IsTupleType() || ty.IsSetType() {
-			for it := v.ElementIterator(); it.Next(); {
-				_, elem := it.Element()
-				walk(elem)
-			}
+		s := string(dm)
+		if !seen[s] {
+			seen[s] = true
+			urns = append(urns, s)
 		}
 	}
-	walk(val)
 	return urns
 }
 
@@ -415,109 +430,6 @@ func ParseTraversal(traversal hcl.Traversal) (namespace string, parts []string) 
 	}
 
 	return namespace, parts
-}
-
-// ResolveReference resolves a reference traversal to its value.
-func (e *Evaluator) ResolveReference(traversal hcl.Traversal) (cty.Value, hcl.Diagnostics) {
-	var diags hcl.Diagnostics
-
-	if len(traversal) == 0 {
-		return cty.NilVal, hcl.Diagnostics{{
-			Severity: hcl.DiagError,
-			Summary:  "Empty reference",
-			Detail:   "Reference traversal is empty.",
-		}}
-	}
-
-	// Use the HCL context to resolve
-	ctx := e.ctx.HCLContext()
-	rootName := traversal.RootName()
-
-	val, ok := ctx.Variables[rootName]
-	if !ok {
-		return cty.NilVal, hcl.Diagnostics{{
-			Severity: hcl.DiagError,
-			Summary:  "Unknown reference",
-			Detail:   fmt.Sprintf("Reference to unknown value %q.", rootName),
-			Subject:  traversal.SourceRange().Ptr(),
-		}}
-	}
-
-	// Apply remaining traversal steps
-	for i := 1; i < len(traversal); i++ {
-		step := traversal[i]
-		var newVal cty.Value
-		var err error
-
-		switch s := step.(type) {
-		case hcl.TraverseAttr:
-			if val.Type().IsObjectType() || val.Type().IsMapType() {
-				if val.Type().IsObjectType() {
-					if val.Type().HasAttribute(s.Name) {
-						newVal = val.GetAttr(s.Name)
-					} else {
-						return cty.NilVal, hcl.Diagnostics{{
-							Severity: hcl.DiagError,
-							Summary:  "Unknown attribute",
-							Detail:   fmt.Sprintf("Object has no attribute %q.", s.Name),
-							Subject:  &s.SrcRange,
-						}}
-					}
-				} else {
-					idx := cty.StringVal(s.Name)
-					if val.HasIndex(idx).True() {
-						newVal = val.Index(idx)
-					} else {
-						return cty.NilVal, hcl.Diagnostics{{
-							Severity: hcl.DiagError,
-							Summary:  "Unknown key",
-							Detail:   fmt.Sprintf("Map has no key %q.", s.Name),
-							Subject:  &s.SrcRange,
-						}}
-					}
-				}
-			} else {
-				return cty.NilVal, hcl.Diagnostics{{
-					Severity: hcl.DiagError,
-					Summary:  "Invalid attribute access",
-					Detail:   fmt.Sprintf("Cannot access attribute on %s.", val.Type().FriendlyName()),
-					Subject:  &s.SrcRange,
-				}}
-			}
-
-		case hcl.TraverseIndex:
-			idx := s.Key
-			if val.HasIndex(idx).True() {
-				newVal = val.Index(idx)
-			} else {
-				return cty.NilVal, hcl.Diagnostics{{
-					Severity: hcl.DiagError,
-					Summary:  "Invalid index",
-					Detail:   fmt.Sprintf("Index %s out of range.", idx.GoString()),
-					Subject:  &s.SrcRange,
-				}}
-			}
-
-		default:
-			return cty.NilVal, hcl.Diagnostics{{
-				Severity: hcl.DiagError,
-				Summary:  "Unsupported traversal",
-				Detail:   fmt.Sprintf("Unsupported traversal step type: %T", step),
-			}}
-		}
-
-		if err != nil {
-			return cty.NilVal, hcl.Diagnostics{{
-				Severity: hcl.DiagError,
-				Summary:  "Traversal error",
-				Detail:   err.Error(),
-			}}
-		}
-
-		val = newVal
-	}
-
-	return val, diags
 }
 
 // ExtractDependencies extracts all resource/data/module dependencies from an expression.

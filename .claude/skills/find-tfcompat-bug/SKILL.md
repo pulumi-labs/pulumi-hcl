@@ -207,12 +207,21 @@ Consult the submit-pr skill for opening a PR.
 
 When writing your PR & changelog:
 
-- Say **OpenTofu**, not "Terraform" — OpenTofu is the runtime we compare against —
-- keep the `<thing>` (function or feature name) in backticks.
-- Apply the same rules to the PR title.
-- Keep the changelog `body` **terse** — a short phrase naming the change (e.g.
-  ``Add `base64gunzip`, `urldecode` and `cidrcontains` ``), not a sentence
-  explaining it. The divergence/fix narrative goes in the PR description.
+- Keep the changelog `body` **terse** — a short phrase naming the change from the
+  user's point of view (e.g. ``Coerce a `variable` `default` to its declared `type` ``
+  or ``Add `base64gunzip`, `urldecode` and `cidrcontains` ``), not a sentence explaining
+  it, and with **no trailing punctuation**. Keep the `<thing>` (function/feature name)
+  in backticks.
+- The changelog body must **not mention OpenTofu** (no "match OpenTofu", "like
+  OpenTofu", "instead of erroring", or other comparison framing). Parity with OpenTofu
+  is the whole project's premise, so stating it in the changelog is noise — just
+  describe what changed. The OpenTofu-vs-pulumi divergence narrative belongs in the **PR
+  description**, where you do say "OpenTofu" (never "Terraform").
+- **Code comments must not mention OpenTofu either.** Do not add comments saying the
+  code "matches OpenTofu" / "mirrors OpenTofu's X" — that applies to the entire codebase
+  and restates the premise. A comment should explain something the code itself doesn't
+  (e.g. *why* a helper is reimplemented rather than imported); if the only thing a
+  comment would say is "this matches OpenTofu," delete it.
 
 Then, on its **own branch off master** (not stacked on a prior fix):
 
