@@ -52,7 +52,6 @@ import (
 	"github.com/hashicorp/hcl/v2/ext/tryfunc"
 	"github.com/hashicorp/hcl/v2/hclsyntax"
 	"github.com/pulumi-labs/pulumi-hcl/vendored/ipaddr"
-	"github.com/pulumi/opentofu/tfdiags"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/resource/archive"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/resource/asset"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/resource/urn"
@@ -816,13 +815,13 @@ var transposeFunc = function.New(&function.Spec{
 			keyPath := path.Index(k)
 			if v.IsNull() {
 				return cty.DynamicVal, function.NewArgErrorf(0,
-					"cannot use null list for %s", tfdiags.FormatCtyPath(keyPath))
+					"cannot use null list for %s", formatCtyPath(keyPath))
 			}
 			for vit := v.ElementIterator(); vit.Next(); {
 				idx, val := vit.Element()
 				if val.IsNull() {
 					return cty.DynamicVal, function.NewArgErrorf(0,
-						"cannot use null string for %s", tfdiags.FormatCtyPath(keyPath.Index(idx)))
+						"cannot use null string for %s", formatCtyPath(keyPath.Index(idx)))
 				}
 				valStr := val.AsString()
 				result[valStr] = append(result[valStr], key)
@@ -845,6 +844,40 @@ var transposeFunc = function.New(&function.Spec{
 		return cty.MapVal(ctyResult), nil
 	},
 })
+
+// formatCtyPath is a helper function to produce a user-friendly string
+// representation of a cty.Path. The result uses a syntax similar to the
+// HCL expression language in the hope of it being familiar to users.
+//
+// Inlined from github.com/opentofu/opentofu/internal/tfdiags/config_traversals.go
+func formatCtyPath(path cty.Path) string {
+	var buf bytes.Buffer
+	for _, step := range path {
+		switch ts := step.(type) {
+		case cty.GetAttrStep:
+			fmt.Fprintf(&buf, ".%s", ts.Name)
+		case cty.IndexStep:
+			buf.WriteByte('[')
+			key := ts.Key
+			keyTy := key.Type()
+			switch {
+			case key.IsNull():
+				buf.WriteString("null")
+			case !key.IsKnown():
+				buf.WriteString("(not yet known)")
+			case keyTy == cty.Number:
+				bf := key.AsBigFloat()
+				buf.WriteString(bf.Text('g', -1))
+			case keyTy == cty.String:
+				buf.WriteString(strconv.Quote(key.AsString()))
+			default:
+				buf.WriteString("...")
+			}
+			buf.WriteByte(']')
+		}
+	}
+	return buf.String()
+}
 
 // Encoding functions
 
