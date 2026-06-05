@@ -407,6 +407,11 @@ func (m *constructResourceMonitor) RegisterResource(
 	// Pulumi SDKs do (e.g. NodeJS uses `${name}-child`).
 	name := m.componentName + "-" + req.Name
 
+	ignoreChanges, err := globsToPropertyPaths(req.IgnoreChanges)
+	if err != nil {
+		return nil, fmt.Errorf("marshaling ignoreChanges: %w", err)
+	}
+
 	resp, err := m.client.RegisterResource(ctx, &pulumirpc.RegisterResourceRequest{
 		Type:                req.Type,
 		Name:                name,
@@ -417,7 +422,7 @@ func (m *constructResourceMonitor) RegisterResource(
 		Provider:            req.Provider,
 		Protect:             &req.Protect,
 		DeleteBeforeReplace: req.DeleteBeforeReplace,
-		IgnoreChanges:       req.IgnoreChanges,
+		IgnoreChanges:       ignoreChanges,
 		AcceptSecrets:       true,
 		AcceptResources:     true,
 	})

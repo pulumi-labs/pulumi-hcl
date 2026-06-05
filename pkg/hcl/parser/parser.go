@@ -719,7 +719,15 @@ func (p *Parser) parsePulumiResourceOptions(block *hcl.Block, resource *ast.Reso
 	}
 
 	if attr, ok := content.Attributes["additional_secret_outputs"]; ok {
-		resource.AdditionalSecretOutputs = attr.Expr
+		exprs, exprDiags := hcl.ExprList(attr.Expr)
+		diags = append(diags, exprDiags...)
+		for _, expr := range exprs {
+			traversal, travDiags := hcl.RelTraversalForExpr(expr)
+			diags = append(diags, travDiags...)
+			if traversal != nil {
+				resource.AdditionalSecretOutputs = append(resource.AdditionalSecretOutputs, traversal)
+			}
+		}
 	}
 
 	if attr, ok := content.Attributes["retain_on_delete"]; ok {
@@ -750,17 +758,10 @@ func (p *Parser) parsePulumiResourceOptions(block *hcl.Block, resource *ast.Reso
 		exprs, exprDiags := hcl.ExprList(attr.Expr)
 		diags = append(diags, exprDiags...)
 		for _, expr := range exprs {
-			// Try as string literal first (preferred: "propertyName" in camelCase)
-			val, valDiags := expr.Value(nil)
-			if !valDiags.HasErrors() && val.Type() == cty.String {
-				resource.HideDiff = append(resource.HideDiff, val.AsString())
-			} else {
-				// Fallback: bare identifier traversal (e.g. for hand-written HCL)
-				traversal, travDiags := hcl.RelTraversalForExpr(expr)
-				diags = append(diags, travDiags...)
-				if traversal != nil {
-					resource.HideDiff = append(resource.HideDiff, traversal.RootName())
-				}
+			traversal, travDiags := hcl.RelTraversalForExpr(expr)
+			diags = append(diags, travDiags...)
+			if traversal != nil {
+				resource.HideDiff = append(resource.HideDiff, traversal)
 			}
 		}
 	}
@@ -769,17 +770,10 @@ func (p *Parser) parsePulumiResourceOptions(block *hcl.Block, resource *ast.Reso
 		exprs, exprDiags := hcl.ExprList(attr.Expr)
 		diags = append(diags, exprDiags...)
 		for _, expr := range exprs {
-			// Try as string literal first (preferred: "propertyName" in camelCase)
-			val, valDiags := expr.Value(nil)
-			if !valDiags.HasErrors() && val.Type() == cty.String {
-				resource.ReplaceOnChanges = append(resource.ReplaceOnChanges, val.AsString())
-			} else {
-				// Fallback: bare identifier traversal (e.g. for hand-written HCL)
-				traversal, travDiags := hcl.RelTraversalForExpr(expr)
-				diags = append(diags, travDiags...)
-				if traversal != nil {
-					resource.ReplaceOnChanges = append(resource.ReplaceOnChanges, traversal.RootName())
-				}
+			traversal, travDiags := hcl.RelTraversalForExpr(expr)
+			diags = append(diags, travDiags...)
+			if traversal != nil {
+				resource.ReplaceOnChanges = append(resource.ReplaceOnChanges, traversal)
 			}
 		}
 	}

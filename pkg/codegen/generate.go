@@ -1199,7 +1199,7 @@ func (g *generator) genProvider(body *hclwrite.Body, r *pcl.Resource) hcl.Diagno
 			}
 		}
 		if opts.AdditionalSecretOutputs != nil {
-			g.genPropertyPathList(pulumiBody(), "additional_secret_outputs", opts.AdditionalSecretOutputs, &diags)
+			g.genPropertyPathTraversalList(pulumiBody(), "additional_secret_outputs", opts.AdditionalSecretOutputs)
 		}
 		if opts.EnvVarMappings != nil {
 			tokens, d := g.exprTokens(opts.EnvVarMappings, schema.AnyType)
@@ -1309,7 +1309,7 @@ func (g *generator) genResourceOptions(body *hclwrite.Body, r *pcl.Resource) hcl
 	}
 
 	if opts.AdditionalSecretOutputs != nil {
-		g.genPropertyPathList(pulumiBody(), "additional_secret_outputs", opts.AdditionalSecretOutputs, &diags)
+		g.genPropertyPathTraversalList(pulumiBody(), "additional_secret_outputs", opts.AdditionalSecretOutputs)
 	}
 
 	if opts.RetainOnDelete != nil {
@@ -1337,7 +1337,7 @@ func (g *generator) genResourceOptions(body *hclwrite.Body, r *pcl.Resource) hcl
 	}
 
 	if opts.HideDiffs != nil {
-		g.genPropertyPathList(pulumiBody(), "hide_diffs", opts.HideDiffs, &diags)
+		g.genPropertyPathTraversalList(pulumiBody(), "hide_diffs", opts.HideDiffs)
 	}
 
 	emitReplaceOnChanges()
@@ -1612,27 +1612,31 @@ func extractPropertyNames(expr model.Expression) []string {
 	return names
 }
 
-// genPropertyPathList generates an HCL string list attribute for property paths.
-// Property names are emitted as string literals in camelCase (e.g., replace_on_changes = ["replaceProp"]).
-func (g *generator) genPropertyPathList(body *hclwrite.Body, attrName string, optsExpr model.Expression, diags *hcl.Diagnostics) {
+// genPropertyPathTraversalList generates an HCL list attribute for property
+// paths emitted as bare traversals in camelCase (e.g.,
+// hide_diffs = [replaceProp]), matching the form of ignore_changes. Used for
+// hide_diffs, replace_on_changes, and additional_secret_outputs.
+func (g *generator) genPropertyPathTraversalList(body *hclwrite.Body, attrName string, optsExpr model.Expression) {
 	names := extractPropertyNames(optsExpr)
 	if len(names) == 0 {
 		return
 	}
-	body.SetAttributeRaw(attrName, makeStringListTokens(names))
+	body.SetAttributeRaw(attrName, makeTraversalListTokens(names))
 }
 
-// makeStringListTokens generates HCL tokens for a list of string literals: ["a", "b", "c"].
-func makeStringListTokens(strs []string) hclwrite.Tokens {
+// makeTraversalListTokens generates HCL tokens for a list of property-path
+// traversals: [a, b.c]. hide_diffs and replace_on_changes name properties by
+// their attribute path, matching the bare-traversal form of ignore_changes.
+func makeTraversalListTokens(paths []string) hclwrite.Tokens {
 	tokens := hclwrite.Tokens{
 		{Type: hclsyntax.TokenOBrack, Bytes: []byte("[")},
 	}
-	for i, s := range strs {
+	for i, p := range paths {
 		if i > 0 {
 			tokens = append(tokens, &hclwrite.Token{Type: hclsyntax.TokenComma, Bytes: []byte(",")})
 		}
 		tokens = append(tokens, &hclwrite.Token{
-			Type: hclsyntax.TokenQuotedLit, Bytes: []byte(`"` + s + `"`), SpacesBefore: 1,
+			Type: hclsyntax.TokenIdent, Bytes: []byte(p), SpacesBefore: 1,
 		})
 	}
 	tokens = append(tokens, &hclwrite.Token{Type: hclsyntax.TokenCBrack, Bytes: []byte("]")})
@@ -1746,7 +1750,7 @@ func (g *generator) genReplaceOnChanges(body *hclwrite.Body, schemaPaths []strin
 		}
 	}
 
-	body.SetAttributeRaw("replace_on_changes", makeStringListTokens(allPaths))
+	body.SetAttributeRaw("replace_on_changes", makeTraversalListTokens(allPaths))
 }
 
 func (g *generator) genConfigVariable(body *hclwrite.Body, cv *pcl.ConfigVariable) hcl.Diagnostics {

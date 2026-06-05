@@ -11,14 +11,14 @@ terraform {
 // Resource with deleteBeforeReplace option
 resource "simple_resource" "withOption" {
   pulumi {
-    replace_on_changes = ["value"]
+    replace_on_changes = [value]
   }
   value = true
 }
 // Resource without deleteBeforeReplace (default create-before-delete behavior)
 resource "simple_resource" "withoutOption" {
   pulumi {
-    replace_on_changes = ["value"]
+    replace_on_changes = [value]
   }
   lifecycle {
     create_before_destroy = true

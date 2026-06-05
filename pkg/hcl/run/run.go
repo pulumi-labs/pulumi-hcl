@@ -20,6 +20,8 @@ import (
 	"errors"
 	"fmt"
 	"maps"
+	"math"
+	"math/big"
 	"os"
 	"path/filepath"
 	"slices"
@@ -147,7 +149,7 @@ type RegisterResourceRequest struct {
 	Custom                  bool
 	Remote                  bool
 	Protect                 bool
-	IgnoreChanges           []string
+	IgnoreChanges           []property.Glob
 	Aliases                 []Alias
 	Provider                string
 	Providers               map[string]string // Map from package name to provider reference (urn::id)
@@ -158,11 +160,11 @@ type RegisterResourceRequest struct {
 	ImportId                string // Resource ID to import
 	AdditionalSecretOutputs []string
 	RetainOnDelete          *bool
-	DeletedWith             string         // URN of the resource that, when deleted, causes this resource to be deleted
-	ReplaceWith             []string       // URNs of resources whose replacement triggers replacement of this resource
-	HideDiffs               []string       // Property paths whose diffs should not be displayed
-	ReplaceOnChanges        []string       // Property paths that if changed should force a replacement
-	ReplacementTrigger      property.Value // Value whose change triggers replacement
+	DeletedWith             string          // URN of the resource that, when deleted, causes this resource to be deleted
+	ReplaceWith             []string        // URNs of resources whose replacement triggers replacement of this resource
+	HideDiffs               []property.Glob // Property paths whose diffs should not be displayed
+	ReplaceOnChanges        []property.Glob // Property paths that if changed should force a replacement
+	ReplacementTrigger      property.Value  // Value whose change triggers replacement
 	EnvVarMappings          map[string]string
 	Version                 string
 	PluginDownloadURL       string
@@ -1367,13 +1369,14 @@ func (e *Engine) buildResourceOptionsInContext(
 		// paths against Pulumi (camelCase) property names, so they must be
 		// translated through the bridge mapping first.
 		for _, ic := range res.Lifecycle.IgnoreChanges {
-			icStr := translateAttrPathTraversal(ic, resourceMapping, inputProps)
-			if icStr != "" {
-				opts.IgnoreChanges = append(opts.IgnoreChanges, icStr)
+			icStr, err := translateAttrPathTraversal(ic, resourceMapping, inputProps)
+			if err != nil {
+				return nil, fmt.Errorf("invalid property path: %w", err)
 			}
+			opts.IgnoreChanges = append(opts.IgnoreChanges, icStr)
 		}
 		if res.Lifecycle.IgnoreAllChanges {
-			opts.IgnoreChanges = []string{"*"}
+			opts.IgnoreChanges = []property.Glob{property.GlobFromSegments(property.Splat)}
 		}
 	}
 	// create_before_destroy controls replacement order, with TF semantics:
@@ -1508,18 +1511,12 @@ func (e *Engine) buildResourceOptionsInContext(
 
 	hclCtx := evalCtx.HCLContext()
 
-	if res.AdditionalSecretOutputs != nil {
-		secretOutputsVal, diags := res.AdditionalSecretOutputs.Value(hclCtx)
-		if !diags.HasErrors() && (secretOutputsVal.Type().IsListType() || secretOutputsVal.Type().IsTupleType()) {
-			it := secretOutputsVal.ElementIterator()
-			for it.Next() {
-				_, elem := it.Element()
-				if elem.Type() == cty.String {
-					opts.AdditionalSecretOutputs = append(opts.AdditionalSecretOutputs,
-						translateAttrPathString(elem.AsString(), resourceMapping, inputProps))
-				}
-			}
+	for _, t := range res.AdditionalSecretOutputs {
+		name, err := translateSecretOutputName(t, resourceMapping, inputProps)
+		if err != nil {
+			return nil, err
 		}
+		opts.AdditionalSecretOutputs = append(opts.AdditionalSecretOutputs, name)
 	}
 
 	if res.RetainOnDelete != nil {
@@ -1558,10 +1555,18 @@ func (e *Engine) buildResourceOptionsInContext(
 	// (snake_case) convention and must be translated to the Pulumi property
 	// name the engine expects; a path already in Pulumi form passes through.
 	for _, p := range res.HideDiff {
-		opts.HideDiffs = append(opts.HideDiffs, translateAttrPathString(p, resourceMapping, inputProps))
+		glob, err := translateAttrPathTraversal(p, resourceMapping, inputProps)
+		if err != nil {
+			return nil, fmt.Errorf("invalid hide_diffs property path: %w", err)
+		}
+		opts.HideDiffs = append(opts.HideDiffs, glob)
 	}
 	for _, p := range res.ReplaceOnChanges {
-		opts.ReplaceOnChanges = append(opts.ReplaceOnChanges, translateAttrPathString(p, resourceMapping, inputProps))
+		glob, err := translateAttrPathTraversal(p, resourceMapping, inputProps)
+		if err != nil {
+			return nil, fmt.Errorf("invalid replace_on_changes property path: %w", err)
+		}
+		opts.ReplaceOnChanges = append(opts.ReplaceOnChanges, glob)
 	}
 
 	// `lifecycle { replace_triggered_by = [a, b, ...] }` evaluates each
@@ -1820,68 +1825,89 @@ func (*Engine) extractModuleResourceName(
 // translateAttrPathTraversal formats an attribute-path traversal (e.g. an
 // ignore_changes entry) into the dotted/bracketed path the Pulumi engine
 // expects, translating each TF (snake_case) attribute segment to its Pulumi
-// (camelCase) name. The Pulumi engine matches these paths against Pulumi
-// property names, so a TF name like input_one must become inputOne. Index
-// segments and keys into a plain map (which have no schema field of their own)
-// are passed through verbatim.
-//
-// Translation prefers the bridge mapping (which captures explicit renames and
-// the block-vs-attribute shape) and falls back to the snake↔camel convention
-// against the Pulumi schema properties, mirroring how resource inputs are
-// mapped in transform.evalBlockWithSchema. A name that is already in Pulumi
-// form passes through unchanged, so paths authored in either convention work.
+// (camelCase) name.
 func translateAttrPathTraversal(
 	traversal hcl.Traversal, mapping *bridge.BodyMapping, props []*schema.Property,
-) string {
+) (property.Glob, error) {
 	if len(traversal) == 0 {
-		return ""
+		return property.Glob{}, nil
 	}
-
+	segments := make([]property.GlobSegment, 0, len(traversal))
 	resolver := attrPathNameResolver{mapping: mapping, props: props}
-	var buf strings.Builder
-	for i, step := range traversal {
+	for _, step := range traversal {
 		switch s := step.(type) {
 		case hcl.TraverseRoot:
-			buf.WriteString(resolver.next(s.Name))
+			segments = append(segments, property.NewSegment(resolver.next(s.Name)))
 		case hcl.TraverseAttr:
-			if i > 0 {
-				buf.WriteByte('.')
-			}
-			buf.WriteString(resolver.next(s.Name))
+			segments = append(segments, property.NewSegment(resolver.next(s.Name)))
 		case hcl.TraverseIndex:
 			// Index traversals use bracket notation without a leading dot.
 			key := s.Key
 			if key.Type() == cty.String {
-				fmt.Fprintf(&buf, "[%q]", key.AsString())
+				segments = append(segments, property.NewSegment(resolver.next(key.AsString())))
 			} else if key.Type() == cty.Number {
-				bf := key.AsBigFloat()
-				if i64, acc := bf.Int64(); acc == 0 {
-					fmt.Fprintf(&buf, "[%d]", i64)
+				i64, acc := key.AsBigFloat().Int64()
+				if acc != big.Exact || i64 > math.MaxInt {
+					return property.Glob{}, fmt.Errorf("unrepresentable path segment %s", key.AsBigFloat())
 				}
+				segments = append(segments, property.NewSegment(int(i64)))
 			}
 		}
 	}
 
-	return buf.String()
+	return property.GlobFromSegments(segments...), nil
 }
 
-// translateAttrPathString translates a dotted attribute path (e.g. a
-// replace_on_changes / hide_diffs / additional_secret_outputs entry) the same
-// way translateAttrPathTraversal does for a traversal. Each `.`-separated
-// segment is translated through the bridge mapping or the snake↔camel
-// convention; a path already in Pulumi form passes through unchanged. Bracketed
-// index segments are not expected here (these options name properties of the
-// current resource), so the path is split on `.` only.
-func translateAttrPathString(path string, mapping *bridge.BodyMapping, props []*schema.Property) string {
-	if path == "" {
-		return ""
+// translateSecretOutputName translates a single additional_secret_outputs entry
+// from its TF (snake_case) name to its Pulumi name. Unlike hide_diffs and
+// replace_on_changes, an additional_secret_outputs entry names a single
+// top-level output property rather than a nested path, so a multi-segment
+// traversal is rejected.
+func translateSecretOutputName(
+	t hcl.Traversal, mapping *bridge.BodyMapping, props []*schema.Property,
+) (string, error) {
+	if len(t) != 1 {
+		return "", fmt.Errorf(
+			"invalid additional_secret_outputs entry %#v: expected a single top-level property name",
+			formatAttrTraversal(t))
+	}
+	var name string
+	switch s := t[0].(type) {
+	case hcl.TraverseRoot:
+		name = s.Name
+	case hcl.TraverseAttr:
+		name = s.Name
+	default:
+		return "", fmt.Errorf("invalid additional_secret_outputs entry: expected a property name")
 	}
 	resolver := attrPathNameResolver{mapping: mapping, props: props}
-	segments := strings.Split(path, ".")
-	for i, seg := range segments {
-		segments[i] = resolver.next(seg)
+	return resolver.next(name), nil
+}
+
+// formatAttrTraversal renders an attribute-path traversal as a dotted/bracketed
+// string for diagnostics.
+func formatAttrTraversal(t hcl.Traversal) string {
+	var b strings.Builder
+	for i, step := range t {
+		switch s := step.(type) {
+		case hcl.TraverseRoot:
+			b.WriteString(s.Name)
+		case hcl.TraverseAttr:
+			if i > 0 {
+				b.WriteByte('.')
+			}
+			b.WriteString(s.Name)
+		case hcl.TraverseIndex:
+			if s.Key.Type() == cty.String {
+				fmt.Fprintf(&b, "[%q]", s.Key.AsString())
+			} else if s.Key.Type() == cty.Number {
+				if i64, acc := s.Key.AsBigFloat().Int64(); acc == big.Exact {
+					fmt.Fprintf(&b, "[%d]", i64)
+				}
+			}
+		}
 	}
-	return strings.Join(segments, ".")
+	return b.String()
 }
 
 // attrPathNameResolver walks an attribute path, translating each attribute
@@ -1938,7 +1964,7 @@ type ResourceOptions struct {
 	DependsOn               []string
 	PropertyDependencies    map[string][]string
 	Protect                 bool
-	IgnoreChanges           []string
+	IgnoreChanges           []property.Glob
 	Aliases                 []Alias
 	Provider                string
 	Providers               map[string]string // Map from package name to provider reference (urn::id)
@@ -1949,11 +1975,11 @@ type ResourceOptions struct {
 	ImportId                string
 	AdditionalSecretOutputs []string
 	RetainOnDelete          *bool
-	DeletedWith             string         // URN of the resource that, when deleted, causes this resource to be deleted
-	ReplaceWith             []string       // URNs of resources whose replacement triggers replacement of this resource
-	HideDiffs               []string       // Property paths whose diffs should not be displayed
-	ReplaceOnChanges        []string       // Property paths that if changed should force a replacement
-	ReplacementTrigger      property.Value // Value whose change triggers replacement
+	DeletedWith             string          // URN of the resource that, when deleted, causes this resource to be deleted
+	ReplaceWith             []string        // URNs of resources whose replacement triggers replacement of this resource
+	HideDiffs               []property.Glob // Property paths whose diffs should not be displayed
+	ReplaceOnChanges        []property.Glob // Property paths that if changed should force a replacement
+	ReplacementTrigger      property.Value  // Value whose change triggers replacement
 	EnvVarMappings          map[string]string
 	Version                 string
 	PluginDownloadURL       string

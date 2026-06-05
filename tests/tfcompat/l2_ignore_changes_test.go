@@ -24,11 +24,7 @@ import (
 // TestL2IgnoreChanges drives both paths across two stages on the same stack.
 // Stage 0 creates the resources; stage 1 changes their inputs in config, but
 // lifecycle.ignore_changes instructs the runtime to keep the prior state
-// values. OpenTofu suppresses those updates entirely (no Update op, prior
-// values survive in state and in references to them); pulumi-hcl must match.
-// The `r` resource exercises a named attribute (input_one), whose path must be
-// translated from the TF name to the Pulumi name before being handed to the
-// engine, and the `all` resource exercises ignore_changes = all.
+// values.
 func TestL2IgnoreChanges(t *testing.T) {
 	t.Parallel()
 	tfcompat.RunCase(t, "l2_ignore_changes", tfcompat.Case{

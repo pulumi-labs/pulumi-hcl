@@ -9,7 +9,7 @@ terraform {
 
 resource "simple_resource" "withSecret" {
   pulumi {
-    additional_secret_outputs = ["value"]
+    additional_secret_outputs = [value]
   }
   lifecycle {
     create_before_destroy = true
