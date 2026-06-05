@@ -1,6 +1,3 @@
-resource "explicitProvider" "pulumi:providers:simple-invoke" {
-}
-
 resource "first" "simple-invoke:index:StringResource" {
   text = "first hello"
 }

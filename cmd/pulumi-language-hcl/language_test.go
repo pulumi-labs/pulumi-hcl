@@ -137,6 +137,8 @@ var expectedFailures = map[string]string{
 	"l2-resource-hook-after-failure": "PCL pcl.Hook nodes not yet supported by HCL codegen",
 	"l2-resource-hook-ignore-errors": "PCL pcl.Hook nodes not yet supported by HCL codegen",
 	"l2-resource-read":               "PCL pcl.ReadResource nodes not yet supported by HCL codegen",
+	"l3-component-simple": "HCL runtime does not propagate resource dependencies from a" +
+		" component's input expressions to the component registration",
 	"l2-provider-call-explicit": "upstream fixture declares `provider \"call\"`, which" +
 		" is reserved as the namespace for resource method calls in HCL",
 }

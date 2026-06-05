@@ -2303,7 +2303,7 @@ func (g *generator) funcCallTokens(expr *model.FunctionCallExpression) (hclwrite
 	case "notImplemented":
 		return g.notImplementedTokens(expr)
 	default:
-		return g.passthroughFuncCallTokens(expr.Name, expr.Args)
+		return g.passthroughFuncCallTokensExpand(expr.Name, expr.Args, expr.ExpandFinal)
 	}
 }
 
@@ -2729,6 +2729,12 @@ func (g *generator) scopeTraversalTokens(expr *model.ScopeTraversalExpression) (
 
 // passthroughFuncCallTokens generates tokens for a function call: name(arg1, arg2, ...).
 func (g *generator) passthroughFuncCallTokens(name string, args []model.Expression) (hclwrite.Tokens, hcl.Diagnostics) {
+	return g.passthroughFuncCallTokensExpand(name, args, false)
+}
+
+func (g *generator) passthroughFuncCallTokensExpand(
+	name string, args []model.Expression, expandFinal bool,
+) (hclwrite.Tokens, hcl.Diagnostics) {
 	tokens := hclwrite.Tokens{
 		{Type: hclsyntax.TokenIdent, Bytes: []byte(name)},
 		{Type: hclsyntax.TokenOParen, Bytes: []byte("(")},
@@ -2744,6 +2750,9 @@ func (g *generator) passthroughFuncCallTokens(name string, args []model.Expressi
 			return nil, diags
 		}
 		tokens = append(tokens, argTokens...)
+	}
+	if expandFinal && len(args) > 0 {
+		tokens = append(tokens, &hclwrite.Token{Type: hclsyntax.TokenEllipsis, Bytes: []byte("...")})
 	}
 	tokens = append(tokens, &hclwrite.Token{Type: hclsyntax.TokenCParen, Bytes: []byte(")")})
 	return tokens, diags

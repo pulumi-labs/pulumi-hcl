@@ -16,9 +16,6 @@ data "simple-invoke_my_invoke" "invoke_1" {
   depends_on = [simple-invoke_string_resource.first]
 }
 
-provider "simple-invoke" {
-  alias = "explicitProvider"
-}
 resource "simple-invoke_string_resource" "first" {
   lifecycle {
     create_before_destroy = true

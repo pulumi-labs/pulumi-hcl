@@ -21,9 +21,9 @@ require (
 	github.com/opentofu/registry-address/v2 v2.0.0-20250611143131-d0a99bd8acdd
 	github.com/opentofu/svchost v0.0.0-20250610175836-86c9e5e3d8c8
 	github.com/pulumi/providertest v0.7.0
-	github.com/pulumi/pulumi-terraform-bridge/v3 v3.129.2
-	github.com/pulumi/pulumi/pkg/v3 v3.245.1-0.20260605100848-9758ae9b7834
-	github.com/pulumi/pulumi/sdk/v3 v3.245.1-0.20260605100848-9758ae9b7834
+	github.com/pulumi/pulumi-terraform-bridge/v3 v3.131.1-0.20260605142145-a9b41ba46509
+	github.com/pulumi/pulumi/pkg/v3 v3.245.1-0.20260605130235-5de910beeb8d
+	github.com/pulumi/pulumi/sdk/v3 v3.245.1-0.20260605130235-5de910beeb8d
 	github.com/stretchr/testify v1.11.1
 	github.com/testcontainers/testcontainers-go v0.42.0
 	github.com/xanzy/ssh-agent v0.3.3
@@ -254,11 +254,11 @@ require (
 	github.com/posener/complete v1.2.3 // indirect
 	github.com/power-devops/perfstat v0.0.0-20240221224432-82ca36839d55 // indirect
 	github.com/pulumi/appdash v0.0.0-20231130102222-75f619a67231 // indirect
-	github.com/pulumi/esc v0.24.0 // indirect
+	github.com/pulumi/esc v0.25.0 // indirect
 	github.com/pulumi/inflector v0.2.1 // indirect
-	github.com/pulumi/pulumi-dotnet/pulumi-language-dotnet/v3 v3.105.0 // indirect
-	github.com/pulumi/pulumi-java v1.26.0 // indirect
-	github.com/pulumi/pulumi-yaml v1.33.0 // indirect
+	github.com/pulumi/pulumi-dotnet/pulumi-language-dotnet/v3 v3.106.2 // indirect
+	github.com/pulumi/pulumi-java v1.28.0 // indirect
+	github.com/pulumi/pulumi-yaml v1.35.1-0.20260605104711-2fb599d00f64 // indirect
 	github.com/pulumi/terraform-diff-reader v0.0.2 // indirect
 	github.com/rivo/uniseg v0.4.7 // indirect
 	github.com/rogpeppe/go-internal v1.14.1 // indirect
