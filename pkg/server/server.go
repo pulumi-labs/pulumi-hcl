@@ -1095,6 +1095,25 @@ func (r *resourceMonitorAdapter) RegisterPackage(
 	return run.PackageRef(resp.Ref), nil
 }
 
+// globsToPropertyPaths marshals property globs to the dotted/bracketed
+// property-path strings the resource monitor protocol expects. The globs are
+// kept in their structured form through the engine and only flattened here, at
+// the wire boundary.
+func globsToPropertyPaths(globs []property.Glob) ([]string, error) {
+	if len(globs) == 0 {
+		return nil, nil
+	}
+	paths := make([]string, len(globs))
+	for i, g := range globs {
+		text, err := g.MarshalText()
+		if err != nil {
+			return nil, err
+		}
+		paths[i] = string(text)
+	}
+	return paths, nil
+}
+
 // RegisterResource registers a resource with Pulumi.
 func (r *resourceMonitorAdapter) RegisterResource(
 	ctx context.Context,
@@ -1138,6 +1157,19 @@ func (r *resourceMonitorAdapter) RegisterResource(
 		}
 	}
 
+	ignoreChanges, err := globsToPropertyPaths(req.IgnoreChanges)
+	if err != nil {
+		return nil, fmt.Errorf("marshaling ignoreChanges: %w", err)
+	}
+	hideDiffs, err := globsToPropertyPaths(req.HideDiffs)
+	if err != nil {
+		return nil, fmt.Errorf("marshaling hideDiffs: %w", err)
+	}
+	replaceOnChanges, err := globsToPropertyPaths(req.ReplaceOnChanges)
+	if err != nil {
+		return nil, fmt.Errorf("marshaling replaceOnChanges: %w", err)
+	}
+
 	// Build the registration request
 	registerReq := &pulumirpc.RegisterResourceRequest{
 		Type:                       req.Type,
@@ -1151,7 +1183,7 @@ func (r *resourceMonitorAdapter) RegisterResource(
 		Provider:                   req.Provider,
 		Providers:                  req.Providers,
 		Parent:                     string(req.Parent),
-		IgnoreChanges:              req.IgnoreChanges,
+		IgnoreChanges:              ignoreChanges,
 		Aliases:                    aliases,
 		AcceptSecrets:              true,
 		AcceptResources:            true,
@@ -1163,8 +1195,8 @@ func (r *resourceMonitorAdapter) RegisterResource(
 		RetainOnDelete:             req.RetainOnDelete,
 		DeletedWith:                req.DeletedWith,
 		ReplaceWith:                req.ReplaceWith,
-		HideDiffs:                  req.HideDiffs,
-		ReplaceOnChanges:           req.ReplaceOnChanges,
+		HideDiffs:                  hideDiffs,
+		ReplaceOnChanges:           replaceOnChanges,
 		EnvVarMappings:             req.EnvVarMappings,
 		Version:                    req.Version,
 		PluginDownloadURL:          req.PluginDownloadURL,
@@ -1175,6 +1207,7 @@ func (r *resourceMonitorAdapter) RegisterResource(
 	if req.CustomTimeouts != nil {
 		registerReq.CustomTimeouts = &pulumirpc.RegisterResourceRequest_CustomTimeouts{
 			Create: formatTimeoutSeconds(req.CustomTimeouts.Create),
+			Read:   formatTimeoutSeconds(req.CustomTimeouts.Read),
 			Update: formatTimeoutSeconds(req.CustomTimeouts.Update),
 			Delete: formatTimeoutSeconds(req.CustomTimeouts.Delete),
 		}

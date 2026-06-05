@@ -7,9 +7,15 @@ terraform {
   }
 }
 
+resource "simple_resource" "input" {
+  lifecycle {
+    create_before_destroy = true
+  }
+  value = true
+}
 module "someComponent" {
   source = "./myComponent"
-  input  = true
+  input  = simple_resource.input.value
 }
 output "result" {
   value = module.someComponent.output

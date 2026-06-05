@@ -31,6 +31,8 @@ import (
 type Timeouts struct {
 	// Create is the timeout for create operations.
 	Create hcl.Expression
+	// Read is the timeout for read operations.
+	Read hcl.Expression
 	// Update is the timeout for update operations.
 	Update hcl.Expression
 	// Delete is the timeout for delete operations.
@@ -83,8 +85,9 @@ type Resource struct {
 	// Unlike Terraform, Pulumi supports explicit parent resources.
 	ResourceParent hcl.Traversal
 
-	// AdditionalSecretOutputs lists output properties that should be treated as secret.
-	AdditionalSecretOutputs hcl.Expression
+	// AdditionalSecretOutputs lists output properties that should be treated as
+	// secret. Each entry names a single top-level property.
+	AdditionalSecretOutputs []hcl.Traversal
 
 	// RetainOnDelete if true means the provider's Delete method will not be called for this resource.
 	RetainOnDelete hcl.Expression
@@ -96,12 +99,10 @@ type Resource struct {
 	ReplaceWith []hcl.Traversal
 
 	// HideDiff lists property paths whose diffs should not be displayed.
-	// Property names are in Pulumi camelCase format (e.g., "someProperty").
-	HideDiff []string
+	HideDiff []hcl.Traversal
 
 	// ReplaceOnChanges lists property paths that if changed should force a replacement.
-	// Property names are in Pulumi camelCase format (e.g., "someProperty").
-	ReplaceOnChanges []string
+	ReplaceOnChanges []hcl.Traversal
 
 	// ImportID is the resource ID to import this resource as.
 	ImportID string

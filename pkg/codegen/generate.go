@@ -1199,7 +1199,7 @@ func (g *generator) genProvider(body *hclwrite.Body, r *pcl.Resource) hcl.Diagno
 			}
 		}
 		if opts.AdditionalSecretOutputs != nil {
-			g.genPropertyPathList(pulumiBody(), "additional_secret_outputs", opts.AdditionalSecretOutputs, &diags)
+			g.genPropertyPathTraversalList(pulumiBody(), "additional_secret_outputs", opts.AdditionalSecretOutputs)
 		}
 		if opts.EnvVarMappings != nil {
 			tokens, d := g.exprTokens(opts.EnvVarMappings, schema.AnyType)
@@ -1309,7 +1309,7 @@ func (g *generator) genResourceOptions(body *hclwrite.Body, r *pcl.Resource) hcl
 	}
 
 	if opts.AdditionalSecretOutputs != nil {
-		g.genPropertyPathList(pulumiBody(), "additional_secret_outputs", opts.AdditionalSecretOutputs, &diags)
+		g.genPropertyPathTraversalList(pulumiBody(), "additional_secret_outputs", opts.AdditionalSecretOutputs)
 	}
 
 	if opts.RetainOnDelete != nil {
@@ -1337,7 +1337,7 @@ func (g *generator) genResourceOptions(body *hclwrite.Body, r *pcl.Resource) hcl
 	}
 
 	if opts.HideDiffs != nil {
-		g.genPropertyPathList(pulumiBody(), "hide_diffs", opts.HideDiffs, &diags)
+		g.genPropertyPathTraversalList(pulumiBody(), "hide_diffs", opts.HideDiffs)
 	}
 
 	emitReplaceOnChanges()
@@ -1612,27 +1612,46 @@ func extractPropertyNames(expr model.Expression) []string {
 	return names
 }
 
-// genPropertyPathList generates an HCL string list attribute for property paths.
-// Property names are emitted as string literals in camelCase (e.g., replace_on_changes = ["replaceProp"]).
-func (g *generator) genPropertyPathList(body *hclwrite.Body, attrName string, optsExpr model.Expression, diags *hcl.Diagnostics) {
+// genPropertyPathTraversalList generates an HCL list attribute for property
+// paths emitted as bare traversals in TF snake_case (e.g.,
+// hide_diffs = [replace_prop]), matching the form of ignore_changes. Used for
+// hide_diffs, replace_on_changes, and additional_secret_outputs.
+func (g *generator) genPropertyPathTraversalList(body *hclwrite.Body, attrName string, optsExpr model.Expression) {
 	names := extractPropertyNames(optsExpr)
 	if len(names) == 0 {
 		return
 	}
-	body.SetAttributeRaw(attrName, makeStringListTokens(names))
+	body.SetAttributeRaw(attrName, makeTraversalListTokens(snakeCasePropertyPaths(names)))
 }
 
-// makeStringListTokens generates HCL tokens for a list of string literals: ["a", "b", "c"].
-func makeStringListTokens(strs []string) hclwrite.Tokens {
+// snakeCasePropertyPaths converts Pulumi camelCase property paths to their TF
+// snake_case form, segment by segment, so emitted property-path options name
+// properties in the same case as the resource's snake_case attributes.
+func snakeCasePropertyPaths(paths []string) []string {
+	out := make([]string, len(paths))
+	for i, p := range paths {
+		segs := strings.Split(p, ".")
+		for j, s := range segs {
+			segs[j] = transform.SnakeCaseFromPulumiCase(s)
+		}
+		out[i] = strings.Join(segs, ".")
+	}
+	return out
+}
+
+// makeTraversalListTokens generates HCL tokens for a list of property-path
+// traversals: [a, b.c]. hide_diffs and replace_on_changes name properties by
+// their attribute path, matching the bare-traversal form of ignore_changes.
+func makeTraversalListTokens(paths []string) hclwrite.Tokens {
 	tokens := hclwrite.Tokens{
 		{Type: hclsyntax.TokenOBrack, Bytes: []byte("[")},
 	}
-	for i, s := range strs {
+	for i, p := range paths {
 		if i > 0 {
 			tokens = append(tokens, &hclwrite.Token{Type: hclsyntax.TokenComma, Bytes: []byte(",")})
 		}
 		tokens = append(tokens, &hclwrite.Token{
-			Type: hclsyntax.TokenQuotedLit, Bytes: []byte(`"` + s + `"`), SpacesBefore: 1,
+			Type: hclsyntax.TokenIdent, Bytes: []byte(p), SpacesBefore: 1,
 		})
 	}
 	tokens = append(tokens, &hclwrite.Token{Type: hclsyntax.TokenCBrack, Bytes: []byte("]")})
@@ -1722,8 +1741,9 @@ func createBeforeDestroyTokens(g *generator, opts *pcl.ResourceOptions, diags *h
 	}, tokens...)
 }
 
-// genReplaceOnChanges generates the replace_on_changes attribute, merging schema-based and option-based paths.
-// All paths are emitted as string literals in camelCase so the engine can match them against the diff.
+// genReplaceOnChanges generates the replace_on_changes attribute, merging
+// schema-based and option-based paths. Paths are emitted as bare traversals in
+// TF snake_case, matching the resource's snake_case attribute names.
 func (g *generator) genReplaceOnChanges(body *hclwrite.Body, schemaPaths []string, optsExpr model.Expression, diags *hcl.Diagnostics) {
 	optPaths := extractPropertyNames(optsExpr)
 	if len(schemaPaths) == 0 && len(optPaths) == 0 {
@@ -1746,7 +1766,7 @@ func (g *generator) genReplaceOnChanges(body *hclwrite.Body, schemaPaths []strin
 		}
 	}
 
-	body.SetAttributeRaw("replace_on_changes", makeStringListTokens(allPaths))
+	body.SetAttributeRaw("replace_on_changes", makeTraversalListTokens(snakeCasePropertyPaths(allPaths)))
 }
 
 func (g *generator) genConfigVariable(body *hclwrite.Body, cv *pcl.ConfigVariable) hcl.Diagnostics {
@@ -2283,7 +2303,7 @@ func (g *generator) funcCallTokens(expr *model.FunctionCallExpression) (hclwrite
 	case "notImplemented":
 		return g.notImplementedTokens(expr)
 	default:
-		return g.passthroughFuncCallTokens(expr.Name, expr.Args)
+		return g.passthroughFuncCallTokensExpand(expr.Name, expr.Args, expr.ExpandFinal)
 	}
 }
 
@@ -2709,6 +2729,12 @@ func (g *generator) scopeTraversalTokens(expr *model.ScopeTraversalExpression) (
 
 // passthroughFuncCallTokens generates tokens for a function call: name(arg1, arg2, ...).
 func (g *generator) passthroughFuncCallTokens(name string, args []model.Expression) (hclwrite.Tokens, hcl.Diagnostics) {
+	return g.passthroughFuncCallTokensExpand(name, args, false)
+}
+
+func (g *generator) passthroughFuncCallTokensExpand(
+	name string, args []model.Expression, expandFinal bool,
+) (hclwrite.Tokens, hcl.Diagnostics) {
 	tokens := hclwrite.Tokens{
 		{Type: hclsyntax.TokenIdent, Bytes: []byte(name)},
 		{Type: hclsyntax.TokenOParen, Bytes: []byte("(")},
@@ -2724,6 +2750,9 @@ func (g *generator) passthroughFuncCallTokens(name string, args []model.Expressi
 			return nil, diags
 		}
 		tokens = append(tokens, argTokens...)
+	}
+	if expandFinal && len(args) > 0 {
+		tokens = append(tokens, &hclwrite.Token{Type: hclsyntax.TokenEllipsis, Bytes: []byte("...")})
 	}
 	tokens = append(tokens, &hclwrite.Token{Type: hclsyntax.TokenCParen, Bytes: []byte(")")})
 	return tokens, diags

@@ -554,9 +554,6 @@ func (g *Graph) resourceDeps(resource *ast.Resource, prefix string) []pdag.Node 
 			}
 		}
 	}
-	for _, dep := range g.exprDeps(resource.AdditionalSecretOutputs, prefix) {
-		seen[dep] = true
-	}
 	for _, dep := range g.exprDeps(resource.Aliases, prefix) {
 		seen[dep] = true
 	}

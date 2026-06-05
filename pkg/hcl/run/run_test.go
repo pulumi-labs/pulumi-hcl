@@ -583,11 +583,13 @@ resource "aws_instance" "web" {
 			Resources: map[string]schema.ResourceSpec{
 				"aws:index:Instance": {
 					InputProperties: map[string]schema.PropertySpec{
-						"ami": {TypeSpec: schema.TypeSpec{Type: "string"}},
+						"ami":  {TypeSpec: schema.TypeSpec{Type: "string"}},
+						"tags": {TypeSpec: schema.TypeSpec{Type: "object", AdditionalProperties: &schema.TypeSpec{Type: "string"}}},
 					},
 					ObjectTypeSpec: schema.ObjectTypeSpec{
 						Properties: map[string]schema.PropertySpec{
-							"ami": {TypeSpec: schema.TypeSpec{Type: "string"}},
+							"ami":  {TypeSpec: schema.TypeSpec{Type: "string"}},
+							"tags": {TypeSpec: schema.TypeSpec{Type: "object", AdditionalProperties: &schema.TypeSpec{Type: "string"}}},
 						},
 					},
 				},
@@ -611,10 +613,7 @@ resource "aws_instance" "web" {
 		t.Error("expected Protect=true from prevent_destroy")
 	}
 
-	// ignore_changes should be set
-	if len(req.IgnoreChanges) == 0 {
-		t.Error("expected IgnoreChanges to be set")
-	}
+	assert.Equal(t, []property.Glob{property.GlobFromSegments(property.NewSegment("tags"))}, req.IgnoreChanges)
 }
 
 func TestEngine_CreateBeforeDestroy(t *testing.T) {

@@ -1,0 +1,6 @@
+kind: bug-fixes
+body: Accept TF-convention attribute paths in `ignore_changes` and `pulumi`-block resource options
+time: 2026-06-03T16:54:19.000000+00:00
+custom:
+    Component: runtime
+    PR: "229"
