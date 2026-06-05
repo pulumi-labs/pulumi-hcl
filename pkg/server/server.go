@@ -1207,6 +1207,7 @@ func (r *resourceMonitorAdapter) RegisterResource(
 	if req.CustomTimeouts != nil {
 		registerReq.CustomTimeouts = &pulumirpc.RegisterResourceRequest_CustomTimeouts{
 			Create: formatTimeoutSeconds(req.CustomTimeouts.Create),
+			Read:   formatTimeoutSeconds(req.CustomTimeouts.Read),
 			Update: formatTimeoutSeconds(req.CustomTimeouts.Update),
 			Delete: formatTimeoutSeconds(req.CustomTimeouts.Delete),
 		}

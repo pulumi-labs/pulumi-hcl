@@ -254,6 +254,7 @@ var preconditionSchema = &hcl.BodySchema{
 var timeoutsSchema = &hcl.BodySchema{
 	Attributes: []hcl.AttributeSchema{
 		{Name: "create"},
+		{Name: "read"},
 		{Name: "update"},
 		{Name: "delete"},
 	},

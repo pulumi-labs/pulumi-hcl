@@ -40,6 +40,15 @@ resource "simple_resource" "deleteOnly" {
   }
   value = true
 }
+resource "simple_resource" "readOnly" {
+  lifecycle {
+    create_before_destroy = true
+  }
+  timeouts {
+    read = "9m"
+  }
+  value = true
+}
 resource "simple_resource" "allTimeouts" {
   lifecycle {
     create_before_destroy = true
@@ -48,6 +57,7 @@ resource "simple_resource" "allTimeouts" {
     create = "2m"
     update = "4m"
     delete = "1m"
+    read   = "5m"
   }
   value = true
 }

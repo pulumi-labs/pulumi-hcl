@@ -31,6 +31,8 @@ import (
 type Timeouts struct {
 	// Create is the timeout for create operations.
 	Create hcl.Expression
+	// Read is the timeout for read operations.
+	Read hcl.Expression
 	// Update is the timeout for update operations.
 	Update hcl.Expression
 	// Delete is the timeout for delete operations.

@@ -117,6 +117,7 @@ type ResourceHookBinding struct {
 // CustomTimeouts contains custom timeout values for resource operations.
 type CustomTimeouts struct {
 	Create float64 // Timeout in seconds for create operations
+	Read   float64 // Timeout in seconds for read operations
 	Update float64 // Timeout in seconds for update operations
 	Delete float64 // Timeout in seconds for delete operations
 }
@@ -1479,6 +1480,10 @@ func (e *Engine) buildResourceOptionsInContext(
 		}
 		if v, ok := evalTimeout(res.Timeouts.Create); ok {
 			ct.Create = v
+			hasTimeouts = true
+		}
+		if v, ok := evalTimeout(res.Timeouts.Read); ok {
+			ct.Read = v
 			hasTimeouts = true
 		}
 		if v, ok := evalTimeout(res.Timeouts.Update); ok {
