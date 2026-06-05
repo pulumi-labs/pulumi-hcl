@@ -723,8 +723,10 @@ func (ft *fileTransformer) emitFile(
 				if pclName, isOpt := resourceOptionHCLToPCL[attr.Name]; isOpt {
 					var tokens hclwrite.Tokens
 					switch attr.Name {
-					case "additional_secret_outputs", "hide_diffs", "replace_on_changes":
-						tokens = ft.transformPropertyPathList(attr.Expr)
+					case "additional_secret_outputs":
+						tokens = ft.transformPropertyPathList(attr.Expr, res.Properties)
+					case "hide_diffs", "replace_on_changes":
+						tokens = ft.transformPropertyPathList(attr.Expr, res.InputProperties)
 					case "for_each":
 						tokens = ft.transformForEachExpr(attr.Expr)
 					default:
@@ -755,8 +757,10 @@ func (ft *fileTransformer) emitFile(
 						}
 						var tokens hclwrite.Tokens
 						switch attr.Name {
-						case "additional_secret_outputs", "hide_diffs", "replace_on_changes":
-							tokens = ft.transformPropertyPathList(attr.Expr)
+						case "additional_secret_outputs":
+							tokens = ft.transformPropertyPathList(attr.Expr, res.Properties)
+						case "hide_diffs", "replace_on_changes":
+							tokens = ft.transformPropertyPathList(attr.Expr, res.InputProperties)
 						default:
 							tokens = ft.transformExpr(attr.Expr)
 						}
@@ -771,7 +775,7 @@ func (ft *fileTransformer) emitFile(
 						case "prevent_destroy":
 							opts = append(opts, optEntry{"protect", ft.transformExpr(attr.Expr)})
 						case "ignore_changes":
-							opts = append(opts, optEntry{"ignoreChanges", ft.transformPropertyPathList(attr.Expr)})
+							opts = append(opts, optEntry{"ignoreChanges", ft.transformPropertyPathList(attr.Expr, res.InputProperties)})
 						case "create_before_destroy":
 							sawCreateBeforeDestroy = true
 							// `create_before_destroy = true` matches Pulumi's default and
@@ -909,7 +913,7 @@ func (ft *fileTransformer) emitFile(
 					case "version":
 						opts = append(opts, optEntry{"version", ft.transformExpr(attr.Expr)})
 					case "additional_secret_outputs":
-						opts = append(opts, optEntry{"additionalSecretOutputs", ft.transformPropertyPathList(attr.Expr)})
+						opts = append(opts, optEntry{"additionalSecretOutputs", ft.transformPropertyPathList(attr.Expr, providerRes.Properties)})
 					}
 				}
 			}
@@ -2110,24 +2114,84 @@ func (ft *fileTransformer) unwrapSingletonTupleExpr(expr hclsyntax.Expression) h
 	return ft.transformExpr(expr)
 }
 
-// transformPropertyPathList converts a tuple of string literals (as used in HCL for
-// replace_on_changes, ignore_changes) to a tuple of identifiers (as used in PCL for
-// replaceOnChanges, ignoreChanges).
-func (ft *fileTransformer) transformPropertyPathList(expr hclsyntax.Expression) hclwrite.Tokens {
+// transformPropertyPathList converts a tuple of property paths (as used in HCL
+// for replace_on_changes, ignore_changes, etc.) to the PCL form, translating
+// every segment of each path from TF snake_case to its Pulumi property name
+// against props (the resource's input or output properties).
+func (ft *fileTransformer) transformPropertyPathList(expr hclsyntax.Expression, props []*schema.Property) hclwrite.Tokens {
 	tuple, ok := expr.(*hclsyntax.TupleConsExpr)
 	if !ok {
 		return ft.transformExpr(expr)
 	}
-	var elems []hclwrite.Tokens
+	elems := make([]hclwrite.Tokens, 0, len(tuple.Exprs))
 	for _, elem := range tuple.Exprs {
-		val, diags := elem.Value(nil)
-		if !diags.HasErrors() && val.Type() == cty.String {
-			elems = append(elems, hclwrite.TokensForIdentifier(val.AsString()))
-		} else {
-			elems = append(elems, ft.transformExpr(elem))
-		}
+		elems = append(elems, ft.transformPropertyPath(elem, props))
 	}
 	return hclwrite.TokensForTuple(elems)
+}
+
+// transformPropertyPath converts a single property-path element — a bare
+// traversal, or a legacy quoted string — to the Pulumi-cased traversal PCL
+// expects.
+func (ft *fileTransformer) transformPropertyPath(elem hclsyntax.Expression, props []*schema.Property) hclwrite.Tokens {
+	if val, diags := elem.Value(nil); !diags.HasErrors() && val.Type() == cty.String {
+		trav, tdiags := hclsyntax.ParseTraversalAbs([]byte(val.AsString()), "", hcl.Pos{})
+		if tdiags.HasErrors() {
+			return hclwrite.TokensForIdentifier(val.AsString())
+		}
+		return hclwrite.TokensForTraversal(schemaAwarePropertyPath(trav, props))
+	}
+	if st, ok := elem.(*hclsyntax.ScopeTraversalExpr); ok {
+		return hclwrite.TokensForTraversal(schemaAwarePropertyPath(st.Traversal, props))
+	}
+	return ft.transformExpr(elem)
+}
+
+// schemaAwarePropertyPath converts every attribute segment of a property-path
+// traversal from TF snake_case to its Pulumi property name, starting at the
+// first segment. Unlike schemaAwareTraversalAttrs, whose root is a resource
+// logical name, here the root is itself a property. Index segments are dynamic
+// keys and are left unchanged; matching a property unwraps any surrounding
+// list/map so the next attribute resolves against the element object.
+func schemaAwarePropertyPath(trav hcl.Traversal, props []*schema.Property) hcl.Traversal {
+	result := make(hcl.Traversal, len(trav))
+	copy(result, trav)
+	nextProps := props
+	for i := range result {
+		switch step := result[i].(type) {
+		case hcl.TraverseRoot:
+			name, matched := transform.PulumiCaseFromSnakeCase(step.Name, nextProps)
+			result[i] = hcl.TraverseRoot{Name: name, SrcRange: step.SrcRange}
+			nextProps = elementObjectProperties(matched)
+		case hcl.TraverseAttr:
+			name, matched := transform.PulumiCaseFromSnakeCase(step.Name, nextProps)
+			result[i] = hcl.TraverseAttr{Name: name, SrcRange: step.SrcRange}
+			nextProps = elementObjectProperties(matched)
+		}
+	}
+	return result
+}
+
+// elementObjectProperties returns the object properties reachable from a matched
+// property, unwrapping any list/map nesting, or nil when the property has no
+// named fields.
+func elementObjectProperties(p *schema.Property) []*schema.Property {
+	if p == nil {
+		return nil
+	}
+	t := codegen.UnwrapType(p.Type)
+	for {
+		switch tt := t.(type) {
+		case *schema.ArrayType:
+			t = codegen.UnwrapType(tt.ElementType)
+		case *schema.MapType:
+			t = codegen.UnwrapType(tt.ElementType)
+		case *schema.ObjectType:
+			return tt.Properties
+		default:
+			return nil
+		}
+	}
 }
 
 // isBoolLiteral reports whether expr is the literal boolean want.

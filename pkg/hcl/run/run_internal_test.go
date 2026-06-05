@@ -190,6 +190,7 @@ func TestTranslateAttrPathTraversal(t *testing.T) {
 		mapping   *bridge.BodyMapping
 		props     []*schema.Property
 		want      string
+		wantErr   string
 	}{
 		{
 			name:      "convention rename via schema props",
@@ -198,10 +199,16 @@ func TestTranslateAttrPathTraversal(t *testing.T) {
 			want:      "inputOne",
 		},
 		{
-			name:      "already-Pulumi name passes through",
+			name:      "camelCase name is rejected, requiring the TF name",
 			traversal: attr("inputOne"),
 			props:     props,
-			want:      "inputOne",
+			wantErr:   `unknown property "inputOne"`,
+		},
+		{
+			name:      "unknown name with a schema is rejected",
+			traversal: attr("not_a_property"),
+			props:     props,
+			wantErr:   `unknown property "not_a_property"`,
 		},
 		{
 			name:      "explicit rename via bridge mapping",
@@ -238,6 +245,10 @@ func TestTranslateAttrPathTraversal(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			glob, err := translateAttrPathTraversal(tt.traversal, tt.mapping, tt.props)
+			if tt.wantErr != "" {
+				require.ErrorContains(t, err, tt.wantErr)
+				return
+			}
 			require.NoError(t, err)
 			text, err := glob.MarshalText()
 			require.NoError(t, err)
@@ -274,7 +285,7 @@ func TestTranslateSecretOutputName(t *testing.T) {
 		wantErr   string
 	}{
 		{name: "snake_case translated via schema props", traversal: attr("input_one"), props: props, want: "inputOne"},
-		{name: "already-Pulumi name passes through", traversal: attr("inputOne"), props: props, want: "inputOne"},
+		{name: "camelCase name is rejected", traversal: attr("inputOne"), props: props, wantErr: `unknown property "inputOne"`},
 		{name: "explicit rename via bridge mapping", traversal: attr("weird_name"), mapping: mapping, want: "niceName"},
 		{name: "unknown name with no schema passes through", traversal: attr("input_one"), want: "input_one"},
 		{

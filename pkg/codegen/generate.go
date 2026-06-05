@@ -1613,15 +1613,30 @@ func extractPropertyNames(expr model.Expression) []string {
 }
 
 // genPropertyPathTraversalList generates an HCL list attribute for property
-// paths emitted as bare traversals in camelCase (e.g.,
-// hide_diffs = [replaceProp]), matching the form of ignore_changes. Used for
+// paths emitted as bare traversals in TF snake_case (e.g.,
+// hide_diffs = [replace_prop]), matching the form of ignore_changes. Used for
 // hide_diffs, replace_on_changes, and additional_secret_outputs.
 func (g *generator) genPropertyPathTraversalList(body *hclwrite.Body, attrName string, optsExpr model.Expression) {
 	names := extractPropertyNames(optsExpr)
 	if len(names) == 0 {
 		return
 	}
-	body.SetAttributeRaw(attrName, makeTraversalListTokens(names))
+	body.SetAttributeRaw(attrName, makeTraversalListTokens(snakeCasePropertyPaths(names)))
+}
+
+// snakeCasePropertyPaths converts Pulumi camelCase property paths to their TF
+// snake_case form, segment by segment, so emitted property-path options name
+// properties in the same case as the resource's snake_case attributes.
+func snakeCasePropertyPaths(paths []string) []string {
+	out := make([]string, len(paths))
+	for i, p := range paths {
+		segs := strings.Split(p, ".")
+		for j, s := range segs {
+			segs[j] = transform.SnakeCaseFromPulumiCase(s)
+		}
+		out[i] = strings.Join(segs, ".")
+	}
+	return out
 }
 
 // makeTraversalListTokens generates HCL tokens for a list of property-path
@@ -1726,8 +1741,9 @@ func createBeforeDestroyTokens(g *generator, opts *pcl.ResourceOptions, diags *h
 	}, tokens...)
 }
 
-// genReplaceOnChanges generates the replace_on_changes attribute, merging schema-based and option-based paths.
-// All paths are emitted as string literals in camelCase so the engine can match them against the diff.
+// genReplaceOnChanges generates the replace_on_changes attribute, merging
+// schema-based and option-based paths. Paths are emitted as bare traversals in
+// TF snake_case, matching the resource's snake_case attribute names.
 func (g *generator) genReplaceOnChanges(body *hclwrite.Body, schemaPaths []string, optsExpr model.Expression, diags *hcl.Diagnostics) {
 	optPaths := extractPropertyNames(optsExpr)
 	if len(schemaPaths) == 0 && len(optPaths) == 0 {
@@ -1750,7 +1766,7 @@ func (g *generator) genReplaceOnChanges(body *hclwrite.Body, schemaPaths []strin
 		}
 	}
 
-	body.SetAttributeRaw("replace_on_changes", makeTraversalListTokens(allPaths))
+	body.SetAttributeRaw("replace_on_changes", makeTraversalListTokens(snakeCasePropertyPaths(allPaths)))
 }
 
 func (g *generator) genConfigVariable(body *hclwrite.Body, cv *pcl.ConfigVariable) hcl.Diagnostics {

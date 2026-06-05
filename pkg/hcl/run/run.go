@@ -1224,7 +1224,7 @@ func (e *Engine) registerResourceInstanceInContext(
 		}
 	}
 
-	opts, err := e.buildResourceOptionsInContext(res, instance, evalCtx, parentURN, node.ModuleInfo, resourceMapping, resSchema.InputProperties)
+	opts, err := e.buildResourceOptionsInContext(res, instance, evalCtx, parentURN, node.ModuleInfo, resourceMapping, resSchema.InputProperties, resSchema.Properties)
 	if err != nil {
 		return err
 	}
@@ -1337,7 +1337,7 @@ func (e *Engine) buildResourceOptionsInContext(
 	res *ast.Resource, instance *graph.ExpandedResource,
 	evalCtx *eval.Context, parentURN urn.URN,
 	modInfo *graph.ModuleInfo, resourceMapping *bridge.BodyMapping,
-	inputProps []*schema.Property,
+	inputProps, outputProps []*schema.Property,
 ) (*ResourceOptions, error) {
 	opts := &ResourceOptions{}
 	opts.Parent = parentURN
@@ -1512,7 +1512,7 @@ func (e *Engine) buildResourceOptionsInContext(
 	hclCtx := evalCtx.HCLContext()
 
 	for _, t := range res.AdditionalSecretOutputs {
-		name, err := translateSecretOutputName(t, resourceMapping, inputProps)
+		name, err := translateSecretOutputName(t, resourceMapping, outputProps)
 		if err != nil {
 			return nil, err
 		}
@@ -1837,14 +1837,26 @@ func translateAttrPathTraversal(
 	for _, step := range traversal {
 		switch s := step.(type) {
 		case hcl.TraverseRoot:
-			segments = append(segments, property.NewSegment(resolver.next(s.Name)))
+			name, err := resolver.next(s.Name)
+			if err != nil {
+				return property.Glob{}, err
+			}
+			segments = append(segments, property.NewSegment(name))
 		case hcl.TraverseAttr:
-			segments = append(segments, property.NewSegment(resolver.next(s.Name)))
+			name, err := resolver.next(s.Name)
+			if err != nil {
+				return property.Glob{}, err
+			}
+			segments = append(segments, property.NewSegment(name))
 		case hcl.TraverseIndex:
-			// Index traversals use bracket notation without a leading dot.
+			// Index segments are dynamic map keys or list indices, not schema
+			// properties: they are emitted verbatim and not validated (the
+			// preceding attribute already advanced the resolver past the
+			// collection), matching OpenTofu, which accepts foo["bar"] without
+			// checking the key.
 			key := s.Key
 			if key.Type() == cty.String {
-				segments = append(segments, property.NewSegment(resolver.next(key.AsString())))
+				segments = append(segments, property.NewSegment(key.AsString()))
 			} else if key.Type() == cty.Number {
 				i64, acc := key.AsBigFloat().Int64()
 				if acc != big.Exact || i64 > math.MaxInt {
@@ -1881,7 +1893,7 @@ func translateSecretOutputName(
 		return "", fmt.Errorf("invalid additional_secret_outputs entry: expected a property name")
 	}
 	resolver := attrPathNameResolver{mapping: mapping, props: props}
-	return resolver.next(name), nil
+	return resolver.next(name)
 }
 
 // formatAttrTraversal renders an attribute-path traversal as a dotted/bracketed
@@ -1918,25 +1930,27 @@ type attrPathNameResolver struct {
 	props   []*schema.Property
 }
 
-// next translates one TF attribute-name segment and advances the resolver to
-// the nested schema. An unknown name (or a key into a plain map) is returned
-// unchanged with the resolver cleared, so trailing map keys pass through.
-func (r *attrPathNameResolver) next(tfName string) string {
+// next translates one TF (snake_case) attribute-name segment to its Pulumi name
+// and advances the resolver into the nested schema for the following segment.
+func (r *attrPathNameResolver) next(tfName string) (string, error) {
 	if fm := r.mapping.Lookup(tfName); fm != nil {
 		if fm.TFBlock {
 			r.mapping, r.props = fm.Nested, nil
 		} else {
 			r.mapping, r.props = nil, nil
 		}
-		return fm.PulumiName
+		return fm.PulumiName, nil
 	}
 	pulumiName, prop := transform.PulumiCaseFromSnakeCase(tfName, r.props)
-	if prop == nil {
-		r.mapping, r.props = nil, nil
-		return tfName
+	if prop != nil {
+		r.mapping, r.props = nil, objectProperties(prop.Type)
+		return pulumiName, nil
 	}
-	r.mapping, r.props = nil, objectProperties(prop.Type)
-	return pulumiName
+	if r.mapping != nil || len(r.props) > 0 {
+		return "", fmt.Errorf("unknown property %q", tfName)
+	}
+	r.mapping, r.props = nil, nil
+	return tfName, nil
 }
 
 // objectProperties returns the nested properties of an object-typed schema,
