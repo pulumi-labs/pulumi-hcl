@@ -2845,3 +2845,191 @@ module "child" {
 		second.PropertyDependencies)
 	assert.Equal(t, []string{urnOf(first)}, second.Dependencies)
 }
+
+// When both the root and a child module declare a default `provider "simple"`
+// config, a resource in the child binds to the child's own block, not the
+// inherited root default.
+func TestEngine_ProviderResolution_ChildModuleBlockWins(t *testing.T) {
+	t.Parallel()
+
+	tmpDir := t.TempDir()
+	childDir := tmpDir + "/modules/child"
+	require.NoError(t, os.MkdirAll(childDir, 0o755))
+
+	require.NoError(t, os.WriteFile(childDir+"/main.tf", []byte(`
+provider "simple" {
+  prefix = "child-prefix"
+}
+
+resource "simple_resource" "r" {
+  input = "p7"
+}
+`), 0o644))
+
+	require.NoError(t, os.WriteFile(tmpDir+"/main.tf", []byte(`
+provider "simple" {
+  prefix = "root-prefix"
+}
+
+module "child" {
+  source = "./modules/child"
+}
+`), 0o644))
+
+	p := parser.NewParser()
+	config, diags := p.ParseDirectory(tmpDir)
+	require.False(t, diags.HasErrors(), "parse error: %s", diags.Error())
+
+	mock := &testutil.MockResourceMonitor{}
+	engine := run.NewEngine(t.Context(), config, &run.EngineOptions{
+		ProjectName:     "test-project",
+		StackName:       "dev",
+		ResourceMonitor: mock,
+		WorkDir:         tmpDir,
+		RootDir:         tmpDir,
+
+		SchemaLoader: schemaloader.New(t, schema.PackageSpec{
+			Name: "simple",
+			Provider: schema.ResourceSpec{
+				InputProperties: map[string]schema.PropertySpec{
+					"prefix": {TypeSpec: schema.TypeSpec{Type: "string"}},
+				},
+			},
+			Resources: map[string]schema.ResourceSpec{
+				"simple:index:Resource": {
+					InputProperties: map[string]schema.PropertySpec{
+						"input": {TypeSpec: schema.TypeSpec{Type: "string"}},
+					},
+					ObjectTypeSpec: schema.ObjectTypeSpec{
+						Properties: map[string]schema.PropertySpec{
+							"input": {TypeSpec: schema.TypeSpec{Type: "string"}},
+						},
+					},
+				},
+			},
+		}),
+	})
+
+	require.NoError(t, engine.Run(t.Context()))
+
+	// Locate a registered provider block by its `prefix` config value.
+	findProvider := func(prefix string) (run.RegisterResourceRequest, bool) {
+		for _, r := range mock.RegisteredResources {
+			if r.Type != "pulumi:providers:simple" {
+				continue
+			}
+			if v, ok := r.Inputs.GetOk("prefix"); ok && v.IsString() && v.AsString() == prefix {
+				return r, true
+			}
+		}
+		return run.RegisterResourceRequest{}, false
+	}
+
+	// The child resource depends on the child's own block, so that block
+	// registers on its own (no AlwaysRegisterProviders).
+	childProvider, ok := findProvider("child-prefix")
+	require.True(t, ok, "child module's provider block should register")
+
+	// MockResourceMonitor mints URN urn:pulumi:test::project::<type>::<name>
+	// and ID <name>-id; a provider ref is "<urn>::<id>".
+	providerRef := func(r run.RegisterResourceRequest) string {
+		urn := "urn:pulumi:test::project::" + r.Type + "::" + r.Name
+		return urn + "::" + r.Name + "-id"
+	}
+
+	var childResource *run.RegisterResourceRequest
+	for i := range mock.RegisteredResources {
+		if mock.RegisteredResources[i].Type == "simple:index:Resource" {
+			childResource = &mock.RegisteredResources[i]
+			break
+		}
+	}
+	require.NotNil(t, childResource, "child resource should register")
+
+	assert.Equal(t, providerRef(childProvider), childResource.Provider,
+		"a resource in a child module with its own provider block must bind to that block")
+
+	// The root block is unused (the child binds to its own block), so it is not
+	// configured — TF only configures providers something actually uses.
+	_, rootRegistered := findProvider("root-prefix")
+	assert.False(t, rootRegistered, "the unused root provider block must not register")
+}
+
+// A resource in a child module with no provider block and no `providers = {}`
+// mapping inherits the root module's default provider config. The graph edge
+// also registers the otherwise-unused root block (no AlwaysRegisterProviders).
+func TestEngine_ProviderResolution_ChildInheritsRootDefault(t *testing.T) {
+	t.Parallel()
+
+	tmpDir := t.TempDir()
+	childDir := tmpDir + "/modules/child"
+	require.NoError(t, os.MkdirAll(childDir, 0o755))
+
+	require.NoError(t, os.WriteFile(childDir+"/main.tf", []byte(`
+resource "simple_resource" "r" {
+  input = "p2"
+}
+`), 0o644))
+
+	require.NoError(t, os.WriteFile(tmpDir+"/main.tf", []byte(`
+provider "simple" {
+  prefix = "root-prefix"
+}
+
+module "child" {
+  source = "./modules/child"
+}
+`), 0o644))
+
+	p := parser.NewParser()
+	config, diags := p.ParseDirectory(tmpDir)
+	require.False(t, diags.HasErrors(), "parse error: %s", diags.Error())
+
+	mock := &testutil.MockResourceMonitor{}
+	engine := run.NewEngine(t.Context(), config, &run.EngineOptions{
+		ProjectName:     "test-project",
+		StackName:       "dev",
+		ResourceMonitor: mock,
+		WorkDir:         tmpDir,
+		RootDir:         tmpDir,
+		SchemaLoader: schemaloader.New(t, schema.PackageSpec{
+			Name: "simple",
+			Provider: schema.ResourceSpec{
+				InputProperties: map[string]schema.PropertySpec{
+					"prefix": {TypeSpec: schema.TypeSpec{Type: "string"}},
+				},
+			},
+			Resources: map[string]schema.ResourceSpec{
+				"simple:index:Resource": {
+					InputProperties: map[string]schema.PropertySpec{
+						"input": {TypeSpec: schema.TypeSpec{Type: "string"}},
+					},
+					ObjectTypeSpec: schema.ObjectTypeSpec{
+						Properties: map[string]schema.PropertySpec{
+							"input": {TypeSpec: schema.TypeSpec{Type: "string"}},
+						},
+					},
+				},
+			},
+		}),
+	})
+
+	require.NoError(t, engine.Run(t.Context()))
+
+	var rootProvider, childResource *run.RegisterResourceRequest
+	for i := range mock.RegisteredResources {
+		switch mock.RegisteredResources[i].Type {
+		case "pulumi:providers:simple":
+			rootProvider = &mock.RegisteredResources[i]
+		case "simple:index:Resource":
+			childResource = &mock.RegisteredResources[i]
+		}
+	}
+	require.NotNil(t, rootProvider, "the root provider block should register via the inherited edge")
+	require.NotNil(t, childResource, "child resource should register")
+
+	rootRef := "urn:pulumi:test::project::" + rootProvider.Type + "::" + rootProvider.Name +
+		"::" + rootProvider.Name + "-id"
+	assert.Equal(t, rootRef, childResource.Provider,
+		"a child resource with no provider block must inherit the root default provider")
+}
