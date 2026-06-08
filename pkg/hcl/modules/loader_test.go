@@ -339,6 +339,53 @@ func TestLoadModule_HostQualifiedRegistrySource(t *testing.T) {
 	require.Contains(t, loaded.Config.Outputs, "ok")
 }
 
+func TestLoadModule_GitSubdirWithRef(t *testing.T) {
+	t.Parallel()
+
+	repo := initGitRepo(t, "modules/iam-policy/main.tf", `output "ok" { value = "v1" }`)
+	git(t, repo, "tag", "v1")
+	require.NoError(t, os.WriteFile(
+		filepath.Join(repo, "modules/iam-policy/main.tf"),
+		[]byte(`output "ok2" { value = "head" }`), 0o600))
+	git(t, repo, "commit", "-am", "rename output")
+
+	l := newTestLoader(t, "http://invalid.example")
+	source := "git::file://" + repo + "//modules/iam-policy?ref=v1"
+
+	loaded, err := l.LoadModule(source, "", t.TempDir())
+	require.NoError(t, err)
+	require.NotNil(t, loaded.Config)
+	require.Contains(t, loaded.Config.Outputs, "ok",
+		"ref=v1 should pin the checkout to the tagged commit")
+	require.NotContains(t, loaded.Config.Outputs, "ok2",
+		"HEAD's output must not appear when ref=v1 is requested")
+}
+
+// initGitRepo creates a git repository in a temp dir containing a single file
+// (relativePath → content), committed on the default branch.
+func initGitRepo(t *testing.T, relativePath, content string) string {
+	t.Helper()
+	repo := t.TempDir()
+	full := filepath.Join(repo, relativePath)
+	require.NoError(t, os.MkdirAll(filepath.Dir(full), 0o755))
+	require.NoError(t, os.WriteFile(full, []byte(content), 0o600))
+
+	git(t, repo, "init")
+	git(t, repo, "config", "user.email", "test@example.com")
+	git(t, repo, "config", "user.name", "test")
+	git(t, repo, "add", ".")
+	git(t, repo, "commit", "-m", "initial")
+	return repo
+}
+
+func git(t *testing.T, dir string, args ...string) {
+	t.Helper()
+	cmd := exec.CommandContext(t.Context(), "git", args...)
+	cmd.Dir = dir
+	out, err := cmd.CombinedOutput()
+	require.NoErrorf(t, err, "git %s: %s", strings.Join(args, " "), out)
+}
+
 // buildModuleTarGz packs `files` (name → content) into a gzipped tar archive
 // using the system `tar`. The returned bytes are the raw .tar.gz body that
 // PackageFetcher / go-getter can consume.
