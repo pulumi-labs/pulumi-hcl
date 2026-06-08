@@ -188,7 +188,7 @@ func evalBlockWithSchema(config hcl.Body, props []*schema.Property, mapping *bri
 		}
 		key := storageKey(name, prop)
 		attrExprs[key] = attr.Expr
-		resourceInputs[key] = conformCtyToType(out, ctyTypeFromType(prop.Type))
+		resourceInputs[key] = conformCtyToType(out, ctyTypeFromType(prop.Type, nil))
 	}
 
 	for name, blocks := range body.Blocks.ByType() {
@@ -1014,7 +1014,7 @@ func FunctionOutputToCty(pv property.Map, r *schema.Function, mapping *bridge.Bo
 		return propertyValueToCty(k, scalarPV, r.ReturnType, dryRun)
 	}
 	if dryRun {
-		return cty.UnknownVal(ctyTypeFromType(r.ReturnType)), nil
+		return cty.UnknownVal(ctyTypeFromType(r.ReturnType, mapping)), nil
 	}
 	return cty.Value{}, fmt.Errorf("invoke %q: provider returned empty scalar result", r.Token)
 }
@@ -1060,9 +1060,9 @@ func propertyObjectToCtyMap(path string, m property.Map, properties []*schema.Pr
 		v, ok := m.GetOk(p.Name)
 		if !ok {
 			if dryRun {
-				result[hclName] = cty.UnknownVal(ctyTypeFromType(p.Type))
+				result[hclName] = cty.UnknownVal(ctyTypeFromType(p.Type, nested))
 			} else {
-				result[hclName] = cty.NullVal(ctyTypeFromType(p.Type))
+				result[hclName] = cty.NullVal(ctyTypeFromType(p.Type, nested))
 			}
 			continue
 		}
@@ -1072,7 +1072,7 @@ func propertyObjectToCtyMap(path string, m property.Map, properties []*schema.Pr
 		// marshaling, losing the "unknown" signal. Since a required property should never
 		// legitimately be null, we safely treat null-during-preview as unknown.
 		if dryRun && v.IsNull() && p.IsRequired() {
-			result[hclName] = cty.UnknownVal(ctyTypeFromType(p.Type))
+			result[hclName] = cty.UnknownVal(ctyTypeFromType(p.Type, nested))
 			continue
 		}
 		var vPath string
@@ -1109,7 +1109,7 @@ func fieldIsSingularBlock(mapping *bridge.BodyMapping, pulumiName string) bool {
 }
 
 func convertToSchemaCtyType(path string, val cty.Value, typ schema.Type) (cty.Value, error) {
-	target := ctyTypeFromType(typ)
+	target := ctyTypeFromType(typ, nil)
 	if val.Type().Equals(target) {
 		return val, nil
 	}
@@ -1120,7 +1120,13 @@ func convertToSchemaCtyType(path string, val cty.Value, typ schema.Type) (cty.Va
 	return converted, nil
 }
 
-func ctyTypeFromType(typ schema.Type) cty.Type {
+// ctyTypeFromType converts a Pulumi schema type to its cty type. Nested
+// object/resource attributes are named via the bridge mapping's TF names so
+// that the type of an unknown or null nested block — e.g. aws_eks_cluster's
+// computed `identity[].oidc[]`, which the bridge renames to `oidcs` — still
+// type-checks against the TF-convention `identity[0].oidc[0]` traversal written
+// in HCL. A nil mapping falls back to the snake_case-of-Pulumi-name convention.
+func ctyTypeFromType(typ schema.Type, mapping *bridge.BodyMapping) cty.Type {
 	typ = codegen.UnwrapType(typ)
 
 	switch typ {
@@ -1140,49 +1146,32 @@ func ctyTypeFromType(typ schema.Type) cty.Type {
 
 	switch typ := typ.(type) {
 	case *schema.ArrayType:
-		et := ctyTypeFromType(typ.ElementType)
+		et := ctyTypeFromType(typ.ElementType, mapping)
 		if ctyTypeContainsDynamic(et) {
 			return cty.DynamicPseudoType
 		}
 		return cty.List(et)
 	case *schema.MapType:
-		et := ctyTypeFromType(typ.ElementType)
+		et := ctyTypeFromType(typ.ElementType, mapping)
 		if ctyTypeContainsDynamic(et) {
 			return cty.DynamicPseudoType
 		}
 		return cty.Map(et)
 	case *schema.EnumType:
-		return ctyTypeFromType(typ.ElementType)
+		return ctyTypeFromType(typ.ElementType, mapping)
 	case *schema.ObjectType:
-		attrs := make(map[string]cty.Type, len(typ.Properties))
-		var optional []string
-		for _, p := range typ.Properties {
-			key := snakeCaseFromCamelCase(p.Name)
-			if !p.IsRequired() {
-				optional = append(optional, key)
-			}
-			attrs[key] = ctyTypeFromType(p.Type)
-		}
-		return cty.ObjectWithOptionalAttrs(attrs, optional)
+		return ctyObjectType(typ.Properties, nil, mapping)
 	case *schema.ResourceType:
 		if typ.Resource == nil {
 			return cty.DynamicPseudoType
 		}
-		attrs := map[string]cty.Type{"__ref": eval.ResourceReferenceCapsuleType}
-		optional := []string{"__ref"}
-		for _, p := range typ.Resource.Properties {
-			key := snakeCaseFromCamelCase(p.Name)
-			if !p.IsRequired() {
-				optional = append(optional, key)
-			}
-			attrs[key] = ctyTypeFromType(p.Type)
-		}
-		return cty.ObjectWithOptionalAttrs(attrs, optional)
+		return ctyObjectType(typ.Resource.Properties,
+			map[string]cty.Type{"__ref": eval.ResourceReferenceCapsuleType}, mapping)
 	case *schema.InvalidType:
 		return cty.DynamicPseudoType
 	case *schema.TokenType:
 		if typ.UnderlyingType != nil {
-			return ctyTypeFromType(typ.UnderlyingType)
+			return ctyTypeFromType(typ.UnderlyingType, mapping)
 		}
 		return cty.DynamicPseudoType
 	case *schema.UnionType:
@@ -1192,7 +1181,7 @@ func ctyTypeFromType(typ schema.Type) cty.Type {
 		var common cty.Type
 		seen := false
 		consider := func(t schema.Type) bool {
-			ct := ctyTypeFromType(t)
+			ct := ctyTypeFromType(t, mapping)
 			if ct == cty.NilType {
 				return true
 			}
@@ -1218,6 +1207,29 @@ func ctyTypeFromType(typ schema.Type) cty.Type {
 	default:
 		return cty.NilType
 	}
+}
+
+// ctyObjectType builds an object type whose attributes are named by the
+// mapping's TF names (snake_case-of-Pulumi-name when mapping is nil). seed
+// pre-populates always-optional synthetic attributes (e.g. the
+// resource-reference `__ref`).
+func ctyObjectType(
+	properties []*schema.Property, seed map[string]cty.Type, mapping *bridge.BodyMapping,
+) cty.Type {
+	attrs := make(map[string]cty.Type, len(properties)+len(seed))
+	var optional []string
+	for k, v := range seed {
+		attrs[k] = v
+		optional = append(optional, k)
+	}
+	for _, p := range properties {
+		key := tfNameForPulumi(p.Name, mapping)
+		if !p.IsRequired() {
+			optional = append(optional, key)
+		}
+		attrs[key] = ctyTypeFromType(p.Type, nestedMappingFor(p.Name, mapping))
+	}
+	return cty.ObjectWithOptionalAttrs(attrs, optional)
 }
 
 // ctyTypeContainsDynamic reports whether the given cty type embeds
@@ -1342,7 +1354,7 @@ func propertyValueToCtyWithMapping(path string, v property.Value, typ schema.Typ
 	// Primitive types
 
 	case v.IsComputed():
-		return cty.UnknownVal(ctyTypeFromType(typ)), nil
+		return cty.UnknownVal(ctyTypeFromType(typ, mapping)), nil
 	case v.IsString():
 		return cty.StringVal(v.AsString()), nil
 	case v.IsBool():
@@ -1350,7 +1362,7 @@ func propertyValueToCtyWithMapping(path string, v property.Value, typ schema.Typ
 	case v.IsNumber():
 		return cty.NumberFloatVal(v.AsNumber()), nil
 	case v.IsNull():
-		return cty.NullVal(ctyTypeFromType(typ)), nil
+		return cty.NullVal(ctyTypeFromType(typ, mapping)), nil
 
 	// Collection types
 
@@ -1401,7 +1413,7 @@ func propertyValueToCtyWithMapping(path string, v property.Value, typ schema.Typ
 			m[k] = convertedV
 		}
 		if len(m) == 0 {
-			return cty.MapValEmpty(ctyTypeFromType(elemType)), nil
+			return cty.MapValEmpty(ctyTypeFromType(elemType, mapping)), nil
 		}
 
 		// When elements have differing cty types — e.g. a Map<Any|JSON> whose
@@ -1438,7 +1450,7 @@ func propertyValueToCtyWithMapping(path string, v property.Value, typ schema.Typ
 			arr[i] = convertedV
 		}
 		if len(arr) == 0 {
-			return cty.ListValEmpty(ctyTypeFromType(elemType)), nil
+			return cty.ListValEmpty(ctyTypeFromType(elemType, mapping)), nil
 		}
 		// Same story as the map case: if elements ended up with different cty
 		// types (dynamic schema element), try to unify into a common type
@@ -1449,7 +1461,7 @@ func propertyValueToCtyWithMapping(path string, v property.Value, typ schema.Typ
 		ref := v.AsResourceReference()
 		resType, ok := typ.(*schema.ResourceType)
 		if !ok || resType.Resource == nil {
-			return cty.NullVal(ctyTypeFromType(typ)), nil
+			return cty.NullVal(ctyTypeFromType(typ, mapping)), nil
 		}
 		result, err := propertyObjectToCtyMap(path, property.Map{}, resType.Resource.Properties, mapping, dryRun)
 		if err != nil {
