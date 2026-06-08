@@ -20,9 +20,13 @@ import (
 	"fmt"
 	"path/filepath"
 
+	"github.com/pulumi-labs/pulumi-hcl/pkg/hcl/ast"
+	"github.com/pulumi-labs/pulumi-hcl/pkg/hcl/bridge"
 	"github.com/pulumi-labs/pulumi-hcl/pkg/hcl/modules"
+	"github.com/pulumi-labs/pulumi-hcl/pkg/hcl/packages"
 	"github.com/pulumi-labs/pulumi-hcl/pkg/hcl/run"
 	"github.com/pulumi-labs/pulumi-hcl/pkg/hcl/schema"
+	"github.com/pulumi/pulumi/pkg/v3/codegen/convert"
 	pulumiSchema "github.com/pulumi/pulumi/pkg/v3/codegen/schema"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/resource"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/resource/plugin"
@@ -52,6 +56,15 @@ type HCLProvider struct {
 	// pkgLoader loads provider schemas.
 	pkgLoader pulumiSchema.ReferenceLoader
 
+	// providerInfoSource resolves bridge mappings for the TF providers a
+	// component uses internally. The gRPC target that serves the schema loader
+	// also serves the mapper, so it is built from the same address.
+	providerInfoSource bridge.ProviderInfoSource
+
+	// packages maps a parameterized package alias to its descriptor, read from
+	// the module's own sdks folder.
+	packages map[string]workspace.PackageDescriptor
+
 	// host is the host callback client.
 	host pulumirpc.EngineClient
 
@@ -73,18 +86,48 @@ func NewHCLProvider(ctx context.Context, modulePath, addr string) (*HCLProvider,
 		return nil, fmt.Errorf("unable to acquire schema loader: %w", err)
 	}
 
+	// The schema-loader target also serves the mapper service, so a component
+	// can resolve the bridge mappings for the TF providers it uses internally.
+	mapperClient, err := convert.NewMapperClient(addr)
+	if err != nil {
+		return nil, fmt.Errorf("unable to acquire mapper: %w", err)
+	}
+	providerInfoSource := bridge.NewCache(bridge.NewMapperSource(mapperClient))
+
+	// A component's own bridged providers carry parameterization descriptors in
+	// its sdks folder, mirroring how `Run` loads them for a root program.
+	paramDescriptors, err := readParameterizationInfos(modulePath)
+	if err != nil {
+		return nil, fmt.Errorf("reading parameterization: %w", err)
+	}
+	schemaLoader := pulumiSchema.ReferenceLoader(pkgLoader)
+	if len(paramDescriptors) > 0 {
+		schemaLoader = packages.NewParameterizationAwareLoader(pkgLoader, paramDescriptors)
+	}
+
 	// Load the module to generate schema
 	loaded, err := loader.LoadModule(modulePath, "", ".")
 	if err != nil {
 		return nil, fmt.Errorf("loading module: %w", err)
 	}
 
-	if loaded.Config.Terraform == nil || loaded.Config.Terraform.Component == nil {
-		return nil, fmt.Errorf("module at %q is missing a terraform { component { ... } } block", modulePath)
+	// The component block is optional. The module segment defaults to "index"
+	// and the component name defaults to the package name, so a module with no
+	// component block yields the single-segment token "<package>:index:<package>"
+	// and is referenced in HCL by the bare package name (e.g. `resource "foo"`),
+	// matching single-segment TF types like `external`.
+	componentModule := "index"
+	var explicitComponentName string
+	var pkg *ast.PackageBlock
+	if tf := loaded.Config.Terraform; tf != nil {
+		if comp := tf.Component; comp != nil {
+			explicitComponentName = comp.Name
+			if comp.Module != "" {
+				componentModule = comp.Module
+			}
+		}
+		pkg = tf.Package
 	}
-
-	comp := loaded.Config.Terraform.Component
-	pkg := loaded.Config.Terraform.Package
 
 	pkgName := filepath.Base(modulePath)
 	pkgVersion := "0.0.0-dev"
@@ -97,18 +140,25 @@ func NewHCLProvider(ctx context.Context, modulePath, addr string) (*HCLProvider,
 		}
 	}
 
-	moduleSchema, err := schema.GenerateModuleSchema(loaded.Config, pkgName, pkgVersion, comp.Name, comp.Module)
+	componentName := pkgName
+	if explicitComponentName != "" {
+		componentName = explicitComponentName
+	}
+
+	moduleSchema, err := schema.GenerateModuleSchema(loaded.Config, pkgName, pkgVersion, componentName, componentModule)
 	if err != nil {
 		return nil, fmt.Errorf("generating schema: %w", err)
 	}
 
 	return &HCLProvider{
-		modulePath:   modulePath,
-		moduleLoader: loader,
-		pkgLoader:    pulumiSchema.NewCachedLoader(pkgLoader),
-		name:         pkgName,
-		version:      pkgVersion,
-		schema:       moduleSchema,
+		modulePath:         modulePath,
+		moduleLoader:       loader,
+		pkgLoader:          pulumiSchema.NewCachedLoader(schemaLoader),
+		providerInfoSource: providerInfoSource,
+		packages:           paramDescriptors,
+		name:               pkgName,
+		version:            pkgVersion,
+		schema:             moduleSchema,
 	}, nil
 }
 
@@ -253,15 +303,17 @@ func (p *HCLProvider) Construct(ctx context.Context, req *pulumirpc.ConstructReq
 
 	// Create engine options
 	engineOpts := &run.EngineOptions{
-		ProjectName:     req.Project,
-		StackName:       req.Stack,
-		Organization:    req.Organization,
-		DryRun:          req.DryRun,
-		WorkDir:         p.modulePath,
-		RootDir:         p.modulePath,
-		Config:          config,
-		ResourceMonitor: resmon,
-		SchemaLoader:    p.pkgLoader,
+		ProjectName:        req.Project,
+		StackName:          req.Stack,
+		Organization:       req.Organization,
+		DryRun:             req.DryRun,
+		WorkDir:            p.modulePath,
+		RootDir:            p.modulePath,
+		Config:             config,
+		ResourceMonitor:    resmon,
+		SchemaLoader:       p.pkgLoader,
+		ProviderInfoSource: p.providerInfoSource,
+		Packages:           p.packages,
 	}
 
 	// Create and run the engine
@@ -426,6 +478,9 @@ func (m *constructResourceMonitor) RegisterResource(
 		Protect:             &req.Protect,
 		DeleteBeforeReplace: req.DeleteBeforeReplace,
 		IgnoreChanges:       ignoreChanges,
+		PackageRef:          string(req.PackageRef),
+		Version:             req.Version,
+		PluginDownloadURL:   req.PluginDownloadURL,
 		AcceptSecrets:       true,
 		AcceptResources:     true,
 	})
@@ -565,7 +620,7 @@ func (m *constructResourceMonitor) RegisterPackage(
 	ctx context.Context,
 	pkg workspace.PackageDescriptor,
 ) (run.PackageRef, error) {
-	return "", nil
+	return registerPackage(ctx, m.client, pkg)
 }
 
 // RegisterResourceHook is not yet supported in Construct modules: the callback

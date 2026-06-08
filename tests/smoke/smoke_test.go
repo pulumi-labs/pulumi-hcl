@@ -65,9 +65,6 @@ func TestSmoke(t *testing.T) {
 // terraform-provider parameterization end-to-end: `pulumi install`
 // materializes a local SDK, then `pulumi up` deploys against it. Hits the
 // public Pulumi + TF registries.
-//
-// Requires a pulumi CLI that includes pulumi/pulumi#23330 (package-spec install
-// support).
 func TestSmokeRandom(t *testing.T) {
 	t.Parallel()
 
@@ -124,6 +121,68 @@ func TestSmokeRandom(t *testing.T) {
 	runPulumi("destroy", "--yes", "--skip-preview")
 }
 
+// TestSmokeModule proves a plain HCL module (no component or package block) can
+// be served as a Multi-Language Component: `pulumi package add ../randommodule`
+// generates a local SDK, the consuming HCL program instantiates the component by
+// its bare package name (passing `length` in, reading `pet` out), the component's
+// `random_pet` (a bridged hashicorp/random resource) is created via Construct,
+// and the root output is unknown at preview and a three-word pet name after up.
+func TestSmokeModule(t *testing.T) {
+	t.Parallel()
+
+	pulumiBin := "pulumi"
+
+	rootDir := copyTree(t, filepath.Join("testdata", "module"))
+	projectDir := filepath.Join(rootDir, "program")
+
+	stateDir := filepath.Join(rootDir, "state")
+	require.NoError(t, os.MkdirAll(stateDir, 0o755))
+
+	env := append(os.Environ(),
+		"PATH="+langBinDir+string(os.PathListSeparator)+os.Getenv("PATH"),
+		"PULUMI_BACKEND_URL=file://"+stateDir,
+		"PULUMI_CONFIG_PASSPHRASE=smoke",
+	)
+
+	runPulumi := func(t *testing.T, args ...string) []byte {
+		t.Helper()
+		var stdout bytes.Buffer
+		cmd := exec.CommandContext(t.Context(), pulumiBin, args...)
+		cmd.Dir = projectDir
+		cmd.Env = env
+		cmd.Stdout = io.MultiWriter(&stdout, os.Stderr)
+		cmd.Stderr = os.Stderr
+		require.NoErrorf(t, cmd.Run(), "pulumi %v failed", args)
+		return stdout.Bytes()
+	}
+
+	runPulumi(t, "stack", "init", "smoke-module")
+	t.Cleanup(func() {
+		cmd := exec.Command(pulumiBin, "stack", "rm", "--yes", "smoke-module")
+		cmd.Dir = projectDir
+		cmd.Env = env
+		_ = cmd.Run()
+	})
+
+	runPulumi(t, "package", "add", "../randommodule")
+
+	// The pet name flows from a not-yet-created `random_pet` inside the
+	// component, so the root output is unknown during preview.
+	require.Regexp(t, regexp.MustCompile(`pet: \[unknown\]`), string(runPulumi(t, "preview")),
+		"pet output should be unknown at preview")
+
+	runPulumi(t, "up", "--yes", "--skip-preview")
+
+	// `length = 3` produces "<word>-<word>-<word>" (lowercase letters only).
+	outputs := parseStackOutput(t, runPulumi(t, "stack", "output", "--json"))
+	pet, ok := outputs["pet"].(string)
+	require.True(t, ok, "pet output must be a string, got %T (%v)", outputs["pet"], outputs["pet"])
+	require.Regexp(t, regexp.MustCompile(`^[a-z]+-[a-z]+-[a-z]+$`), pet,
+		"pet output should match '<word>-<word>-<word>'")
+
+	runPulumi(t, "destroy", "--yes", "--skip-preview")
+}
+
 // parseStackOutput parses `pulumi stack output --json` (a JSON object).
 func parseStackOutput(t *testing.T, raw []byte) map[string]any {
 	t.Helper()
@@ -143,6 +202,30 @@ func copyDir(t *testing.T, src string) string {
 		require.False(t, e.IsDir(), "nested dirs not supported")
 		copyFile(t, filepath.Join(src, e.Name()), filepath.Join(dst, e.Name()))
 	}
+	return dst
+}
+
+// copyTree recursively copies src into a fresh t.TempDir() and returns the new
+// path. Used for fixtures with subdirectories (e.g. a component module alongside
+// its consuming program) that `pulumi package add`/`install` mutate.
+func copyTree(t *testing.T, src string) string {
+	t.Helper()
+	dst := t.TempDir()
+	require.NoError(t, filepath.WalkDir(src, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		rel, err := filepath.Rel(src, path)
+		if err != nil {
+			return err
+		}
+		target := filepath.Join(dst, rel)
+		if d.IsDir() {
+			return os.MkdirAll(target, 0o755)
+		}
+		copyFile(t, path, target)
+		return nil
+	}))
 	return dst
 }
 

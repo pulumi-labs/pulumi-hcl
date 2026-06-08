@@ -6,11 +6,11 @@ that can be consumed from any Pulumi language (TypeScript, Python, Go, C#, Java,
 ## Declaring a Component Module
 
 An HCL module becomes an MLC when it has a `PulumiPlugin.yaml` containing
-`runtime: hcl`. The `component` and `package` blocks inside the `pulumi {}`
+`runtime: hcl`. The `component` and `package` blocks inside the `terraform {}`
 block declare the component's identity and package metadata:
 
 ```hcl
-pulumi {
+terraform {
   component {
     name = "VpcNetwork"
   }
@@ -44,12 +44,20 @@ output "vpc_id" {
 
 ### `component` block
 
-Declares this module as a component resource.
+Declares this module as a component resource. The block is optional; a module
+served as a component without one uses the defaults below.
 
-| Field    | Required | Default   | Description                              |
-|----------|----------|-----------|------------------------------------------|
-| `name`   | Yes      | —         | Component name (must be a valid Pulumi name) |
-| `module` | No       | `"index"` | Module segment of the resource token     |
+| Field    | Required | Default        | Description                                  |
+|----------|----------|----------------|----------------------------------------------|
+| `name`   | No       | Package name   | Component name (must be a valid Pulumi name) |
+| `module` | No       | `"index"`      | Module segment of the resource token         |
+
+When the component name equals the package name (the default), the resource
+token collapses to a single segment and is referenced in HCL by the bare
+package name — e.g. a package `randommodule` is consumed as
+`resource "randommodule" "x" { ... }`, the same shape as a single-segment
+Terraform type like `external`. This requires the package name to be a valid
+Pulumi name (no hyphens), since it also becomes the token's member segment.
 
 ### `package` block
 
@@ -76,7 +84,7 @@ For the example above, the token would be `my-networking:index:VpcNetwork`.
   hyphens, underscores; must start with a letter or underscore).
 - `package.name` must be a valid Pulumi name when specified.
 - `package.version` must be a valid [semver](https://semver.org/) string when specified.
-- Only one `component` block and one `package` block are allowed per `pulumi` block.
+- Only one `component` block and one `package` block are allowed per `terraform` block.
 - `component` and `package` blocks are only valid in MLC modules. Using them in a
   regular Pulumi program (invoked via `pulumi up`) produces an error.
 
