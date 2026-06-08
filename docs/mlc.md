@@ -6,11 +6,11 @@ that can be consumed from any Pulumi language (TypeScript, Python, Go, C#, Java,
 ## Declaring a Component Module
 
 An HCL module becomes an MLC when it has a `PulumiPlugin.yaml` containing
-`runtime: hcl`. The `component` and `package` blocks inside the `pulumi {}`
+`runtime: hcl`. The `component` and `package` blocks inside the `terraform {}`
 block declare the component's identity and package metadata:
 
 ```hcl
-pulumi {
+terraform {
   component {
     name = "VpcNetwork"
   }
@@ -76,7 +76,7 @@ For the example above, the token would be `my-networking:index:VpcNetwork`.
   hyphens, underscores; must start with a letter or underscore).
 - `package.name` must be a valid Pulumi name when specified.
 - `package.version` must be a valid [semver](https://semver.org/) string when specified.
-- Only one `component` block and one `package` block are allowed per `pulumi` block.
+- Only one `component` block and one `package` block are allowed per `terraform` block.
 - `component` and `package` blocks are only valid in MLC modules. Using them in a
   regular Pulumi program (invoked via `pulumi up`) produces an error.
 

@@ -1073,6 +1073,19 @@ func (r *resourceMonitorAdapter) RegisterPackage(
 	ctx context.Context,
 	pkg workspace.PackageDescriptor,
 ) (run.PackageRef, error) {
+	return registerPackage(ctx, r.monitorClient, pkg)
+}
+
+// registerPackage registers a parameterized package with the engine via the
+// resource monitor and returns the ref that routes subsequent resource
+// registrations to the matching provider instance. Shared by the Run-path
+// monitor and the Construct-path monitor so a component's bridged providers
+// register the same way a root program's do.
+func registerPackage(
+	ctx context.Context,
+	client pulumirpc.ResourceMonitorClient,
+	pkg workspace.PackageDescriptor,
+) (run.PackageRef, error) {
 	versionStr := ""
 	if pkg.Version != nil {
 		versionStr = pkg.Version.String()
@@ -1088,7 +1101,7 @@ func (r *resourceMonitorAdapter) RegisterPackage(
 			Value:   pkg.Parameterization.Value,
 		}
 	}
-	resp, err := r.monitorClient.RegisterPackage(ctx, req)
+	resp, err := client.RegisterPackage(ctx, req)
 	if err != nil {
 		return "", fmt.Errorf("registering package %s: %w", pkg.Name, err)
 	}
