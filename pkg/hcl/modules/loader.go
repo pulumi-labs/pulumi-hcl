@@ -131,7 +131,7 @@ func (l *Loader) LoadModule(source, versionConstraint, callerDir string) (*Loade
 // resolveSource resolves a module source to an absolute path on disk.
 // versionConstraint applies only to registry sources.
 func (l *Loader) resolveSource(source, versionConstraint, callerDir string) (string, error) {
-	source, subdir := splitSourceSubdir(source)
+	source, subdir := getmodules.SplitPackageSubdir(source)
 
 	var resolvedPath string
 	var err error
@@ -159,23 +159,6 @@ func (l *Loader) resolveSource(source, versionConstraint, callerDir string) (str
 		}
 	}
 	return resolvedPath, nil
-}
-
-// splitSourceSubdir splits a source into the base source and optional subdir.
-// e.g., "git::https://example.com/repo.git//modules/foo" -> ("git::https://example.com/repo.git", "modules/foo")
-func splitSourceSubdir(source string) (string, string) {
-	idx := strings.Index(source, "//")
-	if idx == -1 {
-		return source, ""
-	}
-	if idx > 0 && source[idx-1] == ':' {
-		nextIdx := strings.Index(source[idx+2:], "//")
-		if nextIdx == -1 {
-			return source, ""
-		}
-		idx = idx + 2 + nextIdx
-	}
-	return source[:idx], source[idx+2:]
 }
 
 func (l *Loader) resolveLocalSource(source string, callerDir string) (string, error) {
