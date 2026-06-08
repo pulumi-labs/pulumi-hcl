@@ -32,7 +32,16 @@ var rootSchema = &hcl.BodySchema{
 		{Type: "module", LabelNames: []string{"name"}},
 		{Type: "moved"},
 		{Type: "import"},
+		{Type: "check", LabelNames: []string{"name"}},
 		{Type: "call", LabelNames: []string{"resource", "method"}},
+	},
+}
+
+// checkSchema defines the structure of a top-level check block.
+var checkSchema = &hcl.BodySchema{
+	Blocks: []hcl.BlockHeaderSchema{
+		{Type: "assert"},
+		{Type: "data", LabelNames: []string{"type", "name"}},
 	},
 }
 

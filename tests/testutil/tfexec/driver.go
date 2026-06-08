@@ -114,15 +114,19 @@ func (d *Driver) Dir() string { return d.cwd }
 // files (terraform.tfstate*, .terraform*) are kept across applies.
 func (d *Driver) Apply(t *testing.T, input map[string]string, config map[string]string) map[string]string {
 	t.Helper()
-	outputs, err := d.TryApply(t, input, config)
+	outputs, _, err := d.TryApply(t, input, config)
 	require.NoError(t, err)
 	return outputs
 }
 
 // TryApply is like Apply but returns the error from `tofu apply` instead of
-// failing the test. The outputs map is still parsed from terraform.tfstate when
-// the file exists, so callers can inspect post-failure state.
-func (d *Driver) TryApply(t *testing.T, input map[string]string, config map[string]string) (map[string]string, error) {
+// failing the test. It also returns the apply's combined output so callers can
+// assert on diagnostics (e.g. check-block warnings). The outputs map is still
+// parsed from terraform.tfstate when the file exists, so callers can inspect
+// post-failure state.
+func (d *Driver) TryApply(
+	t *testing.T, input map[string]string, config map[string]string,
+) (map[string]string, string, error) {
 	t.Helper()
 
 	require.NoError(t, removeProgramFiles(d.cwd))
@@ -134,17 +138,18 @@ func (d *Driver) TryApply(t *testing.T, input map[string]string, config map[stri
 	}
 
 	if _, err := d.execTf(t, "init", "-backend=false"); err != nil {
-		return nil, err
+		return nil, "", err
 	}
 
 	applyArgs := append(make([]string, 0, 4+2*len(config)), "apply", "-auto-approve", "-refresh=false")
 	for k, v := range config {
 		applyArgs = append(applyArgs, "-var", k+"="+v)
 	}
-	if _, err := d.execTf(t, applyArgs...); err != nil {
-		return d.tryParseOutputs(), err
+	out, err := d.execTf(t, applyArgs...)
+	if err != nil {
+		return d.tryParseOutputs(), out, err
 	}
-	return d.parseOutputs(t), nil
+	return d.parseOutputs(t), out, nil
 }
 
 // TF refuses to destroy a resource block whose destroy-time provisioner is

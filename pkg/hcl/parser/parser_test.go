@@ -613,6 +613,126 @@ resource "aws_instance" "app" {
 	}
 }
 
+func TestParseCheckBlock(t *testing.T) {
+	t.Parallel()
+	src := []byte(`
+check "health" {
+  assert {
+    condition     = 1 == 1
+    error_message = "first"
+  }
+
+  assert {
+    condition     = 2 == 2
+    error_message = "second"
+  }
+}
+`)
+	p := NewParser()
+	config, diags := p.ParseSource("test.tf", src)
+	require.False(t, diags.HasErrors(), diags.Error())
+
+	check, ok := config.Checks["health"]
+	require.True(t, ok, "expected check %q", "health")
+	assert.Equal(t, "health", check.Name)
+	require.Len(t, check.Asserts, 2)
+	for _, a := range check.Asserts {
+		assert.NotNil(t, a.Condition)
+		assert.NotNil(t, a.ErrorMessage)
+	}
+}
+
+func TestParseCheckBlockMissingAssert(t *testing.T) {
+	t.Parallel()
+	src := []byte(`
+check "empty" {
+}
+`)
+	p := NewParser()
+	config, diags := p.ParseSource("test.tf", src)
+	require.True(t, diags.HasErrors())
+	assert.Equal(t, "Missing assert block", diags[0].Summary)
+	_, ok := config.Checks["empty"]
+	assert.False(t, ok, "a check with no assert block must not be recorded")
+}
+
+func TestParseCheckBlockDuplicate(t *testing.T) {
+	t.Parallel()
+	src := []byte(`
+check "dup" {
+  assert {
+    condition     = true
+    error_message = "a"
+  }
+}
+
+check "dup" {
+  assert {
+    condition     = true
+    error_message = "b"
+  }
+}
+`)
+	p := NewParser()
+	_, diags := p.ParseSource("test.tf", src)
+	require.True(t, diags.HasErrors())
+	assert.Equal(t, "Duplicate check", diags[0].Summary)
+}
+
+func TestParseCheckBlockScopedDataSource(t *testing.T) {
+	t.Parallel()
+	src := []byte(`
+check "with_data" {
+  data "http" "example" {
+    url = "https://example.com"
+  }
+
+  assert {
+    condition     = data.http.example.status_code == 200
+    error_message = "a"
+  }
+}
+`)
+	p := NewParser()
+	config, diags := p.ParseSource("test.tf", src)
+	require.False(t, diags.HasErrors(), diags.Error())
+
+	check, ok := config.Checks["with_data"]
+	require.True(t, ok, "expected check %q", "with_data")
+	require.NotNil(t, check.DataResource)
+	assert.Equal(t, "http", check.DataResource.Type)
+	assert.Equal(t, "example", check.DataResource.Name)
+	assert.True(t, check.DataResource.IsDataSource)
+
+	// A check's scoped data source must not leak into the global data sources.
+	_, leaked := config.DataSources["http.example"]
+	assert.False(t, leaked, "scoped data source must not be registered globally")
+}
+
+func TestParseCheckBlockMultipleDataSources(t *testing.T) {
+	t.Parallel()
+	src := []byte(`
+check "two_data" {
+  data "http" "a" {
+    url = "https://example.com"
+  }
+
+  data "http" "b" {
+    url = "https://example.org"
+  }
+
+  assert {
+    condition     = data.http.a.status_code == 200
+    error_message = "a"
+  }
+}
+`)
+	p := NewParser()
+	_, diags := p.ParseSource("test.tf", src)
+	require.True(t, diags.HasErrors())
+	assert.Equal(t, "Multiple data resource blocks", diags[0].Summary)
+}
+
 func TestParseProviderCallReserved(t *testing.T) {
 	t.Parallel()
 	src := []byte(`

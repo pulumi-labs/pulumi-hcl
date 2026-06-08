@@ -76,6 +76,9 @@ type Provider struct {
 type Result struct {
 	Outputs   map[string]string
 	Resources []apitype.ResourceV3
+	// Output is the combined stdout/stderr of the `pulumi up`, used by tests
+	// that assert on user-visible diagnostics (e.g. check-block warnings).
+	Output string
 }
 
 // Driver wraps a long-lived pulumitest project so callers can run multiple
@@ -177,6 +180,7 @@ func (d *Driver) Apply(t *testing.T, programFiles map[string]string) Result {
 	return Result{
 		Outputs:   outputs,
 		Resources: deployment.Resources,
+		Output:    upResult.StdOut + "\n" + upResult.StdErr,
 	}
 }
 
@@ -219,6 +223,7 @@ func (d *Driver) TryApply(t *testing.T, programFiles map[string]string) (Result,
 	return Result{
 		Outputs:   outputs,
 		Resources: deployment.Resources,
+		Output:    upResult.StdOut + "\n" + upResult.StdErr + "\n" + cap.Logs(),
 	}, upErr
 }
 

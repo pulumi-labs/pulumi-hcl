@@ -57,6 +57,9 @@ type Config struct {
 	// Imports contains import blocks for importing existing resources.
 	Imports []*Import
 
+	// Checks maps check name to its top-level check block.
+	Checks map[string]*Check
+
 	// Files contains the parsed HCL files.
 	Files map[string]*hcl.File
 
@@ -75,6 +78,7 @@ func NewConfig() *Config {
 		Outputs:     make(map[string]*Output),
 		Modules:     make(map[string]*Module),
 		Calls:       make(map[string]*Call),
+		Checks:      make(map[string]*Check),
 		Files:       make(map[string]*hcl.File),
 	}
 }

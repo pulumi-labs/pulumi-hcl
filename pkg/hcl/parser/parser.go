@@ -114,6 +114,8 @@ func (p *Parser) parseBlock(config *ast.Config, block *hcl.Block) hcl.Diagnostic
 		return p.parseMovedBlock(config, block)
 	case "import":
 		return p.parseImportBlock(config, block)
+	case "check":
+		return p.parseCheckBlock(config, block)
 	case "call":
 		return p.parseCallBlock(config, block)
 	default:
@@ -598,10 +600,9 @@ func (p *Parser) parseLocalsBlock(config *ast.Config, block *hcl.Block) hcl.Diag
 	return diags
 }
 
-// parseResourceBlock parses a resource or data block.
+// parseResourceBlock parses a resource or data block and records it in the
+// config's Resources or DataSources map.
 func (p *Parser) parseResourceBlock(config *ast.Config, block *hcl.Block, isDataSource bool) hcl.Diagnostics {
-	var diags hcl.Diagnostics
-
 	resourceType := block.Labels[0]
 	name := block.Labels[1]
 	key := ast.ResourceKey(resourceType, name)
@@ -614,14 +615,27 @@ func (p *Parser) parseResourceBlock(config *ast.Config, block *hcl.Block, isData
 	}
 
 	if _, exists := targetMap[key]; exists {
-		diags = append(diags, &hcl.Diagnostic{
+		return hcl.Diagnostics{{
 			Severity: hcl.DiagError,
 			Summary:  fmt.Sprintf("Duplicate %s", blockType),
 			Detail:   fmt.Sprintf("A %s %q %q was already declared.", blockType, resourceType, name),
 			Subject:  &block.DefRange,
-		})
-		return diags
+		}}
 	}
+
+	resource, diags := p.decodeResourceBlock(block, isDataSource)
+	targetMap[key] = resource
+	return diags
+}
+
+// decodeResourceBlock decodes a resource or data block body into a Resource
+// without recording it in the config, so callers that scope the block
+// elsewhere (e.g. a check's data source) can reuse the same decoding.
+func (p *Parser) decodeResourceBlock(block *hcl.Block, isDataSource bool) (*ast.Resource, hcl.Diagnostics) {
+	var diags hcl.Diagnostics
+
+	resourceType := block.Labels[0]
+	name := block.Labels[1]
 
 	content, remain, contentDiags := block.Body.PartialContent(resourceSchema)
 	diags = append(diags, contentDiags...)
@@ -701,8 +715,7 @@ func (p *Parser) parseResourceBlock(config *ast.Config, block *hcl.Block, isData
 		}
 	}
 
-	targetMap[key] = resource
-	return diags
+	return resource, diags
 }
 
 // parsePulumiResourceOptions parses a resource or data block's nested
@@ -1080,6 +1093,71 @@ func (p *Parser) parseOutputBlock(config *ast.Config, block *hcl.Block) hcl.Diag
 	}
 
 	config.Outputs[name] = output
+	return diags
+}
+
+// parseCheckBlock parses a top-level check block. Each assert block reuses the
+// condition/error_message schema shared with preconditions. A check may declare
+// at most one scoped data source, which is decoded onto the check and read, at
+// evaluation time, into a context visible only to the check's assertions.
+func (p *Parser) parseCheckBlock(config *ast.Config, block *hcl.Block) hcl.Diagnostics {
+	var diags hcl.Diagnostics
+
+	name := block.Labels[0]
+	if _, exists := config.Checks[name]; exists {
+		diags = append(diags, &hcl.Diagnostic{
+			Severity: hcl.DiagError,
+			Summary:  "Duplicate check",
+			Detail:   fmt.Sprintf("A check named %q was already declared.", name),
+			Subject:  &block.DefRange,
+		})
+		return diags
+	}
+
+	content, contentDiags := block.Body.Content(checkSchema)
+	diags = append(diags, contentDiags...)
+
+	check := &ast.Check{
+		Name:      name,
+		DeclRange: block.DefRange,
+	}
+
+	for _, subBlock := range content.Blocks {
+		switch subBlock.Type {
+		case "assert":
+			rule, ruleDiags := p.parseCheckRule(subBlock)
+			diags = append(diags, ruleDiags...)
+			if rule != nil {
+				check.Asserts = append(check.Asserts, rule)
+			}
+		case "data":
+			if check.DataResource != nil {
+				diags = append(diags, &hcl.Diagnostic{
+					Severity: hcl.DiagError,
+					Summary:  "Multiple data resource blocks",
+					Detail: fmt.Sprintf("This check block already has a data resource defined at %s.",
+						check.DataResource.DeclRange),
+					Subject: &subBlock.DefRange,
+				})
+				continue
+			}
+			ds, dsDiags := p.decodeResourceBlock(subBlock, true)
+			diags = append(diags, dsDiags...)
+			check.DataResource = ds
+		}
+	}
+
+	if len(check.Asserts) == 0 {
+		diags = append(diags, &hcl.Diagnostic{
+			Severity: hcl.DiagError,
+			Summary:  "Missing assert block",
+			Detail:   "A check block must contain at least one assert block.",
+			Subject:  &block.DefRange,
+		})
+		return diags
+	}
+
+	config.Checks[name] = check
 	return diags
 }
 

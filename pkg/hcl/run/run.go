@@ -82,6 +82,9 @@ type ResourceMonitor interface {
 	// RegisterResourceHook registers a named callback. Must be called before any
 	// resource registration that binds the hook by name via Hooks.
 	RegisterResourceHook(ctx context.Context, name string, callback ResourceHookFunction, opts ResourceHookOptions) error
+
+	// LogWarning emits a non-fatal warning diagnostic to the engine.
+	LogWarning(ctx context.Context, message string) error
 }
 
 // ResourceHookFunction is the engine-invoked hook callback. A non-nil return
@@ -491,6 +494,11 @@ func (e *Engine) Run(ctx context.Context) error {
 	nodeErrs := slices.Collect(e.failedNodes.Values())
 	if len(nodeErrs) > 0 {
 		return errors.Join(nodeErrs...)
+	}
+
+	// Evaluate check blocks after the program has exited.
+	if err := e.evaluateChecks(ctx); err != nil {
+		return err
 	}
 
 	// Process outputs (collect them into stackOutputs)
@@ -3317,6 +3325,90 @@ func evaluatePrecondition(rule *ast.CheckRule, hclCtx *hcl.EvalContext, index in
 		msg = s
 	}
 	return fmt.Errorf("precondition for %s: %s", resourceName, msg)
+}
+
+// evaluateChecks evaluates every check block after all resources have settled.
+// Both scoped-data-source errors and failed assertions emit warnings and
+// processing continues, matching Terraform: check blocks are the only custom
+// condition that does not block the operation.
+func (e *Engine) evaluateChecks(ctx context.Context) error {
+	contract.Assertf(e.resmon != nil, "e.resmon cannot be nil")
+	names := slices.Collect(maps.Keys(e.config.Checks))
+	slices.Sort(names)
+	var errs []error
+	for _, name := range names {
+		errs = append(errs, e.evaluateCheck(ctx, name, e.config.Checks[name]))
+	}
+	return errors.Join(errs...)
+}
+
+// evaluateCheck evaluates one check block. Its scoped data source is read into a
+// cloned context so it is visible only to this check's assertions and cannot
+// collide with a top-level data source of the same address.
+func (e *Engine) evaluateCheck(ctx context.Context, name string, check *ast.Check) error {
+	evalCtx := e.evaluator.Context()
+	var errs []error
+	if ds := check.DataResource; ds != nil {
+		evalCtx = evalCtx.Clone()
+		if err := e.readScopedDataSource(ctx, ds, evalCtx); err != nil {
+			// A scoped data source error is masked as a warning, matching TF.
+			errs = append(errs, e.warnf(ctx, "check %q data %q.%q: %s", name, ds.Type, ds.Name, err))
+		}
+	}
+	evaluator := eval.NewEvaluator(evalCtx)
+	for _, assert := range check.Asserts {
+		if msg := evaluateCheckAssert(evaluator, assert); msg != "" {
+			errs = append(errs, e.warnf(ctx, "check %q assertion failed: %s", name, msg))
+		}
+	}
+	return errors.Join(errs...)
+}
+
+// readScopedDataSource reads a check's scoped data source into evalCtx, making
+// it available as data.<type>.<name> within that context only.
+func (e *Engine) readScopedDataSource(ctx context.Context, ds *ast.Resource, evalCtx *eval.Context) error {
+	node := &graph.Node{
+		Key:      "data." + ast.ResourceKey(ds.Type, ds.Name),
+		Type:     graph.NodeTypeDataSource,
+		Resource: ds,
+	}
+	return e.processDataSourceInContext(ctx, node, ds, evalCtx)
+}
+
+// warnf emits a best-effort warning diagnostic. A transport failure emitting it
+// must not turn a non-blocking check into a failed operation.
+func (e *Engine) warnf(ctx context.Context, format string, args ...any) error {
+	return e.resmon.LogWarning(ctx, fmt.Sprintf(format, args...))
+}
+
+// evaluateCheckAssert evaluates a single check assertion. It returns the
+// assertion's error message when the condition is known and false (or its
+// condition cannot be evaluated, which Terraform masks as a warning), and ""
+// when the assertion holds or its condition is not yet known.
+func evaluateCheckAssert(evaluator *eval.Evaluator, rule *ast.CheckRule) string {
+	condVal, diags := evaluator.EvaluateExpression(rule.Condition)
+	if diags.HasErrors() {
+		return fmt.Sprintf("could not evaluate condition: %s", diags.Error())
+	}
+	condVal, _ = condVal.Unmark()
+	if !condVal.IsKnown() {
+		return ""
+	}
+	ok, err := conditionResultToBool(condVal)
+	if err != nil {
+		return err.Error()
+	}
+	if ok {
+		return ""
+	}
+	msgVal, msgDiags := evaluator.EvaluateExpression(rule.ErrorMessage)
+	if msgDiags.HasErrors() {
+		return "assertion failed (could not evaluate error message)"
+	}
+	if msg := ctyAsString(msgVal); msg != "" {
+		return msg
+	}
+	return "assertion failed"
 }
 
 // checkPulumiVersion checks if the Pulumi CLI version satisfies the required version range.

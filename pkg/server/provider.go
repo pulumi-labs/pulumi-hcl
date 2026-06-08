@@ -218,6 +218,7 @@ func (p *HCLProvider) Construct(ctx context.Context, req *pulumirpc.ConstructReq
 	// Create resource monitor adapter
 	resmon := &constructResourceMonitor{
 		client:                  monitor,
+		engine:                  p.host,
 		ctx:                     ctx,
 		parentURN:               req.Parent,
 		componentType:           req.Type,
@@ -311,6 +312,7 @@ func (p *HCLProvider) GetMapping(ctx context.Context, req *pulumirpc.GetMappingR
 // actual component resource registration expected by the Pulumi engine.
 type constructResourceMonitor struct {
 	client          pulumirpc.ResourceMonitorClient
+	engine          pulumirpc.EngineClient
 	ctx             context.Context
 	parentURN       string
 	componentType   string
@@ -573,6 +575,18 @@ func (m *constructResourceMonitor) RegisterResourceHook(
 	ctx context.Context, name string, callback run.ResourceHookFunction, opts run.ResourceHookOptions,
 ) error {
 	return fmt.Errorf("resource hooks are not supported within component constructions")
+}
+
+// LogWarning emits a non-fatal warning diagnostic to the engine.
+func (m *constructResourceMonitor) LogWarning(ctx context.Context, message string) error {
+	if m.engine == nil {
+		return nil
+	}
+	_, err := m.engine.Log(ctx, &pulumirpc.LogRequest{
+		Severity: pulumirpc.LogSeverity_WARNING,
+		Message:  message,
+	})
+	return err
 }
 
 // buildStateDependencies builds the state dependencies map from outputs.
