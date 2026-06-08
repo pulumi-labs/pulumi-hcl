@@ -1,10 +1,4 @@
 terraform {
-  component {
-    name = "RandomPet"
-  }
-  package {
-    name = "random-module"
-  }
   required_providers {
     random = {
       source  = "hashicorp/random"

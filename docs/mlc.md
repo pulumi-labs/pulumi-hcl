@@ -44,12 +44,20 @@ output "vpc_id" {
 
 ### `component` block
 
-Declares this module as a component resource.
+Declares this module as a component resource. The block is optional; a module
+served as a component without one uses the defaults below.
 
-| Field    | Required | Default   | Description                              |
-|----------|----------|-----------|------------------------------------------|
-| `name`   | Yes      | —         | Component name (must be a valid Pulumi name) |
-| `module` | No       | `"index"` | Module segment of the resource token     |
+| Field    | Required | Default        | Description                                  |
+|----------|----------|----------------|----------------------------------------------|
+| `name`   | No       | Package name   | Component name (must be a valid Pulumi name) |
+| `module` | No       | `"index"`      | Module segment of the resource token         |
+
+When the component name equals the package name (the default), the resource
+token collapses to a single segment and is referenced in HCL by the bare
+package name — e.g. a package `randommodule` is consumed as
+`resource "randommodule" "x" { ... }`, the same shape as a single-segment
+Terraform type like `external`. This requires the package name to be a valid
+Pulumi name (no hyphens), since it also becomes the token's member segment.
 
 ### `package` block
 

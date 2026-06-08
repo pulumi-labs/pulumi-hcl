@@ -121,12 +121,12 @@ func TestSmokeRandom(t *testing.T) {
 	runPulumi("destroy", "--yes", "--skip-preview")
 }
 
-// TestSmokeModule proves an HCL module declaring a `component {}` block can be
-// served as a Multi-Language Component: `pulumi package add ../random-module`
-// generates a local SDK, the consuming HCL program instantiates the component
-// (passing `length` in, reading `pet` out), the component's `random_pet` (a
-// bridged hashicorp/random resource) is created via Construct, and the root
-// output is unknown at preview and a three-word pet name after up.
+// TestSmokeModule proves a plain HCL module (no component or package block) can
+// be served as a Multi-Language Component: `pulumi package add ../randommodule`
+// generates a local SDK, the consuming HCL program instantiates the component by
+// its bare package name (passing `length` in, reading `pet` out), the component's
+// `random_pet` (a bridged hashicorp/random resource) is created via Construct,
+// and the root output is unknown at preview and a three-word pet name after up.
 func TestSmokeModule(t *testing.T) {
 	t.Parallel()
 
@@ -164,7 +164,7 @@ func TestSmokeModule(t *testing.T) {
 		_ = cmd.Run()
 	})
 
-	runPulumi(t, "package", "add", "../random-module")
+	runPulumi(t, "package", "add", "../randommodule")
 
 	// The pet name flows from a not-yet-created `random_pet` inside the
 	// component, so the root output is unknown during preview.

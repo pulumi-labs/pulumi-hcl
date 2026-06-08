@@ -20,6 +20,7 @@ import (
 	"fmt"
 	"path/filepath"
 
+	"github.com/pulumi-labs/pulumi-hcl/pkg/hcl/ast"
 	"github.com/pulumi-labs/pulumi-hcl/pkg/hcl/bridge"
 	"github.com/pulumi-labs/pulumi-hcl/pkg/hcl/modules"
 	"github.com/pulumi-labs/pulumi-hcl/pkg/hcl/packages"
@@ -110,12 +111,23 @@ func NewHCLProvider(ctx context.Context, modulePath, addr string) (*HCLProvider,
 		return nil, fmt.Errorf("loading module: %w", err)
 	}
 
-	if loaded.Config.Terraform == nil || loaded.Config.Terraform.Component == nil {
-		return nil, fmt.Errorf("module at %q is missing a terraform { component { ... } } block", modulePath)
+	// The component block is optional. The module segment defaults to "index"
+	// and the component name defaults to the package name, so a module with no
+	// component block yields the single-segment token "<package>:index:<package>"
+	// and is referenced in HCL by the bare package name (e.g. `resource "foo"`),
+	// matching single-segment TF types like `external`.
+	componentModule := "index"
+	var explicitComponentName string
+	var pkg *ast.PackageBlock
+	if tf := loaded.Config.Terraform; tf != nil {
+		if comp := tf.Component; comp != nil {
+			explicitComponentName = comp.Name
+			if comp.Module != "" {
+				componentModule = comp.Module
+			}
+		}
+		pkg = tf.Package
 	}
-
-	comp := loaded.Config.Terraform.Component
-	pkg := loaded.Config.Terraform.Package
 
 	pkgName := filepath.Base(modulePath)
 	pkgVersion := "0.0.0-dev"
@@ -128,7 +140,12 @@ func NewHCLProvider(ctx context.Context, modulePath, addr string) (*HCLProvider,
 		}
 	}
 
-	moduleSchema, err := schema.GenerateModuleSchema(loaded.Config, pkgName, pkgVersion, comp.Name, comp.Module)
+	componentName := pkgName
+	if explicitComponentName != "" {
+		componentName = explicitComponentName
+	}
+
+	moduleSchema, err := schema.GenerateModuleSchema(loaded.Config, pkgName, pkgVersion, componentName, componentModule)
 	if err != nil {
 		return nil, fmt.Errorf("generating schema: %w", err)
 	}

@@ -1,7 +1,7 @@
-resource "random-module_random_pet" "pet" {
+resource "randommodule" "pet" {
   length = 3
 }
 
 output "pet" {
-  value = random-module_random_pet.pet.pet
+  value = randommodule.pet.pet
 }
