@@ -368,8 +368,9 @@ func BuildFromConfig(config *ast.Config, moduleLoader ModuleLoader, workDir stri
 	}
 
 	// Inline module contents into the graph for fine-grained dependency tracking.
+	rootScope := &moduleScope{config: config}
 	for name, module := range config.Modules {
-		if err := g.inlineModule(name, module, modulepath.Root(), moduleLoader, workDir); err != nil {
+		if err := g.inlineModule(name, module, modulepath.Root(), moduleLoader, workDir, rootScope); err != nil {
 			return nil, fmt.Errorf("inlining module %s: %w", name, err)
 		}
 	}
@@ -412,6 +413,36 @@ func (g *Graph) defaultProviderDeps(resource *ast.Resource, config *ast.Config, 
 	}
 	_, idx := g.newNode(prefix + pkgName)
 	return []pdag.Node{idx}
+}
+
+// moduleScope is an ancestor module's node-key prefix and config, linked toward
+// the root via parent. Scopes are immutable once built and shared by reference.
+type moduleScope struct {
+	prefix string
+	config *ast.Config
+	parent *moduleScope
+}
+
+// inheritedProviderDeps returns an edge to the nearest ancestor module's
+// un-aliased `provider "<pkg>" {}` block, for an in-module resource/data source
+// with no `provider`, no own-module block, and no pass-through. parent is the
+// enclosing module's scope; the walk runs from there toward the root. The edge
+// forces that block to register and orders it before the resource.
+func (g *Graph) inheritedProviderDeps(resource *ast.Resource, parent *moduleScope) []pdag.Node {
+	if resource.Provider != nil {
+		return nil
+	}
+	pkgName := packageNameFromResourceType(resource.Type)
+	if pkgName == "" {
+		return nil
+	}
+	for s := parent; s != nil; s = s.parent {
+		if _, ok := s.config.Providers[pkgName]; ok {
+			_, idx := g.newNode(s.prefix + pkgName)
+			return []pdag.Node{idx}
+		}
+	}
+	return nil
 }
 
 // passThroughProviderDeps returns an edge from an in-module resource to the
@@ -811,7 +842,7 @@ func rangeLess(a, b hcl.Range) bool {
 // rooted at parentPath.
 func (g *Graph) inlineModule(
 	name string, mod *ast.Module, parentPath modulepath.Path,
-	moduleLoader ModuleLoader, workDir string,
+	moduleLoader ModuleLoader, workDir string, parent *moduleScope,
 ) error {
 	loaded, err := moduleLoader.LoadModule(mod.Source, mod.Version, workDir)
 	if err != nil {
@@ -926,8 +957,13 @@ func (g *Graph) inlineModule(
 	for key, resource := range loaded.Config.Resources {
 		deps := g.resourceDeps(resource, prefix)
 		deps = append(deps, initIdx)
-		deps = append(deps, g.defaultProviderDeps(resource, loaded.Config, prefix)...)
-		deps = append(deps, g.passThroughProviderDeps(resource, mod, parentPrefix)...)
+		ownDeps := g.defaultProviderDeps(resource, loaded.Config, prefix)
+		passDeps := g.passThroughProviderDeps(resource, mod, parentPrefix)
+		deps = append(deps, ownDeps...)
+		deps = append(deps, passDeps...)
+		if len(ownDeps) == 0 && len(passDeps) == 0 {
+			deps = append(deps, g.inheritedProviderDeps(resource, parent)...)
+		}
 		if err := g.AddNode(&Node{
 			Key:        prefix + key,
 			Type:       NodeTypeResource,
@@ -942,8 +978,13 @@ func (g *Graph) inlineModule(
 	for key, ds := range loaded.Config.DataSources {
 		deps := g.resourceDeps(ds, prefix)
 		deps = append(deps, initIdx)
-		deps = append(deps, g.defaultProviderDeps(ds, loaded.Config, prefix)...)
-		deps = append(deps, g.passThroughProviderDeps(ds, mod, parentPrefix)...)
+		ownDeps := g.defaultProviderDeps(ds, loaded.Config, prefix)
+		passDeps := g.passThroughProviderDeps(ds, mod, parentPrefix)
+		deps = append(deps, ownDeps...)
+		deps = append(deps, passDeps...)
+		if len(ownDeps) == 0 && len(passDeps) == 0 {
+			deps = append(deps, g.inheritedProviderDeps(ds, parent)...)
+		}
 		if err := g.AddNode(&Node{
 			Key:        prefix + "data." + key,
 			Type:       NodeTypeDataSource,
@@ -991,8 +1032,9 @@ func (g *Graph) inlineModule(
 	}
 
 	// Nested modules
+	scope := &moduleScope{prefix: prefix, config: loaded.Config, parent: parent}
 	for nestedName, nestedMod := range loaded.Config.Modules {
-		if err := g.inlineModule(nestedName, nestedMod, path, moduleLoader, loaded.SourcePath); err != nil {
+		if err := g.inlineModule(nestedName, nestedMod, path, moduleLoader, loaded.SourcePath, scope); err != nil {
 			return fmt.Errorf("inlining nested module %s: %w", nestedName, err)
 		}
 	}

@@ -857,6 +857,25 @@ func (e *Engine) resolvePassThroughProvider(modInfo *graph.ModuleInfo, localKey 
 	return ref
 }
 
+// inheritedDefaultProvider walks up the module tree from modInfo, returning the
+// nearest ancestor's registered un-aliased default provider config for pkg
+// (URN::ID), or "" if none. The graph adds a matching edge so that block is
+// registered before this resolves.
+func (e *Engine) inheritedDefaultProvider(modInfo *graph.ModuleInfo, pkg string) string {
+	for path := modInfo.Path; ; {
+		parent, _, ok := path.Parent()
+		if !ok {
+			return ""
+		}
+		if outputs, ok := e.resourceOutputs.Get(parent.PrefixString() + pkg); ok {
+			if ref, err := providerRefFromCty(outputs); err == nil {
+				return ref
+			}
+		}
+		path = parent
+	}
+}
+
 // parentEvalContext returns the eval.Context of the enclosing module
 // instance (or the root context when modInfo's parent is root).
 func (e *Engine) parentEvalContext(modInfo *graph.ModuleInfo) *eval.Context {
@@ -1426,8 +1445,9 @@ func (e *Engine) buildResourceOptionsInContext(
 	} else if modInfo != nil {
 		// Implicit default in a module: try a pass-through entry, then
 		// the in-module `provider "<pkg>" {}` block (registered earlier
-		// at key resPrefix+pkg in resourceOutputs). If neither exists,
-		// fall through to Pulumi's engine default.
+		// at key resPrefix+pkg in resourceOutputs), then an inherited
+		// ancestor default. If none exist, fall through to Pulumi's
+		// engine default.
 		pkg := packageNameFromResourceType(res.Type)
 		if ref := e.resolvePassThroughProvider(modInfo, pkg); ref != "" {
 			opts.Provider = ref
@@ -1435,6 +1455,8 @@ func (e *Engine) buildResourceOptionsInContext(
 			if ref, err := providerRefFromCty(outputs); err == nil {
 				opts.Provider = ref
 			}
+		} else if ref := e.inheritedDefaultProvider(modInfo, pkg); ref != "" {
+			opts.Provider = ref
 		}
 	} else {
 		if ref, ok := e.defaultProviders.Get(packageNameFromResourceType(res.Type)); ok {
@@ -2260,6 +2282,8 @@ func (e *Engine) invokeDataSourceOnce(
 			if ref, err := providerRefFromCty(outputs); err == nil {
 				invokeReq.Provider = ref
 			}
+		} else if ref := e.inheritedDefaultProvider(node.ModuleInfo, pkg); ref != "" {
+			invokeReq.Provider = ref
 		}
 	} else {
 		if ref, ok := e.defaultProviders.Get(packageNameFromResourceType(ds.Type)); ok {
