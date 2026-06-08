@@ -1334,6 +1334,15 @@ func (r *resourceMonitorAdapter) CheckPulumiVersion(ctx context.Context, version
 	return err
 }
 
+// LogWarning emits a non-fatal warning diagnostic to the engine.
+func (r *resourceMonitorAdapter) LogWarning(ctx context.Context, message string) error {
+	_, err := r.engineClient.Log(ctx, &pulumirpc.LogRequest{
+		Severity: pulumirpc.LogSeverity_WARNING,
+		Message:  message,
+	})
+	return err
+}
+
 // Call invokes a method on a resource.
 func (r *resourceMonitorAdapter) Call(
 	ctx context.Context,

@@ -22,7 +22,8 @@ import (
 	"testing"
 )
 
-func (d *Driver) execTf(t *testing.T, args ...string) ([]byte, error) {
+// execTf runs a tofu subcommand and returns its combined stdout+stderr.
+func (d *Driver) execTf(t *testing.T, args ...string) (string, error) {
 	t.Helper()
 	cmd := exec.Command(getTFCommand(), args...) //nolint:gosec // args are test-controlled
 	var stdout, stderr bytes.Buffer
@@ -43,5 +44,5 @@ func (d *Driver) execTf(t *testing.T, args ...string) ([]byte, error) {
 			cmd.String(), stdout.String(), stderr.String())
 		err = fmt.Errorf("%w: %s", err, stderr.String())
 	}
-	return stdout.Bytes(), err
+	return stdout.String() + stderr.String(), err
 }

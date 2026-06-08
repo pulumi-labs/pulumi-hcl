@@ -30,6 +30,7 @@ type MockResourceMonitor struct {
 	mu                  sync.Mutex
 	RegisteredResources []run.RegisterResourceRequest
 	InvokedFunctions    []run.InvokeRequest
+	Warnings            []string
 	StackOutputs        property.Map
 	stackURN            urn.URN
 	hooks               map[string]registeredHook
@@ -152,6 +153,14 @@ func (m *MockResourceMonitor) Call(ctx context.Context, req run.CallRequest) (*r
 }
 
 func (m *MockResourceMonitor) CheckPulumiVersion(ctx context.Context, versionRange string) error {
+	return nil
+}
+
+// LogWarning records emitted warning diagnostics for assertion in tests.
+func (m *MockResourceMonitor) LogWarning(ctx context.Context, message string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.Warnings = append(m.Warnings, message)
 	return nil
 }
 

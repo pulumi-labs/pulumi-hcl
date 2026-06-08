@@ -89,6 +89,11 @@ type Stage struct {
 	// ExpectErr, if non-empty, requires both runtimes to fail with an error
 	// containing this substring.
 	ExpectErr string
+	// AssertOutput, if set, runs against each runtime's combined operation
+	// output (so both are held to the same user-visible diagnostics, e.g. a
+	// check-block warning's error_message). Called once per runtime. Only
+	// invoked for a successful StageApply.
+	AssertOutput func(t *testing.T, output string)
 }
 
 // RunCase resolves testdata/cases/<caseName>/ relative to the calling test
@@ -133,6 +138,7 @@ func runCaseStages(t *testing.T, c Case) {
 		wg.Add(2)
 
 		var tfOut map[string]string
+		var tfText string
 		var tfErr error
 		var pulRes pulexec.Result
 		var pulErr error
@@ -144,7 +150,7 @@ func runCaseStages(t *testing.T, c Case) {
 			case StageDestroy:
 				tfErr = tfDriver.Destroy(t, stage.Files, c.Config)
 			default:
-				tfOut, tfErr = tfDriver.TryApply(t, stage.Files, c.Config)
+				tfOut, tfText, tfErr = tfDriver.TryApply(t, stage.Files, c.Config)
 			}
 		}()
 		go func() {
@@ -184,6 +190,10 @@ func runCaseStages(t *testing.T, c Case) {
 		require.NoErrorf(t, pulErr, "stage %d: %s failed unexpectedly", i, pulLabel)
 
 		if stage.Mode == StageApply {
+			if stage.AssertOutput != nil {
+				stage.AssertOutput(t, tfText)
+				stage.AssertOutput(t, pulRes.Output)
+			}
 			lastOK = pulRes
 			lastOKTfOutputs = tfOut
 		}
