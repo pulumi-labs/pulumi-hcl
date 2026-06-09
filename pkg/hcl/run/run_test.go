@@ -1187,6 +1187,50 @@ variable "instance_type" {
 	}
 }
 
+func TestEngine_VariableValidationFail_SensitiveErrorMessage(t *testing.T) {
+	t.Parallel()
+
+	src := []byte(`
+variable "password" {
+  type      = string
+  sensitive = true
+  default   = "abc"
+
+  validation {
+    condition     = length(var.password) >= 8
+    error_message = "Password is too short: '${var.password}'"
+  }
+}
+`)
+
+	p := parser.NewParser()
+	config, diags := p.ParseSource("test.hcl", src)
+	if diags.HasErrors() {
+		t.Fatalf("parse error: %s", diags.Error())
+	}
+
+	engine := run.NewEngine(t.Context(), config, &run.EngineOptions{
+		ProjectName:     "test-project",
+		StackName:       "dev",
+		ResourceMonitor: &testutil.MockResourceMonitor{},
+		WorkDir:         t.TempDir(),
+		RootDir:         t.TempDir(),
+		SchemaLoader:    schemaloader.New(t, schema.PackageSpec{Name: "aws"}),
+	})
+
+	err := engine.Run(t.Context())
+
+	if err == nil {
+		t.Fatal("expected error for validation failure")
+	}
+	if !strings.Contains(err.Error(), "Error message refers to sensitive values") {
+		t.Errorf("expected sensitive-reference error, got: %v", err)
+	}
+	if strings.Contains(err.Error(), "abc") {
+		t.Errorf("sensitive value leaked into error: %v", err)
+	}
+}
+
 func TestEngine_Precondition(t *testing.T) {
 	t.Parallel()
 
@@ -1245,6 +1289,49 @@ resource "test_resource" "res" {
 		require.False(t, hasRegisteredResource(mock, "test:index:Resource"),
 			"resource must not be registered when precondition fails")
 	})
+}
+
+func TestEngine_Precondition_SensitiveErrorMessage(t *testing.T) {
+	t.Parallel()
+
+	src := []byte(`
+variable "secret" {
+  type      = string
+  sensitive = true
+  default   = "abc"
+}
+
+resource "test_resource" "res" {
+  field = "x"
+
+  lifecycle {
+    precondition {
+      condition     = length(var.secret) >= 8
+      error_message = "Secret too short: '${var.secret}'"
+    }
+  }
+}
+`)
+
+	p := parser.NewParser()
+	config, diags := p.ParseSource("test.hcl", src)
+	require.False(t, diags.HasErrors(), diags.Error())
+
+	mock := &testutil.MockResourceMonitor{}
+	engine := run.NewEngine(t.Context(), config, &run.EngineOptions{
+		ProjectName:     "test-project",
+		StackName:       "dev",
+		ResourceMonitor: mock,
+		WorkDir:         t.TempDir(),
+		RootDir:         t.TempDir(),
+		SchemaLoader:    schemaloader.New(t, testSchema()),
+	})
+
+	err := engine.Run(t.Context())
+	require.ErrorContains(t, err, "Error message refers to sensitive values")
+	require.NotContains(t, err.Error(), "abc", "sensitive value leaked into precondition error")
+	require.False(t, hasRegisteredResource(mock, "test:index:Resource"),
+		"resource must not be registered when precondition fails")
 }
 
 func TestEngine_Precondition_ReferencesOtherResource(t *testing.T) {
