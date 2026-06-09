@@ -1261,7 +1261,7 @@ func unifyOrObject(m map[string]cty.Value) cty.Value {
 		types = append(types, v.Type())
 	}
 	unified, conversions := convert.UnifyUnsafe(types)
-	if unified == cty.NilType {
+	if unified == cty.NilType || isLossyPrimitiveUnification(unified, types) {
 		return cty.ObjectVal(m)
 	}
 	out := make(map[string]cty.Value, len(m))
@@ -1288,6 +1288,24 @@ func unifyOrObject(m map[string]cty.Value) cty.Value {
 	return cty.MapVal(out)
 }
 
+// isLossyPrimitiveUnification reports whether unifying to unified would coerce
+// elements between primitive types — e.g. collapsing [number, string, bool] to
+// string. Such a unification erases each element's own type, so a heterogeneous
+// value must stay a tuple/object rather than be flattened to a list/map. A
+// structural unification (e.g. object -> map) keeps a non-primitive target and
+// is left to proceed.
+func isLossyPrimitiveUnification(unified cty.Type, types []cty.Type) bool {
+	if !unified.IsPrimitiveType() {
+		return false
+	}
+	for _, t := range types {
+		if !t.Equals(unified) {
+			return true
+		}
+	}
+	return false
+}
+
 // blockListValue assembles the elements of a repeated TF block (each an object)
 // into a cty list when they share a type, or a tuple when an optional attribute
 // is set in some blocks and omitted in others so their object types differ.
@@ -1312,7 +1330,7 @@ func unifyOrTuple(arr []cty.Value) cty.Value {
 		types[i] = v.Type()
 	}
 	unified, conversions := convert.UnifyUnsafe(types)
-	if unified == cty.NilType {
+	if unified == cty.NilType || isLossyPrimitiveUnification(unified, types) {
 		return cty.TupleVal(arr)
 	}
 	out := make([]cty.Value, len(arr))
