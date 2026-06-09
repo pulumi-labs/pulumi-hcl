@@ -182,6 +182,12 @@ type Graph struct {
 	// dependents counts how many other nodes list a given key in their
 	// dependency list. Read by HasDependents at Walk time.
 	dependents map[string]int
+
+	// moved holds the moved blocks of each module keyed by that module's node
+	// prefix (the root module uses ""). A moved block's from/to addresses are
+	// relative to the module it is written in, so resolving a rename needs the
+	// blocks scoped to the resource's own module.
+	moved map[string][]*ast.Moved
 }
 
 type dagNode struct {
@@ -202,7 +208,15 @@ func NewGraph() *Graph {
 		references:   make(map[string][]hcl.Range),
 		keyByDagNode: make(map[pdag.Node]string),
 		dependents:   make(map[string]int),
+		moved:        make(map[string][]*ast.Moved),
 	}
+}
+
+// MovedBlocks returns the moved blocks declared in the module identified by
+// prefix (the root module is ""). Their from/to addresses are relative to that
+// module.
+func (g *Graph) MovedBlocks(prefix string) []*ast.Moved {
+	return g.moved[prefix]
 }
 
 // recordRef records that key was referenced from the given source range.
@@ -285,6 +299,7 @@ func (g *Graph) HasDependents(key string) bool {
 // moduleLoader is required when config contains modules.
 func BuildFromConfig(config *ast.Config, moduleLoader ModuleLoader, workDir string) (*Graph, error) {
 	g := NewGraph()
+	g.moved[""] = config.Moved
 
 	contract.AssertNoErrorf(errors.Join(
 		g.AddNode(&Node{
@@ -852,6 +867,7 @@ func (g *Graph) inlineModule(
 	path := parentPath.Append(modulepath.NewStep(name))
 	prefix := path.PrefixString()
 	parentPrefix := parentPath.PrefixString()
+	g.moved[prefix] = loaded.Config.Moved
 	modInfo := &ModuleInfo{
 		Path:             path,
 		Module:           mod,

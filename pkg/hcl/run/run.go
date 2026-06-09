@@ -1251,7 +1251,7 @@ func (e *Engine) registerResourceInstanceInContext(
 		}
 	}
 
-	opts, err := e.buildResourceOptionsInContext(res, instance, evalCtx, parentURN, node.ModuleInfo, resourceMapping, resSchema.InputProperties, resSchema.Properties)
+	opts, err := e.buildResourceOptionsInContext(res, instance, evalCtx, parentURN, node.ModuleInfo, modInst, resourceMapping, resSchema.InputProperties, resSchema.Properties)
 	if err != nil {
 		return err
 	}
@@ -1363,7 +1363,7 @@ func (e *Engine) registerResourceInstanceInContext(
 func (e *Engine) buildResourceOptionsInContext(
 	res *ast.Resource, instance *graph.ExpandedResource,
 	evalCtx *eval.Context, parentURN urn.URN,
-	modInfo *graph.ModuleInfo, resourceMapping *bridge.BodyMapping,
+	modInfo *graph.ModuleInfo, modInst *moduleInstance, resourceMapping *bridge.BodyMapping,
 	inputProps, outputProps []*schema.Property,
 ) (*ResourceOptions, error) {
 	opts := &ResourceOptions{}
@@ -1529,7 +1529,7 @@ func (e *Engine) buildResourceOptionsInContext(
 	}
 
 	// Handle moved blocks - resolve aliases from moved blocks that target this resource
-	movedAliases := e.resolveMovedAliases(res)
+	movedAliases := e.resolveMovedAliases(res, instance.Key, modInfo, modInst)
 	opts.Aliases = append(opts.Aliases, movedAliases...)
 
 	// Handle aliases attribute
@@ -1686,20 +1686,36 @@ func (e *Engine) buildResourceOptionsInContext(
 
 // resolveMovedAliases finds any moved blocks that target this resource and returns
 // the source addresses as aliases.
-func (e *Engine) resolveMovedAliases(res *ast.Resource) []Alias {
+func (e *Engine) resolveMovedAliases(
+	res *ast.Resource, instanceKey string, modInfo *graph.ModuleInfo, modInst *moduleInstance,
+) []Alias {
 	var aliases []Alias
 	resourceAddr := res.Type + "." + res.Name
 
-	for _, moved := range e.config.Moved {
+	// A moved block's from/to addresses are relative to the module it is written
+	// in, so consult the blocks scoped to this resource's own module.
+	prefix := ""
+	if modInfo != nil {
+		prefix = modInfo.Prefix()
+	}
+
+	for _, moved := range e.graph.MovedBlocks(prefix) {
 		// Check if this moved block targets the current resource
 		toAddr := graph.FormatTraversal(moved.To)
 		if toAddr == resourceAddr {
-			// Convert the "from" address to a URN-style alias
 			fromAddr := graph.FormatTraversal(moved.From)
 			if fromAddr != "" {
-				// For Pulumi aliases, we use the resource name from the "from" address
-				// The alias tells Pulumi this resource may have been known by a different name
-				aliases = append(aliases, Alias{Spec: &AliasSpec{Name: fromAddr}})
+				// The alias must name the resource as it was registered under the
+				// old address, not the full "type.name" address — otherwise the
+				// engine misses the rename and replaces the resource. A `moved`
+				// block requires the same type on both sides, so stripping this
+				// resource's type prefix yields the prior bare name; building the
+				// full name with the same key, module info, and instance the
+				// registration uses extends this to `count`/`for_each` instances
+				// (old-0, old-"k") and resources inside a module (m-old).
+				name := strings.TrimPrefix(fromAddr, res.Type+".")
+				aliasName := e.extractModuleResourceName(name, instanceKey, modInfo, modInst)
+				aliases = append(aliases, Alias{Spec: &AliasSpec{Name: aliasName}})
 			}
 		}
 	}
