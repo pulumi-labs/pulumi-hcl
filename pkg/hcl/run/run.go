@@ -713,13 +713,12 @@ func (e *Engine) processVariable(_ context.Context, node *graph.Node) error {
 		}
 
 		if !condOK {
-			// Get error message
 			errMsgVal, diags := e.evaluator.EvaluateExpression(validation.ErrorMessage)
-			var errMsg string
-			if diags.HasErrors() || errMsgVal.Type() != cty.String {
-				errMsg = "validation failed"
-			} else {
-				errMsg = errMsgVal.AsString()
+			errMsg := "validation failed"
+			if !diags.HasErrors() {
+				if s := renderErrorMessage(errMsgVal); s != "" {
+					errMsg = s
+				}
 			}
 			return fmt.Errorf("validation failed for variable %q: %s", varName, errMsg)
 		}
@@ -3281,7 +3280,7 @@ func evaluatePostcondition(
 			index, resourceName, msgDiags.Error())
 	}
 	msg := "postcondition check failed"
-	if s := ctyAsString(msgVal); s != "" {
+	if s := renderErrorMessage(msgVal); s != "" {
 		msg = s
 	}
 	return fmt.Errorf("postcondition for %s: %s", resourceName, msg)
@@ -3327,7 +3326,7 @@ func evaluatePrecondition(rule *ast.CheckRule, hclCtx *hcl.EvalContext, index in
 			index, resourceName, msgDiags.Error())
 	}
 	msg := "precondition check failed"
-	if s := ctyAsString(msgVal); s != "" {
+	if s := renderErrorMessage(msgVal); s != "" {
 		msg = s
 	}
 	return fmt.Errorf("precondition for %s: %s", resourceName, msg)
@@ -3411,7 +3410,7 @@ func evaluateCheckAssert(evaluator *eval.Evaluator, rule *ast.CheckRule) string 
 	if msgDiags.HasErrors() {
 		return "assertion failed (could not evaluate error message)"
 	}
-	if msg := ctyAsString(msgVal); msg != "" {
+	if msg := renderErrorMessage(msgVal); msg != "" {
 		return msg
 	}
 	return "assertion failed"
@@ -3458,4 +3457,23 @@ func ctyAsString(v cty.Value) string {
 		return ""
 	}
 	return v.AsString()
+}
+
+// sensitiveErrorMessageRef is the text substituted for a custom-condition
+// error_message that interpolates a sensitive value. Rendering the real message
+// would leak the secret, so the reference is reported instead.
+const sensitiveErrorMessageRef = "Error message refers to sensitive values"
+
+// renderErrorMessage reads a custom-condition error_message (variable
+// validation, precondition, postcondition, or check assertion). It refuses to
+// render a message that carries the sensitive mark — returning
+// sensitiveErrorMessageRef rather than the interpolated secret — while still
+// tolerating the non-sensitive marks (e.g. DepMarks) that resource outputs
+// carry. A null / unknown / non-string value yields "" so the caller can fall
+// back to its own default message.
+func renderErrorMessage(v cty.Value) string {
+	if v.HasMark(eval.SensitiveMark) {
+		return sensitiveErrorMessageRef
+	}
+	return ctyAsString(v)
 }
