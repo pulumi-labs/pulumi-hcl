@@ -478,8 +478,8 @@ var listFunc = function.New(&function.Spec{
 
 var lookupFunc = function.New(&function.Spec{
 	Params: []function.Parameter{
-		{Name: "map", Type: cty.DynamicPseudoType},
-		{Name: "key", Type: cty.String},
+		{Name: "map", Type: cty.DynamicPseudoType, AllowMarked: true},
+		{Name: "key", Type: cty.String, AllowMarked: true},
 	},
 	VarParam: &function.Parameter{
 		Name:             "default",
@@ -487,6 +487,7 @@ var lookupFunc = function.New(&function.Spec{
 		AllowNull:        true,
 		AllowUnknown:     true,
 		AllowDynamicType: true,
+		AllowMarked:      true,
 	},
 	Type: func(args []cty.Value) (cty.Type, error) {
 		ty := args[0].Type()
@@ -495,7 +496,8 @@ var lookupFunc = function.New(&function.Spec{
 			if !args[1].IsKnown() {
 				return cty.DynamicPseudoType, nil
 			}
-			key := args[1].AsString()
+			keyVal, _ := args[1].Unmark()
+			key := keyVal.AsString()
 			if ty.HasAttribute(key) {
 				return args[0].GetAttr(key).Type(), nil
 			} else if len(args) == 3 {
@@ -517,27 +519,42 @@ var lookupFunc = function.New(&function.Spec{
 		}
 	},
 	Impl: func(args []cty.Value, retType cty.Type) (cty.Value, error) {
-		m := args[0]
-		key := args[1].AsString()
+		// The collection and key marks always propagate to the result, but the
+		// default's must not: when the key is present the default is never
+		// consulted, so a sensitive default leaves a present value unmarked.
+		// The default's marks are reapplied only when the default is returned.
+		var marks []cty.ValueMarks
+
+		mapVar, mapMarks := args[0].Unmark()
+		marks = append(marks, mapMarks)
+
+		keyVal, keyMarks := args[1].Unmark()
+		if len(keyMarks) > 0 {
+			marks = append(marks, keyMarks)
+		}
+		key := keyVal.AsString()
 
 		switch {
-		case m.Type().IsMapType():
+		case mapVar.Type().IsMapType():
 			idx := cty.StringVal(key)
-			if m.HasIndex(idx).True() {
-				return m.Index(idx), nil
+			if mapVar.HasIndex(idx).True() {
+				return mapVar.Index(idx).WithMarks(marks...), nil
 			}
-		case m.Type().IsObjectType():
-			if m.Type().HasAttribute(key) {
-				return m.GetAttr(key), nil
+		case mapVar.Type().IsObjectType():
+			if mapVar.Type().HasAttribute(key) {
+				return mapVar.GetAttr(key).WithMarks(marks...), nil
 			}
 		}
 
-		// The key is absent. Return the default converted to the return type,
-		// matching OpenTofu: for a map this is the element type, so a default
-		// of a different type is coerced (e.g. 30 into a map(string) yields the
-		// string "30").
+		// The key is absent: return the default coerced to the return type (for
+		// a map, the element type, so e.g. 30 becomes "30" in a map(string)),
+		// carrying the collection/key marks alongside the default's own.
 		if len(args) == 3 {
-			return convert.Convert(args[2], retType)
+			defaultVal, err := convert.Convert(args[2], retType)
+			if err != nil {
+				return cty.NilVal, err
+			}
+			return defaultVal.WithMarks(marks...), nil
 		}
 
 		return cty.NilVal, fmt.Errorf("key %q not found", key)

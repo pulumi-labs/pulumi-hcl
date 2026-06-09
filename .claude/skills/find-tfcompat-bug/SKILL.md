@@ -1,13 +1,15 @@
 ---
 name: find-tfcompat-bug
-description: Find, prove, fix, and ship a single runtime divergence between OpenTofu and pulumi-hcl. Use when the user asks to "find another bug/mismatch", find a tfcompat mismatch, or hunt for behavior that differs from Terraform/OpenTofu.
+description: Find and prove a single runtime divergence between OpenTofu and pulumi-hcl with a failing tfcompat test. Use when the user asks to "find another bug/mismatch", find a tfcompat mismatch, or hunt for behavior that differs from Terraform/OpenTofu.
 ---
 
-# Find the next tfcompat bug
+# Find & prove the next tfcompat bug
 
-Hunt one genuine runtime divergence between OpenTofu (`tofu apply`) and pulumi-hcl,
-prove it with a failing `tfcompat` test, fix the pulumi-hcl runtime to faithfully match
-OpenTofu, verify failing-before / passing-after, and ship it as its own PR.
+Hunt one genuine runtime divergence between OpenTofu (`tofu apply`) and pulumi-hcl, and
+**prove it with a failing `tfcompat` test**. That is the whole job of this skill: find a
+real divergence and leave behind a test that fails on `master` for the right reason. You
+**stop at the proven failure** — you do not fix it. To turn a proven failure into a
+shipped fix, hand off to the [`fix-tfcompat-bug`](../fix-tfcompat-bug/SKILL.md) skill.
 
 The divergence can be anywhere the two runtimes can disagree — an expression/function
 result (the L1 seam), or resource, module, provider, or lifecycle behavior (the L2
@@ -22,8 +24,7 @@ bug to chase here: no OpenTofu config depends on it, and tightening pulumi-hcl t
 reject it removes capability without helping any migration. If the only divergence you can
 find is pulumi-hcl being more permissive than OpenTofu, discard it and keep hunting.
 
-Each invocation produces **exactly one** bug fix on its **own branch off master**
-with its own changelog entry and PR. Do not stack fixes.
+Each invocation produces **exactly one** proven failing test. Don't bundle several.
 
 ## Ground rules (from CLAUDE.md — do not violate)
 
@@ -32,11 +33,9 @@ with its own changelog entry and PR. Do not stack fixes.
   probe — never from memory. A backwards memory of token semantics has already burned
   us once.
 - Faithfully match OpenTofu. The goal is parity, not "better". No hacks.
-- `git add` specific files only, never `git add .`. Don't touch staging the user left.
-- Don't self-attribute as commit co-author. Complete punctuation in commit bodies.
-- Commit / push / open PR only when the user asks (the find+fix+verify is automatic;
-  shipping waits for the modeled flow below, which the user has standing-approved for
-  this loop — confirm if unsure).
+- The deliverable is new test files only — you ADD `tests/tfcompat/` files. Don't edit
+  runtime source under `pkg/` (that's the fixing skill's job), and don't touch staging the
+  user left.
 
 ## Source-of-truth locations
 
@@ -143,86 +142,24 @@ disk fixture can't express — an `ExpectErr` assertion, or a multi-stage
 preview/destroy/re-apply sequence. A normal output-comparison case (even one with several
 files) belongs on disk, not inline.
 
-Confirm the bug is real **on master before the fix**:
+Confirm the bug is real **on master**:
 
 ```bash
 PATH="$PWD/bin:$PATH" go test ./tests/tfcompat/ -run 'Test(L1|L2)<Name>' -count=1 -v
 ```
 
-It must FAIL, and the failure must show the genuine OpenTofu-vs-pulumi difference. If it
-passes, the bug isn't real (or isn't observable) — go back to Step 2.
+It must FAIL, and the failure must show the genuine OpenTofu-vs-pulumi difference (a real
+output diff or a matched `ExpectErr`), not a harness/provider/fixture error. If it passes,
+the bug isn't real (or isn't observable) — go back to Step 1.
 
-## Step 3 — Fix the divergence
+## Done — hand off
 
-Edit the pulumi-hcl runtime to match OpenTofu. For a function, fix the `Impl` in
-`pkg/hcl/eval/functions.go` — and prefer delegating to the cty `stdlib.*Func` when
-OpenTofu itself binds that stdlib function (check the binding map); several bugs were
-hand-rolled reimplementations that should have been `stdlib.IndentFunc` /
-`stdlib.FormatDateFunc`. For an L2 bug the fix lives elsewhere under `pkg/hcl/`. Fix
-minimally and faithfully; run `go mod tidy` if you add a dependency.
+You now have a proven failing tfcompat test, left **uncommitted** in the working tree.
+Report:
 
-Add unit coverage next to the code you changed. For functions, add cases to
-`pkg/hcl/eval/functions_test.go`; note `evalExpr` calls `t.Fatalf` on diagnostics, so
-**error-path** cases must call `<fn>.Call(...)` directly rather than via `evalExpr`.
+1. **The divergence** — one line: what OpenTofu does vs. what pulumi-hcl does.
+2. **The test** — name + the file paths you created.
+3. **The failure output** — the captured diff/error proving it fails for the right reason.
 
-## Step 4 — Verify failing-before / passing-after
-
-```bash
-make build
-PATH="$PWD/bin:$PATH" go test ./pkg/hcl/... -run '<UnitTest>' -count=1 -v
-PATH="$PWD/bin:$PATH" go test ./tests/tfcompat/ -run 'Test(L1|L2)<Name>' -count=1 -v
-```
-
-Both must now PASS (with `-count=1` — the rebuilt binary won't be picked up otherwise).
-
-## Step 5 — Sweep for related divergences before shipping
-
-**Before you open the PR, check whether the same root cause produces a sibling
-bug, and fix it in the same PR.** A divergence almost never lives alone: the same
-helper, library choice, or code path usually backs a *sibling* operation, and
-shipping only one half leaves the matching bug behind for the next migration to
-hit.
-
-Look in particular for:
-
-- **The inverse operation.** encode ↔ decode, parse ↔ format, marshal ↔
-  unmarshal, get ↔ set. Fixing `yamlencode` (hand-rolled on `yaml.v3` instead of
-  go-cty-yaml) left an *identical* `yamldecode` bug — same wrong library, mirror
-  symptom — that had to ship as a separate follow-up. Don't make that mistake:
-  when you fix one direction, probe the other in the same session.
-- **Sibling functions sharing the impl.** Functions bound to the same hand-rolled
-  helper or the same family (`base64*`, `file*`, `cidr*`, the `to*` converters).
-  Grep for other call sites of any helper you touched.
-
-For each candidate, run a quick `tofu` probe against the equivalent pulumi-hcl
-result. If it also diverges in the migration-affecting direction, fold the fix
-into this PR and extend the one tfcompat case to cover both (one combined
-`l1_<family>` case is fine — e.g. `l1_yaml` exercising both `yamlencode` and
-`yamldecode`). If a sibling is genuinely out of scope, say so explicitly in the
-PR body rather than leaving it silently unfixed.
-
-## Step 6 — Changelog + branch + PR
-
-Consult the submit-pr skill for opening a PR.
-
-When writing your PR & changelog:
-
-- Keep the changelog `body` **terse** — a short phrase naming the change from the
-  user's point of view (e.g. ``Coerce a `variable` `default` to its declared `type` ``
-  or ``Add `base64gunzip`, `urldecode` and `cidrcontains` ``), not a sentence explaining
-  it, and with **no trailing punctuation**. Keep the `<thing>` (function/feature name)
-  in backticks.
-- The changelog body must **not mention OpenTofu** (no "match OpenTofu", "like
-  OpenTofu", "instead of erroring", or other comparison framing). Parity with OpenTofu
-  is the whole project's premise, so stating it in the changelog is noise — just
-  describe what changed. The OpenTofu-vs-pulumi divergence narrative belongs in the **PR
-  description**, where you do say "OpenTofu" (never "Terraform").
-- **Code comments must not mention OpenTofu either.** Do not add comments saying the
-  code "matches OpenTofu" / "mirrors OpenTofu's X" — that applies to the entire codebase
-  and restates the premise. A comment should explain something the code itself doesn't
-  (e.g. *why* a helper is reimplemented rather than imported); if the only thing a
-  comment would say is "this matches OpenTofu," delete it.
-
-Then, on its **own branch off master** (not stacked on a prior fix):
-
-Report the divergence, the fix, the verification results, and the PR URL.
+To fix the divergence and ship it, continue with the
+[`fix-tfcompat-bug`](../fix-tfcompat-bug/SKILL.md) skill. **Do not fix it here.**

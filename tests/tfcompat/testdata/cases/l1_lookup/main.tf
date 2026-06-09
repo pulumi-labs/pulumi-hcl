@@ -13,3 +13,15 @@ output "results" {
     bool_default_into_string_map   = lookup(tomap({ a = "x" }), "missing", true)
   }
 }
+
+# `lookup` carries the sensitivity of only the arguments that contribute to the
+# result. When the key is present the `default` is never consulted, so a
+# sensitive `default` leaves the result non-sensitive; when the key is absent the
+# default is returned and its sensitivity does propagate. `issensitive` exposes
+# the mark as a plain bool, observable in outputs without leaking the value.
+output "sensitivity" {
+  value = {
+    unused_default_marked = issensitive(lookup({ a = "x" }, "a", sensitive("d")))
+    used_default_marked   = issensitive(lookup({ a = "x" }, "b", sensitive("d")))
+  }
+}
