@@ -163,6 +163,26 @@ func TestTemplateStringFunction(t *testing.T) {
 			`templatestring("static", {})`,
 			cty.StringVal("static"),
 		},
+		{
+			"single interpolation preserves tuple",
+			`templatestring("$${a}", { a = ["foo", "bar"] })`,
+			cty.TupleVal([]cty.Value{cty.StringVal("foo"), cty.StringVal("bar")}),
+		},
+		{
+			"single interpolation preserves number",
+			`templatestring("$${a}", { a = 42 })`,
+			cty.NumberIntVal(42),
+		},
+		{
+			"single interpolation preserves bool",
+			`templatestring("$${a}", { a = true })`,
+			cty.True,
+		},
+		{
+			"single interpolation preserves object",
+			`templatestring("$${a}", { a = { k = 1 } })`,
+			cty.ObjectVal(map[string]cty.Value{"k": cty.NumberIntVal(1)}),
+		},
 	}
 
 	for _, tt := range tests {

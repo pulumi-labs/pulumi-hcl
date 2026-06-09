@@ -1268,23 +1268,38 @@ func fileBase64Func(baseDir string) function.Function {
 // template; it omits the template functions themselves to prevent unbounded
 // recursion.
 func templateFileFunc(baseDir string, nestedFuncs map[string]function.Function) function.Function {
+	render := func(args []cty.Value) (cty.Value, error) {
+		path := args[0].AsString()
+		fullPath, err := resolveFilePath(baseDir, path)
+		if err != nil {
+			return cty.NilVal, err
+		}
+		content, err := os.ReadFile(fullPath)
+		if err != nil {
+			return cty.NilVal, err
+		}
+		return renderTemplate(path, cty.StringVal(string(content)), args[1], nestedFuncs)
+	}
 	return function.New(&function.Spec{
 		Params: []function.Parameter{
 			{Name: "path", Type: cty.String},
 			{Name: "vars", Type: cty.DynamicPseudoType},
 		},
-		Type: function.StaticReturnType(cty.String),
+		// The result type is whatever rendering produces (a single-interpolation
+		// template can yield any type), so it is computed by rendering rather
+		// than fixed; it is unknowable until the path and vars are known.
+		Type: func(args []cty.Value) (cty.Type, error) {
+			if !args[0].IsKnown() || !args[1].IsKnown() {
+				return cty.DynamicPseudoType, nil
+			}
+			val, err := render(args)
+			if err != nil {
+				return cty.DynamicPseudoType, err
+			}
+			return val.Type(), nil
+		},
 		Impl: func(args []cty.Value, retType cty.Type) (cty.Value, error) {
-			path := args[0].AsString()
-			fullPath, err := resolveFilePath(baseDir, path)
-			if err != nil {
-				return cty.NilVal, err
-			}
-			content, err := os.ReadFile(fullPath)
-			if err != nil {
-				return cty.NilVal, err
-			}
-			return renderTemplate(path, cty.StringVal(string(content)), args[1], nestedFuncs)
+			return render(args)
 		},
 	})
 }
@@ -1298,7 +1313,19 @@ func templateStringFunc(nestedFuncs map[string]function.Function) function.Funct
 			{Name: "template", Type: cty.String},
 			{Name: "vars", Type: cty.DynamicPseudoType},
 		},
-		Type: function.StaticReturnType(cty.String),
+		// The result type is whatever rendering produces (a single-interpolation
+		// template can yield any type), so it is computed by rendering rather
+		// than fixed; it is unknowable until the template and vars are known.
+		Type: func(args []cty.Value) (cty.Type, error) {
+			if !args[0].IsKnown() || !args[1].IsKnown() {
+				return cty.DynamicPseudoType, nil
+			}
+			val, err := renderTemplate("<templatestring>", args[0], args[1], nestedFuncs)
+			if err != nil {
+				return cty.DynamicPseudoType, err
+			}
+			return val.Type(), nil
+		},
 		Impl: func(args []cty.Value, retType cty.Type) (cty.Value, error) {
 			return renderTemplate("<templatestring>", args[0], args[1], nestedFuncs)
 		},
@@ -1337,10 +1364,9 @@ func renderTemplate(
 		return cty.NilVal, diags
 	}
 
-	val, err := convert.Convert(val, cty.String)
-	if err != nil {
-		return cty.NilVal, err
-	}
+	// A template that is a single interpolation with no surrounding literal
+	// text evaluates to the interpolated value's own type, so the result is
+	// returned un-coerced rather than forced to a string.
 	return val.WithMarks(tmplMarks), nil
 }
 
