@@ -27,9 +27,10 @@ import (
 // move that must issue no provider Create/Delete operations on the rename, so
 // the two runtimes must agree on the provider operations across both stages.
 //
-// The subtests tagged "not yet supported" currently FAIL: pulumi-hcl replaces
-// the resource because the alias does not match the prior address. They are kept
-// as executable documentation of the remaining gaps.
+// Renaming a module call still replaces the call's resources, because it
+// requires aliasing the module's component resource and re-aliasing every child
+// (whose name embeds the module instance name) against a component that no
+// longer exists in the run. Those cases are skipped until that is implemented.
 func TestL2Moved(t *testing.T) {
 	t.Parallel()
 
@@ -37,16 +38,22 @@ func TestL2Moved(t *testing.T) {
 		name string
 		dir  string
 	}{
-		// Supported.
-		{"rename", "l2_moved_rename"},                         // rename a resource
-		{"count_for_each_module", "l2_moved_rename_expanded"}, // rename of count/for_each + in-module resources
+		// Renaming a resource, including every count/for_each instance, and a
+		// resource inside a module.
+		{name: "rename", dir: "l2_moved_rename"},
+		{name: "count_for_each_module", dir: "l2_moved_rename_expanded"},
 
-		// Not yet supported.
-		{"enable_count", "l2_moved_enable_count"},             // whole resource -> a[0] (instance key)
-		{"rekey_for_each", "l2_moved_rekey"},                  // a["small"] -> a["tiny"] (instance key)
-		{"module_call_rename", "l2_moved_module_call_rename"}, // module.a -> module.b
-		{"module_call_count", "l2_moved_module_call_count"},   // module.a -> module.a[0]
-		{"split_module", "l2_moved_split"},                    // root resource -> module.x (cross-boundary)
+		// Changing a resource's instance key (enabling/disabling count/for_each,
+		// or rekeying a for_each instance).
+		{name: "enable_count", dir: "l2_moved_enable_count"}, // whole resource -> a[0]
+		{name: "rekey_for_each", dir: "l2_moved_rekey"},      // a["small"] -> a["tiny"]
+
+		// Moving a resource across a module boundary.
+		{name: "split_module", dir: "l2_moved_split"}, // root resource -> module.x
+
+		// Renaming or re-keying a module call itself.
+		{name: "module_call_rename", dir: "l2_moved_module_call_rename"}, // module.a -> module.b
+		{name: "module_call_count", dir: "l2_moved_module_call_count"},   // module.a -> module.a[0]
 	}
 
 	for _, c := range cases {
