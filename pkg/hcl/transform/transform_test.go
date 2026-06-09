@@ -696,6 +696,15 @@ func TestCtyToPropertyValue_Collections(t *testing.T) {
 			t.Errorf("expected 2 elements, got %d", len(arr))
 		}
 	})
+
+	t.Run("empty set", func(t *testing.T) {
+		t.Parallel()
+
+		result, err := CtyToPropertyValue(cty.SetValEmpty(cty.String))
+		require.NoError(t, err)
+		require.True(t, result.IsArray(), "an empty set must be an empty array, not null")
+		require.Equal(t, 0, result.AsArray().Len())
+	})
 }
 
 func TestCtyToPropertyValue_Nested(t *testing.T) {

@@ -958,9 +958,10 @@ func ctyListToPropertyValue(val cty.Value) (property.Value, error) {
 	return property.New(arr), nil
 }
 
-// ctySetToPropertyValue converts a cty set to a Pulumi array.
+// ctySetToPropertyValue converts a cty set to a Pulumi array. The slice is
+// allocated non-nil so an empty set becomes an empty array rather than null.
 func ctySetToPropertyValue(val cty.Value) (property.Value, error) {
-	var arr []property.Value
+	arr := make([]property.Value, 0, val.LengthInt())
 	for it := val.ElementIterator(); it.Next(); {
 		_, elemVal := it.Element()
 		pv, err := ctyToPropertyValue(elemVal)
