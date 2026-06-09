@@ -1786,9 +1786,9 @@ func movedKeyToken(v cty.Value) string {
 // A moved block's addresses are relative to the module it is written in, so the
 // resolver walks the resource's own module and every ancestor module. It handles
 // resource renames within a module (including `count`/`for_each` instance-key
-// changes), moves of a resource between the root and a module, and resources
-// carried along when an enclosing module call is renamed or re-keyed (the
-// matching component alias is attached in processModuleInit).
+// changes), moves of a resource between the root and a module or between two
+// modules, and resources carried along when an enclosing module call is renamed
+// or re-keyed (the matching component alias is attached in processModuleInit).
 func (e *Engine) resolveMovedAliases(
 	res *ast.Resource, instanceKey string, modInfo *graph.ModuleInfo, modInst *moduleInstance,
 ) []Alias {
@@ -1860,9 +1860,19 @@ func (e *Engine) resolveMovedAliases(
 					Name:     buildResourceName(from.Name, keyBracket),
 					NoParent: true,
 				}})
+			case modInst != nil:
+				// The resource moved from a different module. It was named under
+				// that module's prefix and parented by that module's component.
+				// A resource move keeps the same module source, so the prior
+				// component shares this one's type and its URN is the current
+				// component's URN with the module name swapped in.
+				bare := buildResourceName(from.Name, keyBracket)
+				priorParent := swapURNName(modInst.URN, resPath.LogicalName(), fromPath.LogicalName())
+				aliases = append(aliases, Alias{Spec: &AliasSpec{
+					Name:      fromPath.LogicalName() + "-" + bare,
+					ParentURN: string(priorParent),
+				}})
 			}
-			// A move from one non-root module to another needs the prior
-			// module's component URN and is not yet handled.
 		}
 	}
 
@@ -1929,6 +1939,17 @@ func (e *Engine) moduleComponentAliases(instPath modulepath.Path) []Alias {
 		return nil
 	}
 	return []Alias{{Spec: &AliasSpec{Name: oldPath.LogicalName()}}}
+}
+
+// swapURNName returns u with its trailing name segment replaced, used to derive
+// a sibling resource's URN (e.g. one module component's URN from another's).
+func swapURNName(u urn.URN, oldName, newName string) urn.URN {
+	s := string(u)
+	suffix := "::" + oldName
+	if !strings.HasSuffix(s, suffix) {
+		return u
+	}
+	return urn.URN(strings.TrimSuffix(s, suffix) + "::" + newName)
 }
 
 // pathSteps returns p's steps, root first.

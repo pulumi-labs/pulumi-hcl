@@ -55,9 +55,7 @@ func TestL2Moved(t *testing.T) {
 		{name: "module_call_rename", dir: "l2_moved_module_call_rename"}, // module.a -> module.b
 		{name: "module_call_count", dir: "l2_moved_module_call_count"},   // module.a -> module.a[0]
 
-		// Out of scope (currently FAILS): moving a resource from one non-root
-		// module to another. The prior location is a different module, so the
-		// alias needs that module's prior component URN.
+		// Moving a resource from one non-root module to another.
 		{name: "module_to_module", dir: "l2_moved_module_to_module"}, // module.a.r -> module.b.r
 	}
 
