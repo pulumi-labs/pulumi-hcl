@@ -1,0 +1,6 @@
+kind: bug-fixes
+body: Propagate a module output's `sensitive` mark to its caller
+time: 2026-06-09T13:25:59.000000+00:00
+custom:
+    Component: runtime
+    PR: "259"

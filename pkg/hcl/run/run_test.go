@@ -1067,6 +1067,55 @@ output "item_count" {
 	})
 }
 
+func TestEngine_ModuleSensitiveOutput(t *testing.T) {
+	t.Parallel()
+
+	const childMain = `
+variable "in" {
+  type    = string
+  default = "hunter2"
+}
+
+output "token" {
+  value     = var.in
+  sensitive = true
+}
+`
+	const rootMain = `
+module "child" {
+  source = "./modules/child"
+}
+
+output "is_sensitive" {
+  value = issensitive(module.child.token)
+}
+`
+	tmpDir := t.TempDir()
+	moduleDir := tmpDir + "/modules/child"
+	require.NoError(t, os.MkdirAll(moduleDir, 0o755))
+	require.NoError(t, os.WriteFile(moduleDir+"/main.tf", []byte(childMain), 0o644))
+	require.NoError(t, os.WriteFile(tmpDir+"/main.tf", []byte(rootMain), 0o644))
+
+	p := parser.NewParser()
+	config, diags := p.ParseDirectory(tmpDir)
+	require.False(t, diags.HasErrors(), "parse error: %s", diags.Error())
+
+	mock := &testutil.MockResourceMonitor{}
+	engine := run.NewEngine(t.Context(), config, &run.EngineOptions{
+		ProjectName:     "test-project",
+		StackName:       "dev",
+		ResourceMonitor: mock,
+		WorkDir:         tmpDir,
+		RootDir:         tmpDir,
+		SchemaLoader:    schemaloader.New(t, schema.PackageSpec{Name: "empty"}),
+	})
+	require.NoError(t, engine.Run(t.Context()))
+
+	output, ok := mock.StackOutputs.GetOk("is_sensitive")
+	require.True(t, ok, "expected is_sensitive output")
+	assert.True(t, output.AsBool(), "a sensitive module output must be sensitive in the caller")
+}
+
 func TestEngine_VariableValidationPass(t *testing.T) {
 	t.Parallel()
 
