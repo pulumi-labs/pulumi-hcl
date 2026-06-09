@@ -23,6 +23,19 @@ output "decode_timestamp" {
   value = yamldecode("d: 2020-01-01")
 }
 
+# YAML integer-tag resolution: a scalar containing underscores is not an integer
+# and stays a string, while plain decimal, octal (0o) and hex (0x) scalars
+# resolve to numbers.
+output "decode_int_tags" {
+  value = {
+    underscore_dec = yamldecode("v: 1_000").v
+    underscore_oct = yamldecode("v: 0o1_0").v
+    underscore_hex = yamldecode("v: 0x1_f").v
+    plain_hex      = yamldecode("v: 0x1f").v
+    plain_oct      = yamldecode("v: 0o17").v
+  }
+}
+
 output "roundtrip" {
   value = yamldecode(yamlencode({ a = 1, b = "two", nested = { c = true } }))
 }
