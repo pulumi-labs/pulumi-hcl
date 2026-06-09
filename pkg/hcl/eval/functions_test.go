@@ -207,6 +207,14 @@ func TestCollectionFunctions(t *testing.T) {
 		{"lookup map default bool to string", `lookup(tomap({a = "x"}), "missing", true)`, cty.StringVal("true")},
 		// On the object path the default keeps its own type.
 		{"lookup object default unconverted", `lookup({a = "x"}, "missing", 30)`, cty.NumberIntVal(30)},
+		// A present key never consults the default, so a sensitive default
+		// leaves the returned value unmarked.
+		{"lookup sensitive default unused", `lookup({a = "x"}, "a", sensitive("d"))`, cty.StringVal("x")},
+		// A returned default carries its own sensitivity.
+		{"lookup sensitive default used", `lookup({a = "x"}, "b", sensitive("d"))`, cty.StringVal("d").Mark(SensitiveMark)},
+		// Collection and key sensitivity always propagate to the result.
+		{"lookup sensitive element", `lookup({a = sensitive("x")}, "a", "d")`, cty.StringVal("x").Mark(SensitiveMark)},
+		{"lookup sensitive key", `lookup({a = "x"}, sensitive("a"), "d")`, cty.StringVal("x").Mark(SensitiveMark)},
 
 		// contains
 		{"contains true", `contains(["a", "b"], "a")`, cty.BoolVal(true)},
