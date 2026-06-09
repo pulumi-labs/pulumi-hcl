@@ -2847,6 +2847,11 @@ func (e *Engine) processModuleOutput(_ context.Context, node *graph.Node) error 
 		if diags.HasErrors() {
 			return fmt.Errorf("evaluating module output %s: %s", outputName, diags.Error())
 		}
+		// A `sensitive = true` output carries the mark into the calling module,
+		// so a reference to it stays sensitive.
+		if output.Sensitive {
+			val = val.Mark(eval.SensitiveMark)
+		}
 		inst.mu.Lock()
 		inst.Outputs[outputName] = val
 		inst.mu.Unlock()
