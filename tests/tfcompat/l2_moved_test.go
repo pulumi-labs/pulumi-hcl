@@ -57,6 +57,9 @@ func TestL2Moved(t *testing.T) {
 
 		// Moving a resource from one non-root module to another.
 		{name: "module_to_module", dir: "l2_moved_module_to_module"}, // module.a.r -> module.b.r
+
+		// Moving a resource out of a module back to the root.
+		{name: "consolidate", dir: "l2_moved_consolidate"}, // module.a.r -> r
 	}
 
 	for _, c := range cases {
