@@ -1,0 +1,6 @@
+kind: bug-fixes
+body: Serialize an empty `set` as an empty collection rather than null
+time: 2026-06-09T12:50:21.000000+00:00
+custom:
+    Component: runtime
+    PR: "257"
