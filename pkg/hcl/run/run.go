@@ -3068,6 +3068,12 @@ func (e *Engine) processOutput(_ context.Context, name string, output *ast.Outpu
 		return fmt.Errorf("evaluating output value: %s", diags.Error())
 	}
 
+	// Root outputs that evaluate to null are removed entirely; nothing can
+	// reference a root output, so omitting it is always safe.
+	if val.IsNull() {
+		return nil
+	}
+
 	// Convert to PropertyValue
 	pv, err := transform.CtyToPropertyValue(val)
 	if err != nil {
