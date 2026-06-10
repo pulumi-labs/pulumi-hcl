@@ -74,6 +74,16 @@ func (m *ModuleInfo) ParentPrefix() string {
 	return parent.PrefixString()
 }
 
+// ParentPath returns the path of the enclosing module, or modulepath.Root() if
+// this module is at the root of the configuration.
+func (m *ModuleInfo) ParentPath() modulepath.Path {
+	parent, _, ok := m.Path.Parent()
+	if !ok {
+		return modulepath.Root()
+	}
+	return parent
+}
+
 // LoadedModule represents a loaded and parsed module (used by ModuleLoader).
 type LoadedModule struct {
 	Config     *ast.Config

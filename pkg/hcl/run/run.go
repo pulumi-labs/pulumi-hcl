@@ -347,8 +347,8 @@ type Engine struct {
 	// moduleLoader loads and caches module configurations.
 	moduleLoader *modules.Loader
 
-	// moduleInstances maps module prefix → list of instances for inlined modules.
-	moduleInstances *util.SyncMap[string, []*moduleInstance]
+	// moduleInstances maps module path → list of instances for inlined modules.
+	moduleInstances *util.SyncMap[modulepath.Path, []*moduleInstance]
 
 	parallel int
 
@@ -449,7 +449,7 @@ func NewEngine(ctx context.Context, config *ast.Config, opts *EngineOptions) *En
 		packages:                opts.Packages,
 		packageRefs:             make(map[string]PackageRef),
 		moduleLoader:            modules.NewLoader(ctx),
-		moduleInstances:         util.NewSyncMap[string, []*moduleInstance](),
+		moduleInstances:         util.NewSyncMap[modulepath.Path, []*moduleInstance](),
 		parallel:                opts.Parallel,
 		failedNodes:             util.NewSyncMap[string, error](),
 		alwaysRegisterProviders: opts.AlwaysRegisterProviders,
@@ -890,7 +890,7 @@ func (e *Engine) parentEvalContext(modInfo *graph.ModuleInfo) *eval.Context {
 	if modInfo.ParentPrefix() == "" {
 		return e.evaluator.Context()
 	}
-	parentInsts, ok := e.moduleInstances.Get(modInfo.ParentPrefix())
+	parentInsts, ok := e.moduleInstances.Get(modInfo.ParentPath())
 	if !ok || len(parentInsts) == 0 {
 		return nil
 	}
@@ -1952,7 +1952,7 @@ func (e *Engine) priorParentSpec(
 func (e *Engine) priorComponentURN(
 	fromPath, resPath modulepath.Path, modInst *moduleInstance,
 ) (urn.URN, bool) {
-	if insts, ok := e.moduleInstances.Get(fromPath.PrefixString()); ok && len(insts) > 0 {
+	if insts, ok := e.moduleInstances.Get(fromPath); ok && len(insts) > 0 {
 		return insts[0].URN, true
 	}
 	if modInst != nil {
@@ -2936,7 +2936,7 @@ func (a *moduleLoaderAdapter) LoadModule(source, version, workDir string) (*grap
 
 // forEachModuleInstance iterates over all instances of the module identified by node.ModuleInfo.Prefix().
 func (e *Engine) forEachModuleInstance(node *graph.Node, fn func(inst *moduleInstance) error) error {
-	instances, ok := e.moduleInstances.Get(node.ModuleInfo.Prefix())
+	instances, ok := e.moduleInstances.Get(node.ModuleInfo.Path)
 	if !ok {
 		return fmt.Errorf("no module instances for prefix %q", node.ModuleInfo.Prefix())
 	}
@@ -2963,7 +2963,7 @@ func (e *Engine) processModuleVariable(node *graph.Node) error {
 	// instance's context so that expressions like var.name resolve correctly.
 	parentEvalCtx := e.evaluator.Context()
 	if modInfo.ParentPrefix() != "" {
-		parentInstances, ok := e.moduleInstances.Get(modInfo.ParentPrefix())
+		parentInstances, ok := e.moduleInstances.Get(modInfo.ParentPath())
 		if ok && len(parentInstances) > 0 {
 			parentEvalCtx = parentInstances[0].EvalCtx
 		}
@@ -3050,9 +3050,9 @@ func (e *Engine) processModuleInit(ctx context.Context, node *graph.Node) error 
 	// downstream per-instance work (vars, locals, nested modules, resources)
 	// loop zero times instead of falling back to the root context.
 	if modInfo.ParentPrefix() != "" {
-		parentInstances, ok := e.moduleInstances.Get(modInfo.ParentPrefix())
+		parentInstances, ok := e.moduleInstances.Get(modInfo.ParentPath())
 		if !ok || len(parentInstances) == 0 {
-			e.moduleInstances.Set(modInfo.Prefix(), nil)
+			e.moduleInstances.Set(modInfo.Path, nil)
 			return nil
 		}
 		parentURN = parentInstances[0].URN
@@ -3104,7 +3104,7 @@ func (e *Engine) processModuleInit(ctx context.Context, node *graph.Node) error 
 			e.stackName, e.projectName, e.organization,
 		)
 
-		e.moduleInstances.Set(modInfo.Prefix(), []*moduleInstance{{
+		e.moduleInstances.Set(modInfo.Path, []*moduleInstance{{
 			Path:    instPath,
 			EvalCtx: instCtx,
 			URN:     componentURN,
@@ -3140,7 +3140,7 @@ func (e *Engine) processModuleInit(ctx context.Context, node *graph.Node) error 
 				Outputs: make(map[string]cty.Value),
 			})
 		}
-		e.moduleInstances.Set(modInfo.Prefix(), instances)
+		e.moduleInstances.Set(modInfo.Path, instances)
 		return nil
 	}
 
@@ -3174,7 +3174,7 @@ func (e *Engine) processModuleInit(ctx context.Context, node *graph.Node) error 
 			Outputs: make(map[string]cty.Value),
 		})
 	}
-	e.moduleInstances.Set(modInfo.Prefix(), instances)
+	e.moduleInstances.Set(modInfo.Path, instances)
 	return nil
 }
 
@@ -3206,12 +3206,12 @@ func (e *Engine) processModuleOutput(_ context.Context, node *graph.Node) error 
 	// the parent context is the enclosing module instance's eval context.
 	parentCtx := e.evaluator.Context()
 	if modInfo.ParentPrefix() != "" {
-		parentInstances, ok := e.moduleInstances.Get(modInfo.ParentPrefix())
+		parentInstances, ok := e.moduleInstances.Get(modInfo.ParentPath())
 		if ok && len(parentInstances) > 0 {
 			parentCtx = parentInstances[0].EvalCtx
 		}
 	}
-	instances, ok := e.moduleInstances.Get(modInfo.Prefix())
+	instances, ok := e.moduleInstances.Get(modInfo.Path)
 	if !ok {
 		return nil
 	}
@@ -3277,7 +3277,7 @@ func (e *Engine) processModuleComplete(ctx context.Context, node *graph.Node) er
 		return fmt.Errorf("module completion node missing ModuleInfo")
 	}
 
-	instances, ok := e.moduleInstances.Get(modInfo.Prefix())
+	instances, ok := e.moduleInstances.Get(modInfo.Path)
 	if !ok {
 		return fmt.Errorf("no module instances for prefix %q", modInfo.Prefix())
 	}
@@ -3306,7 +3306,7 @@ func (e *Engine) processModuleComplete(ctx context.Context, node *graph.Node) er
 	// parent context is the enclosing module instance's eval context.
 	parentCtx := e.evaluator.Context()
 	if modInfo.ParentPrefix() != "" {
-		parentInstances, ok := e.moduleInstances.Get(modInfo.ParentPrefix())
+		parentInstances, ok := e.moduleInstances.Get(modInfo.ParentPath())
 		if ok && len(parentInstances) > 0 {
 			parentCtx = parentInstances[0].EvalCtx
 		}
