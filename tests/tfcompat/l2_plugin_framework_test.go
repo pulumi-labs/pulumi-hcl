@@ -23,9 +23,9 @@ import (
 
 // TestL2PluginFrameworkProvider exercises a provider built on
 // terraform-plugin-framework (instead of terraform-plugin-sdk/v2) end-to-end:
-// provider config, resource create and update, and a data-source read. The
-// two stages drive a create then an update so the protocol-level recorder
-// compares both operation kinds across the runtimes.
+// resource create and update, and a data-source read. The two stages drive a
+// create then an update so the protocol-level recorder compares both
+// operation kinds across the runtimes.
 func TestL2PluginFrameworkProvider(t *testing.T) {
 	t.Parallel()
 	tfcompat.RunCase(t, "l2_plugin_framework", tfcompat.Case{

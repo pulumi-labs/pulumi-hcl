@@ -1,23 +1,17 @@
-provider "pfx" {
-  prefix = "pre"
-}
-
 resource "pfx_thing" "t" {
   name = "alpha"
 }
 
-data "pfx_lookup" "l" {
-  query = pfx_thing.t.name
+data "pfx_lookup" "l" {}
+
+output "name" {
+  value = pfx_thing.t.name
 }
 
-output "echo" {
-  value = pfx_thing.t.echo
-}
-
-output "prefix_result" {
-  value = pfx_thing.t.prefix_result
+output "id" {
+  value = pfx_thing.t.id
 }
 
 output "lookup" {
-  value = data.pfx_lookup.l.prefix_result
+  value = data.pfx_lookup.l.value
 }

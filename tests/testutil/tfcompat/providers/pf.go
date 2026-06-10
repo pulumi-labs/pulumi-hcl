@@ -28,10 +28,10 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/types"
 )
 
-// PFXProvider is the plugin-framework counterpart of SimpleProvider: one
-// resource and one data source, plus a `prefix` provider-config attribute
-// both concatenate into `prefix_result` so tests can observe provider config
-// flowing end-to-end.
+// PFXProvider is a minimal terraform-plugin-framework provider: one resource
+// holding a single string, and one data source returning a constant. It
+// exists so tfcompat covers providers built on the plugin framework rather
+// than terraform-plugin-sdk/v2.
 func PFXProvider() provider.Provider { return &pfxProvider{} }
 
 type pfxProvider struct{}
@@ -43,23 +43,10 @@ func (p *pfxProvider) Metadata(_ context.Context, _ provider.MetadataRequest, re
 }
 
 func (p *pfxProvider) Schema(_ context.Context, _ provider.SchemaRequest, resp *provider.SchemaResponse) {
-	resp.Schema = pschema.Schema{
-		Attributes: map[string]pschema.Attribute{
-			"prefix": pschema.StringAttribute{Optional: true},
-		},
-	}
+	resp.Schema = pschema.Schema{}
 }
 
-func (p *pfxProvider) Configure(ctx context.Context, req provider.ConfigureRequest, resp *provider.ConfigureResponse) {
-	var cfg struct {
-		Prefix types.String `tfsdk:"prefix"`
-	}
-	resp.Diagnostics.Append(req.Config.Get(ctx, &cfg)...)
-	if resp.Diagnostics.HasError() {
-		return
-	}
-	resp.ResourceData = cfg.Prefix.ValueString()
-	resp.DataSourceData = cfg.Prefix.ValueString()
+func (p *pfxProvider) Configure(context.Context, provider.ConfigureRequest, *provider.ConfigureResponse) {
 }
 
 func (p *pfxProvider) Resources(context.Context) []func() resource.Resource {
@@ -74,18 +61,13 @@ func (p *pfxProvider) DataSources(context.Context) []func() datasource.DataSourc
 	}
 }
 
-type pfxThing struct {
-	prefix string
-}
+type pfxThing struct{}
 
-var _ resource.ResourceWithConfigure = (*pfxThing)(nil)
+var _ resource.Resource = (*pfxThing)(nil)
 
 type pfxThingModel struct {
-	ID           types.String `tfsdk:"id"`
-	Name         types.String `tfsdk:"name"`
-	Note         types.String `tfsdk:"note"`
-	Echo         types.String `tfsdk:"echo"`
-	PrefixResult types.String `tfsdk:"prefix_result"`
+	ID   types.String `tfsdk:"id"`
+	Name types.String `tfsdk:"name"`
 }
 
 func (r *pfxThing) Metadata(_ context.Context, req resource.MetadataRequest, resp *resource.MetadataResponse) {
@@ -99,28 +81,9 @@ func (r *pfxThing) Schema(_ context.Context, _ resource.SchemaRequest, resp *res
 				Computed:      true,
 				PlanModifiers: []planmodifier.String{stringplanmodifier.UseStateForUnknown()},
 			},
-			"name":          rschema.StringAttribute{Required: true},
-			"note":          rschema.StringAttribute{Optional: true},
-			"echo":          rschema.StringAttribute{Computed: true},
-			"prefix_result": rschema.StringAttribute{Computed: true},
+			"name": rschema.StringAttribute{Required: true},
 		},
 	}
-}
-
-func (r *pfxThing) Configure(_ context.Context, req resource.ConfigureRequest, _ *resource.ConfigureResponse) {
-	if prefix, ok := req.ProviderData.(string); ok {
-		r.prefix = prefix
-	}
-}
-
-// fill computes the resource's computed attributes from its arguments.
-func (r *pfxThing) fill(m *pfxThingModel) {
-	echo := m.Name.ValueString()
-	if !m.Note.IsNull() {
-		echo += ":" + m.Note.ValueString()
-	}
-	m.Echo = types.StringValue(echo)
-	m.PrefixResult = types.StringValue(r.prefix + "-" + m.Name.ValueString())
 }
 
 func (r *pfxThing) Create(ctx context.Context, req resource.CreateRequest, resp *resource.CreateResponse) {
@@ -130,7 +93,6 @@ func (r *pfxThing) Create(ctx context.Context, req resource.CreateRequest, resp 
 		return
 	}
 	plan.ID = types.StringValue("pfx-id")
-	r.fill(&plan)
 	resp.Diagnostics.Append(resp.State.Set(ctx, &plan)...)
 }
 
@@ -142,21 +104,17 @@ func (r *pfxThing) Update(ctx context.Context, req resource.UpdateRequest, resp 
 	if resp.Diagnostics.HasError() {
 		return
 	}
-	r.fill(&plan)
 	resp.Diagnostics.Append(resp.State.Set(ctx, &plan)...)
 }
 
 func (r *pfxThing) Delete(_ context.Context, _ resource.DeleteRequest, _ *resource.DeleteResponse) {}
 
-type pfxLookup struct {
-	prefix string
-}
+type pfxLookup struct{}
 
-var _ datasource.DataSourceWithConfigure = (*pfxLookup)(nil)
+var _ datasource.DataSource = (*pfxLookup)(nil)
 
 type pfxLookupModel struct {
-	Query        types.String `tfsdk:"query"`
-	PrefixResult types.String `tfsdk:"prefix_result"`
+	Value types.String `tfsdk:"value"`
 }
 
 func (d *pfxLookup) Metadata(_ context.Context, req datasource.MetadataRequest, resp *datasource.MetadataResponse) {
@@ -166,24 +124,12 @@ func (d *pfxLookup) Metadata(_ context.Context, req datasource.MetadataRequest, 
 func (d *pfxLookup) Schema(_ context.Context, _ datasource.SchemaRequest, resp *datasource.SchemaResponse) {
 	resp.Schema = dschema.Schema{
 		Attributes: map[string]dschema.Attribute{
-			"query":         dschema.StringAttribute{Required: true},
-			"prefix_result": dschema.StringAttribute{Computed: true},
+			"value": dschema.StringAttribute{Computed: true},
 		},
 	}
 }
 
-func (d *pfxLookup) Configure(_ context.Context, req datasource.ConfigureRequest, _ *datasource.ConfigureResponse) {
-	if prefix, ok := req.ProviderData.(string); ok {
-		d.prefix = prefix
-	}
-}
-
-func (d *pfxLookup) Read(ctx context.Context, req datasource.ReadRequest, resp *datasource.ReadResponse) {
-	var cfg pfxLookupModel
-	resp.Diagnostics.Append(req.Config.Get(ctx, &cfg)...)
-	if resp.Diagnostics.HasError() {
-		return
-	}
-	cfg.PrefixResult = types.StringValue(d.prefix + "-" + cfg.Query.ValueString())
-	resp.Diagnostics.Append(resp.State.Set(ctx, &cfg)...)
+func (d *pfxLookup) Read(ctx context.Context, _ datasource.ReadRequest, resp *datasource.ReadResponse) {
+	state := pfxLookupModel{Value: types.StringValue("pfx-value")}
+	resp.Diagnostics.Append(resp.State.Set(ctx, &state)...)
 }

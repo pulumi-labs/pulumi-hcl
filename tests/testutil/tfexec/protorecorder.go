@@ -16,10 +16,8 @@ package tfexec
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"math/big"
-	"sort"
 	"sync"
 
 	"github.com/hashicorp/terraform-plugin-go/tfprotov6"
@@ -28,7 +26,7 @@ import (
 
 // unknownSentinel stands in for unknown values in recorded ops. Both runtimes
 // must agree on where unknowns appear for their recordings to compare equal.
-const unknownSentinel = "<unknown>"
+const unknownSentinel = "<unknown-529478307895340>"
 
 // WrapServer returns a tfprotov6.ProviderServer that delegates to srv and
 // appends an Op to r for every resource CRUD operation and data-source read.
@@ -233,13 +231,11 @@ func valueToAny(v tftypes.Value) (any, error) {
 		}
 		n, _ := f.Float64()
 		return n, nil
-	case typ.Is(tftypes.Set{}):
-		elems, err := elementsToAny(v)
-		if err != nil {
-			return nil, err
-		}
-		return sortByJSON(elems)
-	case typ.Is(tftypes.List{}), typ.Is(tftypes.Tuple{}):
+	// Sets keep their wire order. OpenTofu and the bridge could disagree on
+	// set element order (cty hashes vs. Pulumi array order); if a test
+	// provider ever grows a set attribute and recordings diverge on it, set
+	// elements need canonical ordering here.
+	case typ.Is(tftypes.List{}), typ.Is(tftypes.Set{}), typ.Is(tftypes.Tuple{}):
 		return elementsToAny(v)
 	case typ.Is(tftypes.Map{}), typ.Is(tftypes.Object{}):
 		var attrs map[string]tftypes.Value
@@ -272,30 +268,6 @@ func elementsToAny(v tftypes.Value) ([]any, error) {
 			return nil, fmt.Errorf("element %d: %w", i, err)
 		}
 		out[i] = conv
-	}
-	return out, nil
-}
-
-// sortByJSON orders set elements by their JSON encoding. Set element order on
-// the wire is implementation-defined, so recordings from the two paths would
-// otherwise spuriously diverge — the protocol-level analog of canonicalizeSets.
-func sortByJSON(elems []any) ([]any, error) {
-	type keyed struct {
-		key  string
-		elem any
-	}
-	pairs := make([]keyed, len(elems))
-	for i, e := range elems {
-		b, err := json.Marshal(e)
-		if err != nil {
-			return nil, err
-		}
-		pairs[i] = keyed{key: string(b), elem: e}
-	}
-	sort.Slice(pairs, func(i, j int) bool { return pairs[i].key < pairs[j].key })
-	out := make([]any, len(pairs))
-	for i, p := range pairs {
-		out[i] = p.elem
 	}
 	return out, nil
 }
