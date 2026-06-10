@@ -25,6 +25,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -346,8 +347,8 @@ type Engine struct {
 	// moduleLoader loads and caches module configurations.
 	moduleLoader *modules.Loader
 
-	// moduleInstances maps module prefix → list of instances for inlined modules.
-	moduleInstances *util.SyncMap[string, []*moduleInstance]
+	// moduleInstances maps module path → list of instances for inlined modules.
+	moduleInstances *util.SyncMap[modulepath.Path, []*moduleInstance]
 
 	parallel int
 
@@ -448,7 +449,7 @@ func NewEngine(ctx context.Context, config *ast.Config, opts *EngineOptions) *En
 		packages:                opts.Packages,
 		packageRefs:             make(map[string]PackageRef),
 		moduleLoader:            modules.NewLoader(ctx),
-		moduleInstances:         util.NewSyncMap[string, []*moduleInstance](),
+		moduleInstances:         util.NewSyncMap[modulepath.Path, []*moduleInstance](),
 		parallel:                opts.Parallel,
 		failedNodes:             util.NewSyncMap[string, error](),
 		alwaysRegisterProviders: opts.AlwaysRegisterProviders,
@@ -889,7 +890,7 @@ func (e *Engine) parentEvalContext(modInfo *graph.ModuleInfo) *eval.Context {
 	if modInfo.ParentPrefix() == "" {
 		return e.evaluator.Context()
 	}
-	parentInsts, ok := e.moduleInstances.Get(modInfo.ParentPrefix())
+	parentInsts, ok := e.moduleInstances.Get(modInfo.ParentPath())
 	if !ok || len(parentInsts) == 0 {
 		return nil
 	}
@@ -1251,7 +1252,7 @@ func (e *Engine) registerResourceInstanceInContext(
 		}
 	}
 
-	opts, err := e.buildResourceOptionsInContext(res, instance, evalCtx, parentURN, node.ModuleInfo, resourceMapping, resSchema.InputProperties, resSchema.Properties)
+	opts, err := e.buildResourceOptionsInContext(res, instance, evalCtx, parentURN, node.ModuleInfo, modInst, resourceMapping, resSchema.InputProperties, resSchema.Properties)
 	if err != nil {
 		return err
 	}
@@ -1363,7 +1364,7 @@ func (e *Engine) registerResourceInstanceInContext(
 func (e *Engine) buildResourceOptionsInContext(
 	res *ast.Resource, instance *graph.ExpandedResource,
 	evalCtx *eval.Context, parentURN urn.URN,
-	modInfo *graph.ModuleInfo, resourceMapping *bridge.BodyMapping,
+	modInfo *graph.ModuleInfo, modInst *moduleInstance, resourceMapping *bridge.BodyMapping,
 	inputProps, outputProps []*schema.Property,
 ) (*ResourceOptions, error) {
 	opts := &ResourceOptions{}
@@ -1529,7 +1530,7 @@ func (e *Engine) buildResourceOptionsInContext(
 	}
 
 	// Handle moved blocks - resolve aliases from moved blocks that target this resource
-	movedAliases := e.resolveMovedAliases(res)
+	movedAliases := e.resolveMovedAliases(res, instance.Key, modInfo, modInst)
 	opts.Aliases = append(opts.Aliases, movedAliases...)
 
 	// Handle aliases attribute
@@ -1684,27 +1685,350 @@ func (e *Engine) buildResourceOptionsInContext(
 	return opts, nil
 }
 
-// resolveMovedAliases finds any moved blocks that target this resource and returns
-// the source addresses as aliases.
-func (e *Engine) resolveMovedAliases(res *ast.Resource) []Alias {
-	var aliases []Alias
-	resourceAddr := res.Type + "." + res.Name
+// movedAddr is a parsed `moved` block address: optional module-call steps
+// followed by an optional resource. A whole-module-call address (e.g.
+// `module.a`) has an empty Type.
+type movedAddr struct {
+	modules []modulepath.Step // module-call steps, outermost first
+	Type    string            // resource type, or "" for a whole-module-call address
+	Name    string            // resource name
+	key     string            // instance-key bracket content ("0" or `"k"`), or ""
+}
 
-	for _, moved := range e.config.Moved {
-		// Check if this moved block targets the current resource
-		toAddr := graph.FormatTraversal(moved.To)
-		if toAddr == resourceAddr {
-			// Convert the "from" address to a URN-style alias
-			fromAddr := graph.FormatTraversal(moved.From)
-			if fromAddr != "" {
-				// For Pulumi aliases, we use the resource name from the "from" address
-				// The alias tells Pulumi this resource may have been known by a different name
-				aliases = append(aliases, Alias{Spec: &AliasSpec{Name: fromAddr}})
+// parseMovedAddr decodes a `moved` from/to traversal into its module-call steps
+// and (optional) resource. It returns false for a traversal it cannot model.
+func parseMovedAddr(t hcl.Traversal) (movedAddr, bool) {
+	var a movedAddr
+	head := func(step hcl.Traverser) (string, bool) {
+		switch s := step.(type) {
+		case hcl.TraverseRoot:
+			return s.Name, true
+		case hcl.TraverseAttr:
+			return s.Name, true
+		}
+		return "", false
+	}
+	i := 0
+	for i < len(t) {
+		name, ok := head(t[i])
+		if !ok || name != "module" {
+			break
+		}
+		i++
+		if i >= len(t) {
+			return a, false
+		}
+		modName, ok := head(t[i])
+		if !ok {
+			return a, false
+		}
+		i++
+		step := modulepath.NewStep(modName)
+		if i < len(t) {
+			if idx, ok := t[i].(hcl.TraverseIndex); ok {
+				keyed, ok := moduleStepFor(modName, idx.Key)
+				if !ok {
+					return a, false
+				}
+				step = keyed
+				i++
 			}
+		}
+		a.modules = append(a.modules, step)
+	}
+	if i >= len(t) {
+		// Whole-module-call address (no trailing resource).
+		return a, len(a.modules) > 0
+	}
+	typ, ok := head(t[i])
+	if !ok {
+		return a, false
+	}
+	i++
+	if i >= len(t) {
+		return a, false
+	}
+	name, ok := head(t[i])
+	if !ok {
+		return a, false
+	}
+	i++
+	a.Type, a.Name = typ, name
+	if i < len(t) {
+		if idx, ok := t[i].(hcl.TraverseIndex); ok {
+			a.key = movedKeyToken(idx.Key)
+			i++
+		}
+	}
+	return a, i == len(t)
+}
+
+// moduleStepFor builds a module-call path step for `module.<name>[<key>]`,
+// decoding the count index or for_each key. It returns false for a key that is
+// neither a non-negative integer nor a string.
+func moduleStepFor(name string, key cty.Value) (modulepath.Step, bool) {
+	switch key.Type() {
+	case cty.Number:
+		iv, _ := key.AsBigFloat().Int64()
+		if iv < 0 {
+			return modulepath.Step{}, false
+		}
+		return modulepath.NewIndexedStep(name, int(iv)), true
+	case cty.String:
+		return modulepath.NewKeyedStep(name, key.AsString()), true
+	default:
+		return modulepath.Step{}, false
+	}
+}
+
+// movedKeyToken renders an instance-key value as it appears in a node key's
+// `[...]` suffix: a bare integer for count, or a Go-quoted string for for_each.
+func movedKeyToken(v cty.Value) string {
+	switch v.Type() {
+	case cty.Number:
+		iv, _ := v.AsBigFloat().Int64()
+		return strconv.FormatInt(iv, 10)
+	case cty.String:
+		return strconv.Quote(v.AsString())
+	default:
+		return ""
+	}
+}
+
+// resolveMovedAliases finds the `moved` blocks that rename the resource instance
+// being registered and returns the aliases recording its prior addresses, so a
+// rename is treated as a move rather than a replacement.
+//
+// A moved block's addresses are relative to the module it is written in, so the
+// resolver walks the resource's own module and every ancestor module. It handles
+// resource renames within a module (including `count`/`for_each` instance-key
+// changes), moves of a resource between the root and a module or between two
+// modules, and resources carried along when an enclosing module call is renamed
+// or re-keyed (the matching component alias is attached in processModuleInit).
+func (e *Engine) resolveMovedAliases(
+	res *ast.Resource, instanceKey string, modInfo *graph.ModuleInfo, modInst *moduleInstance,
+) []Alias {
+	var aliases []Alias
+
+	// resPath is the resource's module instance path (with any count/for_each
+	// keys), which is what a resolved moved address is matched against.
+	resPath := modulepath.Root()
+	if modInst != nil {
+		resPath = modInst.Path
+	}
+	_, instIdx, instEach := graph.ParseInstanceKey(instanceKey)
+
+	for _, scope := range ancestorPaths(resPath) {
+		for _, moved := range e.graph.MovedBlocks(scope) {
+			to, ok := parseMovedAddr(moved.To)
+			if !ok || to.Type == "" { // skip whole-module-call moves
+				continue
+			}
+			toPath := appendModuleSteps(scope, to.modules)
+			if toPath != resPath || to.Type != res.Type || to.Name != res.Name {
+				continue
+			}
+			from, ok := parseMovedAddr(moved.From)
+			if !ok || from.Type == "" {
+				continue
+			}
+			fromPath := appendModuleSteps(scope, from.modules)
+
+			// Determine the prior instance key. A keyed `to` targets one specific
+			// instance and takes the prior key from `from`; an unkeyed `to` is a
+			// whole-resource rename that maps every instance to the same key.
+			var priorKey string
+			if to.key != "" {
+				if !instanceKeyMatches(instIdx, instEach, to.key) {
+					continue
+				}
+				priorKey = from.key
+			} else {
+				switch {
+				case instIdx != nil:
+					priorKey = strconv.Itoa(*instIdx)
+				case instEach != nil:
+					priorKey = strconv.Quote(*instEach)
+				}
+			}
+			keyBracket := from.Name
+			if priorKey != "" {
+				keyBracket += "[" + priorKey + "]"
+			}
+
+			// The prior name is the resource's own name under its prior module
+			// path; the prior parent is described relative to where it is now.
+			name := buildResourceName(from.Name, keyBracket)
+			if !fromPath.IsRoot() {
+				name = fromPath.LogicalName() + "-" + name
+			}
+			parentURN, noParent, ok := e.priorParentSpec(fromPath, resPath, modInst)
+			if !ok {
+				continue
+			}
+			aliases = append(aliases, Alias{Spec: &AliasSpec{
+				Name:      name,
+				ParentURN: parentURN,
+				NoParent:  noParent,
+			}})
 		}
 	}
 
+	// A `moved` block that renames an enclosing module call moves this resource
+	// with it. The resource keeps its own name within the module, so it is
+	// aliased to the name it had under the prior module path; Pulumi combines
+	// that with the renamed component's own alias to recover the old URN.
+	if oldPath := e.oldModulePath(resPath); oldPath != resPath {
+		bareKey := instanceKey
+		if modInfo != nil {
+			bareKey = strings.TrimPrefix(instanceKey, modInfo.Prefix())
+		}
+		name := buildResourceName(res.Name, bareKey)
+		if !oldPath.IsRoot() {
+			name = oldPath.LogicalName() + "-" + name
+		}
+		aliases = append(aliases, Alias{Spec: &AliasSpec{Name: name}})
+	}
+
 	return aliases
+}
+
+// oldModulePath applies any whole-module-call `moved` blocks that rename a
+// module enclosing (or equal to) path, returning the module path the object
+// lived at before the rename. It returns path unchanged when none applies.
+func (e *Engine) oldModulePath(path modulepath.Path) modulepath.Path {
+	for _, scope := range ancestorPaths(path) {
+		for _, moved := range e.graph.MovedBlocks(scope) {
+			to, ok := parseMovedAddr(moved.To)
+			if !ok || to.Type != "" || len(to.modules) == 0 {
+				continue // not a whole-module-call address
+			}
+			from, ok := parseMovedAddr(moved.From)
+			if !ok || from.Type != "" || len(from.modules) == 0 {
+				continue
+			}
+			toPath := appendModuleSteps(scope, to.modules)
+			suffix, ok := stripModulePrefix(path, toPath)
+			if !ok {
+				continue
+			}
+			fromPath := appendModuleSteps(scope, from.modules)
+			for _, s := range suffix {
+				fromPath = fromPath.Append(s)
+			}
+			return fromPath
+		}
+	}
+	return path
+}
+
+// moduleComponentAliases returns the alias for a module instance's component
+// resource when a `moved` block renames its call, so the component (and its
+// children) are recognized as moved rather than replaced.
+func (e *Engine) moduleComponentAliases(instPath modulepath.Path) []Alias {
+	oldPath := e.oldModulePath(instPath)
+	if oldPath == instPath {
+		return nil
+	}
+	return []Alias{{Spec: &AliasSpec{Name: oldPath.LogicalName()}}}
+}
+
+// priorParentSpec describes the parent of a resource at its prior moved address,
+// relative to where it is registered now: the parent is unchanged within the
+// same module, was the stack (NoParent) when the prior address was the root, or
+// is a specific module component otherwise. ok is false when that prior
+// component cannot be resolved.
+func (e *Engine) priorParentSpec(
+	fromPath, resPath modulepath.Path, modInst *moduleInstance,
+) (parentURN string, noParent, ok bool) {
+	switch {
+	case fromPath == resPath:
+		return "", false, true // parent unchanged; the alias inherits it
+	case fromPath.IsRoot():
+		return "", true, true // prior parent was the stack
+	default:
+		u, ok := e.priorComponentURN(fromPath, modInst)
+		return string(u), false, ok
+	}
+}
+
+// priorComponentURN returns the component URN of the module a resource moved out
+// of. It uses the module's live component when that module still exists in the
+// run; otherwise, when the resource now lives in a sibling module of the same
+// source, it derives the URN from that sibling's component (same component type).
+func (e *Engine) priorComponentURN(
+	fromPath modulepath.Path, modInst *moduleInstance,
+) (urn.URN, bool) {
+	if insts, ok := e.moduleInstances.Get(fromPath); ok && len(insts) > 0 {
+		return insts[0].URN, true
+	}
+	if modInst != nil {
+		// Same component type as the resource's own module, so renaming the
+		// resource's component URN to the prior module's name yields it.
+		return modInst.URN.Rename(fromPath.LogicalName()), true
+	}
+	return "", false
+}
+
+// pathSteps returns p's steps, root first.
+func pathSteps(p modulepath.Path) []modulepath.Step {
+	var steps []modulepath.Step
+	p.Steps(func(s modulepath.Step) bool {
+		steps = append(steps, s)
+		return true
+	})
+	return steps
+}
+
+// stripModulePrefix returns the steps of path that follow prefix, and whether
+// prefix is a prefix of path.
+func stripModulePrefix(path, prefix modulepath.Path) ([]modulepath.Step, bool) {
+	ps, pre := pathSteps(path), pathSteps(prefix)
+	if len(pre) > len(ps) {
+		return nil, false
+	}
+	for i := range pre {
+		if ps[i] != pre[i] {
+			return nil, false
+		}
+	}
+	return ps[len(pre):], true
+}
+
+// ancestorPaths returns p and all of its ancestors, root first.
+func ancestorPaths(p modulepath.Path) []modulepath.Path {
+	var chain []modulepath.Path
+	for {
+		chain = append(chain, p)
+		parent, _, ok := p.Parent()
+		if !ok {
+			break
+		}
+		p = parent
+	}
+	slices.Reverse(chain)
+	return chain
+}
+
+// appendModuleSteps extends base by the module-call steps of a moved address.
+func appendModuleSteps(base modulepath.Path, steps []modulepath.Step) modulepath.Path {
+	for _, s := range steps {
+		base = base.Append(s)
+	}
+	return base
+}
+
+// instanceKeyMatches reports whether the instance identified by idx/each is the
+// one named by a `[...]` key token (e.g. "0" or `"k"`).
+func instanceKeyMatches(idx *int, each *string, token string) bool {
+	switch {
+	case idx != nil:
+		return token == strconv.Itoa(*idx)
+	case each != nil:
+		return token == strconv.Quote(*each)
+	default:
+		return false
+	}
 }
 
 // resolveImportId finds any import blocks that target this resource and returns
@@ -2594,7 +2918,7 @@ func (a *moduleLoaderAdapter) LoadModule(source, version, workDir string) (*grap
 
 // forEachModuleInstance iterates over all instances of the module identified by node.ModuleInfo.Prefix().
 func (e *Engine) forEachModuleInstance(node *graph.Node, fn func(inst *moduleInstance) error) error {
-	instances, ok := e.moduleInstances.Get(node.ModuleInfo.Prefix())
+	instances, ok := e.moduleInstances.Get(node.ModuleInfo.Path)
 	if !ok {
 		return fmt.Errorf("no module instances for prefix %q", node.ModuleInfo.Prefix())
 	}
@@ -2621,7 +2945,7 @@ func (e *Engine) processModuleVariable(node *graph.Node) error {
 	// instance's context so that expressions like var.name resolve correctly.
 	parentEvalCtx := e.evaluator.Context()
 	if modInfo.ParentPrefix() != "" {
-		parentInstances, ok := e.moduleInstances.Get(modInfo.ParentPrefix())
+		parentInstances, ok := e.moduleInstances.Get(modInfo.ParentPath())
 		if ok && len(parentInstances) > 0 {
 			parentEvalCtx = parentInstances[0].EvalCtx
 		}
@@ -2708,9 +3032,9 @@ func (e *Engine) processModuleInit(ctx context.Context, node *graph.Node) error 
 	// downstream per-instance work (vars, locals, nested modules, resources)
 	// loop zero times instead of falling back to the root context.
 	if modInfo.ParentPrefix() != "" {
-		parentInstances, ok := e.moduleInstances.Get(modInfo.ParentPrefix())
+		parentInstances, ok := e.moduleInstances.Get(modInfo.ParentPath())
 		if !ok || len(parentInstances) == 0 {
-			e.moduleInstances.Set(modInfo.Prefix(), nil)
+			e.moduleInstances.Set(modInfo.Path, nil)
 			return nil
 		}
 		parentURN = parentInstances[0].URN
@@ -2751,6 +3075,7 @@ func (e *Engine) processModuleInit(ctx context.Context, node *graph.Node) error 
 	if mod.Count == nil && mod.ForEach == nil {
 		instPath := instancePath(modInfo, nil, nil)
 		componentOpts := &ResourceOptions{Parent: parentURN}
+		componentOpts.Aliases = e.moduleComponentAliases(instPath)
 		componentURN, _, _, err := e.registerComponentResource(ctx, componentType, instPath.LogicalName(), property.NewMap(inputs), componentOpts)
 		if err != nil {
 			return fmt.Errorf("registering module component: %w", err)
@@ -2761,7 +3086,7 @@ func (e *Engine) processModuleInit(ctx context.Context, node *graph.Node) error 
 			e.stackName, e.projectName, e.organization,
 		)
 
-		e.moduleInstances.Set(modInfo.Prefix(), []*moduleInstance{{
+		e.moduleInstances.Set(modInfo.Path, []*moduleInstance{{
 			Path:    instPath,
 			EvalCtx: instCtx,
 			URN:     componentURN,
@@ -2779,6 +3104,7 @@ func (e *Engine) processModuleInit(ctx context.Context, node *graph.Node) error 
 		for idx := range count {
 			instPath := instancePath(modInfo, &idx, nil)
 			componentOpts := &ResourceOptions{Parent: parentURN}
+			componentOpts.Aliases = e.moduleComponentAliases(instPath)
 			componentURN, _, _, err := e.registerComponentResource(ctx, componentType, instPath.LogicalName(), property.NewMap(inputs), componentOpts)
 			if err != nil {
 				return fmt.Errorf("registering module component %s: %w", instPath.String(), err)
@@ -2796,7 +3122,7 @@ func (e *Engine) processModuleInit(ctx context.Context, node *graph.Node) error 
 				Outputs: make(map[string]cty.Value),
 			})
 		}
-		e.moduleInstances.Set(modInfo.Prefix(), instances)
+		e.moduleInstances.Set(modInfo.Path, instances)
 		return nil
 	}
 
@@ -2811,6 +3137,7 @@ func (e *Engine) processModuleInit(ctx context.Context, node *graph.Node) error 
 		v := forEach[ks]
 		instPath := instancePath(modInfo, nil, &k)
 		componentOpts := &ResourceOptions{Parent: parentURN}
+		componentOpts.Aliases = e.moduleComponentAliases(instPath)
 		componentURN, _, _, err := e.registerComponentResource(ctx, componentType, instPath.LogicalName(), property.NewMap(inputs), componentOpts)
 		if err != nil {
 			return fmt.Errorf("registering module component %s: %w", instPath.String(), err)
@@ -2829,7 +3156,7 @@ func (e *Engine) processModuleInit(ctx context.Context, node *graph.Node) error 
 			Outputs: make(map[string]cty.Value),
 		})
 	}
-	e.moduleInstances.Set(modInfo.Prefix(), instances)
+	e.moduleInstances.Set(modInfo.Path, instances)
 	return nil
 }
 
@@ -2866,12 +3193,12 @@ func (e *Engine) processModuleOutput(_ context.Context, node *graph.Node) error 
 	// the parent context is the enclosing module instance's eval context.
 	parentCtx := e.evaluator.Context()
 	if modInfo.ParentPrefix() != "" {
-		parentInstances, ok := e.moduleInstances.Get(modInfo.ParentPrefix())
+		parentInstances, ok := e.moduleInstances.Get(modInfo.ParentPath())
 		if ok && len(parentInstances) > 0 {
 			parentCtx = parentInstances[0].EvalCtx
 		}
 	}
-	instances, ok := e.moduleInstances.Get(modInfo.Prefix())
+	instances, ok := e.moduleInstances.Get(modInfo.Path)
 	if !ok {
 		return nil
 	}
@@ -2937,7 +3264,7 @@ func (e *Engine) processModuleComplete(ctx context.Context, node *graph.Node) er
 		return fmt.Errorf("module completion node missing ModuleInfo")
 	}
 
-	instances, ok := e.moduleInstances.Get(modInfo.Prefix())
+	instances, ok := e.moduleInstances.Get(modInfo.Path)
 	if !ok {
 		return fmt.Errorf("no module instances for prefix %q", modInfo.Prefix())
 	}
@@ -2966,7 +3293,7 @@ func (e *Engine) processModuleComplete(ctx context.Context, node *graph.Node) er
 	// parent context is the enclosing module instance's eval context.
 	parentCtx := e.evaluator.Context()
 	if modInfo.ParentPrefix() != "" {
-		parentInstances, ok := e.moduleInstances.Get(modInfo.ParentPrefix())
+		parentInstances, ok := e.moduleInstances.Get(modInfo.ParentPath())
 		if ok && len(parentInstances) > 0 {
 			parentCtx = parentInstances[0].EvalCtx
 		}

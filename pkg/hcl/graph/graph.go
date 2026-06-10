@@ -74,6 +74,16 @@ func (m *ModuleInfo) ParentPrefix() string {
 	return parent.PrefixString()
 }
 
+// ParentPath returns the path of the enclosing module, or modulepath.Root() if
+// this module is at the root of the configuration.
+func (m *ModuleInfo) ParentPath() modulepath.Path {
+	parent, _, ok := m.Path.Parent()
+	if !ok {
+		return modulepath.Root()
+	}
+	return parent
+}
+
 // LoadedModule represents a loaded and parsed module (used by ModuleLoader).
 type LoadedModule struct {
 	Config     *ast.Config
@@ -182,6 +192,12 @@ type Graph struct {
 	// dependents counts how many other nodes list a given key in their
 	// dependency list. Read by HasDependents at Walk time.
 	dependents map[string]int
+
+	// moved holds the moved blocks of each module keyed by that module's path.
+	// A moved block's from/to addresses are relative to the module it is written
+	// in, so resolving a rename needs the blocks scoped to the resource's own
+	// module.
+	moved map[modulepath.Path][]*ast.Moved
 }
 
 type dagNode struct {
@@ -202,7 +218,15 @@ func NewGraph() *Graph {
 		references:   make(map[string][]hcl.Range),
 		keyByDagNode: make(map[pdag.Node]string),
 		dependents:   make(map[string]int),
+		moved:        make(map[modulepath.Path][]*ast.Moved),
 	}
+}
+
+// MovedBlocks returns the moved blocks declared in the module at path (the root
+// module is modulepath.Root()). Their from/to addresses are relative to that
+// module.
+func (g *Graph) MovedBlocks(path modulepath.Path) []*ast.Moved {
+	return g.moved[path]
 }
 
 // recordRef records that key was referenced from the given source range.
@@ -285,6 +309,7 @@ func (g *Graph) HasDependents(key string) bool {
 // moduleLoader is required when config contains modules.
 func BuildFromConfig(config *ast.Config, moduleLoader ModuleLoader, workDir string) (*Graph, error) {
 	g := NewGraph()
+	g.moved[modulepath.Root()] = config.Moved
 
 	contract.AssertNoErrorf(errors.Join(
 		g.AddNode(&Node{
@@ -852,6 +877,7 @@ func (g *Graph) inlineModule(
 	path := parentPath.Append(modulepath.NewStep(name))
 	prefix := path.PrefixString()
 	parentPrefix := parentPath.PrefixString()
+	g.moved[path] = loaded.Config.Moved
 	modInfo := &ModuleInfo{
 		Path:             path,
 		Module:           mod,

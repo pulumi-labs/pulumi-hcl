@@ -2374,20 +2374,22 @@ resource "aws_instance" "web" {
 
 	require.NotNil(t, instanceReq, "expected aws:index:Instance resource to be registered")
 
-	// Check that aliases include the old resource address
+	// The alias names the resource by the bare name it had under the old
+	// address ("old_server"), not the full "type.name" address, so the engine
+	// recognizes the rename as a move rather than replacing the resource.
 	if len(instanceReq.Aliases) == 0 {
-		t.Fatal("expected Aliases to contain the moved 'from' address")
+		t.Fatal("expected Aliases to contain the moved 'from' name")
 	}
 
 	found := false
 	for _, alias := range instanceReq.Aliases {
-		if alias.Spec != nil && alias.Spec.Name == "aws_instance.old_server" {
+		if alias.Spec != nil && alias.Spec.Name == "old_server" {
 			found = true
 			break
 		}
 	}
 	if !found {
-		t.Errorf("expected alias with name 'aws_instance.old_server', got %v", instanceReq.Aliases)
+		t.Errorf("expected alias with name 'old_server', got %v", instanceReq.Aliases)
 	}
 }
 
