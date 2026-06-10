@@ -72,4 +72,16 @@ func TestL2Moved(t *testing.T) {
 			})
 		})
 	}
+
+	// Changing the resource's type. This needs the plugin-framework provider:
+	// the target type must implement MoveResourceState, which every
+	// terraform-plugin-sdk/v2 provider rejects unconditionally.
+	t.Run("change_type", func(t *testing.T) {
+		t.Parallel()
+		tfcompat.RunCase(t, "l2_moved_change_type", tfcompat.Case{
+			Providers: []tfcompat.Provider{
+				{Name: "pfx", PFFactory: providers.PFXProvider},
+			},
+		})
+	})
 }
