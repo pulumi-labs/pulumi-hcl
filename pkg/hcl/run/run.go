@@ -1947,7 +1947,7 @@ func (e *Engine) priorParentSpec(
 	case fromPath.IsRoot():
 		return "", true, true // prior parent was the stack
 	default:
-		u, ok := e.priorComponentURN(fromPath, resPath, modInst)
+		u, ok := e.priorComponentURN(fromPath, modInst)
 		return string(u), false, ok
 	}
 }
@@ -1957,26 +1957,17 @@ func (e *Engine) priorParentSpec(
 // run; otherwise, when the resource now lives in a sibling module of the same
 // source, it derives the URN from that sibling's component (same component type).
 func (e *Engine) priorComponentURN(
-	fromPath, resPath modulepath.Path, modInst *moduleInstance,
+	fromPath modulepath.Path, modInst *moduleInstance,
 ) (urn.URN, bool) {
 	if insts, ok := e.moduleInstances.Get(fromPath); ok && len(insts) > 0 {
 		return insts[0].URN, true
 	}
 	if modInst != nil {
-		return swapURNName(modInst.URN, resPath.LogicalName(), fromPath.LogicalName()), true
+		// Same component type as the resource's own module, so renaming the
+		// resource's component URN to the prior module's name yields it.
+		return modInst.URN.Rename(fromPath.LogicalName()), true
 	}
 	return "", false
-}
-
-// swapURNName returns u with its trailing name segment replaced, used to derive
-// a sibling resource's URN (e.g. one module component's URN from another's).
-func swapURNName(u urn.URN, oldName, newName string) urn.URN {
-	s := string(u)
-	suffix := "::" + oldName
-	if !strings.HasSuffix(s, suffix) {
-		return u
-	}
-	return urn.URN(strings.TrimSuffix(s, suffix) + "::" + newName)
 }
 
 // pathSteps returns p's steps, root first.
