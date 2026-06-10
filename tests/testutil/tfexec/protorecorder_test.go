@@ -173,6 +173,31 @@ func TestWrapServer_DifferentWhenOutputsDiffer(t *testing.T) {
 	assert.NotEqual(t, a.Ops(), b.Ops())
 }
 
+// TestWrapServer_UnrecordableOpsError confirms operations without an OpKind
+// fail loudly instead of silently passing through unrecorded.
+func TestWrapServer_UnrecordableOpsError(t *testing.T) {
+	t.Parallel()
+	srv := tfexec.WrapServer(&fakeServer{}, &tfexec.Recorder{})
+
+	_, err := srv.MoveResourceState(t.Context(), &tfprotov6.MoveResourceStateRequest{})
+	require.EqualError(t, err, "recording: no OpKind for MoveResourceState; extend the recorder to support it")
+
+	_, err = srv.ImportResourceState(t.Context(), &tfprotov6.ImportResourceStateRequest{})
+	require.EqualError(t, err, "recording: no OpKind for ImportResourceState; extend the recorder to support it")
+
+	_, err = srv.CallFunction(t.Context(), &tfprotov6.CallFunctionRequest{})
+	require.EqualError(t, err, "recording: no OpKind for CallFunction; extend the recorder to support it")
+
+	_, err = srv.OpenEphemeralResource(t.Context(), &tfprotov6.OpenEphemeralResourceRequest{})
+	require.EqualError(t, err, "recording: no OpKind for OpenEphemeralResource; extend the recorder to support it")
+
+	_, err = srv.RenewEphemeralResource(t.Context(), &tfprotov6.RenewEphemeralResourceRequest{})
+	require.EqualError(t, err, "recording: no OpKind for RenewEphemeralResource; extend the recorder to support it")
+
+	_, err = srv.CloseEphemeralResource(t.Context(), &tfprotov6.CloseEphemeralResourceRequest{})
+	require.EqualError(t, err, "recording: no OpKind for CloseEphemeralResource; extend the recorder to support it")
+}
+
 // TestWrapServer_DifferentWhenUnknownsDiffer confirms the recorder preserves
 // the null/unknown distinction: planned states that differ only in an unknown
 // versus a null computed attribute produce unequal recordings.

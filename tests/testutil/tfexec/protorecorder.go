@@ -32,8 +32,9 @@ const unknownSentinel = "<unknown-529478307895340>"
 // appends an Op to r for every resource CRUD operation and data-source read.
 // It records at the protocol boundary — wire values are decoded with the
 // provider's own schema — so it works for any provider implementation (e.g.
-// terraform-plugin-framework) and, unlike a per-resource wrapper, preserves
-// optional protocol capabilities such as MoveResourceState.
+// terraform-plugin-framework). Operations with observable behavior but no
+// OpKind (moves, imports, functions, ephemeral resources) error instead of
+// passing through unrecorded.
 //
 // Protocol recordings are stricter than Wrap's helper/schema snapshots: null
 // and unknown values are preserved instead of being flattened to zero values.
@@ -171,6 +172,54 @@ func (s *recordingServer) ReadDataSource(
 	}
 	s.rec.add(Op{Kind: OpDataSource, Type: req.TypeName, Inputs: config, Outputs: state})
 	return resp, nil
+}
+
+// The provider operations below have observable behavior but no OpKind yet.
+// They fail loudly instead of delegating: an operation that slips through
+// both paths unrecorded would compare vacuously equal, hiding a divergence.
+// Plumbing RPCs (schema, validation, plan, configure, upgrade) still pass
+// through via the embedded server.
+
+// errNoOpKind is the error for protocol operations the recorder cannot
+// represent as an Op.
+func errNoOpKind(rpc string) error {
+	return fmt.Errorf("recording: no OpKind for %s; extend the recorder to support it", rpc)
+}
+
+func (s *recordingServer) ImportResourceState(
+	context.Context, *tfprotov6.ImportResourceStateRequest,
+) (*tfprotov6.ImportResourceStateResponse, error) {
+	return nil, errNoOpKind("ImportResourceState")
+}
+
+func (s *recordingServer) MoveResourceState(
+	context.Context, *tfprotov6.MoveResourceStateRequest,
+) (*tfprotov6.MoveResourceStateResponse, error) {
+	return nil, errNoOpKind("MoveResourceState")
+}
+
+func (s *recordingServer) CallFunction(
+	context.Context, *tfprotov6.CallFunctionRequest,
+) (*tfprotov6.CallFunctionResponse, error) {
+	return nil, errNoOpKind("CallFunction")
+}
+
+func (s *recordingServer) OpenEphemeralResource(
+	context.Context, *tfprotov6.OpenEphemeralResourceRequest,
+) (*tfprotov6.OpenEphemeralResourceResponse, error) {
+	return nil, errNoOpKind("OpenEphemeralResource")
+}
+
+func (s *recordingServer) RenewEphemeralResource(
+	context.Context, *tfprotov6.RenewEphemeralResourceRequest,
+) (*tfprotov6.RenewEphemeralResourceResponse, error) {
+	return nil, errNoOpKind("RenewEphemeralResource")
+}
+
+func (s *recordingServer) CloseEphemeralResource(
+	context.Context, *tfprotov6.CloseEphemeralResourceRequest,
+) (*tfprotov6.CloseEphemeralResourceResponse, error) {
+	return nil, errNoOpKind("CloseEphemeralResource")
 }
 
 // decodeObject unmarshals a wire value with the given object type and converts
