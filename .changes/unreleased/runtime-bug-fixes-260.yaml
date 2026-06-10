@@ -1,6 +1,0 @@
-kind: bug-fixes
-body: Treat a `moved` block as a rename instead of replacing the resource
-time: 2026-06-09T13:44:36.000000+00:00
-custom:
-    Component: runtime
-    PR: "260"

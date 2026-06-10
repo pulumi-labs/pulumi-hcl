@@ -1,6 +1,0 @@
-kind: bug-fixes
-body: Preserve a single-interpolation value's type in `templatefile` and `templatestring`
-time: 2026-06-09T13:15:45.000000+00:00
-custom:
-    Component: runtime
-    PR: "258"

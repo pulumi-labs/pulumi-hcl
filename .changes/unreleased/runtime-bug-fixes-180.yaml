@@ -1,6 +1,0 @@
-kind: bug-fixes
-body: '`tonumber` matches OpenTofu: parses the whole decimal string rather than truncating at the first non-digit, so fractions, exponents, and negatives round-trip'
-time: 2026-06-01T16:40:00.000000+02:00
-custom:
-    Component: runtime
-    PR: "180"

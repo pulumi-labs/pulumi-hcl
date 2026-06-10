@@ -1,6 +1,0 @@
-kind: bug-fixes
-body: '`templatefile` matches OpenTofu: the file is rendered as a full HCL template, so interpolations may call functions and use `%{ for }` / `%{ if }` directives, rather than performing a naive `${name}` string substitution'
-time: 2026-06-01T21:00:00.000000+02:00
-custom:
-    Component: runtime
-    PR: "200"

@@ -1,6 +1,0 @@
-kind: bug-fixes
-body: Inherit default provider configurations into child modules
-time: 2026-06-08T10:32:11.000000Z
-custom:
-    Component: runtime
-    PR: "236"

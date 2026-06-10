@@ -1,6 +1,0 @@
-kind: bug-fixes
-body: Decode underscore-containing YAML scalars as strings in `yamldecode`
-time: 2026-06-09T11:35:07.000000+00:00
-custom:
-    Component: runtime
-    PR: "255"
