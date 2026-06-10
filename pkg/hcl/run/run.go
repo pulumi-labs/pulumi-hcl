@@ -1689,16 +1689,10 @@ func (e *Engine) buildResourceOptionsInContext(
 // followed by an optional resource. A whole-module-call address (e.g.
 // `module.a`) has an empty Type.
 type movedAddr struct {
-	modules []movedStep // module-call steps, outermost first
-	Type    string      // resource type, or "" for a whole-module-call address
-	Name    string      // resource name
-	key     string      // instance-key bracket content ("0" or `"k"`), or ""
-}
-
-// movedStep is one `module.<name>[<key>]` step in a moved address.
-type movedStep struct {
-	name string
-	key  string // index/each-key bracket content, or ""
+	modules []modulepath.Step // module-call steps, outermost first
+	Type    string            // resource type, or "" for a whole-module-call address
+	Name    string            // resource name
+	key     string            // instance-key bracket content ("0" or `"k"`), or ""
 }
 
 // parseMovedAddr decodes a `moved` from/to traversal into its module-call steps
@@ -1729,10 +1723,14 @@ func parseMovedAddr(t hcl.Traversal) (movedAddr, bool) {
 			return a, false
 		}
 		i++
-		step := movedStep{name: modName}
+		step := modulepath.NewStep(modName)
 		if i < len(t) {
 			if idx, ok := t[i].(hcl.TraverseIndex); ok {
-				step.key = movedKeyToken(idx.Key)
+				keyed, ok := moduleStepFor(modName, idx.Key)
+				if !ok {
+					return a, false
+				}
+				step = keyed
 				i++
 			}
 		}
@@ -1763,6 +1761,24 @@ func parseMovedAddr(t hcl.Traversal) (movedAddr, bool) {
 		}
 	}
 	return a, i == len(t)
+}
+
+// moduleStepFor builds a module-call path step for `module.<name>[<key>]`,
+// decoding the count index or for_each key. It returns false for a key that is
+// neither a non-negative integer nor a string.
+func moduleStepFor(name string, key cty.Value) (modulepath.Step, bool) {
+	switch key.Type() {
+	case cty.Number:
+		iv, _ := key.AsBigFloat().Int64()
+		if iv < 0 {
+			return modulepath.Step{}, false
+		}
+		return modulepath.NewIndexedStep(name, int(iv)), true
+	case cty.String:
+		return modulepath.NewKeyedStep(name, key.AsString()), true
+	default:
+		return modulepath.Step{}, false
+	}
 }
 
 // movedKeyToken renders an instance-key value as it appears in a node key's
@@ -1808,18 +1824,15 @@ func (e *Engine) resolveMovedAliases(
 			if !ok || to.Type == "" { // skip whole-module-call moves
 				continue
 			}
-			toPath, ok := appendModuleSteps(scope, to.modules)
-			if !ok || toPath != resPath || to.Type != res.Type || to.Name != res.Name {
+			toPath := appendModuleSteps(scope, to.modules)
+			if toPath != resPath || to.Type != res.Type || to.Name != res.Name {
 				continue
 			}
 			from, ok := parseMovedAddr(moved.From)
 			if !ok || from.Type == "" {
 				continue
 			}
-			fromPath, ok := appendModuleSteps(scope, from.modules)
-			if !ok {
-				continue
-			}
+			fromPath := appendModuleSteps(scope, from.modules)
 
 			// Determine the prior instance key. A keyed `to` targets one specific
 			// instance and takes the prior key from `from`; an unkeyed `to` is a
@@ -1894,18 +1907,12 @@ func (e *Engine) oldModulePath(path modulepath.Path) modulepath.Path {
 			if !ok || from.Type != "" || len(from.modules) == 0 {
 				continue
 			}
-			toPath, ok := appendModuleSteps(scope, to.modules)
-			if !ok {
-				continue
-			}
+			toPath := appendModuleSteps(scope, to.modules)
 			suffix, ok := stripModulePrefix(path, toPath)
 			if !ok {
 				continue
 			}
-			fromPath, ok := appendModuleSteps(scope, from.modules)
-			if !ok {
-				continue
-			}
+			fromPath := appendModuleSteps(scope, from.modules)
 			for _, s := range suffix {
 				fromPath = fromPath.Append(s)
 			}
@@ -2012,28 +2019,12 @@ func ancestorPaths(p modulepath.Path) []modulepath.Path {
 	return chain
 }
 
-// appendModuleSteps extends base by the module-call steps of a moved address,
-// decoding each step's instance key. It returns false on a malformed key.
-func appendModuleSteps(base modulepath.Path, steps []movedStep) (modulepath.Path, bool) {
+// appendModuleSteps extends base by the module-call steps of a moved address.
+func appendModuleSteps(base modulepath.Path, steps []modulepath.Step) modulepath.Path {
 	for _, s := range steps {
-		switch {
-		case s.key == "":
-			base = base.Append(modulepath.NewStep(s.name))
-		case s.key[0] == '"':
-			k, err := strconv.Unquote(s.key)
-			if err != nil {
-				return base, false
-			}
-			base = base.Append(modulepath.NewKeyedStep(s.name, k))
-		default:
-			idx, err := strconv.Atoi(s.key)
-			if err != nil {
-				return base, false
-			}
-			base = base.Append(modulepath.NewIndexedStep(s.name, idx))
-		}
+		base = base.Append(s)
 	}
-	return base, true
+	return base
 }
 
 // instanceKeyMatches reports whether the instance identified by idx/each is the
