@@ -1800,10 +1800,6 @@ func (e *Engine) resolveMovedAliases(
 	if modInst != nil {
 		resPath = modInst.Path
 	}
-	modulePrefix := ""
-	if modInfo != nil {
-		modulePrefix = modInfo.Prefix()
-	}
 	_, instIdx, instEach := graph.ParseInstanceKey(instanceKey)
 
 	for _, scope := range ancestorPaths(resPath) {
@@ -1847,31 +1843,21 @@ func (e *Engine) resolveMovedAliases(
 				keyBracket += "[" + priorKey + "]"
 			}
 
-			switch {
-			case fromPath == resPath:
-				// Same module: the parent is unchanged, so naming the prior
-				// resource is enough.
-				name := e.extractModuleResourceName(from.Name, modulePrefix+keyBracket, modInfo, modInst)
-				aliases = append(aliases, Alias{Spec: &AliasSpec{Name: name}})
-			case fromPath.IsRoot():
-				// The resource used to live at the root, with no module-component
-				// parent, so the alias must say so explicitly.
-				aliases = append(aliases, Alias{Spec: &AliasSpec{
-					Name:     buildResourceName(from.Name, keyBracket),
-					NoParent: true,
-				}})
-			default:
-				// The resource moved from a different (non-root) module. It was
-				// named under that module's prefix and parented by that module's
-				// component, so the alias names it under the prior component.
-				if priorParent, ok := e.priorComponentURN(fromPath, resPath, modInst); ok {
-					bare := buildResourceName(from.Name, keyBracket)
-					aliases = append(aliases, Alias{Spec: &AliasSpec{
-						Name:      fromPath.LogicalName() + "-" + bare,
-						ParentURN: string(priorParent),
-					}})
-				}
+			// The prior name is the resource's own name under its prior module
+			// path; the prior parent is described relative to where it is now.
+			name := buildResourceName(from.Name, keyBracket)
+			if !fromPath.IsRoot() {
+				name = fromPath.LogicalName() + "-" + name
 			}
+			parentURN, noParent, ok := e.priorParentSpec(fromPath, resPath, modInst)
+			if !ok {
+				continue
+			}
+			aliases = append(aliases, Alias{Spec: &AliasSpec{
+				Name:      name,
+				ParentURN: parentURN,
+				NoParent:  noParent,
+			}})
 		}
 	}
 
@@ -1938,6 +1924,25 @@ func (e *Engine) moduleComponentAliases(instPath modulepath.Path) []Alias {
 		return nil
 	}
 	return []Alias{{Spec: &AliasSpec{Name: oldPath.LogicalName()}}}
+}
+
+// priorParentSpec describes the parent of a resource at its prior moved address,
+// relative to where it is registered now: the parent is unchanged within the
+// same module, was the stack (NoParent) when the prior address was the root, or
+// is a specific module component otherwise. ok is false when that prior
+// component cannot be resolved.
+func (e *Engine) priorParentSpec(
+	fromPath, resPath modulepath.Path, modInst *moduleInstance,
+) (parentURN string, noParent, ok bool) {
+	switch {
+	case fromPath == resPath:
+		return "", false, true // parent unchanged; the alias inherits it
+	case fromPath.IsRoot():
+		return "", true, true // prior parent was the stack
+	default:
+		u, ok := e.priorComponentURN(fromPath, resPath, modInst)
+		return string(u), false, ok
+	}
 }
 
 // priorComponentURN returns the component URN of the module a resource moved out
