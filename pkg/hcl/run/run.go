@@ -1803,7 +1803,7 @@ func (e *Engine) resolveMovedAliases(
 	_, instIdx, instEach := graph.ParseInstanceKey(instanceKey)
 
 	for _, scope := range ancestorPaths(resPath) {
-		for _, moved := range e.graph.MovedBlocks(scope.PrefixString()) {
+		for _, moved := range e.graph.MovedBlocks(scope) {
 			to, ok := parseMovedAddr(moved.To)
 			if !ok || to.Type == "" { // skip whole-module-call moves
 				continue
@@ -1885,7 +1885,7 @@ func (e *Engine) resolveMovedAliases(
 // lived at before the rename. It returns path unchanged when none applies.
 func (e *Engine) oldModulePath(path modulepath.Path) modulepath.Path {
 	for _, scope := range ancestorPaths(path) {
-		for _, moved := range e.graph.MovedBlocks(scope.PrefixString()) {
+		for _, moved := range e.graph.MovedBlocks(scope) {
 			to, ok := parseMovedAddr(moved.To)
 			if !ok || to.Type != "" || len(to.modules) == 0 {
 				continue // not a whole-module-call address
