@@ -1,6 +1,0 @@
-kind: Improvements
-body: '`terraform_remote_state` now supports the `defaults` argument, filling in outputs the referenced state omits'
-time: 2026-06-02T12:00:00.000000+02:00
-custom:
-    Component: runtime
-    PR: "207"

@@ -1,6 +1,0 @@
-kind: bug-fixes
-body: Omit `null`-valued root outputs from stack outputs
-time: 2026-06-09T09:07:04Z
-custom:
-    Component: runtime
-    PR: "232"

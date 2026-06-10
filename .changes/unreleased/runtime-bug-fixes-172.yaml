@@ -1,6 +1,0 @@
-kind: bug-fixes
-body: '`indent` matches Terraform: the first line is left unindented and blank lines are still padded'
-time: 2026-06-01T14:45:00.000000+02:00
-custom:
-    Component: runtime
-    PR: "172"

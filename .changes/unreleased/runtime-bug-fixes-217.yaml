@@ -1,6 +1,0 @@
-kind: bug-fixes
-body: '`tostring` and `tobool` accept `null`, returning a null value instead of erroring, matching OpenTofu'
-time: 2026-06-03T16:30:00.000000+02:00
-custom:
-    Component: runtime
-    PR: "217"

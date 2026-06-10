@@ -1,6 +1,0 @@
-kind: bug-fixes
-body: Preserve element types of a heterogeneous tuple or object passed through `terraform_data`
-time: 2026-06-09T12:14:29.000000+00:00
-custom:
-    Component: runtime
-    PR: "256"

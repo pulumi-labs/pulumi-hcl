@@ -1,6 +1,0 @@
-kind: bug-fixes
-body: '`length` propagates its argument''s marks onto the result for tuples and objects'
-time: 2026-06-03T16:00:00.000000+02:00
-custom:
-    Component: runtime
-    PR: "231"

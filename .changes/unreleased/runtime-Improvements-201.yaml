@@ -1,6 +1,0 @@
-kind: Improvements
-body: '`terraform_remote_state` now supports non-`local` backends by deferring to the pulumi-terraform `getRemoteReference` invoke (Terraform Cloud / Enterprise)'
-time: 2026-06-01T22:00:00.000000+02:00
-custom:
-    Component: runtime
-    PR: "201"

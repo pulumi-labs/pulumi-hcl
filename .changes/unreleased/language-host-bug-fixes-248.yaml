@@ -1,6 +1,0 @@
-kind: bug-fixes
-body: HCL MLCs correctly handle non-pulumi native providers
-time: 2026-06-08T16:30:03.68268+02:00
-custom:
-    Component: language-host
-    PR: "248"
