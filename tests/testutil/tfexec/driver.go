@@ -28,6 +28,8 @@ import (
 
 	"github.com/hashicorp/go-hclog"
 	"github.com/hashicorp/go-plugin"
+	"github.com/hashicorp/terraform-plugin-framework/provider"
+	"github.com/hashicorp/terraform-plugin-framework/providerserver"
 	"github.com/hashicorp/terraform-plugin-go/tfprotov5"
 	"github.com/hashicorp/terraform-plugin-go/tfprotov6"
 	"github.com/hashicorp/terraform-plugin-go/tfprotov6/tf6server"
@@ -36,10 +38,28 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// Provider pairs a terraform provider name with an SDKv2 provider instance.
+// Provider pairs a terraform provider name with a tfprotov6 server factory.
+// Use SDKv2Provider or PFProvider to build one.
 type Provider struct {
-	Name     string
-	Provider *schema.Provider
+	Name   string
+	Server func() tfprotov6.ProviderServer
+}
+
+// SDKv2Provider adapts an SDKv2 (helper/schema) provider into a Provider by
+// upgrading it to protocol version 6.
+func SDKv2Provider(t *testing.T, name string, p *schema.Provider) Provider {
+	t.Helper()
+	v6server, err := tf5to6server.UpgradeServer(t.Context(),
+		func() tfprotov5.ProviderServer { return p.GRPCProvider() })
+	require.NoError(t, err)
+	return Provider{Name: name, Server: func() tfprotov6.ProviderServer { return v6server }}
+}
+
+// PFProvider adapts a terraform-plugin-framework provider into a Provider,
+// recording its operations to rec at the protocol boundary (see WrapServer).
+func PFProvider(name string, p provider.Provider, rec *Recorder) Provider {
+	server := WrapServer(providerserver.NewProtocol6(p)(), rec)
+	return Provider{Name: name, Server: func() tfprotov6.ProviderServer { return server }}
 }
 
 // Driver hosts TF providers in-process and runs the terraform CLI against them.
@@ -63,17 +83,13 @@ func init() {
 	}
 }
 
-// NewDriver creates a Driver for the given SDKv2 providers. If no providers are given,
-// the driver runs terraform without any reattach configuration.
+// NewDriver creates a Driver for the given providers. If no providers are
+// given, the driver runs terraform without any reattach configuration.
 func NewDriver(t *testing.T, providers []Provider) *Driver {
 	t.Helper()
 
 	reattachConfigs := make(map[string]*plugin.ReattachConfig, len(providers))
 	for _, p := range providers {
-		v6server, err := tf5to6server.UpgradeServer(t.Context(),
-			func() tfprotov5.ProviderServer { return p.Provider.GRPCProvider() })
-		require.NoError(t, err)
-
 		reattachConfigCh := make(chan *plugin.ReattachConfig)
 		closeCh := make(chan struct{})
 
@@ -83,9 +99,9 @@ func NewDriver(t *testing.T, providers []Provider) *Driver {
 			tf6server.WithoutLogStderrOverride(),
 		}
 
-		name := p.Name
+		name, server := p.Name, p.Server
 		go func() {
-			err := tf6server.Serve(name, func() tfprotov6.ProviderServer { return v6server }, serverOpts...)
+			err := tf6server.Serve(name, server, serverOpts...)
 			if err != nil {
 				t.Logf("tf6server.Serve error: %v", err)
 			}

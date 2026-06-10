@@ -27,7 +27,6 @@ import (
 	"github.com/pulumi/providertest/pulumitest"
 	"github.com/pulumi/providertest/pulumitest/optnewstack"
 	"github.com/pulumi/providertest/pulumitest/opttest"
-	"github.com/pulumi/pulumi-terraform-bridge/v3/pkg/tfbridge"
 	"github.com/pulumi/pulumi/sdk/v3/go/auto"
 	"github.com/pulumi/pulumi/sdk/v3/go/auto/optdestroy"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/apitype"
@@ -66,10 +65,11 @@ func serveLanguageHost(t *testing.T) int {
 	return handle.Port
 }
 
-// Provider pairs a provider name with its bridged info.
+// Provider pairs a provider name with a way to start its in-process Pulumi
+// provider server. Use SDKv2Provider or PFProvider to build one.
 type Provider struct {
-	Name string
-	Info tfbridge.ProviderInfo
+	Name  string
+	Start func(ctx context.Context) (pulumirpc.ResourceProviderServer, error)
 }
 
 // Result holds the outputs and resource state from a Pulumi deployment.
@@ -127,11 +127,11 @@ backend:
 		opttest.NewStackOptions(optnewstack.DisableAutoDestroy()),
 	)
 	for _, p := range provs {
-		info := p.Info
+		start := p.Start
 		opts = append(opts, opttest.AttachProvider(
 			p.Name,
 			func(ctx context.Context, pt providers.PulumiTest) (providers.Port, error) {
-				handle, err := startProvider(ctx, info)
+				handle, err := startProvider(ctx, start)
 				if err != nil {
 					return 0, err
 				}
@@ -300,10 +300,12 @@ func (d *Driver) writeStubSDKs(t *testing.T) {
 	}
 }
 
-func startProvider(ctx context.Context, providerInfo tfbridge.ProviderInfo) (*rpcutil.ServeHandle, error) {
-	prov, err := providerServerFromInfo(ctx, providerInfo)
+func startProvider(
+	ctx context.Context, start func(context.Context) (pulumirpc.ResourceProviderServer, error),
+) (*rpcutil.ServeHandle, error) {
+	prov, err := start(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("providerServerFromInfo failed: %w", err)
+		return nil, fmt.Errorf("starting provider server: %w", err)
 	}
 
 	handle, err := rpcutil.ServeWithOptions(rpcutil.ServeOptions{
