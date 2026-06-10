@@ -28,10 +28,12 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/types"
 )
 
-// PFXProvider is a minimal terraform-plugin-framework provider: one resource
+// PFXProvider is a minimal terraform-plugin-framework provider: two resources
 // holding a single string, and one data source returning a constant. It
 // exists so tfcompat covers providers built on the plugin framework rather
-// than terraform-plugin-sdk/v2.
+// than terraform-plugin-sdk/v2. pfx_widget accepts a `moved` from pfx_thing,
+// which no terraform-plugin-sdk/v2 provider can (its MoveResourceState
+// unconditionally errors).
 func PFXProvider() provider.Provider { return &pfxProvider{} }
 
 type pfxProvider struct{}
@@ -52,6 +54,7 @@ func (p *pfxProvider) Configure(context.Context, provider.ConfigureRequest, *pro
 func (p *pfxProvider) Resources(context.Context) []func() resource.Resource {
 	return []func() resource.Resource{
 		func() resource.Resource { return &pfxThing{} },
+		func() resource.Resource { return &pfxWidget{} },
 	}
 }
 
@@ -74,8 +77,10 @@ func (r *pfxThing) Metadata(_ context.Context, req resource.MetadataRequest, res
 	resp.TypeName = req.ProviderTypeName + "_thing"
 }
 
-func (r *pfxThing) Schema(_ context.Context, _ resource.SchemaRequest, resp *resource.SchemaResponse) {
-	resp.Schema = rschema.Schema{
+// pfxThingSchema is shared by pfx_thing and pfx_widget: the cross-type `moved`
+// test moves state between two resources of identical shape.
+func pfxThingSchema() rschema.Schema {
+	return rschema.Schema{
 		Attributes: map[string]rschema.Attribute{
 			"id": rschema.StringAttribute{
 				Computed:      true,
@@ -84,6 +89,10 @@ func (r *pfxThing) Schema(_ context.Context, _ resource.SchemaRequest, resp *res
 			"name": rschema.StringAttribute{Required: true},
 		},
 	}
+}
+
+func (r *pfxThing) Schema(_ context.Context, _ resource.SchemaRequest, resp *resource.SchemaResponse) {
+	resp.Schema = pfxThingSchema()
 }
 
 func (r *pfxThing) Create(ctx context.Context, req resource.CreateRequest, resp *resource.CreateResponse) {
@@ -108,6 +117,65 @@ func (r *pfxThing) Update(ctx context.Context, req resource.UpdateRequest, resp 
 }
 
 func (r *pfxThing) Delete(_ context.Context, _ resource.DeleteRequest, _ *resource.DeleteResponse) {}
+
+// pfxWidget is pfx_thing under another type name. It implements MoveState so a
+// `moved { from = pfx_thing.x, to = pfx_widget.x }` is a state-only move.
+type pfxWidget struct{}
+
+var (
+	_ resource.Resource              = (*pfxWidget)(nil)
+	_ resource.ResourceWithMoveState = (*pfxWidget)(nil)
+)
+
+func (r *pfxWidget) Metadata(_ context.Context, req resource.MetadataRequest, resp *resource.MetadataResponse) {
+	resp.TypeName = req.ProviderTypeName + "_widget"
+}
+
+func (r *pfxWidget) Schema(_ context.Context, _ resource.SchemaRequest, resp *resource.SchemaResponse) {
+	resp.Schema = pfxThingSchema()
+}
+
+func (r *pfxWidget) Create(ctx context.Context, req resource.CreateRequest, resp *resource.CreateResponse) {
+	var plan pfxThingModel
+	resp.Diagnostics.Append(req.Plan.Get(ctx, &plan)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+	plan.ID = types.StringValue("pfx-widget-id")
+	resp.Diagnostics.Append(resp.State.Set(ctx, &plan)...)
+}
+
+func (r *pfxWidget) Read(_ context.Context, _ resource.ReadRequest, _ *resource.ReadResponse) {}
+
+func (r *pfxWidget) Update(ctx context.Context, req resource.UpdateRequest, resp *resource.UpdateResponse) {
+	var plan pfxThingModel
+	resp.Diagnostics.Append(req.Plan.Get(ctx, &plan)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+	resp.Diagnostics.Append(resp.State.Set(ctx, &plan)...)
+}
+
+func (r *pfxWidget) Delete(_ context.Context, _ resource.DeleteRequest, _ *resource.DeleteResponse) {
+}
+
+func (r *pfxWidget) MoveState(context.Context) []resource.StateMover {
+	sourceSchema := pfxThingSchema()
+	return []resource.StateMover{{
+		SourceSchema: &sourceSchema,
+		StateMover: func(ctx context.Context, req resource.MoveStateRequest, resp *resource.MoveStateResponse) {
+			if req.SourceTypeName != "pfx_thing" || req.SourceState == nil {
+				return
+			}
+			var src pfxThingModel
+			resp.Diagnostics.Append(req.SourceState.Get(ctx, &src)...)
+			if resp.Diagnostics.HasError() {
+				return
+			}
+			resp.Diagnostics.Append(resp.TargetState.Set(ctx, &src)...)
+		},
+	}}
+}
 
 type pfxLookup struct{}
 

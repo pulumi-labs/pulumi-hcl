@@ -33,8 +33,9 @@ const unknownSentinel = "<unknown-529478307895340>"
 // It records at the protocol boundary — wire values are decoded with the
 // provider's own schema — so it works for any provider implementation (e.g.
 // terraform-plugin-framework). Operations with observable behavior but no
-// OpKind (moves, imports, functions, ephemeral resources) error instead of
-// passing through unrecorded.
+// OpKind (imports, functions, ephemeral resources) error instead of passing
+// through unrecorded; MoveResourceState is the deliberate exception (see its
+// method comment).
 //
 // Protocol recordings are stricter than Wrap's helper/schema snapshots: null
 // and unknown values are preserved instead of being flattened to zero values.
@@ -174,6 +175,18 @@ func (s *recordingServer) ReadDataSource(
 	return resp, nil
 }
 
+// MoveResourceState delegates without recording. Pulumi performs a cross-type
+// `moved` inside the engine — the old state is re-addressed via an alias and
+// the provider is never consulted — so OpenTofu's move call has no counterpart
+// operation to compare against. The moved state is still compared: it feeds
+// every later operation on the resource, including the final destroy, which
+// records it as the Delete op's inputs.
+func (s *recordingServer) MoveResourceState(
+	ctx context.Context, req *tfprotov6.MoveResourceStateRequest,
+) (*tfprotov6.MoveResourceStateResponse, error) {
+	return s.ProviderServer.MoveResourceState(ctx, req)
+}
+
 // The provider operations below have observable behavior but no OpKind yet.
 // They fail loudly instead of delegating: an operation that slips through
 // both paths unrecorded would compare vacuously equal, hiding a divergence.
@@ -190,12 +203,6 @@ func (s *recordingServer) ImportResourceState(
 	context.Context, *tfprotov6.ImportResourceStateRequest,
 ) (*tfprotov6.ImportResourceStateResponse, error) {
 	return nil, errNoOpKind("ImportResourceState")
-}
-
-func (s *recordingServer) MoveResourceState(
-	context.Context, *tfprotov6.MoveResourceStateRequest,
-) (*tfprotov6.MoveResourceStateResponse, error) {
-	return nil, errNoOpKind("MoveResourceState")
 }
 
 func (s *recordingServer) CallFunction(

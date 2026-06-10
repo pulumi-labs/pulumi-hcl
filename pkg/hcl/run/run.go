@@ -46,6 +46,7 @@ import (
 	"github.com/pulumi/pulumi/sdk/v3/go/common/resource/urn"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/tokens"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/util/contract"
+	"github.com/pulumi/pulumi/sdk/v3/go/common/util/logging"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/workspace"
 	"github.com/pulumi/pulumi/sdk/v3/go/property"
 	"github.com/zclconf/go-cty/cty"
@@ -1252,7 +1253,7 @@ func (e *Engine) registerResourceInstanceInContext(
 		}
 	}
 
-	opts, err := e.buildResourceOptionsInContext(res, instance, evalCtx, parentURN, node.ModuleInfo, modInst, resourceMapping, resSchema.InputProperties, resSchema.Properties)
+	opts, err := e.buildResourceOptionsInContext(ctx, res, instance, evalCtx, parentURN, node.ModuleInfo, modInst, resourceMapping, resSchema.InputProperties, resSchema.Properties)
 	if err != nil {
 		return err
 	}
@@ -1362,7 +1363,7 @@ func (e *Engine) registerResourceInstanceInContext(
 
 // buildResourceOptionsInContext builds resource options using the provided eval context and parent URN.
 func (e *Engine) buildResourceOptionsInContext(
-	res *ast.Resource, instance *graph.ExpandedResource,
+	ctx context.Context, res *ast.Resource, instance *graph.ExpandedResource,
 	evalCtx *eval.Context, parentURN urn.URN,
 	modInfo *graph.ModuleInfo, modInst *moduleInstance, resourceMapping *bridge.BodyMapping,
 	inputProps, outputProps []*schema.Property,
@@ -1530,7 +1531,7 @@ func (e *Engine) buildResourceOptionsInContext(
 	}
 
 	// Handle moved blocks - resolve aliases from moved blocks that target this resource
-	movedAliases := e.resolveMovedAliases(res, instance.Key, modInfo, modInst)
+	movedAliases := e.resolveMovedAliases(ctx, res, instance.Key, modInfo, modInst)
 	opts.Aliases = append(opts.Aliases, movedAliases...)
 
 	// Handle aliases attribute
@@ -1802,11 +1803,12 @@ func movedKeyToken(v cty.Value) string {
 // A moved block's addresses are relative to the module it is written in, so the
 // resolver walks the resource's own module and every ancestor module. It handles
 // resource renames within a module (including `count`/`for_each` instance-key
-// changes), moves of a resource between the root and a module or between two
-// modules, and resources carried along when an enclosing module call is renamed
-// or re-keyed (the matching component alias is attached in processModuleInit).
+// changes), changes of the resource's type, moves of a resource between the
+// root and a module or between two modules, and resources carried along when an
+// enclosing module call is renamed or re-keyed (the matching component alias is
+// attached in processModuleInit).
 func (e *Engine) resolveMovedAliases(
-	res *ast.Resource, instanceKey string, modInfo *graph.ModuleInfo, modInst *moduleInstance,
+	ctx context.Context, res *ast.Resource, instanceKey string, modInfo *graph.ModuleInfo, modInst *moduleInstance,
 ) []Alias {
 	var aliases []Alias
 
@@ -1866,8 +1868,22 @@ func (e *Engine) resolveMovedAliases(
 			if !ok {
 				continue
 			}
+
+			// A `moved` may also change the resource's type; the alias then
+			// carries the prior type's token so the engine matches the old URN.
+			var priorType string
+			if from.Type != res.Type {
+				prior, err := e.resolveResource(ctx, from.Type)
+				if err != nil {
+					logging.V(5).Infof("moved: cannot resolve prior type %q: %v", from.Type, err)
+					continue
+				}
+				priorType = prior.Token
+			}
+
 			aliases = append(aliases, Alias{Spec: &AliasSpec{
 				Name:      name,
+				Type:      priorType,
 				ParentURN: parentURN,
 				NoParent:  noParent,
 			}})

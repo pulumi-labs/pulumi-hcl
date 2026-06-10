@@ -78,6 +78,12 @@ func (s *fakeServer) ApplyResourceChange(
 	return &tfprotov6.ApplyResourceChangeResponse{NewState: &state}, nil
 }
 
+func (s *fakeServer) MoveResourceState(
+	context.Context, *tfprotov6.MoveResourceStateRequest,
+) (*tfprotov6.MoveResourceStateResponse, error) {
+	return &tfprotov6.MoveResourceStateResponse{}, nil
+}
+
 // thingState builds a wire value for t_resource. nil means a null state.
 func thingState(t *testing.T, attrs map[string]tftypes.Value) *tfprotov6.DynamicValue {
 	t.Helper()
@@ -179,10 +185,7 @@ func TestWrapServer_UnrecordableOpsError(t *testing.T) {
 	t.Parallel()
 	srv := tfexec.WrapServer(&fakeServer{}, &tfexec.Recorder{})
 
-	_, err := srv.MoveResourceState(t.Context(), &tfprotov6.MoveResourceStateRequest{})
-	require.EqualError(t, err, "recording: no OpKind for MoveResourceState; extend the recorder to support it")
-
-	_, err = srv.ImportResourceState(t.Context(), &tfprotov6.ImportResourceStateRequest{})
+	_, err := srv.ImportResourceState(t.Context(), &tfprotov6.ImportResourceStateRequest{})
 	require.EqualError(t, err, "recording: no OpKind for ImportResourceState; extend the recorder to support it")
 
 	_, err = srv.CallFunction(t.Context(), &tfprotov6.CallFunctionRequest{})
@@ -196,6 +199,20 @@ func TestWrapServer_UnrecordableOpsError(t *testing.T) {
 
 	_, err = srv.CloseEphemeralResource(t.Context(), &tfprotov6.CloseEphemeralResourceRequest{})
 	require.EqualError(t, err, "recording: no OpKind for CloseEphemeralResource; extend the recorder to support it")
+}
+
+// TestWrapServer_MoveDelegatesUnrecorded confirms MoveResourceState reaches the
+// underlying server and produces no Op: a cross-type `moved` has no counterpart
+// provider operation on the Pulumi path to compare against.
+func TestWrapServer_MoveDelegatesUnrecorded(t *testing.T) {
+	t.Parallel()
+	r := &tfexec.Recorder{}
+	srv := tfexec.WrapServer(&fakeServer{}, r)
+
+	resp, err := srv.MoveResourceState(t.Context(), &tfprotov6.MoveResourceStateRequest{})
+	require.NoError(t, err)
+	require.NotNil(t, resp)
+	assert.Empty(t, r.Ops())
 }
 
 // TestWrapServer_DifferentWhenUnknownsDiffer confirms the recorder preserves
