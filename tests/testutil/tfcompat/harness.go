@@ -41,6 +41,7 @@ import (
 	"sync"
 	"testing"
 
+	pfprovider "github.com/hashicorp/terraform-plugin-framework/provider"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
 	"github.com/pulumi-labs/pulumi-hcl/tests/testutil/pulexec"
 	"github.com/pulumi-labs/pulumi-hcl/tests/testutil/tfexec"
@@ -51,13 +52,42 @@ import (
 
 // Provider describes an in-memory TF provider that's available to both paths.
 type Provider struct {
-	Name    string
+	Name string
+	// Factory builds an SDKv2 (helper/schema) provider. Exactly one of
+	// Factory and PFFactory must be set.
 	Factory func() *schema.Provider
+	// PFFactory builds a terraform-plugin-framework provider.
+	PFFactory func() pfprovider.Provider
 	// Customize, if non-nil, runs against the bridged ProviderInfo on the
 	// Pulumi path so tests can apply non-default Pulumi-side renames (or any
 	// other ProviderInfo tweak) to exercise the bridge mapping behaviour.
 	// The TF path is unaffected.
 	Customize func(*testing.T, *tfbridge.ProviderInfo)
+}
+
+// buildProviders wires each Case provider into both paths, wrapping it with
+// the per-path recorder. SDKv2 providers record at the helper/schema CRUD
+// boundary (tfexec.Wrap); plugin-framework providers record at the tfprotov6
+// boundary (tfexec.WrapServer). Each path gets its own provider instance.
+func buildProviders(
+	t *testing.T, provs []Provider, recA, recB *tfexec.Recorder,
+) ([]tfexec.Provider, []pulexec.Provider) {
+	t.Helper()
+	tfProvs := make([]tfexec.Provider, len(provs))
+	pulProvs := make([]pulexec.Provider, len(provs))
+	for i, p := range provs {
+		switch {
+		case p.Factory != nil && p.PFFactory == nil:
+			tfProvs[i] = tfexec.SDKv2Provider(t, p.Name, tfexec.Wrap(p.Factory(), recA))
+			pulProvs[i] = pulexec.SDKv2Provider(t, p.Name, tfexec.Wrap(p.Factory(), recB), p.Customize)
+		case p.PFFactory != nil && p.Factory == nil:
+			tfProvs[i] = tfexec.PFProvider(p.Name, p.PFFactory(), recA)
+			pulProvs[i] = pulexec.PFProvider(t, p.Name, p.PFFactory(), recB, p.Customize)
+		default:
+			t.Fatalf("provider %q: exactly one of Factory or PFFactory must be set", p.Name)
+		}
+	}
+	return tfProvs, pulProvs
 }
 
 // Case is the test description passed to RunCase.
@@ -118,15 +148,7 @@ func runCaseStages(t *testing.T, c Case) {
 	t.Helper()
 
 	recA, recB := &tfexec.Recorder{}, &tfexec.Recorder{}
-	tfProvs := make([]tfexec.Provider, len(c.Providers))
-	pulProvs := make([]pulexec.Provider, len(c.Providers))
-	for i, p := range c.Providers {
-		tfProvs[i] = tfexec.Provider{Name: p.Name, Provider: tfexec.Wrap(p.Factory(), recA)}
-		pulProvs[i] = pulexec.Provider{
-			Name: p.Name,
-			Info: pulexec.BridgedProvider(t, p.Name, tfexec.Wrap(p.Factory(), recB), p.Customize),
-		}
-	}
+	tfProvs, pulProvs := buildProviders(t, c.Providers, recA, recB)
 
 	tfDriver := tfexec.NewDriver(t, tfProvs)
 	pulDriver := pulexec.NewDriver(t, pulProvs, c.Config)
@@ -221,16 +243,7 @@ func runCaseFromDir(t *testing.T, caseDir string, c Case) {
 	stages := loadStages(t, caseDir)
 
 	recA, recB := &tfexec.Recorder{}, &tfexec.Recorder{}
-
-	tfProvs := make([]tfexec.Provider, len(c.Providers))
-	pulProvs := make([]pulexec.Provider, len(c.Providers))
-	for i, p := range c.Providers {
-		tfProvs[i] = tfexec.Provider{Name: p.Name, Provider: tfexec.Wrap(p.Factory(), recA)}
-		pulProvs[i] = pulexec.Provider{
-			Name: p.Name,
-			Info: pulexec.BridgedProvider(t, p.Name, tfexec.Wrap(p.Factory(), recB), p.Customize),
-		}
-	}
+	tfProvs, pulProvs := buildProviders(t, c.Providers, recA, recB)
 
 	tfDriver := tfexec.NewDriver(t, tfProvs)
 	pulDriver := pulexec.NewDriver(t, pulProvs, c.Config)
