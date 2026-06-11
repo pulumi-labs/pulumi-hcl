@@ -359,10 +359,14 @@ type Engine struct {
 
 	// pendingResourceChanges tracks, during preview, the managed resources
 	// whose registration indicates a change is pending (unknown id means a
-	// pending create; computed outputs mean the provider planned new values).
-	// Keyed by the resource's unexpanded graph key so a reference to any
-	// instance of a ranged resource matches. Data sources that reference or
-	// depend on such a resource defer their read to the apply phase.
+	// pending create or replace; computed outputs mean the provider planned
+	// new values). A pending resource is stored under its instance-qualified
+	// module prefix plus unexpanded resource key — so a reference to any
+	// count/for_each instance of the resource matches, while other instances
+	// of the enclosing module call don't — and under each enclosing module
+	// call's own key, so `depends_on = [module.x]` matches transitively. Data
+	// sources that reference or depend on a pending entry defer their read to
+	// the apply phase.
 	pendingResourceChanges *util.SyncMap[string, struct{}]
 
 	// graph is the resolved dependency graph for the current run. Stored on
@@ -1320,7 +1324,7 @@ func (e *Engine) registerResourceInstanceInContext(
 	}
 
 	if e.dryRun && (id == "" || property.New(outputs).HasComputed()) {
-		e.pendingResourceChanges.Set(instance.OriginalKey, struct{}{})
+		e.markPendingResourceChange(node, modInst, instance.OriginalKey)
 	}
 
 	outputs = outputs.Delete("id", "urn")
@@ -2440,6 +2444,29 @@ func (e *Engine) registerResource(
 	return resp.URN, resp.ID, lowerTerraformDataOutputs(tfType, resp.Outputs, opts), nil
 }
 
+// markPendingResourceChange records a managed resource with a change pending
+// so data sources that reference it defer their read. The resource is keyed
+// by its instance-qualified module prefix plus unexpanded resource key, and
+// every enclosing module call is keyed too so a `depends_on` naming the
+// module call defers as well.
+func (e *Engine) markPendingResourceChange(node *graph.Node, modInst *moduleInstance, originalKey string) {
+	instPath := modulepath.Root()
+	localKey := originalKey
+	if modInst != nil {
+		instPath = modInst.Path
+		localKey = strings.TrimPrefix(originalKey, node.ModuleInfo.Prefix())
+	}
+	e.pendingResourceChanges.Set(instPath.PrefixString()+localKey, struct{}{})
+	for p := instPath; ; {
+		parent, leaf, ok := p.Parent()
+		if !ok {
+			return
+		}
+		e.pendingResourceChanges.Set(parent.PrefixString()+"module."+leaf.Name(), struct{}{})
+		p = parent
+	}
+}
+
 // processDataSource processes a data source definition.
 func (e *Engine) processDataSource(ctx context.Context, node *graph.Node) error {
 	ds := node.Resource
@@ -2449,15 +2476,17 @@ func (e *Engine) processDataSource(ctx context.Context, node *graph.Node) error 
 
 	if node.ModuleInfo != nil {
 		return e.forEachModuleInstance(node, func(inst *moduleInstance) error {
-			return e.processDataSourceInContext(ctx, node, ds, inst.EvalCtx)
+			return e.processDataSourceInContext(ctx, node, ds, inst.EvalCtx, inst.Path.PrefixString())
 		})
 	}
 
-	return e.processDataSourceInContext(ctx, node, ds, e.evaluator.Context())
+	return e.processDataSourceInContext(ctx, node, ds, e.evaluator.Context(), "")
 }
 
+// instPrefix is the instance-qualified module prefix of the module instance
+// being processed ("" at the root), used to match pendingResourceChanges keys.
 func (e *Engine) processDataSourceInContext(
-	ctx context.Context, node *graph.Node, ds *ast.Resource, evalCtx *eval.Context,
+	ctx context.Context, node *graph.Node, ds *ast.Resource, evalCtx *eval.Context, instPrefix string,
 ) error {
 	funcSchema, err := e.resolveFunction(ctx, ds.Type)
 	if err != nil {
@@ -2474,10 +2503,10 @@ func (e *Engine) processDataSourceInContext(
 	dsKey = strings.TrimPrefix(dsKey, "data.")
 
 	if ds.Count != nil || ds.ForEach != nil {
-		return e.processRangedDataSource(ctx, node, ds, funcSchema, evalCtx, dsKey)
+		return e.processRangedDataSource(ctx, node, ds, funcSchema, evalCtx, dsKey, instPrefix)
 	}
 
-	ctyOutputs, err := e.invokeDataSourceOnce(ctx, node, ds, funcSchema, evalCtx)
+	ctyOutputs, err := e.invokeDataSourceOnce(ctx, node, ds, funcSchema, evalCtx, instPrefix)
 	if err != nil {
 		return err
 	}
@@ -2491,7 +2520,7 @@ func (e *Engine) processDataSourceInContext(
 // `data.<type>.<name>[<index>|<key>].<attr>` resolves as expected.
 func (e *Engine) processRangedDataSource(
 	ctx context.Context, node *graph.Node, ds *ast.Resource, funcSchema *schema.Function,
-	evalCtx *eval.Context, dsKey string,
+	evalCtx *eval.Context, dsKey, instPrefix string,
 ) error {
 	tempEvaluator := eval.NewEvaluator(evalCtx)
 	expander := graph.NewResourceExpander()
@@ -2530,7 +2559,7 @@ func (e *Engine) processRangedDataSource(
 			evalCtx.SetEach(*instance.EachKey, *instance.EachValue)
 		}
 
-		ctyOut, invokeErr := e.invokeDataSourceOnce(ctx, node, ds, funcSchema, evalCtx)
+		ctyOut, invokeErr := e.invokeDataSourceOnce(ctx, node, ds, funcSchema, evalCtx, instPrefix)
 
 		if instance.Index != nil {
 			evalCtx.ClearCount()
@@ -2575,7 +2604,7 @@ func (e *Engine) processRangedDataSource(
 // without a separate dependency map.
 func (e *Engine) invokeDataSourceOnce(
 	ctx context.Context, node *graph.Node, ds *ast.Resource, funcSchema *schema.Function,
-	evalCtx *eval.Context,
+	evalCtx *eval.Context, instPrefix string,
 ) (cty.Value, error) {
 	hclCtx := evalCtx.HCLContext()
 
@@ -2591,10 +2620,6 @@ func (e *Engine) invokeDataSourceOnce(
 	// a change pending must defer its read to the apply phase, even when the
 	// referenced value is already known. Only direct references count:
 	// indirection through a local, variable, or module output does not defer.
-	refPrefix := ""
-	if node.ModuleInfo != nil {
-		refPrefix = node.ModuleInfo.Prefix()
-	}
 	depsPending := false
 	checkPendingDep := func(key string) {
 		if _, ok := e.pendingResourceChanges.Get(key); ok {
@@ -2610,8 +2635,14 @@ func (e *Engine) invokeDataSourceOnce(
 			if _, isIterationVar := extraVars[namespace]; isIterationVar {
 				continue
 			}
+			// A module-output reference can carry a pending resource's value
+			// without deferring; only an explicit depends_on on the module
+			// call may match its pending key.
+			if namespace == "module" {
+				continue
+			}
 			if len(parts) > 0 {
-				checkPendingDep(refPrefix + namespace + "." + parts[0])
+				checkPendingDep(instPrefix + namespace + "." + parts[0])
 			}
 		}
 	}
@@ -2703,7 +2734,7 @@ func (e *Engine) invokeDataSourceOnce(
 		if outputs, ok := e.resourceOutputs.Get(fullDepKey); ok {
 			addURN(ctyAsString(outputs.GetAttr("urn")))
 		}
-		checkPendingDep(fullDepKey)
+		checkPendingDep(instPrefix + depKey)
 	}
 
 	// Match the Node.js / Python SDK behavior: during preview, if any input
@@ -3773,7 +3804,7 @@ func (e *Engine) readScopedDataSource(ctx context.Context, ds *ast.Resource, eva
 		Type:     graph.NodeTypeDataSource,
 		Resource: ds,
 	}
-	return e.processDataSourceInContext(ctx, node, ds, evalCtx)
+	return e.processDataSourceInContext(ctx, node, ds, evalCtx, "")
 }
 
 // warnf emits a best-effort warning diagnostic. A transport failure emitting it

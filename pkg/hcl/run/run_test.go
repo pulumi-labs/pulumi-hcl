@@ -3300,3 +3300,106 @@ data "aws_ec2_vpc" "via_local" {
 		}, runEngine(t, false))
 	})
 }
+
+// During preview, `depends_on = [module.child]` on a data source defers the
+// read while any managed resource inside that module has a change pending,
+// and does not defer once nothing is pending.
+func TestEngine_DataSourceDeferredWhenModuleDependencyPending(t *testing.T) {
+	t.Parallel()
+
+	runEngine := func(t *testing.T, pendingCreate bool) []run.InvokeRequest {
+		tmpDir := t.TempDir()
+		moduleDir := tmpDir + "/modules/child"
+		require.NoError(t, os.MkdirAll(moduleDir, 0o755))
+		require.NoError(t, os.WriteFile(moduleDir+"/main.tf", []byte(`
+resource "aws_ec2_instance" "inner" {
+  ami = "ami-123"
+}
+`), 0o644))
+		require.NoError(t, os.WriteFile(tmpDir+"/main.tf", []byte(`
+module "child" {
+  source = "./modules/child"
+}
+
+data "aws_ec2_vpc" "after_module" {
+  query      = "static"
+  depends_on = [module.child]
+}
+`), 0o644))
+
+		p := parser.NewParser()
+		config, diags := p.ParseDirectory(tmpDir)
+		require.False(t, diags.HasErrors(), diags.Error())
+
+		mock := &testutil.MockResourceMonitor{
+			DryRun: true,
+			RegisterResourceHandler: func(ctx context.Context, req run.RegisterResourceRequest) (*run.RegisterResourceResponse, error) {
+				id := req.Name + "-id"
+				if pendingCreate && req.Type == "aws:ec2/instance:Instance" {
+					id = ""
+				}
+				return &run.RegisterResourceResponse{
+					URN:     urn.URN("urn:pulumi:test::project::" + req.Type + "::" + req.Name),
+					ID:      id,
+					Outputs: req.Inputs,
+				}, nil
+			},
+		}
+		engine := run.NewEngine(t.Context(), config, &run.EngineOptions{
+			ProjectName:     "test-project",
+			StackName:       "dev",
+			ResourceMonitor: mock,
+			WorkDir:         tmpDir,
+			RootDir:         tmpDir,
+			DryRun:          true,
+			SchemaLoader: schemaloader.New(t, schema.PackageSpec{
+				Name: "aws",
+				Meta: &schema.MetadataSpec{
+					ModuleFormat: `(.*)(?:/[^/]*)`,
+				},
+				Resources: map[string]schema.ResourceSpec{
+					"aws:ec2/instance:Instance": {
+						InputProperties: map[string]schema.PropertySpec{
+							"ami": {TypeSpec: schema.TypeSpec{Type: "string"}},
+						},
+						ObjectTypeSpec: schema.ObjectTypeSpec{
+							Properties: map[string]schema.PropertySpec{
+								"ami": {TypeSpec: schema.TypeSpec{Type: "string"}},
+							},
+						},
+					},
+				},
+				Functions: map[string]schema.FunctionSpec{
+					"aws:ec2/getVpc:getVpc": {
+						Inputs: &schema.ObjectTypeSpec{
+							Properties: map[string]schema.PropertySpec{
+								"query": {TypeSpec: schema.TypeSpec{Type: "string"}},
+							},
+						},
+						Outputs: &schema.ObjectTypeSpec{
+							Properties: map[string]schema.PropertySpec{
+								"result": {TypeSpec: schema.TypeSpec{Type: "string"}},
+							},
+						},
+					},
+				},
+			}),
+		})
+
+		require.NoError(t, engine.Run(t.Context()))
+		return mock.InvokedFunctions
+	}
+
+	t.Run("module dependency pending create", func(t *testing.T) {
+		t.Parallel()
+		assert.Equal(t, []run.InvokeRequest(nil), runEngine(t, true))
+	})
+
+	t.Run("module dependency without pending change", func(t *testing.T) {
+		t.Parallel()
+		assert.Equal(t, []run.InvokeRequest{{
+			Token: "aws:ec2/getVpc:getVpc",
+			Args:  property.NewMap(map[string]property.Value{"query": property.New("static")}),
+		}}, runEngine(t, false))
+	})
+}

@@ -77,6 +77,171 @@ output "via_local" {
 		Stages: []tfcompat.Stage{
 			{Mode: tfcompat.StagePreview, Files: files},
 			{Mode: tfcompat.StageApply, Files: files},
+			// A clean preview after the apply: nothing is pending anymore, so
+			// neither runtime defers — all three data sources are read during
+			// the plan/preview phase.
+			{Mode: tfcompat.StagePreview, Files: files},
+		},
+	})
+}
+
+// A pending *update* must defer dependent data source reads the same way a
+// pending create does: after the first apply, changing `input_one` gives the
+// resource a pending change, and `tofu plan` defers the read of a data source
+// that references it even though the new value is already known.
+//
+// KNOWN FAILURE (https://github.com/pulumi-labs/pulumi-hcl/issues/266): an
+// update that changes only inputs is invisible to the language host — the
+// RegisterResourceResponse for an update preview carries a known id and known
+// outputs, indistinguishable from a no-op registration — so pulumi reads the
+// data source during the preview (one extra recorded read with query "b").
+// Detecting this case needs the engine to report whether a registration has a
+// change planned.
+func TestL2DataSourcePendingUpdatePreview(t *testing.T) {
+	t.Parallel()
+	program := func(inputOne string) map[string]string {
+		return map[string]string{"main.tf": `
+resource "simple_resource" "upstream" {
+  input_one = "` + inputOne + `"
+  input_two = true
+}
+
+data "simple_lookup" "by_ref" {
+  query = simple_resource.upstream.input_one
+}
+
+output "by_ref" {
+  value = data.simple_lookup.by_ref.prefix_result
+}
+`}
+	}
+	tfcompat.RunCase(t, "l2_data_source_pending_update_preview", tfcompat.Case{
+		Providers: []tfcompat.Provider{
+			{Name: "simple", Factory: providers.SimpleProvider},
+		},
+		Stages: []tfcompat.Stage{
+			{Mode: tfcompat.StageApply, Files: program("a")},
+			{Mode: tfcompat.StagePreview, Files: program("b")},
+			{Mode: tfcompat.StageApply, Files: program("b")},
+		},
+	})
+}
+
+// A pending *replacement* (ForceNew change) must defer dependent data source
+// reads: changing `input_replace` plans a replace of the resource, so the
+// read of a data source referencing it waits for the apply phase even though
+// the referenced value (`input_one`) is unchanged and known.
+func TestL2DataSourcePendingReplacePreview(t *testing.T) {
+	t.Parallel()
+	program := func(replace string) map[string]string {
+		return map[string]string{"main.tf": `
+resource "simple_resource" "upstream" {
+  input_one     = "a"
+  input_two     = true
+  input_replace = "` + replace + `"
+}
+
+data "simple_lookup" "by_ref" {
+  query = simple_resource.upstream.input_one
+}
+
+output "by_ref" {
+  value = data.simple_lookup.by_ref.prefix_result
+}
+`}
+	}
+	tfcompat.RunCase(t, "l2_data_source_pending_replace_preview", tfcompat.Case{
+		Providers: []tfcompat.Provider{
+			{Name: "simple", Factory: providers.SimpleProvider},
+		},
+		Stages: []tfcompat.Stage{
+			{Mode: tfcompat.StageApply, Files: program("x")},
+			{Mode: tfcompat.StagePreview, Files: program("y")},
+			{Mode: tfcompat.StageApply, Files: program("y")},
+		},
+	})
+}
+
+// `depends_on = [module.maker]` on a data source must defer the read while
+// any managed resource inside that module has a change pending, mirroring
+// the transitive walk OpenTofu performs for module references in depends_on.
+func TestL2DataSourceModuleDependsOnPendingPreview(t *testing.T) {
+	t.Parallel()
+	files := map[string]string{
+		"main.tf": `
+module "maker" {
+  source = "./mod"
+}
+
+data "simple_lookup" "after_module" {
+  query      = "static"
+  depends_on = [module.maker]
+}
+
+output "after_module" {
+  value = data.simple_lookup.after_module.prefix_result
+}
+`,
+		"mod/main.tf": `
+resource "simple_resource" "inner" {
+  input_one = "m"
+  input_two = false
+}
+`,
+	}
+	tfcompat.RunCase(t, "l2_data_source_module_depends_on_pending_preview", tfcompat.Case{
+		Providers: []tfcompat.Provider{
+			{Name: "simple", Factory: providers.SimpleProvider},
+		},
+		Stages: []tfcompat.Stage{
+			{Mode: tfcompat.StagePreview, Files: files},
+			{Mode: tfcompat.StageApply, Files: files},
+		},
+	})
+}
+
+// Pending changes are tracked per module *instance*: growing a module call
+// from count = 1 to count = 2 leaves instance [0] unchanged, so the data
+// source inside instance [0] is still read during the plan/preview phase,
+// while the one inside the new instance [1] defers until apply.
+func TestL2DataSourceModuleInstancePendingPreview(t *testing.T) {
+	t.Parallel()
+	program := func(count string) map[string]string {
+		return map[string]string{
+			"main.tf": `
+module "m" {
+  source = "./mod"
+  count  = ` + count + `
+}
+
+output "looked" {
+  value = module.m[0].looked
+}
+`,
+			"mod/main.tf": `
+resource "simple_resource" "inner" {
+  input_one = "i"
+  input_two = true
+}
+
+data "simple_lookup" "sibling" {
+  query = simple_resource.inner.input_one
+}
+
+output "looked" {
+  value = data.simple_lookup.sibling.prefix_result
+}
+`,
+		}
+	}
+	tfcompat.RunCase(t, "l2_data_source_module_instance_pending_preview", tfcompat.Case{
+		Providers: []tfcompat.Provider{
+			{Name: "simple", Factory: providers.SimpleProvider},
+		},
+		Stages: []tfcompat.Stage{
+			{Mode: tfcompat.StageApply, Files: program("1")},
+			{Mode: tfcompat.StagePreview, Files: program("2")},
+			{Mode: tfcompat.StageApply, Files: program("2")},
 		},
 	})
 }

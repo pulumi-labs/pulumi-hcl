@@ -59,6 +59,9 @@ func SimpleProvider() *schema.Provider {
 				Schema: map[string]*schema.Schema{
 					"input_one": {Type: schema.TypeString, Optional: true},
 					"input_two": {Type: schema.TypeBool, Optional: true},
+					// Changing this forces a replacement, so tests can stage
+					// a resource with a pending replace.
+					"input_replace": {Type: schema.TypeString, Optional: true, ForceNew: true},
 					// `version` is an upstream-style attribute name used by
 					// some real TF resources (e.g. aws_rds_engine_version).
 					// Kept here so tests can assert it survives the

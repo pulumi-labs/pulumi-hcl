@@ -1,6 +1,6 @@
 kind: bug-fixes
-body: Defer a `data` source read until apply when a referenced resource has changes pending
-time: 2026-06-11T11:13:06Z
+body: Defer a `data` source read until apply when a referenced resource has changes pending, and make `depends_on` on a module call wait for the module's resources
+time: 2026-06-11T11:36:38Z
 custom:
     Component: runtime
     PR: "266"
