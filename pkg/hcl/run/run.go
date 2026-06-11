@@ -357,6 +357,14 @@ type Engine struct {
 	// Dependent nodes check this map and are skipped when a dependency failed.
 	failedNodes *util.SyncMap[string, error]
 
+	// pendingResourceChanges tracks, during preview, the managed resources
+	// whose registration indicates a change is pending (unknown id means a
+	// pending create; computed outputs mean the provider planned new values).
+	// Keyed by the resource's unexpanded graph key so a reference to any
+	// instance of a ranged resource matches. Data sources that reference or
+	// depend on such a resource defer their read to the apply phase.
+	pendingResourceChanges *util.SyncMap[string, struct{}]
+
 	// graph is the resolved dependency graph for the current run. Stored on
 	// the engine so processNode handlers can consult its topology (e.g.
 	// processProvider checks whether anything depends on a provider node
@@ -453,6 +461,7 @@ func NewEngine(ctx context.Context, config *ast.Config, opts *EngineOptions) *En
 		moduleInstances:         util.NewSyncMap[modulepath.Path, []*moduleInstance](),
 		parallel:                opts.Parallel,
 		failedNodes:             util.NewSyncMap[string, error](),
+		pendingResourceChanges:  util.NewSyncMap[string, struct{}](),
 		alwaysRegisterProviders: opts.AlwaysRegisterProviders,
 	}
 
@@ -1308,6 +1317,10 @@ func (e *Engine) registerResourceInstanceInContext(
 	if err != nil {
 		e.failedNodes.Set(instance.Key, fmt.Errorf("registering resource: %w", err))
 		return nil
+	}
+
+	if e.dryRun && (id == "" || property.New(outputs).HasComputed()) {
+		e.pendingResourceChanges.Set(instance.OriginalKey, struct{}{})
 	}
 
 	outputs = outputs.Delete("id", "urn")
@@ -2574,6 +2587,37 @@ func (e *Engine) invokeDataSourceOnce(
 		depMarks[eval.DepMark(urn)] = struct{}{}
 	}
 
+	// A data source whose config directly references a managed resource with
+	// a change pending must defer its read to the apply phase, even when the
+	// referenced value is already known. Only direct references count:
+	// indirection through a local, variable, or module output does not defer.
+	refPrefix := ""
+	if node.ModuleInfo != nil {
+		refPrefix = node.ModuleInfo.Prefix()
+	}
+	depsPending := false
+	checkPendingDep := func(key string) {
+		if _, ok := e.pendingResourceChanges.Get(key); ok {
+			depsPending = true
+		}
+	}
+	collectPendingRefs := func(expr hcl.Expression, extraVars map[string]cty.Value) {
+		if expr == nil || !e.dryRun {
+			return
+		}
+		for _, traversal := range expr.Variables() {
+			namespace, parts := eval.ParseTraversal(traversal)
+			if _, isIterationVar := extraVars[namespace]; isIterationVar {
+				continue
+			}
+			if len(parts) > 0 {
+				checkPendingDep(refPrefix + namespace + "." + parts[0])
+			}
+		}
+	}
+	collectPendingRefs(ds.Count, nil)
+	collectPendingRefs(ds.ForEach, nil)
+
 	dataSourceMapping := e.dataSourceBodyMapping(ctx, ds.Type)
 	inputs, diags := transform.EvalFunctionWithSchema(ds.Config, funcSchema, dataSourceMapping,
 		func(propKey resource.PropertyKey, expr hcl.Expression, extraVars map[string]cty.Value) (cty.Value, hcl.Diagnostics) {
@@ -2593,6 +2637,8 @@ func (e *Engine) invokeDataSourceOnce(
 			for _, urn := range eval.CollectDepURNs(val) {
 				addURN(urn)
 			}
+
+			collectPendingRefs(expr, extraVars)
 
 			return val, diags
 		})
@@ -2657,13 +2703,15 @@ func (e *Engine) invokeDataSourceOnce(
 		if outputs, ok := e.resourceOutputs.Get(fullDepKey); ok {
 			addURN(ctyAsString(outputs.GetAttr("urn")))
 		}
+		checkPendingDep(fullDepKey)
 	}
 
 	// Match the Node.js / Python SDK behavior: during preview, if any input
 	// to the invoke is unknown, skip the provider call and synthesize an
-	// all-unknown result.
+	// all-unknown result. The same applies when the data source references or
+	// depends on a managed resource with a change pending.
 	var outputs property.Map
-	if !e.dryRun || !property.New(inputs).HasComputed() {
+	if !e.dryRun || (!property.New(inputs).HasComputed() && !depsPending) {
 		var err error
 		outputs, err = e.invokeFunction(ctx, ds.Type, invokeReq)
 		if err != nil {

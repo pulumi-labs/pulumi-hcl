@@ -18,6 +18,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"sort"
 	"strings"
 	"testing"
 
@@ -3170,4 +3171,132 @@ module "child" {
 		"::" + rootProvider.Name + "-id"
 	assert.Equal(t, rootRef, childResource.Provider,
 		"a child resource with no provider block must inherit the root default provider")
+}
+
+// During preview, a data source that directly references — or names in
+// depends_on — a managed resource with a change pending (unknown id) is not
+// invoked; its result is synthesized as unknown. A reference that reaches the
+// pending resource only through a local does not defer the invoke, and when
+// the dependency has no change pending (known id, known outputs) nothing
+// defers.
+func TestEngine_DataSourceDeferredWhenDependencyPending(t *testing.T) {
+	t.Parallel()
+
+	src := []byte(`
+resource "aws_ec2_instance" "upstream" {
+  ami = "ami-123"
+}
+
+data "aws_ec2_vpc" "by_ref" {
+  query = aws_ec2_instance.upstream.ami
+}
+
+data "aws_ec2_vpc" "by_depends_on" {
+  query      = "static"
+  depends_on = [aws_ec2_instance.upstream]
+}
+
+locals {
+  indirect = "${aws_ec2_instance.upstream.ami}-local"
+}
+
+data "aws_ec2_vpc" "via_local" {
+  query = local.indirect
+}
+`)
+
+	runEngine := func(t *testing.T, pendingCreate bool) []run.InvokeRequest {
+		p := parser.NewParser()
+		config, diags := p.ParseSource("test.hcl", src)
+		require.False(t, diags.HasErrors(), diags.Error())
+
+		mock := &testutil.MockResourceMonitor{
+			DryRun: true,
+			RegisterResourceHandler: func(ctx context.Context, req run.RegisterResourceRequest) (*run.RegisterResourceResponse, error) {
+				id := req.Name + "-id"
+				if pendingCreate {
+					id = ""
+				}
+				return &run.RegisterResourceResponse{
+					URN:     urn.URN("urn:pulumi:test::project::" + req.Type + "::" + req.Name),
+					ID:      id,
+					Outputs: req.Inputs,
+				}, nil
+			},
+		}
+		engine := run.NewEngine(t.Context(), config, &run.EngineOptions{
+			ProjectName:     "test-project",
+			StackName:       "dev",
+			ResourceMonitor: mock,
+			WorkDir:         t.TempDir(),
+			RootDir:         t.TempDir(),
+			DryRun:          true,
+			SchemaLoader: schemaloader.New(t, schema.PackageSpec{
+				Name: "aws",
+				Meta: &schema.MetadataSpec{
+					ModuleFormat: `(.*)(?:/[^/]*)`,
+				},
+				Resources: map[string]schema.ResourceSpec{
+					"aws:ec2/instance:Instance": {
+						InputProperties: map[string]schema.PropertySpec{
+							"ami": {TypeSpec: schema.TypeSpec{Type: "string"}},
+						},
+						ObjectTypeSpec: schema.ObjectTypeSpec{
+							Properties: map[string]schema.PropertySpec{
+								"ami": {TypeSpec: schema.TypeSpec{Type: "string"}},
+							},
+						},
+					},
+				},
+				Functions: map[string]schema.FunctionSpec{
+					"aws:ec2/getVpc:getVpc": {
+						Inputs: &schema.ObjectTypeSpec{
+							Properties: map[string]schema.PropertySpec{
+								"query": {TypeSpec: schema.TypeSpec{Type: "string"}},
+							},
+						},
+						Outputs: &schema.ObjectTypeSpec{
+							Properties: map[string]schema.PropertySpec{
+								"result": {TypeSpec: schema.TypeSpec{Type: "string"}},
+							},
+						},
+					},
+				},
+			}),
+		})
+
+		require.NoError(t, engine.Run(t.Context()))
+
+		invoked := mock.InvokedFunctions
+		sort.Slice(invoked, func(i, j int) bool {
+			return invoked[i].Args.Get("query").AsString() < invoked[j].Args.Get("query").AsString()
+		})
+		return invoked
+	}
+
+	t.Run("dependency pending create", func(t *testing.T) {
+		t.Parallel()
+		assert.Equal(t, []run.InvokeRequest{{
+			Token: "aws:ec2/getVpc:getVpc",
+			Args:  property.NewMap(map[string]property.Value{"query": property.New("ami-123-local")}),
+		}}, runEngine(t, true))
+	})
+
+	t.Run("dependency without pending change", func(t *testing.T) {
+		t.Parallel()
+		assert.Equal(t, []run.InvokeRequest{
+			{
+				Token: "aws:ec2/getVpc:getVpc",
+				Args:  property.NewMap(map[string]property.Value{"query": property.New("ami-123")}),
+			},
+			{
+				Token: "aws:ec2/getVpc:getVpc",
+				Args:  property.NewMap(map[string]property.Value{"query": property.New("ami-123-local")}),
+			},
+			{
+				Token: "aws:ec2/getVpc:getVpc",
+				Args:  property.NewMap(map[string]property.Value{"query": property.New("static")}),
+			},
+		}, runEngine(t, false))
+	})
 }
