@@ -1,0 +1,47 @@
+{
+  "description": "",
+  "name": "required",
+  "resources": {
+    "required:index:required": {
+      "description": "",
+      "inputProperties": {
+        "account": {
+          "type": "string"
+        },
+        "optional": {
+          "default": "ok",
+          "type": "string"
+        },
+        "region": {
+          "type": "string"
+        },
+        "zone": {
+          "type": "string"
+        }
+      },
+      "isComponent": true,
+      "properties": {
+        "account": {
+          "type": "string"
+        },
+        "optional": {
+          "default": "ok",
+          "type": "string"
+        },
+        "region": {
+          "type": "string"
+        },
+        "zone": {
+          "type": "string"
+        }
+      },
+      "requiredInputs": [
+        "account",
+        "region",
+        "zone"
+      ],
+      "type": "object"
+    }
+  },
+  "version": "0.0.0-dev"
+}

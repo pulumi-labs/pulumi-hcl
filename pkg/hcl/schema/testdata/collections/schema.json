@@ -1,0 +1,78 @@
+{
+  "description": "",
+  "name": "collections",
+  "resources": {
+    "collections:infra:widget": {
+      "description": "",
+      "inputProperties": {
+        "ports": {
+          "items": {
+            "type": "number"
+          },
+          "type": "array"
+        },
+        "settings": {
+          "properties": {
+            "cidr": {
+              "type": "string"
+            },
+            "public": {
+              "type": "boolean"
+            }
+          },
+          "type": "object"
+        },
+        "subnets": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "tags": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "type": "object"
+        }
+      },
+      "isComponent": true,
+      "properties": {
+        "endpoints": {
+          "type": "object"
+        },
+        "ports": {
+          "items": {
+            "type": "number"
+          },
+          "type": "array"
+        },
+        "settings": {
+          "properties": {
+            "cidr": {
+              "type": "string"
+            },
+            "public": {
+              "type": "boolean"
+            }
+          },
+          "type": "object"
+        },
+        "subnets": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "tags": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "type": "object"
+        }
+      },
+      "requiredInputs": null,
+      "type": "object"
+    }
+  },
+  "version": "0.0.0-dev"
+}

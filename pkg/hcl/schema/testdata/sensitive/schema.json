@@ -1,0 +1,39 @@
+{
+  "description": "",
+  "name": "sensitive",
+  "resources": {
+    "sensitive:index:sensitive": {
+      "description": "",
+      "inputProperties": {
+        "freeform": {
+          "description": "No type constraint, so it defaults to the object (any) type.",
+          "type": "object"
+        },
+        "secret_key": {
+          "secret": true,
+          "type": "string"
+        }
+      },
+      "isComponent": true,
+      "properties": {
+        "freeform": {
+          "description": "No type constraint, so it defaults to the object (any) type.",
+          "type": "object"
+        },
+        "secret_key": {
+          "secret": true,
+          "type": "string"
+        },
+        "token": {
+          "secret": true,
+          "type": "object"
+        }
+      },
+      "requiredInputs": [
+        "secret_key"
+      ],
+      "type": "object"
+    }
+  },
+  "version": "0.0.0-dev"
+}

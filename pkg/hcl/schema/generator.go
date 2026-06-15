@@ -18,6 +18,7 @@ package schema
 import (
 	"encoding/json"
 	"fmt"
+	"sort"
 
 	"github.com/pulumi-labs/pulumi-hcl/pkg/hcl/ast"
 	"github.com/zclconf/go-cty/cty"
@@ -88,7 +89,6 @@ func GenerateModuleSchema(config *ast.Config, pkgName, pkgVersion, componentName
 		OutputProperties: make(map[string]*PropertySpec),
 	}
 
-	// Process variables as inputs
 	for _, v := range config.Variables {
 		prop, err := variableToPropertySpec(v)
 		if err != nil {
@@ -102,11 +102,12 @@ func GenerateModuleSchema(config *ast.Config, pkgName, pkgVersion, componentName
 		}
 	}
 
-	// Process outputs
 	for _, o := range config.Outputs {
 		prop := outputToPropertySpec(o)
 		schema.OutputProperties[o.Name] = prop
 	}
+
+	sort.Strings(schema.RequiredInputs)
 
 	return schema, nil
 }
@@ -133,7 +134,42 @@ func variableToPropertySpec(v *ast.Variable) (*PropertySpec, error) {
 		prop.Type = "object"
 	}
 
+	// A variable default is a constant expression (it cannot reference other
+	// values), so a nil evaluation context is sufficient. The Pulumi schema
+	// only permits constant defaults on primitive properties; a default on a
+	// collection or object is conveyed by the property being optional rather
+	// than by an explicit default value.
+	if v.Default != nil {
+		val, diags := v.Default.Value(nil)
+		if diags.HasErrors() {
+			return nil, fmt.Errorf("evaluating default: %s", diags.Error())
+		}
+		if d, ok := ctyToConstant(val); ok {
+			prop.Default = d
+		}
+	}
+
 	return prop, nil
+}
+
+// ctyToConstant converts a primitive cty.Value to a Go value usable as a Pulumi
+// schema default. Only booleans, numbers, and strings are valid schema
+// constants, so null and non-primitive values return ok=false.
+func ctyToConstant(val cty.Value) (any, bool) {
+	if val.IsNull() {
+		return nil, false
+	}
+	switch val.Type() {
+	case cty.String:
+		return val.AsString(), true
+	case cty.Number:
+		f, _ := val.AsBigFloat().Float64()
+		return f, true
+	case cty.Bool:
+		return val.True(), true
+	default:
+		return nil, false
+	}
 }
 
 // outputToPropertySpec converts an HCL output to a PropertySpec.
