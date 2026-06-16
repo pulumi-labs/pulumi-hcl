@@ -20,43 +20,16 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/pulumi/pulumi/pkg/v3/codegen/schema"
+	"github.com/pulumi-labs/pulumi-hcl/pkg/hcl/packages"
 	"github.com/pulumi/pulumi/sdk/v3/go/property"
 )
 
 const (
-	remoteStateType      = "terraform_remote_state"
-	localReferenceToken  = "terraform:state:getLocalReference"
-	remoteReferenceToken = "terraform:state:getRemoteReference"
-
 	// TerraformStatePackage / TerraformStatePackageVersion is the external
 	// pulumi-terraform package that provides the state-reference invokes.
 	TerraformStatePackage        = "terraform"
 	TerraformStatePackageVersion = "6.0.2"
 )
-
-// terraformRemoteStateSchema is the synthetic schema terraform_remote_state
-// resolves to: the TF data source surface as inputs. lowerRemoteStateInvoke
-// selects the concrete pulumi-terraform invoke (local or remote) by backend and
-// translates the inputs to its arguments, and applyRemoteStateDefaults overlays
-// `defaults` on the result. The placeholder Token is always overridden there.
-func terraformRemoteStateSchema() *schema.Function {
-	opt := func(t schema.Type) schema.Type { return &schema.OptionalType{ElementType: t} }
-	return &schema.Function{
-		Token: localReferenceToken,
-		Inputs: &schema.ObjectType{
-			Properties: []*schema.Property{
-				{Name: "backend", Type: opt(schema.StringType)},
-				{Name: "config", Type: opt(schema.AnyType)},
-				{Name: "workspace", Type: opt(schema.StringType)},
-				{Name: "defaults", Type: opt(schema.AnyType)},
-			},
-		},
-		ReturnType: &schema.ObjectType{
-			Properties: []*schema.Property{{Name: "outputs", Type: schema.AnyType}},
-		},
-	}
-}
 
 // lowerRemoteStateInvoke rewrites a terraform_remote_state invoke into the matching
 // pulumi-terraform state-reference invoke: the local backend uses getLocalReference
@@ -74,7 +47,7 @@ func terraformRemoteStateSchema() *schema.Function {
 // `defaults` is returned for applyRemoteStateDefaults to overlay on the invoke
 // result; it is the zero Map when absent.
 func lowerRemoteStateInvoke(tfType string, req InvokeRequest) (InvokeRequest, property.Map, error) {
-	if tfType != remoteStateType {
+	if tfType != packages.RemoteStateType {
 		return req, property.Map{}, nil
 	}
 
@@ -103,11 +76,11 @@ func lowerRemoteStateInvoke(tfType string, req InvokeRequest) (InvokeRequest, pr
 		if hasWorkspace {
 			return req, property.Map{}, fmt.Errorf("terraform_remote_state: the local backend does not support the workspace attribute")
 		}
-		token = localReferenceToken
+		token = packages.LocalReferenceToken
 		desc = "the local backend"
 		fields = map[string]string{"path": "path", "workspace_dir": "workspaceDir"}
 	case "remote":
-		token = remoteReferenceToken
+		token = packages.RemoteReferenceToken
 		desc = fmt.Sprintf("backend %q", backend)
 		fields = map[string]string{
 			"organization": "organization",

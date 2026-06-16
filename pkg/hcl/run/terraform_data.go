@@ -15,49 +15,9 @@
 package run
 
 import (
-	"github.com/pulumi/pulumi/pkg/v3/codegen/schema"
+	"github.com/pulumi-labs/pulumi-hcl/pkg/hcl/packages"
 	"github.com/pulumi/pulumi/sdk/v3/go/property"
 )
-
-const (
-	// terraformDataType is Terraform's builtin `terraform_data` managed
-	// resource. Its provider (`terraform`) ships no installable plugin;
-	// Terraform/OpenTofu implement it internally.
-	terraformDataType = "terraform_data"
-	// stashToken is the Pulumi engine's builtin resource we lower onto.
-	stashToken = "pulumi:index:Stash"
-)
-
-// terraformDataSchema is the synthetic schema terraform_data resolves to, so it
-// flows through the generic registration path like any other resource. It is
-// backed by the engine's builtin Stash resource (hence the Stash token) but
-// described in terraform_data's own terms; the lowerTerraformData* hooks bridge
-// the two property surfaces around the Stash registration:
-//
-//   - `input` is the value Stash stores.
-//   - `output` mirrors `input`. It is read back from Stash's `input` output,
-//     which tracks the current input across updates (Stash's own `output`
-//     property is frozen at create time and is not used).
-//   - `triggers_replace` is declared so it is evaluated from config, but it is
-//     not sent to Stash; lowerTerraformDataInputs moves it to the engine's
-//     replacement trigger so a change to it forces replacement (and a new id).
-//
-// `id` is the Stash resource id and is attached by the registration machinery,
-// so it is not declared here.
-func terraformDataSchema() *schema.Resource {
-	// All of terraform_data's attributes are optional/nullable, so the property
-	// types are wrapped in OptionalType (an un-wrapped type reads as required).
-	anyProp := func(name string) *schema.Property {
-		return &schema.Property{Name: name, Type: &schema.OptionalType{ElementType: schema.AnyType}}
-	}
-	return &schema.Resource{
-		Token:           stashToken,
-		InputProperties: []*schema.Property{anyProp("input"), anyProp("triggers_replace")},
-		Properties: []*schema.Property{
-			anyProp("input"), anyProp("output"), anyProp("triggers_replace"),
-		},
-	}
-}
 
 // lowerTerraformDataInputs adapts evaluated terraform_data inputs to Stash's
 // input surface just before registration. It is a no-op for every other type.
@@ -71,7 +31,7 @@ func terraformDataSchema() *schema.Resource {
 // is supplied as an explicit null: Stash stores it and mirrors it back as a null
 // output, matching terraform_data used purely for its triggers_replace lifecycle.
 func lowerTerraformDataInputs(resType string, inputs property.Map, opts *ResourceOptions) property.Map {
-	if resType != terraformDataType {
+	if resType != packages.TerraformDataType {
 		return inputs
 	}
 	if t, ok := inputs.GetOk("triggers_replace"); ok {
@@ -92,7 +52,7 @@ func lowerTerraformDataInputs(resType string, inputs property.Map, opts *Resourc
 // `input` output; `triggers_replace` is not a Stash output, so it is echoed
 // from the replacement trigger captured by lowerTerraformDataInputs.
 func lowerTerraformDataOutputs(resType string, outputs property.Map, opts *ResourceOptions) property.Map {
-	if resType != terraformDataType {
+	if resType != packages.TerraformDataType {
 		return outputs
 	}
 	outputs = outputs.Set("output", outputs.Get("input"))

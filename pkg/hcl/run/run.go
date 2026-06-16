@@ -297,6 +297,10 @@ type Engine struct {
 	// transform path is used.
 	providerInfoSource bridge.ProviderInfoSource
 
+	// resolver resolves TF resource/data source types to Pulumi schemas and
+	// bridge mappings, shared with schema generation so both resolve identically.
+	resolver *packages.Resolver
+
 	// resmon is the resource monitor for registering resources.
 	resmon ResourceMonitor
 
@@ -455,6 +459,9 @@ func NewEngine(ctx context.Context, config *ast.Config, opts *EngineOptions) *En
 		failedNodes:             util.NewSyncMap[string, error](),
 		alwaysRegisterProviders: opts.AlwaysRegisterProviders,
 	}
+
+	engine.resolver = packages.NewResolver(
+		opts.SchemaLoader, opts.ProviderInfoSource, opts.Packages, engine.knownProviders())
 
 	return engine
 }
@@ -942,7 +949,7 @@ func (e *Engine) registerProviderInContext(
 		return fmt.Errorf("resolving provider schema for %s: %w", provider.Name, perr)
 	}
 
-	providerMapping := e.providerConfigBodyMapping(ctx, provider.Name)
+	providerMapping := e.resolver.ProviderConfigBodyMapping(ctx, provider.Name)
 	inputsMap, diags := transform.EvalResourceWithSchema(provider.Config, resSchema, providerMapping,
 		func(_ resource.PropertyKey, expr hcl.Expression, extraVars map[string]cty.Value) (cty.Value, hcl.Diagnostics) {
 			c := hclCtx
@@ -1114,7 +1121,7 @@ func (e *Engine) processResourceInContext(
 	ctx context.Context, node *graph.Node, res *ast.Resource,
 	evalCtx *eval.Context, parentURN urn.URN, modInst *moduleInstance,
 ) error {
-	resSchema, err := e.resolveResource(ctx, res.Type)
+	resSchema, err := e.resolver.ResolveResource(ctx, res.Type)
 	if err != nil {
 		if diag := unknownTokenDiag("resource", res.TypeRange, err); diag != err {
 			return diag
@@ -1216,7 +1223,7 @@ func (e *Engine) registerResourceInstanceInContext(
 		plainInputProps[p.Name] = p.Plain
 	}
 
-	resourceMapping := e.resourceBodyMapping(ctx, res.Type)
+	resourceMapping := e.resolver.ResourceBodyMapping(ctx, res.Type)
 	resourceInputs, diags := transform.EvalResourceWithSchema(res.Config, resSchema, resourceMapping,
 		func(propKey resource.PropertyKey, expr hcl.Expression, extraVars map[string]cty.Value) (cty.Value, hcl.Diagnostics) {
 			var val cty.Value
@@ -1873,7 +1880,7 @@ func (e *Engine) resolveMovedAliases(
 			// carries the prior type's token so the engine matches the old URN.
 			var priorType string
 			if from.Type != res.Type {
-				prior, err := e.resolveResource(ctx, from.Type)
+				prior, err := e.resolver.ResolveResource(ctx, from.Type)
 				if err != nil {
 					logging.V(5).Infof("moved: cannot resolve prior type %q: %v", from.Type, err)
 					continue
@@ -2446,7 +2453,7 @@ func (e *Engine) processDataSource(ctx context.Context, node *graph.Node) error 
 func (e *Engine) processDataSourceInContext(
 	ctx context.Context, node *graph.Node, ds *ast.Resource, evalCtx *eval.Context,
 ) error {
-	funcSchema, err := e.resolveFunction(ctx, ds.Type)
+	funcSchema, err := e.resolver.ResolveFunction(ctx, ds.Type)
 	if err != nil {
 		if diag := unknownTokenDiag("data source", ds.TypeRange, err); diag != err {
 			return diag
@@ -2574,7 +2581,7 @@ func (e *Engine) invokeDataSourceOnce(
 		depMarks[eval.DepMark(urn)] = struct{}{}
 	}
 
-	dataSourceMapping := e.dataSourceBodyMapping(ctx, ds.Type)
+	dataSourceMapping := e.resolver.DataSourceBodyMapping(ctx, ds.Type)
 	inputs, diags := transform.EvalFunctionWithSchema(ds.Config, funcSchema, dataSourceMapping,
 		func(propKey resource.PropertyKey, expr hcl.Expression, extraVars map[string]cty.Value) (cty.Value, hcl.Diagnostics) {
 			var val cty.Value
@@ -2697,7 +2704,7 @@ func (e *Engine) processCall(ctx context.Context, node *graph.Node) error {
 			resKey = k
 			resType = res.Type
 			var err error
-			resSchema, err = e.resolveResource(ctx, res.Type)
+			resSchema, err = e.resolver.ResolveResource(ctx, res.Type)
 			if err != nil {
 				if diag := unknownTokenDiag("resource", res.TypeRange, err); diag != err {
 					return diag

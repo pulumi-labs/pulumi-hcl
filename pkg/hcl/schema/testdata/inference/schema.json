@@ -11,9 +11,6 @@
       },
       "isComponent": true,
       "properties": {
-        "pet_id": {
-          "type": "object"
-        },
         "port": {
           "type": "number"
         },
