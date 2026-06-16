@@ -1,0 +1,47 @@
+{
+  "description": "",
+  "name": "required",
+  "resources": {
+    "required:index:required": {
+      "description": "",
+      "inputProperties": {
+        "string_a": {
+          "type": "string"
+        },
+        "string_b": {
+          "type": "string"
+        },
+        "string_c": {
+          "type": "string"
+        },
+        "string_with_default": {
+          "default": "ok",
+          "type": "string"
+        }
+      },
+      "isComponent": true,
+      "properties": {
+        "string_a": {
+          "type": "string"
+        },
+        "string_b": {
+          "type": "string"
+        },
+        "string_c": {
+          "type": "string"
+        },
+        "string_with_default": {
+          "default": "ok",
+          "type": "string"
+        }
+      },
+      "requiredInputs": [
+        "string_a",
+        "string_b",
+        "string_c"
+      ],
+      "type": "object"
+    }
+  },
+  "version": "0.0.0-dev"
+}

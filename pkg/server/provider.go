@@ -145,7 +145,25 @@ func NewHCLProvider(ctx context.Context, modulePath, addr string) (*HCLProvider,
 		componentName = explicitComponentName
 	}
 
-	moduleSchema, err := schema.GenerateModuleSchema(loaded.Config, pkgName, pkgVersion, componentName, componentModule)
+	// Resolve resource/data source references in outputs against provider
+	// schemas, using the same loader, bridge source, and required-provider hints
+	// the engine uses, so schema generation types them the way Run resolves them.
+	// The same module loader types references to child modules.
+	cachedLoader := pulumiSchema.NewCachedLoader(schemaLoader)
+	var knownProviders []string
+	if tf := loaded.Config.Terraform; tf != nil {
+		for name := range tf.RequiredProviders {
+			knownProviders = append(knownProviders, name)
+		}
+	}
+	binder := &schema.Binder{
+		Resources: packages.NewResolver(cachedLoader, providerInfoSource, paramDescriptors, knownProviders),
+		Modules:   moduleLoaderAdapter{loader},
+		ModuleDir: loaded.SourcePath,
+	}
+
+	moduleSchema, err := schema.GenerateModuleSchema(
+		ctx, loaded.Config, binder, pkgName, pkgVersion, componentName, componentModule)
 	if err != nil {
 		return nil, fmt.Errorf("generating schema: %w", err)
 	}
@@ -153,13 +171,27 @@ func NewHCLProvider(ctx context.Context, modulePath, addr string) (*HCLProvider,
 	return &HCLProvider{
 		modulePath:         modulePath,
 		moduleLoader:       loader,
-		pkgLoader:          pulumiSchema.NewCachedLoader(schemaLoader),
+		pkgLoader:          cachedLoader,
 		providerInfoSource: providerInfoSource,
 		packages:           paramDescriptors,
 		name:               pkgName,
 		version:            pkgVersion,
 		schema:             moduleSchema,
 	}, nil
+}
+
+// moduleLoaderAdapter adapts *modules.Loader to schema.ModuleLoader, so schema
+// generation can recursively type references to child modules.
+type moduleLoaderAdapter struct {
+	loader *modules.Loader
+}
+
+func (a moduleLoaderAdapter) LoadModule(source, versionConstraint, callerDir string) (*ast.Config, string, error) {
+	m, err := a.loader.LoadModule(source, versionConstraint, callerDir)
+	if err != nil {
+		return nil, "", err
+	}
+	return m.Config, m.SourcePath, nil
 }
 
 // Attach configures the provider with a host callback.

@@ -1,0 +1,29 @@
+{
+  "description": "",
+  "name": "inference",
+  "resources": {
+    "inference:index:inference": {
+      "description": "",
+      "inputProperties": {
+        "string_value": {
+          "type": "string"
+        }
+      },
+      "isComponent": true,
+      "properties": {
+        "number_output": {
+          "type": "number"
+        },
+        "string_output": {
+          "type": "string"
+        },
+        "string_value": {
+          "type": "string"
+        }
+      },
+      "requiredInputs": null,
+      "type": "object"
+    }
+  },
+  "version": "0.0.0-dev"
+}

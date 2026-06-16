@@ -1,0 +1,39 @@
+{
+  "description": "",
+  "name": "sensitive",
+  "resources": {
+    "sensitive:index:sensitive": {
+      "description": "",
+      "inputProperties": {
+        "sensitive_string": {
+          "secret": true,
+          "type": "string"
+        },
+        "untyped_value": {
+          "description": "No type constraint, so it defaults to the object (any) type.",
+          "type": "object"
+        }
+      },
+      "isComponent": true,
+      "properties": {
+        "sensitive_output": {
+          "secret": true,
+          "type": "string"
+        },
+        "sensitive_string": {
+          "secret": true,
+          "type": "string"
+        },
+        "untyped_value": {
+          "description": "No type constraint, so it defaults to the object (any) type.",
+          "type": "object"
+        }
+      },
+      "requiredInputs": [
+        "sensitive_string"
+      ],
+      "type": "object"
+    }
+  },
+  "version": "0.0.0-dev"
+}

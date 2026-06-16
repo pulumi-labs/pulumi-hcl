@@ -297,6 +297,10 @@ type Engine struct {
 	// transform path is used.
 	providerInfoSource bridge.ProviderInfoSource
 
+	// resolver resolves TF resource/data source types to Pulumi schemas and
+	// bridge mappings, shared with schema generation so both resolve identically.
+	resolver *packages.Resolver
+
 	// resmon is the resource monitor for registering resources.
 	resmon ResourceMonitor
 
@@ -430,7 +434,7 @@ func NewEngine(ctx context.Context, config *ast.Config, opts *EngineOptions) *En
 	evalCtx := eval.NewContext(opts.WorkDir, opts.RootDir, opts.WorkDir,
 		opts.StackName, opts.ProjectName, opts.Organization)
 
-	engine := &Engine{
+	return &Engine{
 		config:                  config,
 		evaluator:               eval.NewEvaluator(evalCtx),
 		pkgLoader:               opts.SchemaLoader,
@@ -454,9 +458,9 @@ func NewEngine(ctx context.Context, config *ast.Config, opts *EngineOptions) *En
 		parallel:                opts.Parallel,
 		failedNodes:             util.NewSyncMap[string, error](),
 		alwaysRegisterProviders: opts.AlwaysRegisterProviders,
+		resolver: packages.NewResolver(
+			opts.SchemaLoader, opts.ProviderInfoSource, opts.Packages, knownProviders(config.Terraform)),
 	}
-
-	return engine
 }
 
 // Run executes the HCL program.
@@ -933,7 +937,7 @@ func (e *Engine) registerProviderInContext(
 	hclCtx := evalCtx.HCLContext()
 
 	// Schema-aware eval is needed so schema.Property.Secret marks survive.
-	pkg, perr := packages.ResolvePackage(ctx, e.pkgLoader, e.knownProviders(), "pulumi_providers_"+provider.Name)
+	pkg, perr := packages.ResolvePackage(ctx, e.pkgLoader, knownProviders(e.config.Terraform), "pulumi_providers_"+provider.Name)
 	if perr != nil {
 		return fmt.Errorf("resolving provider package %s: %w", provider.Name, perr)
 	}
@@ -942,7 +946,7 @@ func (e *Engine) registerProviderInContext(
 		return fmt.Errorf("resolving provider schema for %s: %w", provider.Name, perr)
 	}
 
-	providerMapping := e.providerConfigBodyMapping(ctx, provider.Name)
+	providerMapping := e.resolver.ProviderConfigBodyMapping(ctx, provider.Name)
 	inputsMap, diags := transform.EvalResourceWithSchema(provider.Config, resSchema, providerMapping,
 		func(_ resource.PropertyKey, expr hcl.Expression, extraVars map[string]cty.Value) (cty.Value, hcl.Diagnostics) {
 			c := hclCtx
@@ -1114,7 +1118,7 @@ func (e *Engine) processResourceInContext(
 	ctx context.Context, node *graph.Node, res *ast.Resource,
 	evalCtx *eval.Context, parentURN urn.URN, modInst *moduleInstance,
 ) error {
-	resSchema, err := e.resolveResource(ctx, res.Type)
+	resSchema, err := e.resolver.ResolveResource(ctx, res.Type)
 	if err != nil {
 		if diag := unknownTokenDiag("resource", res.TypeRange, err); diag != err {
 			return diag
@@ -1216,7 +1220,7 @@ func (e *Engine) registerResourceInstanceInContext(
 		plainInputProps[p.Name] = p.Plain
 	}
 
-	resourceMapping := e.resourceBodyMapping(ctx, res.Type)
+	resourceMapping := e.resolver.ResourceBodyMapping(ctx, res.Type)
 	resourceInputs, diags := transform.EvalResourceWithSchema(res.Config, resSchema, resourceMapping,
 		func(propKey resource.PropertyKey, expr hcl.Expression, extraVars map[string]cty.Value) (cty.Value, hcl.Diagnostics) {
 			var val cty.Value
@@ -1873,7 +1877,7 @@ func (e *Engine) resolveMovedAliases(
 			// carries the prior type's token so the engine matches the old URN.
 			var priorType string
 			if from.Type != res.Type {
-				prior, err := e.resolveResource(ctx, from.Type)
+				prior, err := e.resolver.ResolveResource(ctx, from.Type)
 				if err != nil {
 					logging.V(5).Infof("moved: cannot resolve prior type %q: %v", from.Type, err)
 					continue
@@ -2122,12 +2126,12 @@ func (e *Engine) packageRefForType(hclToken string) PackageRef {
 	return e.packageRefs[packageNameFromResourceType(hclToken)]
 }
 
-func (e *Engine) knownProviders() []string {
-	if e.config.Terraform == nil {
+func knownProviders(tfBlock *ast.Terraform) []string {
+	if tfBlock == nil {
 		return nil
 	}
-	providers := make([]string, 0, len(e.config.Terraform.RequiredProviders))
-	for name := range e.config.Terraform.RequiredProviders {
+	providers := make([]string, 0, len(tfBlock.RequiredProviders))
+	for name := range tfBlock.RequiredProviders {
 		providers = append(providers, name)
 	}
 	return providers
@@ -2446,7 +2450,7 @@ func (e *Engine) processDataSource(ctx context.Context, node *graph.Node) error 
 func (e *Engine) processDataSourceInContext(
 	ctx context.Context, node *graph.Node, ds *ast.Resource, evalCtx *eval.Context,
 ) error {
-	funcSchema, err := e.resolveFunction(ctx, ds.Type)
+	funcSchema, err := e.resolver.ResolveFunction(ctx, ds.Type)
 	if err != nil {
 		if diag := unknownTokenDiag("data source", ds.TypeRange, err); diag != err {
 			return diag
@@ -2574,7 +2578,7 @@ func (e *Engine) invokeDataSourceOnce(
 		depMarks[eval.DepMark(urn)] = struct{}{}
 	}
 
-	dataSourceMapping := e.dataSourceBodyMapping(ctx, ds.Type)
+	dataSourceMapping := e.resolver.DataSourceBodyMapping(ctx, ds.Type)
 	inputs, diags := transform.EvalFunctionWithSchema(ds.Config, funcSchema, dataSourceMapping,
 		func(propKey resource.PropertyKey, expr hcl.Expression, extraVars map[string]cty.Value) (cty.Value, hcl.Diagnostics) {
 			var val cty.Value
@@ -2697,7 +2701,7 @@ func (e *Engine) processCall(ctx context.Context, node *graph.Node) error {
 			resKey = k
 			resType = res.Type
 			var err error
-			resSchema, err = e.resolveResource(ctx, res.Type)
+			resSchema, err = e.resolver.ResolveResource(ctx, res.Type)
 			if err != nil {
 				if diag := unknownTokenDiag("resource", res.TypeRange, err); diag != err {
 					return diag
@@ -2723,7 +2727,7 @@ func (e *Engine) processCall(ctx context.Context, node *graph.Node) error {
 			resKey = matched.Key()
 			providerToken := "pulumi_providers_" + matched.Name
 			resType = providerToken
-			pkg, err := packages.ResolvePackage(ctx, e.pkgLoader, e.knownProviders(), providerToken)
+			pkg, err := packages.ResolvePackage(ctx, e.pkgLoader, knownProviders(e.config.Terraform), providerToken)
 			if err != nil {
 				return fmt.Errorf("resolving provider package for call: %w", err)
 			}

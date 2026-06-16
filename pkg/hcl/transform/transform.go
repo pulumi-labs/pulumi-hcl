@@ -1005,6 +1005,33 @@ func ResourceOutputToCty(pv property.Map, r *schema.Resource, mapping *bridge.Bo
 	return propertyObjectToCtyMap("", pv, properties, mapping, dryRun)
 }
 
+// ResourceReferenceType returns the cty type of a reference to r — the value
+// bound for e.g. `aws_s3_bucket.b`. Its attributes are r's output properties
+// under their TF names plus the synthetic `id`, mirroring the value
+// ResourceOutputToCty puts in scope at runtime, so an expression referencing the
+// resource can be typed against it.
+func ResourceReferenceType(r *schema.Resource, mapping *bridge.BodyMapping) cty.Type {
+	properties := r.Properties
+	if r.IsProvider {
+		properties = append(slices.Clone(r.Properties),
+			&schema.Property{Name: "version", Type: schema.StringType},
+			&schema.Property{Name: "pluginDownloadURL", Type: schema.StringType},
+		)
+	}
+	return ctyObjectType(properties, map[string]cty.Type{"id": cty.String}, mapping)
+}
+
+// DataSourceReferenceType returns the cty type of a `data.<type>.<name>`
+// reference: the object type of the data source's return value, or
+// DynamicPseudoType when the return type is not an object.
+func DataSourceReferenceType(fn *schema.Function, mapping *bridge.BodyMapping) cty.Type {
+	obj, ok := fn.ReturnType.(*schema.ObjectType)
+	if !ok {
+		return cty.DynamicPseudoType
+	}
+	return ctyObjectType(obj.Properties, nil, mapping)
+}
+
 // FunctionOutputToCty mirrors ResourceOutputToCty for invoke return values.
 func FunctionOutputToCty(pv property.Map, r *schema.Function, mapping *bridge.BodyMapping, dryRun bool) (cty.Value, error) {
 	if obj, ok := r.ReturnType.(*schema.ObjectType); ok {

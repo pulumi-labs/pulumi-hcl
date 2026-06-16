@@ -1,0 +1,87 @@
+{
+  "description": "",
+  "name": "collections",
+  "resources": {
+    "collections:infra:widget": {
+      "description": "",
+      "inputProperties": {
+        "list_of_string": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "map_of_string": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "type": "object"
+        },
+        "object_value": {
+          "properties": {
+            "bool_field": {
+              "type": "boolean"
+            },
+            "string_field": {
+              "type": "string"
+            }
+          },
+          "type": "object"
+        },
+        "set_of_number": {
+          "items": {
+            "type": "number"
+          },
+          "type": "array"
+        }
+      },
+      "isComponent": true,
+      "properties": {
+        "list_of_string": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "list_of_string_output": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "map_of_string": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "type": "object"
+        },
+        "map_of_string_output": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "type": "object"
+        },
+        "object_value": {
+          "properties": {
+            "bool_field": {
+              "type": "boolean"
+            },
+            "string_field": {
+              "type": "string"
+            }
+          },
+          "type": "object"
+        },
+        "set_of_number": {
+          "items": {
+            "type": "number"
+          },
+          "type": "array"
+        }
+      },
+      "requiredInputs": null,
+      "type": "object"
+    }
+  },
+  "version": "0.0.0-dev"
+}

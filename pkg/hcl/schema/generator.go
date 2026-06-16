@@ -16,12 +16,55 @@
 package schema
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
+	"maps"
+	"slices"
+	"sort"
 
 	"github.com/pulumi-labs/pulumi-hcl/pkg/hcl/ast"
+	"github.com/pulumi-labs/pulumi-hcl/pkg/hcl/bridge"
+	"github.com/pulumi-labs/pulumi-hcl/pkg/hcl/eval"
+	"github.com/pulumi-labs/pulumi-hcl/pkg/hcl/transform"
+	pulumischema "github.com/pulumi/pulumi/pkg/v3/codegen/schema"
+	"github.com/pulumi/pulumi/sdk/v3/go/common/resource/urn"
 	"github.com/zclconf/go-cty/cty"
 )
+
+// ResourceTypeResolver resolves a TF resource or data source type to its Pulumi
+// schema and bridge mapping, so an output expression that references a resource
+// or data source can be typed. It is satisfied by *packages.Resolver.
+type ResourceTypeResolver interface {
+	ResolveResource(ctx context.Context, tfType string) (*pulumischema.Resource, error)
+	ResolveFunction(ctx context.Context, tfType string) (*pulumischema.Function, error)
+	ResourceBodyMapping(ctx context.Context, tfType string) *bridge.BodyMapping
+	DataSourceBodyMapping(ctx context.Context, tfType string) *bridge.BodyMapping
+}
+
+// ModuleLoader loads a child module's parsed configuration and resolved
+// directory, so module.<name>.<output> references can be typed by recursively
+// typing the child module's outputs.
+type ModuleLoader interface {
+	LoadModule(source, versionConstraint, callerDir string) (config *ast.Config, dir string, err error)
+}
+
+// Binder supplies the external lookups used to type output expressions that
+// reference resources, data sources, or child modules. A nil *Binder, or a nil
+// field within it, leaves the corresponding references untyped (they fall back
+// to "any"). Variables and locals are always typed, without a Binder.
+type Binder struct {
+	// Resources types resource and data source references from provider schemas.
+	Resources ResourceTypeResolver
+	// Modules loads child modules so their outputs can be typed.
+	Modules ModuleLoader
+	// ModuleDir is the directory child module sources are resolved relative to.
+	ModuleDir string
+}
+
+func (b *Binder) child(dir string) *Binder {
+	return &Binder{Resources: b.Resources, Modules: b.Modules, ModuleDir: dir}
+}
 
 // ModuleSchema represents a generated schema for an HCL module.
 type ModuleSchema struct {
@@ -77,8 +120,13 @@ type PropertySpec struct {
 	Ref string `json:"$ref,omitempty"`
 }
 
-// GenerateModuleSchema generates a Pulumi schema from an HCL module configuration.
-func GenerateModuleSchema(config *ast.Config, pkgName, pkgVersion, componentName, module string) (*ModuleSchema, error) {
+// GenerateModuleSchema generates a Pulumi schema from an HCL module
+// configuration. binder types output expressions that reference resources, data
+// sources, or child modules; pass nil to leave those references untyped.
+func GenerateModuleSchema(
+	ctx context.Context, config *ast.Config, binder *Binder,
+	pkgName, pkgVersion, componentName, module string,
+) (*ModuleSchema, error) {
 	schema := &ModuleSchema{
 		PackageName:      pkgName,
 		Version:          pkgVersion,
@@ -88,7 +136,6 @@ func GenerateModuleSchema(config *ast.Config, pkgName, pkgVersion, componentName
 		OutputProperties: make(map[string]*PropertySpec),
 	}
 
-	// Process variables as inputs
 	for _, v := range config.Variables {
 		prop, err := variableToPropertySpec(v)
 		if err != nil {
@@ -102,13 +149,211 @@ func GenerateModuleSchema(config *ast.Config, pkgName, pkgVersion, componentName
 		}
 	}
 
-	// Process outputs
+	scope, err := buildTypeScope(ctx, config, binder, map[string]bool{})
+	if err != nil {
+		return nil, err
+	}
+	evaluator := eval.NewEvaluator(scope)
 	for _, o := range config.Outputs {
-		prop := outputToPropertySpec(o)
+		ty, err := inferOutputType(evaluator, o)
+		if err != nil {
+			return nil, fmt.Errorf("typing output %q: %w", o.Name, err)
+		}
+		prop, err := outputToPropertySpec(o, ty)
+		if err != nil {
+			return nil, fmt.Errorf("processing output %q: %w", o.Name, err)
+		}
 		schema.OutputProperties[o.Name] = prop
 	}
 
+	sort.Strings(schema.RequiredInputs)
+
 	return schema, nil
+}
+
+// buildTypeScope returns an evaluation context in which variable, local,
+// resource, data source, and module references resolve to unknown values of
+// their types, so that an output expression can be evaluated for its type alone.
+// Type information rides through cty evaluation, so typing an output is just
+// evaluating it against typed unknowns and reading the result type.
+//
+// Every reference must resolve: a resource/data source/module that cannot be
+// resolved, or a local that cannot be typed (an unresolvable reference or a
+// cycle), is a hard error rather than a silent fallback to "any". path holds the
+// module directories on the current recursion stack to detect module cycles.
+func buildTypeScope(
+	ctx context.Context, config *ast.Config, binder *Binder, path map[string]bool,
+) (*eval.Context, error) {
+	scope := eval.NewContext(".", ".", ".", "", "", "")
+
+	for name, v := range config.Variables {
+		t := v.TypeConstraint
+		if t == cty.NilType {
+			t = cty.DynamicPseudoType
+		}
+		scope.SetVariable(name, cty.UnknownVal(t))
+	}
+
+	if binder != nil {
+		if err := seedResourceTypes(ctx, scope, config, binder.Resources); err != nil {
+			return nil, err
+		}
+		if err := seedModuleTypes(ctx, scope, config, binder, path); err != nil {
+			return nil, err
+		}
+	}
+
+	if err := seedLocalTypes(scope, config); err != nil {
+		return nil, err
+	}
+
+	return scope, nil
+}
+
+// seedLocalTypes types each local against the (already seeded) scope and binds
+// it. Locals may reference variables, resources, modules, and one another, so it
+// evaluates to a fixpoint: each pass types any local whose references already
+// resolve. If a pass makes no progress while locals remain, those locals cannot
+// be typed (an unresolvable reference or a local cycle) and the first such
+// failure is returned.
+func seedLocalTypes(scope *eval.Context, config *ast.Config) error {
+	evaluator := eval.NewEvaluator(scope)
+	remaining := maps.Clone(config.Locals)
+	for len(remaining) > 0 {
+		progress := false
+		for name, l := range remaining {
+			val, diags := evaluator.Evaluate(l.Value)
+			if diags.HasErrors() {
+				continue
+			}
+			scope.SetLocal(name, cty.UnknownVal(val.Type()))
+			delete(remaining, name)
+			progress = true
+		}
+		if !progress {
+			for _, name := range slices.Sorted(maps.Keys(remaining)) {
+				_, diags := evaluator.Evaluate(remaining[name].Value)
+				return fmt.Errorf("typing local %q: %s", name, diags.Error())
+			}
+		}
+	}
+	return nil
+}
+
+// rangedType wraps an element reference type to match how a count or for_each
+// reference is shaped: count yields a list of instances, for_each a map of them.
+func rangedType(elem cty.Type, count, forEach bool) cty.Type {
+	switch {
+	case count:
+		return cty.List(elem)
+	case forEach:
+		return cty.Map(elem)
+	default:
+		return elem
+	}
+}
+
+// seedResourceTypes binds each resource and data source to an unknown value of
+// its reference type, resolved from its provider schema. Ranged (count/for_each)
+// references are bound as a list/map of the element type. A type that cannot be
+// resolved is an error.
+func seedResourceTypes(
+	ctx context.Context, scope *eval.Context, config *ast.Config, resolver ResourceTypeResolver,
+) error {
+	if resolver == nil {
+		if len(config.Resources) > 0 || len(config.DataSources) > 0 {
+			return fmt.Errorf("cannot type resource references: no resource resolver provided")
+		}
+		return nil
+	}
+	for _, key := range slices.Sorted(maps.Keys(config.Resources)) {
+		res := config.Resources[key]
+		schemaRes, err := resolver.ResolveResource(ctx, res.Type)
+		if err != nil {
+			return fmt.Errorf("resolving resource %q: %w", key, err)
+		}
+		if schemaRes == nil {
+			return fmt.Errorf("resolving resource %q: no schema for type %q", key, res.Type)
+		}
+		mapping := resolver.ResourceBodyMapping(ctx, res.Type)
+		ty := rangedType(transform.ResourceReferenceType(schemaRes, mapping), res.Count != nil, res.ForEach != nil)
+		scope.SetResource(key, urn.URN(""), cty.UnknownVal(ty))
+	}
+
+	for _, key := range slices.Sorted(maps.Keys(config.DataSources)) {
+		ds := config.DataSources[key]
+		fn, err := resolver.ResolveFunction(ctx, ds.Type)
+		if err != nil {
+			return fmt.Errorf("resolving data source %q: %w", key, err)
+		}
+		if fn == nil {
+			return fmt.Errorf("resolving data source %q: no schema for type %q", key, ds.Type)
+		}
+		mapping := resolver.DataSourceBodyMapping(ctx, ds.Type)
+		ty := rangedType(transform.DataSourceReferenceType(fn, mapping), ds.Count != nil, ds.ForEach != nil)
+		scope.SetDataSource(key, cty.UnknownVal(ty))
+	}
+	return nil
+}
+
+// seedModuleTypes binds each module call to an unknown value of its output
+// object type, computed by recursively typing the child module's outputs.
+// Ranged calls are bound as a list/map of that object. A module that cannot be
+// loaded, or whose source is already on the recursion path (a module cycle), is
+// an error.
+func seedModuleTypes(
+	ctx context.Context, scope *eval.Context, config *ast.Config, binder *Binder, path map[string]bool,
+) error {
+	if binder.Modules == nil {
+		if len(config.Modules) > 0 {
+			return fmt.Errorf("cannot type module references: no module loader provided")
+		}
+		return nil
+	}
+	for _, name := range slices.Sorted(maps.Keys(config.Modules)) {
+		call := config.Modules[name]
+		childConfig, dir, err := binder.Modules.LoadModule(call.Source, call.Version, binder.ModuleDir)
+		if err != nil {
+			return fmt.Errorf("loading module %q: %w", name, err)
+		}
+		if path[dir] {
+			return fmt.Errorf("module cycle through %q (%s)", name, dir)
+		}
+
+		path[dir] = true
+		childScope, err := buildTypeScope(ctx, childConfig, binder.child(dir), path)
+		delete(path, dir)
+		if err != nil {
+			return fmt.Errorf("typing module %q: %w", name, err)
+		}
+
+		childEval := eval.NewEvaluator(childScope)
+		attrs := make(map[string]cty.Type, len(childConfig.Outputs))
+		for _, o := range childConfig.Outputs {
+			ty, err := inferOutputType(childEval, o)
+			if err != nil {
+				return fmt.Errorf("typing module %q output %q: %w", name, o.Name, err)
+			}
+			attrs[o.Name] = ty
+		}
+		ty := rangedType(cty.Object(attrs), call.Count != nil, call.ForEach != nil)
+		scope.SetModule(name, cty.UnknownVal(ty))
+	}
+	return nil
+}
+
+// inferOutputType evaluates an output's value expression against the type scope
+// and returns its type. An output with no value, or whose expression cannot be
+// evaluated against the scope, is an error.
+func inferOutputType(evaluator *eval.Evaluator, o *ast.Output) (cty.Type, error) {
+	if o.Value == nil {
+		return cty.NilType, fmt.Errorf("output has no value expression")
+	}
+	val, diags := evaluator.Evaluate(o.Value)
+	if diags.HasErrors() {
+		return cty.NilType, fmt.Errorf("%s", diags.Error())
+	}
+	return val.Type(), nil
 }
 
 // variableToPropertySpec converts an HCL variable to a PropertySpec.
@@ -133,17 +378,55 @@ func variableToPropertySpec(v *ast.Variable) (*PropertySpec, error) {
 		prop.Type = "object"
 	}
 
+	// A variable default is a constant expression (it cannot reference other
+	// values), so a nil evaluation context is sufficient. The Pulumi schema
+	// only permits constant defaults on primitive properties; a default on a
+	// collection or object is conveyed by the property being optional rather
+	// than by an explicit default value.
+	if v.Default != nil {
+		val, diags := v.Default.Value(nil)
+		if diags.HasErrors() {
+			return nil, fmt.Errorf("evaluating default: %s", diags.Error())
+		}
+		if d, ok := ctyToConstant(val); ok {
+			prop.Default = d
+		}
+	}
+
 	return prop, nil
 }
 
-// outputToPropertySpec converts an HCL output to a PropertySpec.
-func outputToPropertySpec(o *ast.Output) *PropertySpec {
-	return &PropertySpec{
-		Description: o.Description,
-		Secret:      o.Sensitive,
-		// Outputs don't have explicit types in HCL, so we use "object" (any)
-		Type: "object",
+// ctyToConstant converts a primitive cty.Value to a Go value usable as a Pulumi
+// schema default. Only booleans, numbers, and strings are valid schema
+// constants, so null and non-primitive values return ok=false.
+func ctyToConstant(val cty.Value) (any, bool) {
+	if val.IsNull() {
+		return nil, false
 	}
+	switch val.Type() {
+	case cty.String:
+		return val.AsString(), true
+	case cty.Number:
+		f, _ := val.AsBigFloat().Float64()
+		return f, true
+	case cty.Bool:
+		return val.True(), true
+	default:
+		return nil, false
+	}
+}
+
+// outputToPropertySpec converts an HCL output to a PropertySpec. typ is the type
+// inferred from the output's value expression; a DynamicPseudoType maps to the
+// "object" (any) type.
+func outputToPropertySpec(o *ast.Output, typ cty.Type) (*PropertySpec, error) {
+	prop, err := ctyTypeToPropertySpec(typ)
+	if err != nil {
+		return nil, err
+	}
+	prop.Description = o.Description
+	prop.Secret = o.Sensitive
+	return prop, nil
 }
 
 // ctyTypeToPropertySpec converts a cty.Type to a PropertySpec.
@@ -193,12 +476,15 @@ func ctyTypeToPropertySpec(t cty.Type) (*PropertySpec, error) {
 		}, nil
 
 	case t.IsTupleType():
-		// Tuples are represented as arrays with the first element type
+		// Tuples are represented as arrays with the first element type. An empty
+		// tuple (e.g. the literal `[]`) has no element type; treat it as an array
+		// of any, since the Pulumi schema requires an items type on every array.
 		elemTypes := t.TupleElementTypes()
-		if len(elemTypes) == 0 {
-			return &PropertySpec{Type: "array"}, nil
+		elem := cty.DynamicPseudoType
+		if len(elemTypes) > 0 {
+			elem = elemTypes[0]
 		}
-		elemSpec, err := ctyTypeToPropertySpec(elemTypes[0])
+		elemSpec, err := ctyTypeToPropertySpec(elem)
 		if err != nil {
 			return nil, err
 		}

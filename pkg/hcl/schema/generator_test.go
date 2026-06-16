@@ -1,0 +1,356 @@
+// Copyright 2026, Pulumi Corporation.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+package schema
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"os"
+	"path/filepath"
+	"testing"
+
+	"github.com/blang/semver"
+	"github.com/pulumi-labs/pulumi-hcl/pkg/hcl/ast"
+	"github.com/pulumi-labs/pulumi-hcl/pkg/hcl/bridge"
+	"github.com/pulumi-labs/pulumi-hcl/pkg/hcl/parser"
+	pulumiSchema "github.com/pulumi/pulumi/pkg/v3/codegen/schema"
+	"github.com/pulumi/pulumi/sdk/v3/go/common/util/cmdutil"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+)
+
+// TestGenerateModuleSchemaGolden parses the HCL in each testdata case and
+// asserts the Pulumi package schema produced by GenerateModuleSchema followed by
+// ToPulumiPackageSchema against a golden schema.json. Run with PULUMI_ACCEPT=1 to
+// (re)generate the golden files.
+//
+// These cases pass a nil binder, so they cover only variable, local, and literal
+// typing — their fixtures reference no resources, data sources, or modules (a
+// reference with no binder to resolve it is an error). Resolver- and
+// loader-backed typing is covered by the focused tests below. The package and
+// component identity (name, version, component name, module segment) is supplied
+// by NewHCLProvider in production, so each case passes those values explicitly.
+func TestGenerateModuleSchemaGolden(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name          string
+		pkgName       string
+		version       string
+		componentName string
+		module        string
+	}{
+		{name: "primitives", pkgName: "primitives", version: "1.2.3", componentName: "primitives", module: "index"},
+		{name: "collections", pkgName: "collections", version: "0.0.0-dev", componentName: "widget", module: "infra"},
+		{name: "sensitive", pkgName: "sensitive", version: "0.0.0-dev", componentName: "sensitive", module: "index"},
+		{name: "required", pkgName: "required", version: "0.0.0-dev", componentName: "required", module: "index"},
+		{name: "inference", pkgName: "inference", version: "0.0.0-dev", componentName: "inference", module: "index"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			caseDir := filepath.Join("testdata", tc.name)
+			config, diags := parser.NewParser().ParseDirectory(caseDir)
+			require.False(t, diags.HasErrors(), diags.Error())
+
+			moduleSchema, err := GenerateModuleSchema(
+				t.Context(), config, nil, tc.pkgName, tc.version, tc.componentName, tc.module)
+			require.NoError(t, err)
+
+			pkgSpec := moduleSchema.ToPulumiPackageSchema()
+			got, err := json.MarshalIndent(pkgSpec, "", "  ")
+			require.NoError(t, err)
+			got = append(got, '\n')
+
+			// Bind the generated schema against the Pulumi package metaschema so
+			// that an invalid spec (e.g. a constant default on a non-primitive
+			// property) fails the test rather than only `pulumi schema check`.
+			var spec pulumiSchema.PackageSpec
+			require.NoError(t, json.Unmarshal(got, &spec))
+			_, bindDiags, err := pulumiSchema.BindSpec(spec, errLoader{}, pulumiSchema.ValidationOptions{})
+			require.NoError(t, err)
+			require.False(t, bindDiags.HasErrors(), bindDiags.Error())
+
+			goldenPath := filepath.Join(caseDir, "schema.json")
+			if cmdutil.IsTruthy(os.Getenv("PULUMI_ACCEPT")) {
+				require.NoError(t, os.WriteFile(goldenPath, got, 0o644))
+				return
+			}
+
+			want, err := os.ReadFile(goldenPath)
+			require.NoError(t, err, "golden file %s not found; run with PULUMI_ACCEPT=1 to generate", goldenPath)
+			assert.Equal(t, string(want), string(got))
+		})
+	}
+}
+
+// stubResolver resolves a fixed set of resources by TF type and nothing else,
+// so resource-reference output typing can be tested without a provider schema.
+type stubResolver struct {
+	resources map[string]*pulumiSchema.Resource
+}
+
+func (s stubResolver) ResolveResource(_ context.Context, tfType string) (*pulumiSchema.Resource, error) {
+	return s.resources[tfType], nil
+}
+
+func (stubResolver) ResolveFunction(_ context.Context, _ string) (*pulumiSchema.Function, error) {
+	return nil, nil
+}
+func (stubResolver) ResourceBodyMapping(_ context.Context, _ string) *bridge.BodyMapping { return nil }
+func (stubResolver) DataSourceBodyMapping(_ context.Context, _ string) *bridge.BodyMapping {
+	return nil
+}
+
+// TestResourceReferenceOutputsAreTyped shows that an output referencing a
+// resource attribute is typed from the resolved provider schema (and that the
+// synthetic id attribute is always available).
+func TestResourceReferenceOutputsAreTyped(t *testing.T) {
+	t.Parallel()
+
+	const src = `
+resource "random_pet" "name" {
+  length = 2
+}
+
+output "id" {
+  value = random_pet.name.id
+}
+
+output "pet_name" {
+  value = random_pet.name.pet_name
+}
+
+output "length" {
+  value = random_pet.name.length
+}
+`
+	config, diags := parser.NewParser().ParseSource("main.tf", []byte(src))
+	require.False(t, diags.HasErrors(), diags.Error())
+
+	resolver := stubResolver{resources: map[string]*pulumiSchema.Resource{
+		"random_pet": {
+			Properties: []*pulumiSchema.Property{
+				{Name: "petName", Type: pulumiSchema.StringType},
+				{Name: "length", Type: pulumiSchema.IntType},
+			},
+		},
+	}}
+
+	moduleSchema, err := GenerateModuleSchema(
+		t.Context(), config, &Binder{Resources: resolver}, "pkg", "0.0.0-dev", "pkg", "index")
+	require.NoError(t, err)
+
+	assert.Equal(t, map[string]*PropertySpec{
+		"id":       {Type: "string"},
+		"pet_name": {Type: "string"},
+		"length":   {Type: "number"},
+	}, moduleSchema.OutputProperties)
+}
+
+// TestRangedResourceOutputsAreTyped shows that a counted resource references as
+// a list of its object and a for_each resource as a map of its object.
+func TestRangedResourceOutputsAreTyped(t *testing.T) {
+	t.Parallel()
+
+	const src = `
+resource "random_pet" "counted" {
+  count  = 3
+  length = 2
+}
+
+resource "random_pet" "keyed" {
+  for_each = { a = 1 }
+  length   = 2
+}
+
+output "counted_id" {
+  value = random_pet.counted[0].id
+}
+
+output "all_counted" {
+  value = random_pet.counted
+}
+
+output "keyed_id" {
+  value = random_pet.keyed["a"].id
+}
+`
+	config, diags := parser.NewParser().ParseSource("main.tf", []byte(src))
+	require.False(t, diags.HasErrors(), diags.Error())
+
+	resolver := stubResolver{resources: map[string]*pulumiSchema.Resource{
+		"random_pet": {Properties: []*pulumiSchema.Property{{Name: "length", Type: pulumiSchema.IntType}}},
+	}}
+	moduleSchema, err := GenerateModuleSchema(
+		t.Context(), config, &Binder{Resources: resolver}, "pkg", "0.0.0-dev", "pkg", "index")
+	require.NoError(t, err)
+
+	elem := &PropertySpec{Type: "object", Properties: map[string]*PropertySpec{
+		"id":     {Type: "string"},
+		"length": {Type: "number"},
+	}}
+	assert.Equal(t, map[string]*PropertySpec{
+		"counted_id":  {Type: "string"},
+		"keyed_id":    {Type: "string"},
+		"all_counted": {Type: "array", Items: elem},
+	}, moduleSchema.OutputProperties)
+}
+
+// stubModuleLoader resolves child modules from parsed configs keyed by source.
+type stubModuleLoader struct {
+	configs map[string]*ast.Config
+}
+
+func (s stubModuleLoader) LoadModule(source, _, _ string) (*ast.Config, string, error) {
+	cfg, ok := s.configs[source]
+	if !ok {
+		return nil, "", fmt.Errorf("no module %q", source)
+	}
+	return cfg, source, nil
+}
+
+// TestModuleOutputsAreTyped shows that a module.<name>.<output> reference is
+// typed by recursively typing the child module's outputs.
+func TestModuleOutputsAreTyped(t *testing.T) {
+	t.Parallel()
+
+	child, childDiags := parser.NewParser().ParseSource("child.tf", []byte(`
+variable "name" {
+  type = string
+}
+
+output "greeting" {
+  value = "hello ${var.name}"
+}
+
+output "n" {
+  value = 42
+}
+`))
+	require.False(t, childDiags.HasErrors(), childDiags.Error())
+
+	const parent = `
+module "child" {
+  source = "./child"
+  name   = "world"
+}
+
+output "greeting" {
+  value = module.child.greeting
+}
+
+output "n" {
+  value = module.child.n
+}
+`
+	config, diags := parser.NewParser().ParseSource("main.tf", []byte(parent))
+	require.False(t, diags.HasErrors(), diags.Error())
+
+	binder := &Binder{
+		Modules:   stubModuleLoader{configs: map[string]*ast.Config{"./child": child}},
+		ModuleDir: ".",
+	}
+	moduleSchema, err := GenerateModuleSchema(
+		t.Context(), config, binder, "pkg", "0.0.0-dev", "pkg", "index")
+	require.NoError(t, err)
+
+	assert.Equal(t, map[string]*PropertySpec{
+		"greeting": {Type: "string"},
+		"n":        {Type: "number"},
+	}, moduleSchema.OutputProperties)
+}
+
+// TestUnresolvableResourceIsError shows that a resource whose type cannot be
+// resolved raises an error rather than degrading to an untyped output.
+func TestUnresolvableResourceIsError(t *testing.T) {
+	t.Parallel()
+
+	const src = `
+resource "mystery_thing" "x" {
+}
+
+output "id" {
+  value = mystery_thing.x.id
+}
+`
+	config, diags := parser.NewParser().ParseSource("main.tf", []byte(src))
+	require.False(t, diags.HasErrors(), diags.Error())
+
+	_, err := GenerateModuleSchema(
+		t.Context(), config, &Binder{Resources: stubResolver{}}, "pkg", "0.0.0-dev", "pkg", "index")
+	require.EqualError(t, err, `resolving resource "mystery_thing.x": no schema for type "mystery_thing"`)
+}
+
+// TestModuleCycleIsError shows that a cycle among modules raises an error rather
+// than silently terminating with untyped references.
+func TestModuleCycleIsError(t *testing.T) {
+	t.Parallel()
+
+	parse := func(src string) *ast.Config {
+		cfg, diags := parser.NewParser().ParseSource("m.tf", []byte(src))
+		require.False(t, diags.HasErrors(), diags.Error())
+		return cfg
+	}
+
+	a := parse(`
+module "b" {
+  source = "./b"
+}
+output "x" {
+  value = module.b.y
+}
+`)
+	b := parse(`
+module "a" {
+  source = "./a"
+}
+output "y" {
+  value = module.a.x
+}
+`)
+	root := parse(`
+module "a" {
+  source = "./a"
+}
+output "z" {
+  value = module.a.x
+}
+`)
+	binder := &Binder{
+		Modules:   stubModuleLoader{configs: map[string]*ast.Config{"./a": a, "./b": b}},
+		ModuleDir: ".",
+	}
+	_, err := GenerateModuleSchema(t.Context(), root, binder, "pkg", "0.0.0-dev", "pkg", "index")
+	require.Error(t, err)
+}
+
+// errLoader is a schema.Loader that fails if asked to load any package. The
+// component schemas under test reference no external packages, so binding never
+// invokes it; supplying it keeps BindSpec from constructing a real plugin loader.
+type errLoader struct{}
+
+func (errLoader) LoadPackage(pkg string, version *semver.Version) (*pulumiSchema.Package, error) {
+	return nil, assert.AnError
+}
+
+func (errLoader) LoadPackageV2(
+	ctx context.Context, descriptor *pulumiSchema.PackageDescriptor,
+) (*pulumiSchema.Package, error) {
+	return nil, assert.AnError
+}
