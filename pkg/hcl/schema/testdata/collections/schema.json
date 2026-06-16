@@ -5,19 +5,19 @@
     "collections:infra:widget": {
       "description": "",
       "inputProperties": {
-        "list_of_string": {
+        "listOfString": {
           "items": {
             "type": "string"
           },
           "type": "array"
         },
-        "map_of_string": {
+        "mapOfString": {
           "additionalProperties": {
             "type": "string"
           },
           "type": "object"
         },
-        "object_value": {
+        "objectValue": {
           "properties": {
             "bool_field": {
               "type": "boolean"
@@ -28,7 +28,7 @@
           },
           "type": "object"
         },
-        "set_of_number": {
+        "setOfNumber": {
           "items": {
             "type": "number"
           },
@@ -37,31 +37,31 @@
       },
       "isComponent": true,
       "properties": {
-        "list_of_string": {
+        "listOfString": {
           "items": {
             "type": "string"
           },
           "type": "array"
         },
-        "list_of_string_output": {
+        "listOfStringOutput": {
           "items": {
             "type": "string"
           },
           "type": "array"
         },
-        "map_of_string": {
+        "mapOfString": {
           "additionalProperties": {
             "type": "string"
           },
           "type": "object"
         },
-        "map_of_string_output": {
+        "mapOfStringOutput": {
           "additionalProperties": {
             "type": "string"
           },
           "type": "object"
         },
-        "object_value": {
+        "objectValue": {
           "properties": {
             "bool_field": {
               "type": "boolean"
@@ -72,7 +72,7 @@
           },
           "type": "object"
         },
-        "set_of_number": {
+        "setOfNumber": {
           "items": {
             "type": "number"
           },

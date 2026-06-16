@@ -1,0 +1,6 @@
+kind: Improvements
+body: Expose Multi-Language Component inputs and outputs under camelCase names
+time: 2026-06-16T23:41:33Z
+custom:
+    Component: language-host
+    PR: "274"

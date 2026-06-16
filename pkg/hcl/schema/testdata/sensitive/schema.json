@@ -5,32 +5,32 @@
     "sensitive:index:sensitive": {
       "description": "",
       "inputProperties": {
-        "sensitive_string": {
+        "sensitiveString": {
           "secret": true,
           "type": "string"
         },
-        "untyped_value": {
+        "untypedValue": {
           "description": "No type constraint, so it defaults to the object (any) type.",
           "type": "object"
         }
       },
       "isComponent": true,
       "properties": {
-        "sensitive_output": {
+        "sensitiveOutput": {
           "secret": true,
           "type": "string"
         },
-        "sensitive_string": {
+        "sensitiveString": {
           "secret": true,
           "type": "string"
         },
-        "untyped_value": {
+        "untypedValue": {
           "description": "No type constraint, so it defaults to the object (any) type.",
           "type": "object"
         }
       },
       "requiredInputs": [
-        "sensitive_string"
+        "sensitiveString"
       ],
       "type": "object"
     }

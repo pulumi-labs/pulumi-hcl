@@ -26,6 +26,7 @@ import (
 	"github.com/pulumi-labs/pulumi-hcl/pkg/hcl/packages"
 	"github.com/pulumi-labs/pulumi-hcl/pkg/hcl/run"
 	"github.com/pulumi-labs/pulumi-hcl/pkg/hcl/schema"
+	"github.com/pulumi-labs/pulumi-hcl/pkg/hcl/transform"
 	"github.com/pulumi/pulumi/pkg/v3/codegen/convert"
 	pulumiSchema "github.com/pulumi/pulumi/pkg/v3/codegen/schema"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/resource"
@@ -321,10 +322,12 @@ func (p *HCLProvider) Construct(ctx context.Context, req *pulumirpc.ConstructReq
 		replacementTrigger:      req.ReplacementTrigger,
 	}
 
-	// Set up config from inputs, prefixing with project name as the engine expects.
+	// Set up config from inputs, prefixing with project name as the engine
+	// expects. Inputs arrive under their camelCase schema property names; recover
+	// the snake_case HCL variable name the module declares.
 	config := make(map[string]string)
 	for k, v := range inputs {
-		configKey := req.Project + ":" + string(k)
+		configKey := req.Project + ":" + transform.SnakeCaseFromPulumiCase(string(k))
 		if v.IsString() {
 			config[configKey] = v.StringValue()
 		} else {
@@ -542,8 +545,16 @@ func (m *constructResourceMonitor) RegisterResourceOutputs(
 	urn urn.URN,
 	outputs property.Map,
 ) error {
-	// Track outputs for the component
+	// The component's outputs are keyed by the HCL module's snake_case output
+	// names; expose them under the camelCase names the schema declares. Child
+	// resources already carry their own correctly-cased property names.
 	if urn == m.componentURN {
+		converted := make(map[string]property.Value, outputs.Len())
+		for k, v := range outputs.AsMap() {
+			camel, _ := transform.PulumiCaseFromSnakeCase(k, nil)
+			converted[camel] = v
+		}
+		outputs = property.NewMap(converted)
 		m.outputs = outputs
 	}
 

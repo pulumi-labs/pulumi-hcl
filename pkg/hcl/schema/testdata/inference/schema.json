@@ -5,19 +5,19 @@
     "inference:index:inference": {
       "description": "",
       "inputProperties": {
-        "string_value": {
+        "stringValue": {
           "type": "string"
         }
       },
       "isComponent": true,
       "properties": {
-        "number_output": {
+        "numberOutput": {
           "type": "number"
         },
-        "string_output": {
+        "stringOutput": {
           "type": "string"
         },
-        "string_value": {
+        "stringValue": {
           "type": "string"
         }
       },

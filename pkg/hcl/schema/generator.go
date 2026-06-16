@@ -518,24 +518,41 @@ func (s *ModuleSchema) ToJSON() ([]byte, error) {
 	return json.MarshalIndent(s, "", "  ")
 }
 
-// ToPulumiPackageSchema converts the module schema to a full Pulumi package schema format.
+// pulumiName converts a snake_case HCL identifier (a variable or output name) to
+// the camelCase name Pulumi conventionally uses for the corresponding schema
+// property. The runtime boundary (Construct) reverses this with
+// transform.SnakeCaseFromPulumiCase to recover the HCL name.
+func pulumiName(snake string) string {
+	name, _ := transform.PulumiCaseFromSnakeCase(snake, nil)
+	return name
+}
+
+// ToPulumiPackageSchema converts the module schema to a full Pulumi package
+// schema format. Variable and output names, which are snake_case in HCL, are
+// exposed under their camelCase Pulumi property names.
 func (s *ModuleSchema) ToPulumiPackageSchema() map[string]any {
 	componentToken := fmt.Sprintf("%s:%s:%s", s.PackageName, s.Module, s.ComponentName)
 
 	// Build input properties
 	inputProps := make(map[string]any)
 	for name, prop := range s.InputProperties {
-		inputProps[name] = propertySpecToSchemaProperty(prop)
+		inputProps[pulumiName(name)] = propertySpecToSchemaProperty(prop)
 	}
 
 	// Build output properties (inputs + outputs)
 	outputProps := make(map[string]any)
 	for name, prop := range s.InputProperties {
-		outputProps[name] = propertySpecToSchemaProperty(prop)
+		outputProps[pulumiName(name)] = propertySpecToSchemaProperty(prop)
 	}
 	for name, prop := range s.OutputProperties {
-		outputProps[name] = propertySpecToSchemaProperty(prop)
+		outputProps[pulumiName(name)] = propertySpecToSchemaProperty(prop)
 	}
+
+	var requiredInputs []string
+	for _, name := range s.RequiredInputs {
+		requiredInputs = append(requiredInputs, pulumiName(name))
+	}
+	sort.Strings(requiredInputs)
 
 	return map[string]any{
 		"name":        s.PackageName,
@@ -546,7 +563,7 @@ func (s *ModuleSchema) ToPulumiPackageSchema() map[string]any {
 				"isComponent":     true,
 				"description":     s.Description,
 				"inputProperties": inputProps,
-				"requiredInputs":  s.RequiredInputs,
+				"requiredInputs":  requiredInputs,
 				"properties":      outputProps,
 				"type":            "object",
 			},

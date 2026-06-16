@@ -5,40 +5,40 @@
     "required:index:required": {
       "description": "",
       "inputProperties": {
-        "string_a": {
+        "stringA": {
           "type": "string"
         },
-        "string_b": {
+        "stringB": {
           "type": "string"
         },
-        "string_c": {
+        "stringC": {
           "type": "string"
         },
-        "string_with_default": {
+        "stringWithDefault": {
           "default": "ok",
           "type": "string"
         }
       },
       "isComponent": true,
       "properties": {
-        "string_a": {
+        "stringA": {
           "type": "string"
         },
-        "string_b": {
+        "stringB": {
           "type": "string"
         },
-        "string_c": {
+        "stringC": {
           "type": "string"
         },
-        "string_with_default": {
+        "stringWithDefault": {
           "default": "ok",
           "type": "string"
         }
       },
       "requiredInputs": [
-        "string_a",
-        "string_b",
-        "string_c"
+        "stringA",
+        "stringB",
+        "stringC"
       ],
       "type": "object"
     }
