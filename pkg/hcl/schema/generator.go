@@ -19,6 +19,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"sort"
 
 	"github.com/pulumi-labs/pulumi-hcl/pkg/hcl/ast"
@@ -226,10 +227,7 @@ func buildTypeScope(
 // failure is returned.
 func seedLocalTypes(scope *eval.Context, config *ast.Config) error {
 	evaluator := eval.NewEvaluator(scope)
-	remaining := make(map[string]*ast.Local, len(config.Locals))
-	for name, l := range config.Locals {
-		remaining[name] = l
-	}
+	remaining := maps.Clone(config.Locals)
 	for len(remaining) > 0 {
 		progress := false
 		for name, l := range remaining {

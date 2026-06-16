@@ -69,7 +69,7 @@ func TestGenerateModuleSchemaGolden(t *testing.T) {
 			require.False(t, diags.HasErrors(), diags.Error())
 
 			moduleSchema, err := GenerateModuleSchema(
-				context.Background(), config, nil, tc.pkgName, tc.version, tc.componentName, tc.module)
+				t.Context(), config, nil, tc.pkgName, tc.version, tc.componentName, tc.module)
 			require.NoError(t, err)
 
 			pkgSpec := moduleSchema.ToPulumiPackageSchema()
@@ -153,7 +153,7 @@ output "length" {
 	}}
 
 	moduleSchema, err := GenerateModuleSchema(
-		context.Background(), config, &Binder{Resources: resolver}, "pkg", "0.0.0-dev", "pkg", "index")
+		t.Context(), config, &Binder{Resources: resolver}, "pkg", "0.0.0-dev", "pkg", "index")
 	require.NoError(t, err)
 
 	assert.Equal(t, map[string]*PropertySpec{
@@ -198,7 +198,7 @@ output "keyed_id" {
 		"random_pet": {Properties: []*pulumiSchema.Property{{Name: "length", Type: pulumiSchema.IntType}}},
 	}}
 	moduleSchema, err := GenerateModuleSchema(
-		context.Background(), config, &Binder{Resources: resolver}, "pkg", "0.0.0-dev", "pkg", "index")
+		t.Context(), config, &Binder{Resources: resolver}, "pkg", "0.0.0-dev", "pkg", "index")
 	require.NoError(t, err)
 
 	elem := &PropertySpec{Type: "object", Properties: map[string]*PropertySpec{
@@ -267,7 +267,7 @@ output "n" {
 		ModuleDir: ".",
 	}
 	moduleSchema, err := GenerateModuleSchema(
-		context.Background(), config, binder, "pkg", "0.0.0-dev", "pkg", "index")
+		t.Context(), config, binder, "pkg", "0.0.0-dev", "pkg", "index")
 	require.NoError(t, err)
 
 	assert.Equal(t, map[string]*PropertySpec{
@@ -293,7 +293,7 @@ output "id" {
 	require.False(t, diags.HasErrors(), diags.Error())
 
 	_, err := GenerateModuleSchema(
-		context.Background(), config, &Binder{Resources: stubResolver{}}, "pkg", "0.0.0-dev", "pkg", "index")
+		t.Context(), config, &Binder{Resources: stubResolver{}}, "pkg", "0.0.0-dev", "pkg", "index")
 	require.EqualError(t, err, `resolving resource "mystery_thing.x": no schema for type "mystery_thing"`)
 }
 
@@ -336,7 +336,7 @@ output "z" {
 		Modules:   stubModuleLoader{configs: map[string]*ast.Config{"./a": a, "./b": b}},
 		ModuleDir: ".",
 	}
-	_, err := GenerateModuleSchema(context.Background(), root, binder, "pkg", "0.0.0-dev", "pkg", "index")
+	_, err := GenerateModuleSchema(t.Context(), root, binder, "pkg", "0.0.0-dev", "pkg", "index")
 	require.Error(t, err)
 }
 
