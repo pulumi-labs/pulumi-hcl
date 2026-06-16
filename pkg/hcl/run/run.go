@@ -434,7 +434,7 @@ func NewEngine(ctx context.Context, config *ast.Config, opts *EngineOptions) *En
 	evalCtx := eval.NewContext(opts.WorkDir, opts.RootDir, opts.WorkDir,
 		opts.StackName, opts.ProjectName, opts.Organization)
 
-	engine := &Engine{
+	return &Engine{
 		config:                  config,
 		evaluator:               eval.NewEvaluator(evalCtx),
 		pkgLoader:               opts.SchemaLoader,
@@ -458,12 +458,9 @@ func NewEngine(ctx context.Context, config *ast.Config, opts *EngineOptions) *En
 		parallel:                opts.Parallel,
 		failedNodes:             util.NewSyncMap[string, error](),
 		alwaysRegisterProviders: opts.AlwaysRegisterProviders,
+		resolver: packages.NewResolver(
+			opts.SchemaLoader, opts.ProviderInfoSource, opts.Packages, knownProviders(config.Terraform)),
 	}
-
-	engine.resolver = packages.NewResolver(
-		opts.SchemaLoader, opts.ProviderInfoSource, opts.Packages, engine.knownProviders())
-
-	return engine
 }
 
 // Run executes the HCL program.
@@ -940,7 +937,7 @@ func (e *Engine) registerProviderInContext(
 	hclCtx := evalCtx.HCLContext()
 
 	// Schema-aware eval is needed so schema.Property.Secret marks survive.
-	pkg, perr := packages.ResolvePackage(ctx, e.pkgLoader, e.knownProviders(), "pulumi_providers_"+provider.Name)
+	pkg, perr := packages.ResolvePackage(ctx, e.pkgLoader, knownProviders(e.config.Terraform), "pulumi_providers_"+provider.Name)
 	if perr != nil {
 		return fmt.Errorf("resolving provider package %s: %w", provider.Name, perr)
 	}
@@ -2129,12 +2126,12 @@ func (e *Engine) packageRefForType(hclToken string) PackageRef {
 	return e.packageRefs[packageNameFromResourceType(hclToken)]
 }
 
-func (e *Engine) knownProviders() []string {
-	if e.config.Terraform == nil {
+func knownProviders(tfBlock *ast.Terraform) []string {
+	if tfBlock == nil {
 		return nil
 	}
-	providers := make([]string, 0, len(e.config.Terraform.RequiredProviders))
-	for name := range e.config.Terraform.RequiredProviders {
+	providers := make([]string, 0, len(tfBlock.RequiredProviders))
+	for name := range tfBlock.RequiredProviders {
 		providers = append(providers, name)
 	}
 	return providers
@@ -2730,7 +2727,7 @@ func (e *Engine) processCall(ctx context.Context, node *graph.Node) error {
 			resKey = matched.Key()
 			providerToken := "pulumi_providers_" + matched.Name
 			resType = providerToken
-			pkg, err := packages.ResolvePackage(ctx, e.pkgLoader, e.knownProviders(), providerToken)
+			pkg, err := packages.ResolvePackage(ctx, e.pkgLoader, knownProviders(e.config.Terraform), providerToken)
 			if err != nil {
 				return fmt.Errorf("resolving provider package for call: %w", err)
 			}
