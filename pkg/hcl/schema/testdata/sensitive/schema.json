@@ -5,32 +5,32 @@
     "sensitive:index:sensitive": {
       "description": "",
       "inputProperties": {
-        "freeform": {
-          "description": "No type constraint, so it defaults to the object (any) type.",
-          "type": "object"
-        },
-        "secret_key": {
+        "sensitive_string": {
           "secret": true,
           "type": "string"
+        },
+        "untyped_value": {
+          "description": "No type constraint, so it defaults to the object (any) type.",
+          "type": "object"
         }
       },
       "isComponent": true,
       "properties": {
-        "freeform": {
+        "sensitive_output": {
+          "secret": true,
+          "type": "string"
+        },
+        "sensitive_string": {
+          "secret": true,
+          "type": "string"
+        },
+        "untyped_value": {
           "description": "No type constraint, so it defaults to the object (any) type.",
           "type": "object"
-        },
-        "secret_key": {
-          "secret": true,
-          "type": "string"
-        },
-        "token": {
-          "secret": true,
-          "type": "string"
         }
       },
       "requiredInputs": [
-        "secret_key"
+        "sensitive_string"
       ],
       "type": "object"
     }

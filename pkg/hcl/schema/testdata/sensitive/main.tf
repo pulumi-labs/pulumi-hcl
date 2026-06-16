@@ -1,14 +1,14 @@
-variable "secret_key" {
+variable "sensitive_string" {
   type      = string
   sensitive = true
   nullable  = false
 }
 
-variable "freeform" {
+variable "untyped_value" {
   description = "No type constraint, so it defaults to the object (any) type."
 }
 
-output "token" {
+output "sensitive_output" {
   value     = "x"
   sensitive = true
 }

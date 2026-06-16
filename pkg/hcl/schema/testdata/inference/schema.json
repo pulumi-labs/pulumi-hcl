@@ -5,19 +5,19 @@
     "inference:index:inference": {
       "description": "",
       "inputProperties": {
-        "region": {
+        "string_value": {
           "type": "string"
         }
       },
       "isComponent": true,
       "properties": {
-        "port": {
+        "number_output": {
           "type": "number"
         },
-        "prefix": {
+        "string_output": {
           "type": "string"
         },
-        "region": {
+        "string_value": {
           "type": "string"
         }
       },

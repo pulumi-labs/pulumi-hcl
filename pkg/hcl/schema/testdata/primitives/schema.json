@@ -5,43 +5,43 @@
     "primitives:index:primitives": {
       "description": "",
       "inputProperties": {
-        "count": {
-          "default": 1,
-          "type": "number"
-        },
-        "enabled": {
+        "bool_value": {
           "default": true,
           "type": "boolean"
         },
-        "name": {
+        "number_value": {
+          "default": 1,
+          "type": "number"
+        },
+        "string_value": {
           "description": "The resource name.",
           "type": "string"
         }
       },
       "isComponent": true,
       "properties": {
-        "count": {
-          "default": 1,
-          "type": "number"
-        },
-        "enabled": {
+        "bool_value": {
           "default": true,
           "type": "boolean"
         },
-        "id": {
+        "number_value": {
+          "default": 1,
+          "type": "number"
+        },
+        "string_output": {
           "description": "The generated identifier.",
           "type": "string"
         },
-        "label": {
+        "string_value": {
+          "description": "The resource name.",
           "type": "string"
         },
-        "name": {
-          "description": "The resource name.",
+        "template_output": {
           "type": "string"
         }
       },
       "requiredInputs": [
-        "name"
+        "string_value"
       ],
       "type": "object"
     }

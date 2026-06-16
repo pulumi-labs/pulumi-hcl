@@ -5,78 +5,78 @@
     "collections:infra:widget": {
       "description": "",
       "inputProperties": {
-        "ports": {
-          "items": {
-            "type": "number"
-          },
-          "type": "array"
-        },
-        "settings": {
-          "properties": {
-            "cidr": {
-              "type": "string"
-            },
-            "public": {
-              "type": "boolean"
-            }
-          },
-          "type": "object"
-        },
-        "subnets": {
+        "list_of_string": {
           "items": {
             "type": "string"
           },
           "type": "array"
         },
-        "tags": {
+        "map_of_string": {
           "additionalProperties": {
             "type": "string"
           },
           "type": "object"
+        },
+        "object_value": {
+          "properties": {
+            "bool_field": {
+              "type": "boolean"
+            },
+            "string_field": {
+              "type": "string"
+            }
+          },
+          "type": "object"
+        },
+        "set_of_number": {
+          "items": {
+            "type": "number"
+          },
+          "type": "array"
         }
       },
       "isComponent": true,
       "properties": {
-        "ports": {
+        "list_of_string": {
           "items": {
-            "type": "number"
+            "type": "string"
           },
           "type": "array"
         },
-        "settings": {
+        "list_of_string_output": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "map_of_string": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "type": "object"
+        },
+        "map_of_string_output": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "type": "object"
+        },
+        "object_value": {
           "properties": {
-            "cidr": {
-              "type": "string"
-            },
-            "public": {
+            "bool_field": {
               "type": "boolean"
+            },
+            "string_field": {
+              "type": "string"
             }
           },
           "type": "object"
         },
-        "subnet_ids": {
+        "set_of_number": {
           "items": {
-            "type": "string"
+            "type": "number"
           },
           "type": "array"
-        },
-        "subnets": {
-          "items": {
-            "type": "string"
-          },
-          "type": "array"
-        },
-        "tag_map": {
-          "additionalProperties": {
-            "type": "string"
-          },
-          "type": "object"
-        },
-        "tags": {
-          "additionalProperties": {
-            "type": "string"
-          },
-          "type": "object"
         }
       },
       "requiredInputs": null,

@@ -1,33 +1,33 @@
-variable "tags" {
+variable "map_of_string" {
   type    = map(string)
   default = {}
 }
 
-variable "subnets" {
+variable "list_of_string" {
   type    = list(string)
   default = []
 }
 
-variable "ports" {
+variable "set_of_number" {
   type    = set(number)
   default = []
 }
 
-variable "settings" {
+variable "object_value" {
   type = object({
-    cidr   = string
-    public = bool
+    string_field = string
+    bool_field   = bool
   })
   default = {
-    cidr   = "10.0.0.0/16"
-    public = false
+    string_field = "10.0.0.0/16"
+    bool_field   = false
   }
 }
 
-output "subnet_ids" {
-  value = var.subnets
+output "list_of_string_output" {
+  value = var.list_of_string
 }
 
-output "tag_map" {
-  value = var.tags
+output "map_of_string_output" {
+  value = var.map_of_string
 }
