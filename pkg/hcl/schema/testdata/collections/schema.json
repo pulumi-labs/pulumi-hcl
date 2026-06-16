@@ -37,9 +37,6 @@
       },
       "isComponent": true,
       "properties": {
-        "endpoints": {
-          "type": "object"
-        },
         "ports": {
           "items": {
             "type": "number"
@@ -57,11 +54,23 @@
           },
           "type": "object"
         },
+        "subnet_ids": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
         "subnets": {
           "items": {
             "type": "string"
           },
           "type": "array"
+        },
+        "tag_map": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "type": "object"
         },
         "tags": {
           "additionalProperties": {

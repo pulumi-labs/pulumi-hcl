@@ -1,0 +1,32 @@
+{
+  "description": "",
+  "name": "inference",
+  "resources": {
+    "inference:index:inference": {
+      "description": "",
+      "inputProperties": {
+        "region": {
+          "type": "string"
+        }
+      },
+      "isComponent": true,
+      "properties": {
+        "pet_id": {
+          "type": "object"
+        },
+        "port": {
+          "type": "number"
+        },
+        "prefix": {
+          "type": "string"
+        },
+        "region": {
+          "type": "string"
+        }
+      },
+      "requiredInputs": null,
+      "type": "object"
+    }
+  },
+  "version": "0.0.0-dev"
+}

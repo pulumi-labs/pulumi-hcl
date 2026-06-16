@@ -52,6 +52,7 @@ func TestGenerateModuleSchemaGolden(t *testing.T) {
 		{name: "collections", pkgName: "collections", version: "0.0.0-dev", componentName: "widget", module: "infra"},
 		{name: "sensitive", pkgName: "sensitive", version: "0.0.0-dev", componentName: "sensitive", module: "index"},
 		{name: "required", pkgName: "required", version: "0.0.0-dev", componentName: "required", module: "index"},
+		{name: "inference", pkgName: "inference", version: "0.0.0-dev", componentName: "inference", module: "index"},
 	}
 
 	for _, tc := range cases {

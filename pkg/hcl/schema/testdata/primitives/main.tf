@@ -18,3 +18,7 @@ output "id" {
   value       = "static"
   description = "The generated identifier."
 }
+
+output "label" {
+  value = "${var.name}-${var.count}"
+}

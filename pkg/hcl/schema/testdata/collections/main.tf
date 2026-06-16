@@ -24,6 +24,10 @@ variable "settings" {
   }
 }
 
-output "endpoints" {
-  value = []
+output "subnet_ids" {
+  value = var.subnets
+}
+
+output "tag_map" {
+  value = var.tags
 }

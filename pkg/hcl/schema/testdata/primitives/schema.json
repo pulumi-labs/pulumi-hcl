@@ -30,7 +30,10 @@
         },
         "id": {
           "description": "The generated identifier.",
-          "type": "object"
+          "type": "string"
+        },
+        "label": {
+          "type": "string"
         },
         "name": {
           "description": "The resource name.",

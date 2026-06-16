@@ -21,6 +21,7 @@ import (
 	"sort"
 
 	"github.com/pulumi-labs/pulumi-hcl/pkg/hcl/ast"
+	"github.com/pulumi-labs/pulumi-hcl/pkg/hcl/eval"
 	"github.com/zclconf/go-cty/cty"
 )
 
@@ -102,14 +103,80 @@ func GenerateModuleSchema(config *ast.Config, pkgName, pkgVersion, componentName
 		}
 	}
 
+	evaluator := eval.NewEvaluator(buildTypeScope(config))
 	for _, o := range config.Outputs {
-		prop := outputToPropertySpec(o)
+		prop, err := outputToPropertySpec(o, inferOutputType(evaluator, o))
+		if err != nil {
+			return nil, fmt.Errorf("processing output %q: %w", o.Name, err)
+		}
 		schema.OutputProperties[o.Name] = prop
 	}
 
 	sort.Strings(schema.RequiredInputs)
 
 	return schema, nil
+}
+
+// buildTypeScope returns an evaluation context in which variable and local
+// references resolve to unknown values of their inferred types, so that an
+// output expression can be evaluated for its type alone. Type information rides
+// through cty evaluation, so typing an output is just evaluating it against
+// typed unknowns and reading the result type.
+//
+// Resource, data source, and module references are intentionally left unbound:
+// typing them requires resolving provider schemas, which is not available here.
+// An output referencing one fails to evaluate and falls back to the "any" type.
+func buildTypeScope(config *ast.Config) *eval.Context {
+	ctx := eval.NewContext(".", ".", ".", "", "", "")
+
+	for name, v := range config.Variables {
+		t := v.TypeConstraint
+		if t == cty.NilType {
+			t = cty.DynamicPseudoType
+		}
+		ctx.SetVariable(name, cty.UnknownVal(t))
+	}
+
+	// Locals may reference variables and one another. Evaluate to a fixpoint:
+	// each pass types any local whose references already resolve. A local that
+	// never resolves (a cycle, or a reference to something unbound) is left
+	// unset, so an output using it falls back to "any".
+	evaluator := eval.NewEvaluator(ctx)
+	remaining := make(map[string]*ast.Local, len(config.Locals))
+	for name, l := range config.Locals {
+		remaining[name] = l
+	}
+	for len(remaining) > 0 {
+		progress := false
+		for name, l := range remaining {
+			val, diags := evaluator.Evaluate(l.Value)
+			if diags.HasErrors() {
+				continue
+			}
+			ctx.SetLocal(name, cty.UnknownVal(val.Type()))
+			delete(remaining, name)
+			progress = true
+		}
+		if !progress {
+			break
+		}
+	}
+
+	return ctx
+}
+
+// inferOutputType evaluates an output's value expression against the type scope
+// and returns its type, or cty.DynamicPseudoType (which maps to "any") when the
+// expression cannot be evaluated for a type.
+func inferOutputType(evaluator *eval.Evaluator, o *ast.Output) cty.Type {
+	if o.Value == nil {
+		return cty.DynamicPseudoType
+	}
+	val, diags := evaluator.Evaluate(o.Value)
+	if diags.HasErrors() {
+		return cty.DynamicPseudoType
+	}
+	return val.Type()
 }
 
 // variableToPropertySpec converts an HCL variable to a PropertySpec.
@@ -172,14 +239,17 @@ func ctyToConstant(val cty.Value) (any, bool) {
 	}
 }
 
-// outputToPropertySpec converts an HCL output to a PropertySpec.
-func outputToPropertySpec(o *ast.Output) *PropertySpec {
-	return &PropertySpec{
-		Description: o.Description,
-		Secret:      o.Sensitive,
-		// Outputs don't have explicit types in HCL, so we use "object" (any)
-		Type: "object",
+// outputToPropertySpec converts an HCL output to a PropertySpec. typ is the type
+// inferred from the output's value expression; a DynamicPseudoType maps to the
+// "object" (any) type.
+func outputToPropertySpec(o *ast.Output, typ cty.Type) (*PropertySpec, error) {
+	prop, err := ctyTypeToPropertySpec(typ)
+	if err != nil {
+		return nil, err
 	}
+	prop.Description = o.Description
+	prop.Secret = o.Sensitive
+	return prop, nil
 }
 
 // ctyTypeToPropertySpec converts a cty.Type to a PropertySpec.
@@ -229,12 +299,15 @@ func ctyTypeToPropertySpec(t cty.Type) (*PropertySpec, error) {
 		}, nil
 
 	case t.IsTupleType():
-		// Tuples are represented as arrays with the first element type
+		// Tuples are represented as arrays with the first element type. An empty
+		// tuple (e.g. the literal `[]`) has no element type; treat it as an array
+		// of any, since the Pulumi schema requires an items type on every array.
 		elemTypes := t.TupleElementTypes()
-		if len(elemTypes) == 0 {
-			return &PropertySpec{Type: "array"}, nil
+		elem := cty.DynamicPseudoType
+		if len(elemTypes) > 0 {
+			elem = elemTypes[0]
 		}
-		elemSpec, err := ctyTypeToPropertySpec(elemTypes[0])
+		elemSpec, err := ctyTypeToPropertySpec(elem)
 		if err != nil {
 			return nil, err
 		}
