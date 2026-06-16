@@ -20,6 +20,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"maps"
+	"slices"
 	"sort"
 
 	"github.com/pulumi-labs/pulumi-hcl/pkg/hcl/ast"
@@ -63,16 +64,6 @@ type Binder struct {
 
 func (b *Binder) child(dir string) *Binder {
 	return &Binder{Resources: b.Resources, Modules: b.Modules, ModuleDir: dir}
-}
-
-// sortedKeys returns the keys of m in sorted order, for deterministic iteration.
-func sortedKeys[V any](m map[string]V) []string {
-	keys := make([]string, 0, len(m))
-	for k := range m {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
-	return keys
 }
 
 // ModuleSchema represents a generated schema for an HCL module.
@@ -240,7 +231,7 @@ func seedLocalTypes(scope *eval.Context, config *ast.Config) error {
 			progress = true
 		}
 		if !progress {
-			for _, name := range sortedKeys(remaining) {
+			for _, name := range slices.Sorted(maps.Keys(remaining)) {
 				_, diags := evaluator.Evaluate(remaining[name].Value)
 				return fmt.Errorf("typing local %q: %s", name, diags.Error())
 			}
@@ -275,7 +266,7 @@ func seedResourceTypes(
 		}
 		return nil
 	}
-	for _, key := range sortedKeys(config.Resources) {
+	for _, key := range slices.Sorted(maps.Keys(config.Resources)) {
 		res := config.Resources[key]
 		schemaRes, err := resolver.ResolveResource(ctx, res.Type)
 		if err != nil {
@@ -289,7 +280,7 @@ func seedResourceTypes(
 		scope.SetResource(key, urn.URN(""), cty.UnknownVal(ty))
 	}
 
-	for _, key := range sortedKeys(config.DataSources) {
+	for _, key := range slices.Sorted(maps.Keys(config.DataSources)) {
 		ds := config.DataSources[key]
 		fn, err := resolver.ResolveFunction(ctx, ds.Type)
 		if err != nil {
@@ -319,7 +310,7 @@ func seedModuleTypes(
 		}
 		return nil
 	}
-	for _, name := range sortedKeys(config.Modules) {
+	for _, name := range slices.Sorted(maps.Keys(config.Modules)) {
 		call := config.Modules[name]
 		childConfig, dir, err := binder.Modules.LoadModule(call.Source, call.Version, binder.ModuleDir)
 		if err != nil {
