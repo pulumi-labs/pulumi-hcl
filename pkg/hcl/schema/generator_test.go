@@ -27,7 +27,9 @@ import (
 	"github.com/pulumi-labs/pulumi-hcl/pkg/hcl/bridge"
 	"github.com/pulumi-labs/pulumi-hcl/pkg/hcl/parser"
 	pulumiSchema "github.com/pulumi/pulumi/pkg/v3/codegen/schema"
+	"github.com/pulumi/pulumi/sdk/v3/go/common/resource"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/util/cmdutil"
+	"github.com/pulumi/pulumi/sdk/v3/go/property"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -80,9 +82,7 @@ func TestGenerateModuleSchemaGolden(t *testing.T) {
 			// Bind the generated schema against the Pulumi package metaschema so
 			// that an invalid spec (e.g. a constant default on a non-primitive
 			// property) fails the test rather than only `pulumi schema check`.
-			var spec pulumiSchema.PackageSpec
-			require.NoError(t, json.Unmarshal(got, &spec))
-			_, bindDiags, err := pulumiSchema.BindSpec(spec, errLoader{}, pulumiSchema.ValidationOptions{})
+			_, bindDiags, err := pulumiSchema.BindSpec(pkgSpec, errLoader{}, pulumiSchema.ValidationOptions{})
 			require.NoError(t, err)
 			require.False(t, bindDiags.HasErrors(), bindDiags.Error())
 
@@ -338,6 +338,52 @@ output "z" {
 	}
 	_, err := GenerateModuleSchema(t.Context(), root, binder, "pkg", "0.0.0-dev", "pkg", "index")
 	require.Error(t, err)
+}
+
+// TestBoundaryNameConversion shows that the Construct boundary renames object
+// field names (snake_case ↔ camelCase) at every depth in both directions, while
+// leaving the dynamic keys of a map untouched.
+func TestBoundaryNameConversion(t *testing.T) {
+	t.Parallel()
+
+	s := &ModuleSchema{
+		InputProperties: map[string]*PropertySpec{
+			"object_in": {Type: "object", Properties: map[string]*PropertySpec{
+				"field_one": {Type: "string"},
+			}},
+			"map_in": {Type: "object", AdditionalProperties: &PropertySpec{Type: "string"}},
+		},
+		OutputProperties: map[string]*PropertySpec{
+			"object_out": {Type: "object", Properties: map[string]*PropertySpec{
+				"field_two": {Type: "string"},
+			}},
+			"map_out": {Type: "object", AdditionalProperties: &PropertySpec{Type: "string"}},
+		},
+	}
+
+	propMap := func(m map[string]any) property.Map {
+		return resource.FromResourcePropertyMap(resource.NewPropertyMapFromMap(m))
+	}
+
+	// Inputs arrive camelCase (top-level names and object fields). A map's keys
+	// are user data, so a key that looks like snake_case stays verbatim.
+	assert.Equal(t, propMap(map[string]any{
+		"object_in": map[string]any{"field_one": "a"},
+		"map_in":    map[string]any{"user_key": "b"},
+	}), s.InputsToHCL(propMap(map[string]any{
+		"objectIn": map[string]any{"fieldOne": "a"},
+		"mapIn":    map[string]any{"user_key": "b"},
+	})))
+
+	// Outputs arrive snake_case from HCL; object fields become camelCase, map
+	// keys are preserved verbatim.
+	assert.Equal(t, propMap(map[string]any{
+		"objectOut": map[string]any{"fieldTwo": "c"},
+		"mapOut":    map[string]any{"user_key": "d"},
+	}), s.OutputsToPulumi(propMap(map[string]any{
+		"object_out": map[string]any{"field_two": "c"},
+		"map_out":    map[string]any{"user_key": "d"},
+	})))
 }
 
 // errLoader is a schema.Loader that fails if asked to load any package. The

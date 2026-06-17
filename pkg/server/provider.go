@@ -319,16 +319,21 @@ func (p *HCLProvider) Construct(ctx context.Context, req *pulumirpc.ConstructReq
 		replaceWith:             req.ReplaceWith,
 		customTimeouts:          req.CustomTimeouts,
 		replacementTrigger:      req.ReplacementTrigger,
+		moduleSchema:            p.schema,
 	}
 
-	// Set up config from inputs, prefixing with project name as the engine expects.
+	// Set up config from inputs, prefixing with project name as the engine
+	// expects. Inputs arrive under their camelCase schema property names (with
+	// camelCase object fields); map them to the snake_case names the HCL module
+	// declares, at every nesting depth.
 	config := make(map[string]string)
-	for k, v := range inputs {
+	hclInputs := resource.ToResourcePropertyMap(p.schema.InputsToHCL(resource.FromResourcePropertyMap(inputs)))
+	for k, v := range hclInputs {
 		configKey := req.Project + ":" + string(k)
 		if v.IsString() {
 			config[configKey] = v.StringValue()
 		} else {
-			jsonVal, _ := json.Marshal(v.V)
+			jsonVal, _ := json.Marshal(v.Mappable())
 			config[configKey] = string(jsonVal)
 		}
 	}
@@ -420,6 +425,10 @@ type constructResourceMonitor struct {
 
 	componentURN urn.URN
 	outputs      property.Map
+
+	// moduleSchema maps the component's snake_case HCL output names to the
+	// camelCase schema property names when registering its outputs.
+	moduleSchema *schema.ModuleSchema
 }
 
 // RegisterResource registers a resource.
@@ -542,8 +551,12 @@ func (m *constructResourceMonitor) RegisterResourceOutputs(
 	urn urn.URN,
 	outputs property.Map,
 ) error {
-	// Track outputs for the component
+	// The component's outputs are keyed by the HCL module's snake_case output
+	// names (with snake_case object fields); expose them under the camelCase
+	// names the schema declares, at every nesting depth. Child resources already
+	// carry their own correctly-cased property names.
 	if urn == m.componentURN {
+		outputs = m.moduleSchema.OutputsToPulumi(outputs)
 		m.outputs = outputs
 	}
 

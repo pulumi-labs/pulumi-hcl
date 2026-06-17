@@ -1,29 +1,28 @@
 {
-  "description": "",
   "name": "inference",
+  "version": "0.0.0-dev",
+  "config": {},
+  "provider": {},
   "resources": {
     "inference:index:inference": {
-      "description": "",
-      "inputProperties": {
-        "string_value": {
-          "type": "string"
-        }
-      },
-      "isComponent": true,
       "properties": {
-        "number_output": {
+        "numberOutput": {
           "type": "number"
         },
-        "string_output": {
+        "stringOutput": {
           "type": "string"
         },
-        "string_value": {
+        "stringValue": {
           "type": "string"
         }
       },
-      "requiredInputs": null,
-      "type": "object"
+      "type": "object",
+      "inputProperties": {
+        "stringValue": {
+          "type": "string"
+        }
+      },
+      "isComponent": true
     }
-  },
-  "version": "0.0.0-dev"
+  }
 }

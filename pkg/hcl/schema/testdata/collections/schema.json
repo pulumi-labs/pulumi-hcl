@@ -1,87 +1,83 @@
 {
-  "description": "",
   "name": "collections",
-  "resources": {
-    "collections:infra:widget": {
-      "description": "",
-      "inputProperties": {
-        "list_of_string": {
-          "items": {
-            "type": "string"
-          },
-          "type": "array"
-        },
-        "map_of_string": {
-          "additionalProperties": {
-            "type": "string"
-          },
-          "type": "object"
-        },
-        "object_value": {
-          "properties": {
-            "bool_field": {
-              "type": "boolean"
-            },
-            "string_field": {
-              "type": "string"
-            }
-          },
-          "type": "object"
-        },
-        "set_of_number": {
-          "items": {
-            "type": "number"
-          },
-          "type": "array"
-        }
-      },
-      "isComponent": true,
+  "version": "0.0.0-dev",
+  "config": {},
+  "types": {
+    "collections:infra:ObjectValue": {
       "properties": {
-        "list_of_string": {
-          "items": {
-            "type": "string"
-          },
-          "type": "array"
+        "boolField": {
+          "type": "boolean"
         },
-        "list_of_string_output": {
-          "items": {
-            "type": "string"
-          },
-          "type": "array"
-        },
-        "map_of_string": {
-          "additionalProperties": {
-            "type": "string"
-          },
-          "type": "object"
-        },
-        "map_of_string_output": {
-          "additionalProperties": {
-            "type": "string"
-          },
-          "type": "object"
-        },
-        "object_value": {
-          "properties": {
-            "bool_field": {
-              "type": "boolean"
-            },
-            "string_field": {
-              "type": "string"
-            }
-          },
-          "type": "object"
-        },
-        "set_of_number": {
-          "items": {
-            "type": "number"
-          },
-          "type": "array"
+        "stringField": {
+          "type": "string"
         }
       },
-      "requiredInputs": null,
       "type": "object"
     }
   },
-  "version": "0.0.0-dev"
+  "provider": {},
+  "resources": {
+    "collections:infra:widget": {
+      "properties": {
+        "listOfString": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "listOfStringOutput": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "mapOfString": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          }
+        },
+        "mapOfStringOutput": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          }
+        },
+        "objectValue": {
+          "$ref": "#/types/collections:infra:ObjectValue"
+        },
+        "setOfNumber": {
+          "type": "array",
+          "items": {
+            "type": "number"
+          }
+        }
+      },
+      "type": "object",
+      "inputProperties": {
+        "listOfString": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "mapOfString": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          }
+        },
+        "objectValue": {
+          "$ref": "#/types/collections:infra:ObjectValue"
+        },
+        "setOfNumber": {
+          "type": "array",
+          "items": {
+            "type": "number"
+          }
+        }
+      },
+      "isComponent": true
+    }
+  }
 }

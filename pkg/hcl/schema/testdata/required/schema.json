@@ -1,47 +1,47 @@
 {
-  "description": "",
   "name": "required",
+  "version": "0.0.0-dev",
+  "config": {},
+  "provider": {},
   "resources": {
     "required:index:required": {
-      "description": "",
-      "inputProperties": {
-        "string_a": {
+      "properties": {
+        "stringA": {
           "type": "string"
         },
-        "string_b": {
+        "stringB": {
           "type": "string"
         },
-        "string_c": {
+        "stringC": {
           "type": "string"
         },
-        "string_with_default": {
-          "default": "ok",
-          "type": "string"
+        "stringWithDefault": {
+          "type": "string",
+          "default": "ok"
         }
       },
-      "isComponent": true,
-      "properties": {
-        "string_a": {
+      "type": "object",
+      "inputProperties": {
+        "stringA": {
           "type": "string"
         },
-        "string_b": {
+        "stringB": {
           "type": "string"
         },
-        "string_c": {
+        "stringC": {
           "type": "string"
         },
-        "string_with_default": {
-          "default": "ok",
-          "type": "string"
+        "stringWithDefault": {
+          "type": "string",
+          "default": "ok"
         }
       },
       "requiredInputs": [
-        "string_a",
-        "string_b",
-        "string_c"
+        "stringA",
+        "stringB",
+        "stringC"
       ],
-      "type": "object"
+      "isComponent": true
     }
-  },
-  "version": "0.0.0-dev"
+  }
 }

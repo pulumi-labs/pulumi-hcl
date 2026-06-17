@@ -22,6 +22,7 @@ import (
 	"maps"
 	"slices"
 	"sort"
+	"strings"
 
 	"github.com/pulumi-labs/pulumi-hcl/pkg/hcl/ast"
 	"github.com/pulumi-labs/pulumi-hcl/pkg/hcl/bridge"
@@ -29,6 +30,7 @@ import (
 	"github.com/pulumi-labs/pulumi-hcl/pkg/hcl/transform"
 	pulumischema "github.com/pulumi/pulumi/pkg/v3/codegen/schema"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/resource/urn"
+	"github.com/pulumi/pulumi/sdk/v3/go/property"
 	"github.com/zclconf/go-cty/cty"
 )
 
@@ -518,74 +520,187 @@ func (s *ModuleSchema) ToJSON() ([]byte, error) {
 	return json.MarshalIndent(s, "", "  ")
 }
 
-// ToPulumiPackageSchema converts the module schema to a full Pulumi package schema format.
-func (s *ModuleSchema) ToPulumiPackageSchema() map[string]any {
-	componentToken := fmt.Sprintf("%s:%s:%s", s.PackageName, s.Module, s.ComponentName)
+// pulumiCase converts a snake_case HCL identifier (a variable, output, or object
+// field name) to the camelCase name Pulumi conventionally uses for the schema
+// property. props is nil because an MLC module has no provider property list to
+// resolve against — the convention is the definition of the camelCase name.
+//
+// This conversion is only ever applied in the snake→camel direction, and the
+// snake_case name is always retained as the source of truth (the boundary
+// converters below iterate the snake-keyed spec rather than inverting a
+// camelCase name), so the lossy camel→snake inverse is never relied upon.
+func pulumiCase(snake string) string {
+	name, _ := transform.PulumiCaseFromSnakeCase(snake, nil)
+	return name
+}
 
-	// Build input properties
-	inputProps := make(map[string]any)
+// InputsToHCL maps component inputs — keyed by their camelCase schema property
+// names — to the snake_case names the HCL module declares, recursively renaming
+// object fields at every depth. Map keys are user data and are left unchanged.
+// It iterates the snake-keyed input spec and looks up each input by its derived
+// camelCase name, so the mapping never depends on inverting a camelCase name.
+func (s *ModuleSchema) InputsToHCL(inputs property.Map) property.Map {
+	out := make(map[string]property.Value, inputs.Len())
+	for snake, spec := range s.InputProperties {
+		if v, ok := inputs.GetOk(pulumiCase(snake)); ok {
+			out[snake] = convertPropertyNames(v, spec, false)
+		}
+	}
+	return property.NewMap(out)
+}
+
+// OutputsToPulumi maps the module's outputs — keyed by their snake_case HCL
+// names — to the camelCase schema property names, recursively renaming object
+// fields at every depth. Map keys are left unchanged.
+func (s *ModuleSchema) OutputsToPulumi(outputs property.Map) property.Map {
+	out := make(map[string]property.Value, outputs.Len())
+	for snake, v := range outputs.All {
+		out[pulumiCase(snake)] = convertPropertyNames(v, s.OutputProperties[snake], true)
+	}
+	return property.NewMap(out)
+}
+
+// convertPropertyNames recursively renames object-field names in v according to
+// spec, which describes v's type. Object fields (spec.Properties, snake_case)
+// are renamed between snake_case and camelCase; the dynamic keys of a map
+// (spec.AdditionalProperties) are user data and left unchanged. toPulumi selects
+// the direction: snake_case→camelCase when true, the reverse when false. A
+// value's secret flag and dependencies are preserved across the rename.
+func convertPropertyNames(v property.Value, spec *PropertySpec, toPulumi bool) property.Value {
+	if spec == nil || v.IsNull() || v.IsComputed() {
+		return v
+	}
+	switch {
+	case len(spec.Properties) > 0 && v.IsMap():
+		obj := v.AsMap()
+		out := make(map[string]property.Value, obj.Len())
+		for snake, fieldSpec := range spec.Properties {
+			src, dst := pulumiCase(snake), snake
+			if toPulumi {
+				src, dst = dst, src
+			}
+			if fv, ok := obj.GetOk(src); ok {
+				out[dst] = convertPropertyNames(fv, fieldSpec, toPulumi)
+			}
+		}
+		return property.WithGoValue(v, out)
+	case spec.AdditionalProperties != nil && v.IsMap():
+		obj := v.AsMap()
+		out := make(map[string]property.Value, obj.Len())
+		for k, mv := range obj.All {
+			out[k] = convertPropertyNames(mv, spec.AdditionalProperties, toPulumi)
+		}
+		return property.WithGoValue(v, out)
+	case spec.Items != nil && v.IsArray():
+		arr := v.AsArray()
+		out := make([]property.Value, arr.Len())
+		for i, e := range arr.All {
+			out[i] = convertPropertyNames(e, spec.Items, toPulumi)
+		}
+		return property.WithGoValue(v, out)
+	default:
+		return v
+	}
+}
+
+// ToPulumiPackageSchema converts the module schema to a full Pulumi package
+// schema. Variable and output names, which are snake_case in HCL, are exposed
+// under their camelCase Pulumi property names. Object types are emitted as named
+// types in the `types` section and referenced via `$ref`, so a consumer binds
+// them as proper object types (a property's inline type spec cannot carry
+// `properties`).
+func (s *ModuleSchema) ToPulumiPackageSchema() pulumischema.PackageSpec {
+	componentToken := fmt.Sprintf("%s:%s:%s", s.PackageName, s.Module, s.ComponentName)
+	types := make(map[string]pulumischema.ComplexTypeSpec)
+
+	inputProps := make(map[string]pulumischema.PropertySpec)
 	for name, prop := range s.InputProperties {
-		inputProps[name] = propertySpecToSchemaProperty(prop)
+		inputProps[pulumiCase(name)] = s.schemaProperty(prop, pascalCase(pulumiCase(name)), types)
 	}
 
-	// Build output properties (inputs + outputs)
-	outputProps := make(map[string]any)
+	// Output properties are the inputs plus the declared outputs.
+	outputProps := make(map[string]pulumischema.PropertySpec)
 	for name, prop := range s.InputProperties {
-		outputProps[name] = propertySpecToSchemaProperty(prop)
+		outputProps[pulumiCase(name)] = s.schemaProperty(prop, pascalCase(pulumiCase(name)), types)
 	}
 	for name, prop := range s.OutputProperties {
-		outputProps[name] = propertySpecToSchemaProperty(prop)
+		outputProps[pulumiCase(name)] = s.schemaProperty(prop, pascalCase(pulumiCase(name)), types)
 	}
 
-	return map[string]any{
-		"name":        s.PackageName,
-		"version":     s.Version,
-		"description": s.Description,
-		"resources": map[string]any{
-			componentToken: map[string]any{
-				"isComponent":     true,
-				"description":     s.Description,
-				"inputProperties": inputProps,
-				"requiredInputs":  s.RequiredInputs,
-				"properties":      outputProps,
-				"type":            "object",
+	requiredInputs := make([]string, 0, len(s.RequiredInputs))
+	for _, name := range s.RequiredInputs {
+		requiredInputs = append(requiredInputs, pulumiCase(name))
+	}
+	sort.Strings(requiredInputs)
+
+	return pulumischema.PackageSpec{
+		Name:        s.PackageName,
+		Version:     s.Version,
+		Description: s.Description,
+		Types:       types,
+		Resources: map[string]pulumischema.ResourceSpec{
+			componentToken: {
+				ObjectTypeSpec: pulumischema.ObjectTypeSpec{
+					Type:        "object",
+					Description: s.Description,
+					Properties:  outputProps,
+				},
+				IsComponent:     true,
+				InputProperties: inputProps,
+				RequiredInputs:  requiredInputs,
 			},
 		},
 	}
 }
 
-// propertySpecToSchemaProperty converts a PropertySpec to a Pulumi schema property format.
-func propertySpecToSchemaProperty(prop *PropertySpec) map[string]any {
-	result := make(map[string]any)
+// pascalCase upper-cases the first letter of a camelCase name, for use in a type
+// token.
+func pascalCase(s string) string {
+	if s == "" {
+		return s
+	}
+	return strings.ToUpper(s[:1]) + s[1:]
+}
 
-	if prop.Type != "" {
-		result["type"] = prop.Type
+// schemaProperty converts a PropertySpec to a Pulumi PropertySpec, carrying the
+// property-level description, secret flag, and default over the underlying type.
+func (s *ModuleSchema) schemaProperty(
+	prop *PropertySpec, typeName string, types map[string]pulumischema.ComplexTypeSpec,
+) pulumischema.PropertySpec {
+	return pulumischema.PropertySpec{
+		TypeSpec:    s.schemaType(prop, typeName, types),
+		Description: prop.Description,
+		Secret:      prop.Secret,
+		Default:     prop.Default,
 	}
-	if prop.Description != "" {
-		result["description"] = prop.Description
-	}
-	if prop.Secret {
-		result["secret"] = true
-	}
-	if prop.Default != nil {
-		result["default"] = prop.Default
-	}
-	if prop.Items != nil {
-		result["items"] = propertySpecToSchemaProperty(prop.Items)
-	}
-	if prop.AdditionalProperties != nil {
-		result["additionalProperties"] = propertySpecToSchemaProperty(prop.AdditionalProperties)
-	}
-	if len(prop.Properties) > 0 {
-		props := make(map[string]any)
-		for name, p := range prop.Properties {
-			props[name] = propertySpecToSchemaProperty(p)
+}
+
+// schemaType converts a PropertySpec to a Pulumi TypeSpec. An object type is
+// registered as a named type (keyed by a token derived from typeName) in types
+// and referenced via `$ref`; the dynamic keys of a map are not named, so its
+// value type recurses without registering field names.
+func (s *ModuleSchema) schemaType(
+	prop *PropertySpec, typeName string, types map[string]pulumischema.ComplexTypeSpec,
+) pulumischema.TypeSpec {
+	switch {
+	case len(prop.Properties) > 0:
+		token := fmt.Sprintf("%s:%s:%s", s.PackageName, s.Module, typeName)
+		fields := make(map[string]pulumischema.PropertySpec, len(prop.Properties))
+		for name, field := range prop.Properties {
+			camel := pulumiCase(name)
+			fields[camel] = s.schemaProperty(field, typeName+pascalCase(camel), types)
 		}
-		result["properties"] = props
+		types[token] = pulumischema.ComplexTypeSpec{
+			ObjectTypeSpec: pulumischema.ObjectTypeSpec{Type: "object", Properties: fields},
+		}
+		return pulumischema.TypeSpec{Ref: "#/types/" + token}
+	case prop.AdditionalProperties != nil:
+		elem := s.schemaType(prop.AdditionalProperties, typeName+"Value", types)
+		return pulumischema.TypeSpec{Type: "object", AdditionalProperties: &elem}
+	case prop.Items != nil:
+		elem := s.schemaType(prop.Items, typeName+"Item", types)
+		return pulumischema.TypeSpec{Type: "array", Items: &elem}
+	default:
+		return pulumischema.TypeSpec{Type: prop.Type}
 	}
-	if prop.Ref != "" {
-		result["$ref"] = prop.Ref
-	}
-
-	return result
 }
