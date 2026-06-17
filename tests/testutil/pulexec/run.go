@@ -65,6 +65,16 @@ func serveLanguageHost(t *testing.T) int {
 	return handle.Port
 }
 
+// languageHostGuard writes a pulumi-language-hcl executable into a fresh temp
+// dir that fails loudly when run, and returns that dir.
+func languageHostGuard(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	stub := "#!/bin/sh\necho 'should not use HCL language binary' >&2\nexit 1\n"
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "pulumi-language-hcl"), []byte(stub), 0o755))
+	return dir
+}
+
 // Provider pairs a provider name with a way to start its in-process Pulumi
 // provider server. Use SDKv2Provider or PFProvider to build one.
 type Provider struct {
@@ -120,6 +130,9 @@ backend:
 		make([]opttest.Option, 0, 5+len(provs)),
 		opttest.Env("PULUMI_DISABLE_AUTOMATIC_PLUGIN_ACQUISITION", "true"),
 		opttest.Env("PULUMI_DEBUG_LANGUAGES", fmt.Sprintf("hcl:%d", hostPort)),
+		// The runtime under test is served in-process via PULUMI_DEBUG_LANGUAGES, so
+		// the engine must never spawn (or download) the pulumi-language-hcl binary.
+		opttest.Env("PATH", languageHostGuard(t)+string(os.PathListSeparator)+os.Getenv("PATH")),
 		opttest.TestInPlace(),
 		opttest.SkipInstall(),
 		// Cleanup destroy fails on prevent_destroy cases; temp dir is
