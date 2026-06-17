@@ -1419,6 +1419,59 @@ variable "instance_type" {
 	}
 }
 
+// A variable's validation condition may reference another variable; the
+// referencing variable must be sequenced after the one it reads, so the rule
+// evaluates deterministically rather than racing the dependency.
+func TestEngine_VariableValidationCrossReference(t *testing.T) {
+	t.Parallel()
+
+	runProgram := func(t *testing.T, name string) error {
+		src := []byte(`
+variable "min" {
+  type    = number
+  default = 3
+}
+
+variable "name" {
+  type    = string
+  default = "` + name + `"
+
+  validation {
+    condition     = length(var.name) >= var.min
+    error_message = "name is shorter than min"
+  }
+}
+
+output "name" {
+  value = var.name
+}
+`)
+		config, diags := parser.NewParser().ParseSource("test.hcl", src)
+		require.False(t, diags.HasErrors(), "parse error: %s", diags.Error())
+
+		engine := run.NewEngine(t.Context(), config, &run.EngineOptions{
+			ProjectName:     "test-project",
+			StackName:       "dev",
+			ResourceMonitor: &testutil.MockResourceMonitor{},
+			WorkDir:         t.TempDir(),
+			RootDir:         t.TempDir(),
+			SchemaLoader:    schemaloader.New(t, schema.PackageSpec{Name: "empty"}),
+		})
+		return engine.Run(t.Context())
+	}
+
+	t.Run("pass", func(t *testing.T) {
+		t.Parallel()
+		require.NoError(t, runProgram(t, "widget"))
+	})
+
+	t.Run("fail", func(t *testing.T) {
+		t.Parallel()
+		assert.EqualError(t, runProgram(t, "xy"),
+			`validation failed for variable "name": name is shorter than min`+"\ncontext canceled")
+	})
+}
+
 func TestEngine_VariableValidationFail_SensitiveErrorMessage(t *testing.T) {
 	t.Parallel()
 

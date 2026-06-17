@@ -326,13 +326,14 @@ func BuildFromConfig(config *ast.Config, moduleLoader ModuleLoader, workDir stri
 		}, nil),
 	), "nodes without dependencies cannot error")
 
-	// Add variable nodes (no dependencies, they come from outside)
+	// Variable values come from outside, so a variable depends only on whatever
+	// its validation rules reference (e.g. another variable).
 	for name, v := range config.Variables {
 		err := g.AddNode(&Node{
 			Key:      "var." + name,
 			Type:     NodeTypeVariable,
 			Variable: v,
-		}, nil)
+		}, g.variableValidationDeps(v, "var."+name, ""))
 		if err != nil {
 			return nil, err
 		}
@@ -692,6 +693,20 @@ func (g *Graph) outputDeps(output *ast.Output, prefix string) []pdag.Node {
 	return deps
 }
 
+// variableValidationDeps gathers the graph dependencies of a variable's
+// `validation` rules — the condition and error-message expressions — minus a
+// self-reference to the variable being validated, which is always in scope and
+// would otherwise form a cycle.
+func (g *Graph) variableValidationDeps(v *ast.Variable, key, prefix string) []pdag.Node {
+	_, self := g.newNode(key)
+	var deps []pdag.Node
+	for _, rule := range v.Validations {
+		deps = append(deps, g.exprDeps(rule.Condition, prefix)...)
+		deps = append(deps, g.exprDeps(rule.ErrorMessage, prefix)...)
+	}
+	return slices.DeleteFunc(deps, func(n pdag.Node) bool { return n == self })
+}
+
 // exprDeps extracts all dependencies from an expression, applying prefix to resolved keys.
 func (g *Graph) exprDeps(expr hcl.Expression, prefix string) []pdag.Node {
 	return g.exprDepsExcluding(expr, prefix, nil)
@@ -933,6 +948,7 @@ func (g *Graph) inlineModule(
 		if inputAttr, ok := moduleInputAttrs[varName]; ok {
 			varDeps = append(varDeps, g.exprDeps(inputAttr.Expr, parentPrefix)...)
 		}
+		varDeps = append(varDeps, g.variableValidationDeps(v, prefix+"var."+varName, prefix)...)
 		if err := g.AddNode(&Node{
 			Key:        prefix + "var." + varName,
 			Type:       NodeTypeVariable,
