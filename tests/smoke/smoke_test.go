@@ -167,18 +167,25 @@ func TestSmokeModule(t *testing.T) {
 	runPulumi(t, "package", "add", "../randommodule")
 
 	// The pet name flows from a not-yet-created `random_pet` inside the
-	// component, so the root output is unknown during preview.
-	require.Regexp(t, regexp.MustCompile(`pet: \[unknown\]`), string(runPulumi(t, "preview")),
-		"pet output should be unknown at preview")
+	// component, so that output is unknown during preview.
+	require.Regexp(t, regexp.MustCompile(`pet_name\s*: \[unknown\]`), string(runPulumi(t, "preview")),
+		"pet_name output should be unknown at preview")
 
 	runPulumi(t, "up", "--yes", "--skip-preview")
 
-	// `length = 3` produces "<word>-<word>-<word>" (lowercase letters only).
+	// The multi-word `pet_length`, nested object field `string_field`, and map
+	// value `user_key` all round-trip through the component, which only works if
+	// the boundary translates object/field names (but not map keys) in both
+	// directions: a snake_case HCL module exposed under a camelCase schema.
 	outputs := parseStackOutput(t, runPulumi(t, "stack", "output", "--json"))
-	pet, ok := outputs["pet"].(string)
-	require.True(t, ok, "pet output must be a string, got %T (%v)", outputs["pet"], outputs["pet"])
-	require.Regexp(t, regexp.MustCompile(`^[a-z]+-[a-z]+-[a-z]+$`), pet,
-		"pet output should match '<word>-<word>-<word>'")
+
+	petName, ok := outputs["pet_name"].(string)
+	require.True(t, ok, "pet_name must be a string, got %T (%v)", outputs["pet_name"], outputs["pet_name"])
+	require.Regexp(t, regexp.MustCompile(`^[a-z]+-[a-z]+-[a-z]+$`), petName,
+		"pet_length = 3 should yield a three-word pet name")
+
+	require.Equal(t, "hello", outputs["object_field"], "object field value should round-trip")
+	require.Equal(t, "world", outputs["map_field"], "map value (keyed by a preserved key) should round-trip")
 
 	runPulumi(t, "destroy", "--yes", "--skip-preview")
 }

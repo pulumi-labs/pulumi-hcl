@@ -18,15 +18,7 @@
           "type": "object"
         },
         "objectValue": {
-          "properties": {
-            "bool_field": {
-              "type": "boolean"
-            },
-            "string_field": {
-              "type": "string"
-            }
-          },
-          "type": "object"
+          "$ref": "#/types/collections:infra:ObjectValue"
         },
         "setOfNumber": {
           "items": {
@@ -62,15 +54,7 @@
           "type": "object"
         },
         "objectValue": {
-          "properties": {
-            "bool_field": {
-              "type": "boolean"
-            },
-            "string_field": {
-              "type": "string"
-            }
-          },
-          "type": "object"
+          "$ref": "#/types/collections:infra:ObjectValue"
         },
         "setOfNumber": {
           "items": {
@@ -80,6 +64,19 @@
         }
       },
       "requiredInputs": null,
+      "type": "object"
+    }
+  },
+  "types": {
+    "collections:infra:ObjectValue": {
+      "properties": {
+        "boolField": {
+          "type": "boolean"
+        },
+        "stringField": {
+          "type": "string"
+        }
+      },
       "type": "object"
     }
   },

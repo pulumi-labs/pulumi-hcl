@@ -26,7 +26,6 @@ import (
 	"github.com/pulumi-labs/pulumi-hcl/pkg/hcl/packages"
 	"github.com/pulumi-labs/pulumi-hcl/pkg/hcl/run"
 	"github.com/pulumi-labs/pulumi-hcl/pkg/hcl/schema"
-	"github.com/pulumi-labs/pulumi-hcl/pkg/hcl/transform"
 	"github.com/pulumi/pulumi/pkg/v3/codegen/convert"
 	pulumiSchema "github.com/pulumi/pulumi/pkg/v3/codegen/schema"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/resource"
@@ -320,18 +319,20 @@ func (p *HCLProvider) Construct(ctx context.Context, req *pulumirpc.ConstructReq
 		replaceWith:             req.ReplaceWith,
 		customTimeouts:          req.CustomTimeouts,
 		replacementTrigger:      req.ReplacementTrigger,
+		moduleSchema:            p.schema,
 	}
 
 	// Set up config from inputs, prefixing with project name as the engine
-	// expects. Inputs arrive under their camelCase schema property names; recover
-	// the snake_case HCL variable name the module declares.
+	// expects. Inputs arrive under their camelCase schema property names (with
+	// camelCase object fields); map them to the snake_case names the HCL module
+	// declares, at every nesting depth.
 	config := make(map[string]string)
-	for k, v := range inputs {
-		configKey := req.Project + ":" + transform.SnakeCaseFromPulumiCase(string(k))
+	for k, v := range p.schema.InputsToHCL(inputs) {
+		configKey := req.Project + ":" + string(k)
 		if v.IsString() {
 			config[configKey] = v.StringValue()
 		} else {
-			jsonVal, _ := json.Marshal(v.V)
+			jsonVal, _ := json.Marshal(v.Mappable())
 			config[configKey] = string(jsonVal)
 		}
 	}
@@ -423,6 +424,10 @@ type constructResourceMonitor struct {
 
 	componentURN urn.URN
 	outputs      property.Map
+
+	// moduleSchema maps the component's snake_case HCL output names to the
+	// camelCase schema property names when registering its outputs.
+	moduleSchema *schema.ModuleSchema
 }
 
 // RegisterResource registers a resource.
@@ -546,15 +551,12 @@ func (m *constructResourceMonitor) RegisterResourceOutputs(
 	outputs property.Map,
 ) error {
 	// The component's outputs are keyed by the HCL module's snake_case output
-	// names; expose them under the camelCase names the schema declares. Child
-	// resources already carry their own correctly-cased property names.
+	// names (with snake_case object fields); expose them under the camelCase
+	// names the schema declares, at every nesting depth. Child resources already
+	// carry their own correctly-cased property names.
 	if urn == m.componentURN {
-		converted := make(map[string]property.Value, outputs.Len())
-		for k, v := range outputs.AsMap() {
-			camel, _ := transform.PulumiCaseFromSnakeCase(k, nil)
-			converted[camel] = v
-		}
-		outputs = property.NewMap(converted)
+		converted := m.moduleSchema.OutputsToPulumi(resource.ToResourcePropertyMap(outputs))
+		outputs = resource.FromResourcePropertyMap(converted)
 		m.outputs = outputs
 	}
 
