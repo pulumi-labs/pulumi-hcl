@@ -21,6 +21,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/pulumi-labs/pulumi-hcl/pkg/hcl/ast"
 	"github.com/pulumi-labs/pulumi-hcl/pkg/hcl/parser"
 	"github.com/pulumi-labs/pulumi-hcl/pkg/hcl/run"
 	"github.com/pulumi-labs/pulumi-hcl/tests/testutil"
@@ -1135,6 +1136,117 @@ output "name" {
 		assert.EqualError(t, err,
 			`validation failed for variable "name": name must be longer than three characters`+
 				"\ncontext canceled")
+	})
+}
+
+func TestEngine_OutputPrecondition(t *testing.T) {
+	t.Parallel()
+
+	newEngine := func(t *testing.T, config *ast.Config, workDir string) (*testutil.MockResourceMonitor, *run.Engine) {
+		mock := &testutil.MockResourceMonitor{}
+		engine := run.NewEngine(t.Context(), config, &run.EngineOptions{
+			ProjectName:     "test-project",
+			StackName:       "dev",
+			ResourceMonitor: mock,
+			WorkDir:         workDir,
+			RootDir:         workDir,
+			SchemaLoader:    schemaloader.New(t, schema.PackageSpec{Name: "empty"}),
+		})
+		return mock, engine
+	}
+
+	t.Run("root_pass", func(t *testing.T) {
+		t.Parallel()
+
+		src := []byte(`
+variable "enabled" {
+  type    = bool
+  default = true
+}
+
+output "result" {
+  value = "ok"
+
+  precondition {
+    condition     = var.enabled
+    error_message = "must be enabled"
+  }
+}
+`)
+		config, diags := parser.NewParser().ParseSource("test.hcl", src)
+		require.False(t, diags.HasErrors(), "parse error: %s", diags.Error())
+
+		mock, engine := newEngine(t, config, t.TempDir())
+		require.NoError(t, engine.Run(t.Context()))
+
+		output, ok := mock.StackOutputs.GetOk("result")
+		require.True(t, ok, "expected result output")
+		assert.Equal(t, "ok", output.AsString())
+	})
+
+	t.Run("root_fail", func(t *testing.T) {
+		t.Parallel()
+
+		src := []byte(`
+variable "enabled" {
+  type    = bool
+  default = false
+}
+
+output "result" {
+  value = "ok"
+
+  precondition {
+    condition     = var.enabled
+    error_message = "must be enabled"
+  }
+}
+`)
+		config, diags := parser.NewParser().ParseSource("test.hcl", src)
+		require.False(t, diags.HasErrors(), "parse error: %s", diags.Error())
+
+		_, engine := newEngine(t, config, t.TempDir())
+		assert.EqualError(t, engine.Run(t.Context()),
+			`processing output result: precondition for output "result": must be enabled`)
+	})
+
+	t.Run("module_fail", func(t *testing.T) {
+		t.Parallel()
+
+		tmpDir := t.TempDir()
+		moduleDir := tmpDir + "/modules/child"
+		require.NoError(t, os.MkdirAll(moduleDir, 0o755))
+		require.NoError(t, os.WriteFile(moduleDir+"/main.tf", []byte(`
+variable "ok" {
+  type    = bool
+  default = false
+}
+
+output "result" {
+  value = "ok"
+
+  precondition {
+    condition     = var.ok
+    error_message = "child output not ok"
+  }
+}
+`), 0o644))
+		require.NoError(t, os.WriteFile(tmpDir+"/main.tf", []byte(`
+module "child" {
+  source = "./modules/child"
+}
+
+output "child_result" {
+  value = module.child.result
+}
+`), 0o644))
+
+		config, diags := parser.NewParser().ParseDirectory(tmpDir)
+		require.False(t, diags.HasErrors(), "parse error: %s", diags.Error())
+
+		_, engine := newEngine(t, config, tmpDir)
+		assert.EqualError(t, engine.Run(t.Context()),
+			`precondition for output "result": child output not ok`+"\ncontext canceled")
 	})
 }
 

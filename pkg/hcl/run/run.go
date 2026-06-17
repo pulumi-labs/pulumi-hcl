@@ -3197,6 +3197,9 @@ func (e *Engine) processModuleOutput(_ context.Context, node *graph.Node) error 
 	isForEach := mod.ForEach != nil
 
 	err := e.forEachModuleInstance(node, func(inst *moduleInstance) error {
+		if err := runOutputPreconditions(output, inst.EvalCtx.HCLContext(), outputName); err != nil {
+			return err
+		}
 		val, diags := output.Value.Value(inst.EvalCtx.HCLContext())
 		if diags.HasErrors() {
 			return fmt.Errorf("evaluating module output %s: %s", outputName, diags.Error())
@@ -3420,6 +3423,10 @@ func (e *Engine) registerComponentResource(
 
 // processOutput processes an output definition.
 func (e *Engine) processOutput(_ context.Context, name string, output *ast.Output) error {
+	if err := runOutputPreconditions(output, e.evaluator.Context().HCLContext(), name); err != nil {
+		return err
+	}
+
 	// Evaluate the output value, intercepting can() calls.
 	val, diags := e.evaluator.EvaluateExpression(output.Value)
 	if diags.HasErrors() {
@@ -3659,6 +3666,18 @@ func conditionResultToBool(v cty.Value) (bool, error) {
 		return false, fmt.Errorf("condition must return either true or false, not null")
 	}
 	return converted.True(), nil
+}
+
+// runOutputPreconditions evaluates an output's `precondition` rules against
+// hclCtx and returns an error for the first rule whose condition is known and
+// false; unknown conditions are deferred.
+func runOutputPreconditions(output *ast.Output, hclCtx *hcl.EvalContext, name string) error {
+	for i, rule := range output.Preconditions {
+		if err := evaluatePrecondition(rule, hclCtx, i+1, fmt.Sprintf("output %q", name)); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // evaluatePrecondition returns nil when the rule holds or its condition is

@@ -406,7 +406,7 @@ func BuildFromConfig(config *ast.Config, moduleLoader ModuleLoader, workDir stri
 
 	// Add output nodes
 	for name, output := range config.Outputs {
-		deps := g.exprDeps(output.Value, "")
+		deps := g.outputDeps(output, "")
 		err := g.AddNode(&Node{
 			Key:    "output." + name,
 			Type:   NodeTypeOutput,
@@ -678,6 +678,18 @@ func (g *Graph) bodyDeps(body hcl.Body, prefix string, exclude map[string]bool) 
 	}
 
 	return slices.Collect(maps.Keys(seen))
+}
+
+// outputDeps gathers an output node's dependencies: its value expression plus
+// the condition and error-message expressions of every precondition, so an
+// output is sequenced after everything its precondition references.
+func (g *Graph) outputDeps(output *ast.Output, prefix string) []pdag.Node {
+	deps := g.exprDeps(output.Value, prefix)
+	for _, rule := range output.Preconditions {
+		deps = append(deps, g.exprDeps(rule.Condition, prefix)...)
+		deps = append(deps, g.exprDeps(rule.ErrorMessage, prefix)...)
+	}
+	return deps
 }
 
 // exprDeps extracts all dependencies from an expression, applying prefix to resolved keys.
@@ -1023,7 +1035,7 @@ func (g *Graph) inlineModule(
 
 	// Outputs
 	for outputName, output := range loaded.Config.Outputs {
-		deps := g.exprDeps(output.Value, prefix)
+		deps := g.outputDeps(output, prefix)
 		deps = append(deps, initIdx)
 		if err := g.AddNode(&Node{
 			Key:        prefix + "output." + outputName,
