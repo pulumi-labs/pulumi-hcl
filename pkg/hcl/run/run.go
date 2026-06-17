@@ -701,10 +701,16 @@ func (e *Engine) processVariable(_ context.Context, node *graph.Node) error {
 	// Store in eval context (needed for validation which may reference var.<name>)
 	e.evaluator.Context().SetVariable(varName, val)
 
-	// Run validations
-	for i, validation := range v.Validations {
-		// Evaluate condition
-		condVal, diags := e.evaluator.EvaluateExpression(validation.Condition)
+	return runVariableValidations(e.evaluator, varName, v.Validations)
+}
+
+// runVariableValidations evaluates a variable's `validation` rules against ev
+// (whose context must already hold the variable's value). It returns an error
+// for the first rule whose condition is known and false; unknown conditions are
+// deferred.
+func runVariableValidations(ev *eval.Evaluator, varName string, validations []*ast.Validation) error {
+	for i, validation := range validations {
+		condVal, diags := ev.EvaluateExpression(validation.Condition)
 		if diags.HasErrors() {
 			return fmt.Errorf("evaluating validation condition %d for variable %q: %s", i+1, varName, diags.Error())
 		}
@@ -719,7 +725,7 @@ func (e *Engine) processVariable(_ context.Context, node *graph.Node) error {
 		}
 
 		if !condOK {
-			errMsgVal, diags := e.evaluator.EvaluateExpression(validation.ErrorMessage)
+			errMsgVal, diags := ev.EvaluateExpression(validation.ErrorMessage)
 			errMsg := "validation failed"
 			if !diags.HasErrors() {
 				if s := renderErrorMessage(errMsgVal); s != "" {
@@ -3029,7 +3035,8 @@ func (e *Engine) processModuleVariable(node *graph.Node) error {
 		}
 
 		inst.EvalCtx.SetVariable(varName, val)
-		return nil
+
+		return runVariableValidations(eval.NewEvaluator(inst.EvalCtx), varName, v.Validations)
 	})
 }
 
