@@ -1,72 +1,7 @@
 {
-  "description": "",
   "name": "collections",
-  "resources": {
-    "collections:infra:widget": {
-      "description": "",
-      "inputProperties": {
-        "listOfString": {
-          "items": {
-            "type": "string"
-          },
-          "type": "array"
-        },
-        "mapOfString": {
-          "additionalProperties": {
-            "type": "string"
-          },
-          "type": "object"
-        },
-        "objectValue": {
-          "$ref": "#/types/collections:infra:ObjectValue"
-        },
-        "setOfNumber": {
-          "items": {
-            "type": "number"
-          },
-          "type": "array"
-        }
-      },
-      "isComponent": true,
-      "properties": {
-        "listOfString": {
-          "items": {
-            "type": "string"
-          },
-          "type": "array"
-        },
-        "listOfStringOutput": {
-          "items": {
-            "type": "string"
-          },
-          "type": "array"
-        },
-        "mapOfString": {
-          "additionalProperties": {
-            "type": "string"
-          },
-          "type": "object"
-        },
-        "mapOfStringOutput": {
-          "additionalProperties": {
-            "type": "string"
-          },
-          "type": "object"
-        },
-        "objectValue": {
-          "$ref": "#/types/collections:infra:ObjectValue"
-        },
-        "setOfNumber": {
-          "items": {
-            "type": "number"
-          },
-          "type": "array"
-        }
-      },
-      "requiredInputs": null,
-      "type": "object"
-    }
-  },
+  "version": "0.0.0-dev",
+  "config": {},
   "types": {
     "collections:infra:ObjectValue": {
       "properties": {
@@ -80,5 +15,69 @@
       "type": "object"
     }
   },
-  "version": "0.0.0-dev"
+  "provider": {},
+  "resources": {
+    "collections:infra:widget": {
+      "properties": {
+        "listOfString": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "listOfStringOutput": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "mapOfString": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          }
+        },
+        "mapOfStringOutput": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          }
+        },
+        "objectValue": {
+          "$ref": "#/types/collections:infra:ObjectValue"
+        },
+        "setOfNumber": {
+          "type": "array",
+          "items": {
+            "type": "number"
+          }
+        }
+      },
+      "type": "object",
+      "inputProperties": {
+        "listOfString": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "mapOfString": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          }
+        },
+        "objectValue": {
+          "$ref": "#/types/collections:infra:ObjectValue"
+        },
+        "setOfNumber": {
+          "type": "array",
+          "items": {
+            "type": "number"
+          }
+        }
+      },
+      "isComponent": true
+    }
+  }
 }

@@ -327,7 +327,8 @@ func (p *HCLProvider) Construct(ctx context.Context, req *pulumirpc.ConstructReq
 	// camelCase object fields); map them to the snake_case names the HCL module
 	// declares, at every nesting depth.
 	config := make(map[string]string)
-	for k, v := range p.schema.InputsToHCL(inputs) {
+	hclInputs := resource.ToResourcePropertyMap(p.schema.InputsToHCL(resource.FromResourcePropertyMap(inputs)))
+	for k, v := range hclInputs {
 		configKey := req.Project + ":" + string(k)
 		if v.IsString() {
 			config[configKey] = v.StringValue()
@@ -555,8 +556,7 @@ func (m *constructResourceMonitor) RegisterResourceOutputs(
 	// names the schema declares, at every nesting depth. Child resources already
 	// carry their own correctly-cased property names.
 	if urn == m.componentURN {
-		converted := m.moduleSchema.OutputsToPulumi(resource.ToResourcePropertyMap(outputs))
-		outputs = resource.FromResourcePropertyMap(converted)
+		outputs = m.moduleSchema.OutputsToPulumi(outputs)
 		m.outputs = outputs
 	}
 

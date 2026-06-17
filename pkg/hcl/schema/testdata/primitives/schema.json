@@ -1,50 +1,50 @@
 {
-  "description": "",
   "name": "primitives",
+  "version": "1.2.3",
+  "config": {},
+  "provider": {},
   "resources": {
     "primitives:index:primitives": {
-      "description": "",
-      "inputProperties": {
-        "boolValue": {
-          "default": true,
-          "type": "boolean"
-        },
-        "numberValue": {
-          "default": 1,
-          "type": "number"
-        },
-        "stringValue": {
-          "description": "The resource name.",
-          "type": "string"
-        }
-      },
-      "isComponent": true,
       "properties": {
         "boolValue": {
-          "default": true,
-          "type": "boolean"
+          "type": "boolean",
+          "default": true
         },
         "numberValue": {
-          "default": 1,
-          "type": "number"
+          "type": "number",
+          "default": 1
         },
         "stringOutput": {
-          "description": "The generated identifier.",
-          "type": "string"
+          "type": "string",
+          "description": "The generated identifier."
         },
         "stringValue": {
-          "description": "The resource name.",
-          "type": "string"
+          "type": "string",
+          "description": "The resource name."
         },
         "templateOutput": {
           "type": "string"
         }
       },
+      "type": "object",
+      "inputProperties": {
+        "boolValue": {
+          "type": "boolean",
+          "default": true
+        },
+        "numberValue": {
+          "type": "number",
+          "default": 1
+        },
+        "stringValue": {
+          "type": "string",
+          "description": "The resource name."
+        }
+      },
       "requiredInputs": [
         "stringValue"
       ],
-      "type": "object"
+      "isComponent": true
     }
-  },
-  "version": "1.2.3"
+  }
 }
