@@ -1067,6 +1067,77 @@ output "item_count" {
 	})
 }
 
+func TestEngine_ModuleVariableValidation(t *testing.T) {
+	t.Parallel()
+
+	const childMain = `
+variable "name" {
+  type = string
+
+  validation {
+    condition     = length(var.name) > 3
+    error_message = "name must be longer than three characters"
+  }
+}
+
+output "name" {
+  value = var.name
+}
+`
+	run := func(t *testing.T, name string) (*testutil.MockResourceMonitor, error) {
+		tmpDir := t.TempDir()
+		moduleDir := tmpDir + "/modules/child"
+		require.NoError(t, os.MkdirAll(moduleDir, 0o755))
+		require.NoError(t, os.WriteFile(moduleDir+"/main.tf", []byte(childMain), 0o644))
+		rootMain := `
+module "child" {
+  source = "./modules/child"
+  name   = "` + name + `"
+}
+
+output "name" {
+  value = module.child.name
+}
+`
+		require.NoError(t, os.WriteFile(tmpDir+"/main.tf", []byte(rootMain), 0o644))
+
+		p := parser.NewParser()
+		config, diags := p.ParseDirectory(tmpDir)
+		require.False(t, diags.HasErrors(), "parse error: %s", diags.Error())
+
+		mock := &testutil.MockResourceMonitor{}
+		engine := run.NewEngine(t.Context(), config, &run.EngineOptions{
+			ProjectName:     "test-project",
+			StackName:       "dev",
+			ResourceMonitor: mock,
+			WorkDir:         tmpDir,
+			RootDir:         tmpDir,
+			SchemaLoader:    schemaloader.New(t, schema.PackageSpec{Name: "empty"}),
+		})
+		return mock, engine.Run(t.Context())
+	}
+
+	t.Run("valid", func(t *testing.T) {
+		t.Parallel()
+
+		mock, err := run(t, "widget")
+		require.NoError(t, err)
+
+		output, ok := mock.StackOutputs.GetOk("name")
+		require.True(t, ok, "expected name output")
+		assert.Equal(t, "widget", output.AsString())
+	})
+
+	t.Run("invalid", func(t *testing.T) {
+		t.Parallel()
+
+		_, err := run(t, "xy")
+		assert.EqualError(t, err,
+			`validation failed for variable "name": name must be longer than three characters`+
+				"\ncontext canceled")
+	})
+}
+
 func TestEngine_ModuleSensitiveOutput(t *testing.T) {
 	t.Parallel()
 
