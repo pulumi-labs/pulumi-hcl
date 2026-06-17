@@ -500,6 +500,41 @@ func TestMissingNonPulumiSDKs_BuiltinProvider(t *testing.T) {
 	assert.Empty(t, missingNonPulumiSDKs(t.Context(), cfg, nil, ""))
 }
 
+// A pulumi-sourced provider declared only in a child module must not be
+// reported missing: it needs no local SDK regardless of which module declares
+// it.
+func TestMissingNonPulumiSDKs_PulumiSourceInChildModule(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "main.tf"), []byte(`
+module "deploy" {
+  source = "./deploy"
+}
+`), 0o600))
+
+	childDir := filepath.Join(dir, "deploy")
+	require.NoError(t, os.MkdirAll(childDir, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(childDir, "main.tf"), []byte(`
+terraform {
+  required_providers {
+    example = {
+      source = "pulumi/example"
+    }
+  }
+}
+
+provider "example" {}
+
+resource "example_resource" "hello" {}
+`), 0o600))
+
+	cfg, diags := parser.NewParser().ParseDirectory(dir)
+	require.False(t, diags.HasErrors(), "diags: %v", diags)
+
+	assert.Empty(t, missingNonPulumiSDKs(t.Context(), cfg, nil, dir))
+}
+
 // A provider local name that contains underscores (e.g. "snake_names") must
 // be resolved against the declared providers, not split at the first
 // underscore. The naive split yielded a spurious "snake" provider that was

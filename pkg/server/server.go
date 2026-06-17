@@ -27,7 +27,6 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
-	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -313,37 +312,20 @@ func readParameterizationInfos(dir string) (map[string]workspace.PackageDescript
 func missingNonPulumiSDKs(
 	ctx context.Context, config *ast.Config, sdks map[string]workspace.PackageDescriptor, workDir string,
 ) []string {
-	used := usedProviders(ctx, config, workDir)
-	pulumiSourced := map[string]bool{}
-	if config != nil && config.Terraform != nil {
-		for alias, req := range config.Terraform.RequiredProviders {
-			if req.IsPulumi() {
-				pulumiSourced[alias] = true
-			}
-		}
-	}
+	_, _, aliases := collectRequirements(ctx, config, workDir)
 	var missing []string
-	for _, alias := range used {
-		if isBuiltinProvider(alias) || pulumiSourced[alias] {
+	for _, alias := range sortedKeys(aliases) {
+		if isBuiltinProvider(alias) || aliases[alias].IsPulumi() {
 			continue
 		}
 		if _, ok := sdks[alias]; !ok {
 			missing = append(missing, alias)
 		}
 	}
-	sort.Strings(missing)
 	return missing
 }
 
 func isBuiltinProvider(alias string) bool { return alias == "pulumi" || alias == "terraform" }
-
-// usedProviders returns the sorted provider local names referenced by config
-// (required_providers, provider blocks, resource/data type prefixes). A
-// non-empty workDir enables recursion through `module` blocks.
-func usedProviders(ctx context.Context, config *ast.Config, workDir string) []string {
-	_, _, aliases := collectRequirements(ctx, config, workDir)
-	return sortedKeys(aliases)
-}
 
 // versionSet is a deduplicated set of version constraints declared for one
 // provider source. constraint() joins them in sorted order — so the emitted
@@ -369,8 +351,8 @@ func (v *versionSet) constraint() string { return strings.Join(sortedKeys(v.seen
 //   - tf: non-Pulumi sources mapped to the union of version constraints
 //     declared for them across the module tree;
 //   - pulumi: pulumi/<name>-sourced packages mapped to their version;
-//   - aliases: every provider local name referenced (the set usedProviders
-//     reports), builtins included.
+//   - aliases: every provider local name referenced, mapped to its resolved
+//     required_providers entry (nil for implicit providers), builtins included.
 //
 // Each local name is resolved to its source within the module that uses it (its
 // own required_providers, else the "hashicorp/<name>" default), so a provider
