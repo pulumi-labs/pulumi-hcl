@@ -583,29 +583,24 @@ func convertPropertyNames(v property.Value, spec *PropertySpec, toPulumi bool) p
 				out[dst] = convertPropertyNames(fv, fieldSpec, toPulumi)
 			}
 		}
-		return withAttrs(v, property.New(out))
+		return property.WithGoValue(v, out)
 	case spec.AdditionalProperties != nil && v.IsMap():
 		obj := v.AsMap()
 		out := make(map[string]property.Value, obj.Len())
 		for k, mv := range obj.All {
 			out[k] = convertPropertyNames(mv, spec.AdditionalProperties, toPulumi)
 		}
-		return withAttrs(v, property.New(out))
+		return property.WithGoValue(v, out)
 	case spec.Items != nil && v.IsArray():
 		arr := v.AsArray()
 		out := make([]property.Value, arr.Len())
 		for i, e := range arr.All {
 			out[i] = convertPropertyNames(e, spec.Items, toPulumi)
 		}
-		return withAttrs(v, property.New(out))
+		return property.WithGoValue(v, out)
 	default:
 		return v
 	}
-}
-
-// withAttrs copies orig's secret flag and dependencies onto a rebuilt value.
-func withAttrs(orig, rebuilt property.Value) property.Value {
-	return rebuilt.WithSecret(orig.Secret()).WithDependencies(orig.Dependencies())
 }
 
 // ToPulumiPackageSchema converts the module schema to a full Pulumi package
