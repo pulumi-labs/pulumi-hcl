@@ -1,8 +1,8 @@
-pulumi {
+terraform {
   required_providers {
     random = {
-      source  = "pulumi/random"
-      version = ">= 4.0.0"
+      source  = "hashicorp/random"
+      version = ">= 3.0.0"
     }
   }
 }

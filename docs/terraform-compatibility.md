@@ -6,7 +6,7 @@ Pulumi HCL should be able to run all valid Terraform config programs without cha
 
 A small number of Terraform features are not modeled:
 
-- **`backend`, `cloud`, and `required_version`** in the `terraform` block are accepted but ignored with a warning. Pulumi manages state independently and tracks its own version constraints via `required_version_range`.
+- **`backend`, `required_version`, and `provider_meta`** in the `terraform` block are accepted but ignored with a warning. Pulumi manages state independently and tracks its own version constraints via `required_version_range`.
 - **WinRM `connection` blocks** are not supported — `connection` accepts `type = "ssh"` only.
 - **`List<Object>` empty vs null** — HCL block syntax cannot distinguish an empty `List<Object>` from a null one, a known incompatibility with some Pulumi programs.
 
@@ -49,6 +49,7 @@ The `provider::terraform::*` provider functions and `terraform.applying` are Ter
 | `stringAsset`        | Asset/Archive   | Creates a Pulumi `StringAsset` from a string value.               |
 | `remoteAsset`        | Asset/Archive   | Creates a Pulumi `RemoteAsset` from a URL.                        |
 | `fileArchive`        | Asset/Archive   | Creates a Pulumi `FileArchive` from a local path.                 |
+| `remoteArchive`      | Asset/Archive   | Creates a Pulumi `RemoteArchive` from a URL.                      |
 | `assetArchive`       | Asset/Archive   | Creates a Pulumi `AssetArchive` from a map of assets or archives. |
 
 ## Getting Help
