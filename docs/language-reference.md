@@ -16,6 +16,7 @@ Pulumi HCL lets you write Pulumi programs using Terraform-compatible HCL syntax.
 - [Modules](#modules)
 - [Call Blocks](#call-blocks)
 - [Moved and Import Blocks](#moved-and-import-blocks)
+- [Check Blocks](#check-blocks)
 - [Expressions](#expressions)
 - [Built-in Functions](#built-in-functions)
 - [Stack References](#stack-references)
@@ -49,6 +50,7 @@ The full set of [expressions](#expressions) and [built-in functions](#built-in-f
 | `call`      | Invoke methods on resources                       |
 | `moved`     | Rename resources without recreation               |
 | `import`    | Import existing cloud resources                   |
+| `check`     | Non-blocking assertions about infrastructure      |
 | `terraform` | Version constraints and component declarations    |
 
 ## Variables
@@ -607,6 +609,35 @@ import {
 | `id`       | string    | Yes      | Cloud resource ID to import   |
 | `provider` | reference | No       | Provider configuration to use |
 
+## Check Blocks
+
+Check blocks make non-blocking assertions about your infrastructure. Unlike a
+resource precondition or postcondition, a failed `assert` reports a warning and
+the operation continues rather than aborting.
+
+```hcl
+check "health" {
+  data "http" "status" {
+    url = "https://example.com"
+  }
+
+  assert {
+    condition     = data.http.status.status_code == 200
+    error_message = "${data.http.status.url} returned an unhealthy status."
+  }
+}
+```
+
+Each check block has a name (its label) and one or more `assert` blocks:
+
+| Attribute       | Type       | Required | Description                             |
+|-----------------|------------|----------|-----------------------------------------|
+| `condition`     | expression | Yes      | Expression that must evaluate to `true` |
+| `error_message` | expression | Yes      | Warning shown when condition is `false` |
+
+A check may also declare a single nested `data` source (a *scoped data source*),
+read fresh on every operation and visible only to that check's assertions.
+
 ## Expressions
 
 Pulumi HCL supports the full HCL expression language.
@@ -732,11 +763,11 @@ Pulumi HCL supports nearly all Terraform built-in functions. Functions are group
 
 ### Encoding
 
-`base64decode`, `base64encode`, `base64gzip`, `csvdecode`, `jsondecode`, `jsonencode`, `textdecodebase64`, `textencodebase64`, `urlencode`, `yamldecode`, `yamlencode`
+`base64decode`, `base64encode`, `base64gzip`, `base64gunzip`, `csvdecode`, `jsondecode`, `jsonencode`, `textdecodebase64`, `textencodebase64`, `urlencode`, `urldecode`, `yamldecode`, `yamlencode`
 
 ### Filesystem
 
-`abspath`, `basename`, `dirname`, `file`, `filebase64`, `fileexists`, `fileset`, `pathexpand`, `templatefile`
+`abspath`, `basename`, `dirname`, `file`, `filebase64`, `fileexists`, `fileset`, `pathexpand`, `templatefile`, `templatestring`
 
 ### Date and Time
 
@@ -748,11 +779,11 @@ Pulumi HCL supports nearly all Terraform built-in functions. Functions are group
 
 ### IP Network
 
-`cidrhost`, `cidrnetmask`, `cidrsubnet`, `cidrsubnets`
+`cidrhost`, `cidrnetmask`, `cidrsubnet`, `cidrsubnets`, `cidrcontains`
 
 ### Type Conversion
 
-`can`, `nonsensitive`, `sensitive`, `tobool`, `tolist`, `tomap`, `tonumber`, `toset`, `tostring`, `try`, `type`
+`can`, `issensitive`, `nonsensitive`, `sensitive`, `tobool`, `tolist`, `tomap`, `tonumber`, `toset`, `tostring`, `try`, `type`
 
 ### Pulumi-Specific Functions
 
@@ -848,7 +879,7 @@ few unsupported features. If you find a case where `tofu` works and `pulumi` doe
 
 ### Unsupported Features
 
-- **`backend`, `cloud`, `required_version`** — Accepted inside the `terraform` block but ignored with a warning; Pulumi manages state independently and tracks its own version constraints via `required_version_range`.
+- **`backend`, `required_version`, `provider_meta`** — Accepted inside the `terraform` block but ignored with a warning; Pulumi manages state independently and tracks its own version constraints via `required_version_range`.
 - **WinRM connections** — Only `type = "ssh"` is supported in `connection` blocks.
 - **`List<Object>` empty vs null** — HCL block syntax cannot distinguish between an empty and null `List<Object>`, a known incompatibility with some Pulumi programs.
 

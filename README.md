@@ -265,7 +265,7 @@ provider "aws" {
 ```
 
 Sources prefixed with `pulumi/` (e.g. `pulumi/aws`) consume a native Pulumi provider
-instead of bridging a Terraform one. `backend`, `cloud`, and `required_version` inside the
+instead of bridging a Terraform one. `backend`, `required_version`, and `provider_meta` inside the
 `terraform` block are accepted for compatibility but ignored with a warning.  See
 [docs/providers.md](docs/providers.md) for details.
 
@@ -382,6 +382,7 @@ This plugin supports the majority of Terraform's HCL syntax. For detailed compat
 - `dynamic` blocks
 - `moved` blocks (map to Pulumi aliases)
 - `import` blocks (map to Pulumi import option)
+- `check` blocks (non-blocking assertions, with optional scoped data sources)
 - `lifecycle` meta-arguments, including `replace_triggered_by`
 - Most Terraform built-in functions
 - Resource and data source references
@@ -389,7 +390,7 @@ This plugin supports the majority of Terraform's HCL syntax. For detailed compat
 
 ### Not Supported
 
-- `backend`, `cloud`, and `required_version` in the `terraform` block — accepted but ignored with a warning; Pulumi manages state independently
+- `backend`, `required_version`, and `provider_meta` in the `terraform` block — accepted but ignored with a warning; Pulumi manages state independently
 - WinRM `connection` blocks — `connection` supports `type = "ssh"` only
 - `List<Object>` empty vs null distinction: HCL block syntax cannot distinguish between an empty and null `List<Object>`, which is a known incompatibility with some Pulumi programs
 
