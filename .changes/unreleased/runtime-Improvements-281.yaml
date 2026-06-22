@@ -1,0 +1,6 @@
+kind: Improvements
+body: Implment pulumi_stack_reference as a Read instead of a Create
+time: 2026-06-22T10:44:10.65913+02:00
+custom:
+    Component: runtime
+    PR: "281"

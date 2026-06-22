@@ -29,6 +29,7 @@ import (
 type MockResourceMonitor struct {
 	mu                  sync.Mutex
 	RegisteredResources []run.RegisterResourceRequest
+	ReadResources       []run.ReadResourceRequest
 	InvokedFunctions    []run.InvokeRequest
 	Warnings            []string
 	StackOutputs        property.Map
@@ -43,6 +44,9 @@ type MockResourceMonitor struct {
 
 	// RegisterResourceHandler, if  set, is  called for each  RegisterResource instead of the default behavior.
 	RegisterResourceHandler func(ctx context.Context, req run.RegisterResourceRequest) (*run.RegisterResourceResponse, error)
+
+	// ReadResourceHandler, if set, is called for each ReadResource instead of the default behavior.
+	ReadResourceHandler func(ctx context.Context, req run.ReadResourceRequest) (*run.ReadResourceResponse, error)
 }
 
 type registeredHook struct {
@@ -101,6 +105,24 @@ func (m *MockResourceMonitor) RegisterResource(ctx context.Context, req run.Regi
 	}
 
 	return resp, nil
+}
+
+func (m *MockResourceMonitor) ReadResource(ctx context.Context, req run.ReadResourceRequest) (*run.ReadResourceResponse, error) {
+	m.mu.Lock()
+	m.ReadResources = append(m.ReadResources, req)
+	handler := m.ReadResourceHandler
+	m.mu.Unlock()
+
+	if handler != nil {
+		return handler(ctx, req)
+	}
+
+	resURN := urn.URN("urn:pulumi:test::project::" + req.Type + "::" + req.Name)
+	return &run.ReadResourceResponse{
+		URN:     resURN,
+		ID:      req.ID,
+		Outputs: req.Inputs,
+	}, nil
 }
 
 func (m *MockResourceMonitor) runHooks(

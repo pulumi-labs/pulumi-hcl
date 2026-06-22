@@ -1250,6 +1250,47 @@ func (r *resourceMonitorAdapter) RegisterResource(
 	}, nil
 }
 
+// ReadResource reads the state of an existing resource.
+func (r *resourceMonitorAdapter) ReadResource(
+	ctx context.Context,
+	req run.ReadResourceRequest,
+) (*run.ReadResourceResponse, error) {
+	inputsStruct, err := plugin.MarshalProperties(resource.ToResourcePropertyMap(req.Inputs), r.pluginOptions())
+	if err != nil {
+		return nil, fmt.Errorf("marshaling inputs: %w", err)
+	}
+
+	resp, err := r.monitorClient.ReadResource(ctx, &pulumirpc.ReadResourceRequest{
+		Id:                      req.ID,
+		Type:                    req.Type,
+		Name:                    req.Name,
+		Parent:                  string(req.Parent),
+		Properties:              inputsStruct,
+		Dependencies:            req.Dependencies,
+		Provider:                req.Provider,
+		Version:                 req.Version,
+		AcceptSecrets:           true,
+		AdditionalSecretOutputs: req.AdditionalSecretOutputs,
+		AcceptResources:         true,
+		PluginDownloadURL:       req.PluginDownloadURL,
+		PackageRef:              string(req.PackageRef),
+	})
+	if err != nil {
+		return nil, fmt.Errorf("reading resource: %w", err)
+	}
+
+	outputs, err := plugin.UnmarshalProperties(resp.Properties, r.pluginOptions())
+	if err != nil {
+		return nil, fmt.Errorf("unmarshaling outputs: %w", err)
+	}
+
+	return &run.ReadResourceResponse{
+		URN:     urn.URN(resp.Urn),
+		ID:      req.ID,
+		Outputs: resource.FromResourcePropertyMap(outputs),
+	}, nil
+}
+
 // Invoke invokes a provider function.
 func (r *resourceMonitorAdapter) Invoke(
 	ctx context.Context,

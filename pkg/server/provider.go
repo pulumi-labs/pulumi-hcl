@@ -545,6 +545,58 @@ func (m *constructResourceMonitor) RegisterResource(
 	}, nil
 }
 
+// ReadResource reads the state of an existing resource.
+func (m *constructResourceMonitor) ReadResource(
+	ctx context.Context,
+	req run.ReadResourceRequest,
+) (*run.ReadResourceResponse, error) {
+	properties, err := plugin.MarshalProperties(resource.ToResourcePropertyMap(req.Inputs), plugin.MarshalOptions{
+		KeepSecrets:   true,
+		KeepResources: true,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("marshaling inputs: %w", err)
+	}
+
+	parent := req.Parent
+	if parent == "" {
+		parent = m.componentURN
+	}
+
+	resp, err := m.client.ReadResource(ctx, &pulumirpc.ReadResourceRequest{
+		Id:                      req.ID,
+		Type:                    req.Type,
+		Name:                    m.componentName + "-" + req.Name,
+		Parent:                  string(parent),
+		Properties:              properties,
+		Dependencies:            req.Dependencies,
+		Provider:                req.Provider,
+		Version:                 req.Version,
+		AdditionalSecretOutputs: req.AdditionalSecretOutputs,
+		PluginDownloadURL:       req.PluginDownloadURL,
+		PackageRef:              string(req.PackageRef),
+		AcceptSecrets:           true,
+		AcceptResources:         true,
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	outputs, err := plugin.UnmarshalProperties(resp.Properties, plugin.MarshalOptions{
+		KeepSecrets:   true,
+		KeepResources: true,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("unmarshaling outputs: %w", err)
+	}
+
+	return &run.ReadResourceResponse{
+		URN:     urn.URN(resp.Urn),
+		ID:      req.ID,
+		Outputs: resource.FromResourcePropertyMap(outputs),
+	}, nil
+}
+
 // RegisterResourceOutputs registers resource outputs.
 func (m *constructResourceMonitor) RegisterResourceOutputs(
 	ctx context.Context,

@@ -107,6 +107,64 @@ resource "aws_instance" "web" {
 	}
 }
 
+func TestEngine_StackReferenceUsesRead(t *testing.T) {
+	t.Parallel()
+
+	src := []byte(`
+resource "pulumi_stack_reference" "ref" {
+  name = "org/project/stack"
+}
+`)
+
+	p := parser.NewParser()
+	config, diags := p.ParseSource("test.hcl", src)
+	require.Empty(t, diags)
+
+	// "pulumi" is a reserved package name, so it must be bound with
+	// AllowPulumiPackage rather than through schemaloader.New.
+	pulumiPkg, diag, err := schema.BindSpec(schema.PackageSpec{
+		Name: "pulumi",
+		Resources: map[string]schema.ResourceSpec{
+			"pulumi:pulumi:StackReference": {
+				InputProperties: map[string]schema.PropertySpec{
+					"name": {TypeSpec: schema.TypeSpec{Type: "string"}},
+				},
+				ObjectTypeSpec: schema.ObjectTypeSpec{
+					Properties: map[string]schema.PropertySpec{
+						"name": {TypeSpec: schema.TypeSpec{Type: "string"}},
+					},
+				},
+			},
+		},
+	}, nil, schema.ValidationOptions{AllowPulumiPackage: true})
+	require.NoError(t, err)
+	require.Empty(t, diag)
+
+	mock := &testutil.MockResourceMonitor{}
+	engine := run.NewEngine(t.Context(), config, &run.EngineOptions{
+		ProjectName:     "test-project",
+		StackName:       "dev",
+		ResourceMonitor: mock,
+		WorkDir:         t.TempDir(),
+		RootDir:         t.TempDir(),
+		SchemaLoader:    schemaloader.Mock{"pulumi": pulumiPkg},
+	})
+
+	require.NoError(t, engine.Run(t.Context()))
+
+	// The stack reference must be resolved with a Read, not a Create: only the
+	// stack (a Create) should appear among registrations.
+	require.Len(t, mock.RegisteredResources, 1)
+	assert.Equal(t, "pulumi:pulumi:Stack", mock.RegisteredResources[0].Type)
+
+	require.Len(t, mock.ReadResources, 1)
+	read := mock.ReadResources[0]
+	assert.Equal(t, "pulumi:pulumi:StackReference", read.Type)
+	assert.Equal(t, "ref", read.Name)
+	assert.Equal(t, "org/project/stack", read.ID)
+	assert.Equal(t, "org/project/stack", read.Inputs.Get("name").AsString())
+}
+
 func TestEngine_PulumiResourceNameRejectsWrappedResource(t *testing.T) {
 	t.Parallel()
 
