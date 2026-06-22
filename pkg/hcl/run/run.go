@@ -69,6 +69,11 @@ type ResourceMonitor interface {
 	// RegisterResource registers a resource with Pulumi.
 	RegisterResource(ctx context.Context, req RegisterResourceRequest) (*RegisterResourceResponse, error)
 
+	// ReadResource reads the state of an existing resource. This is the
+	// registration form used for stack references, which the engine resolves
+	// against the backend rather than creating.
+	ReadResource(ctx context.Context, req ReadResourceRequest) (*ReadResourceResponse, error)
+
 	// Invoke invokes a provider function.
 	Invoke(ctx context.Context, req InvokeRequest) (*InvokeResponse, error)
 
@@ -180,6 +185,32 @@ type RegisterResourceRequest struct {
 
 // RegisterResourceResponse contains the result of registering a resource.
 type RegisterResourceResponse struct {
+	URN     urn.URN
+	ID      string
+	Outputs property.Map
+}
+
+// ReadResourceRequest contains the parameters for reading an existing resource.
+// A read honors only the subset of resource options the engine's ReadResource
+// RPC accepts; options that imply lifecycle management (Protect, IgnoreChanges,
+// CustomTimeouts, ...) have no meaning for a read and are not carried.
+type ReadResourceRequest struct {
+	Type                    string
+	Name                    string
+	ID                      string
+	Inputs                  property.Map
+	Parent                  urn.URN
+	Dependencies            []string
+	Provider                string
+	Version                 string
+	AdditionalSecretOutputs []string
+	PluginDownloadURL       string
+	PackageRef              PackageRef
+}
+
+// ReadResourceResponse contains the result of reading a resource. ID echoes the
+// requested ID, since a read identifies the resource rather than minting one.
+type ReadResourceResponse struct {
 	URN     urn.URN
 	ID      string
 	Outputs property.Map
@@ -2398,6 +2429,10 @@ func (e *Engine) registerResource(
 ) (urn.URN, string, property.Map, error) {
 	inputs = lowerTerraformDataInputs(tfType, inputs, opts)
 
+	if typeToken == stackReferenceType {
+		return e.readResource(ctx, typeToken, name, inputs, opts)
+	}
+
 	// Register with the resource monitor
 	resp, err := e.resmon.RegisterResource(ctx, RegisterResourceRequest{
 		Type:                    typeToken,
@@ -2435,6 +2470,47 @@ func (e *Engine) registerResource(
 	}
 
 	return resp.URN, resp.ID, lowerTerraformDataOutputs(tfType, resp.Outputs, opts), nil
+}
+
+// stackReferenceType is the builtin resource the engine resolves against the
+// backend. It is registered with a Read rather than a Create: the modern Pulumi
+// SDKs read stack references (Go's ReadResource, Node's id-bearing
+// CustomResource), and Create is deprecated for this type.
+const stackReferenceType = "pulumi:pulumi:StackReference"
+
+// readResource registers a resource via a Read. The ID is taken from the "name"
+// input (the fully-qualified stack name), matching how the SDKs identify a
+// stack reference.
+func (e *Engine) readResource(
+	ctx context.Context,
+	typeToken string,
+	name string,
+	inputs property.Map,
+	opts *ResourceOptions,
+) (urn.URN, string, property.Map, error) {
+	nameVal, ok := inputs.GetOk("name")
+	if !ok || !nameVal.IsString() {
+		return "", "", property.Map{}, fmt.Errorf("%s %q requires a string \"name\" input", typeToken, name)
+	}
+
+	resp, err := e.resmon.ReadResource(ctx, ReadResourceRequest{
+		Type:                    typeToken,
+		Name:                    name,
+		ID:                      nameVal.AsString(),
+		Inputs:                  inputs,
+		Parent:                  opts.Parent,
+		Dependencies:            opts.DependsOn,
+		Provider:                opts.Provider,
+		Version:                 opts.Version,
+		AdditionalSecretOutputs: opts.AdditionalSecretOutputs,
+		PluginDownloadURL:       opts.PluginDownloadURL,
+		PackageRef:              opts.PackageRef,
+	})
+	if err != nil {
+		return "", "", property.Map{}, err
+	}
+
+	return resp.URN, resp.ID, resp.Outputs, nil
 }
 
 // processDataSource processes a data source definition.
