@@ -1,6 +1,0 @@
-kind: bug-fixes
-body: Sequence a `variable` after the values its `validation` references
-time: 2026-06-17T20:35:17Z
-custom:
-    Component: runtime
-    PR: "279"
