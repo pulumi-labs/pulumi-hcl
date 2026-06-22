@@ -1,6 +1,0 @@
-kind: bug-fixes
-body: Recognize `pulumi/`-sourced providers declared in child modules as needing no local SDK
-time: 2026-06-17T18:54:59Z
-custom:
-    Component: language-host
-    PR: "275"
