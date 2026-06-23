@@ -18,6 +18,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"sort"
+	"strings"
 	"time"
 
 	p "github.com/pulumi/pulumi-go-provider"
@@ -150,13 +152,20 @@ func (m *moduleProvider) construct(ctx context.Context, req p.ConstructRequest) 
 	source := sourceVal.AsString()
 
 	var inputs property.Map
-	if v, ok := req.Inputs.GetOk("inputs"); ok && v.IsMap() {
+	if v, ok := req.Inputs.GetOk("inputs"); ok && !v.IsComputed() {
+		if !v.IsMap() {
+			return p.ConstructResponse{}, fmt.Errorf("module %q input must be a map", "inputs")
+		}
 		inputs = v.AsMap()
 	}
 
 	loaded, err := m.moduleLoader.LoadModule(source, "", ".")
 	if err != nil {
 		return p.ConstructResponse{}, fmt.Errorf("loading module %q: %w", source, err)
+	}
+
+	if err := validateModuleInputs(inputs, loaded.Config); err != nil {
+		return p.ConstructResponse{}, err
 	}
 
 	// Resolve every provider the module references to a concrete descriptor, the
@@ -271,6 +280,32 @@ func (m *moduleProvider) requirementSpecs(
 		})
 	}
 	return reqs
+}
+
+// validateModuleInputs rejects any input that does not name a variable the
+// module declares. Without this an input the module never reads — a typo, or a
+// stale input left over after the module changed — is silently dropped rather
+// than surfaced. Invalid values for declared variables (type mismatches, failed
+// `validation` blocks) are caught later by the engine.
+func validateModuleInputs(inputs property.Map, config *ast.Config) error {
+	var unknown []string
+	for k := range inputs.All {
+		if _, ok := config.Variables[k]; !ok {
+			unknown = append(unknown, k)
+		}
+	}
+	sort.Strings(unknown)
+	plural := "s"
+	switch len(unknown) {
+	case 0:
+		return nil
+	case 1:
+		plural = ""
+		fallthrough
+	default:
+		return fmt.Errorf("module has no variables declared for input%s: %s",
+			plural, strings.Join(unknown, ", "))
+	}
 }
 
 // moduleConfig maps the module's input variables to the engine's config map,
