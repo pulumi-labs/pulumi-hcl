@@ -27,7 +27,7 @@ jobs:
           go-version-file: go.mod
       - uses: pulumi/actions@v7
         with:
-          pulumi-version: dev
+          pulumi-version: pr#23654
         env:
           GITHUB_TOKEN: ${{ secrets.RELEASE_TOKEN }}
       - uses: opentofu/setup-opentofu@v2
