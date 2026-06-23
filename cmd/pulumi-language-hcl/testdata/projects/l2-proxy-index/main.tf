@@ -34,6 +34,16 @@ resource "ref-ref_resource" "res" {
       "x" = "100"
       "y" = "200"
     }
+    inner_data_list = [{
+      boolean    = false
+      float      = 3.14
+      integer    = 42
+      string     = "Partridge"
+      bool_array = [true]
+      string_map = {
+        "one" = "in a pear tree"
+      }
+    }]
   }
 }
 output "bool" {
@@ -47,4 +57,7 @@ output "map" {
 }
 output "nested" {
   value = ref-ref_resource.res.data.inner_data.string_map["three"]
+}
+output "listIndex" {
+  value = ref-ref_resource.res.data.inner_data_list[0].string
 }

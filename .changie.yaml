@@ -19,6 +19,7 @@ custom:
     type: enum
     enumOptions:
       - language-host
+      - resource-host
       - converter
       - codegen
       - runtime

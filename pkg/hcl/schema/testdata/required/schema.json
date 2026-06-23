@@ -2,7 +2,6 @@
   "name": "required",
   "version": "0.0.0-dev",
   "config": {},
-  "provider": {},
   "resources": {
     "required:index:required": {
       "properties": {

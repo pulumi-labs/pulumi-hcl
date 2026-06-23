@@ -26,3 +26,24 @@ variable "optionalUntypedObject" {
 output "defaultUntypedObject" {
   value = var.optionalUntypedObject
 }
+variable "optionalList" {
+  type    = list(string)
+  default = null
+}
+variable "optionalMap" {
+  type    = map(string)
+  default = null
+}
+variable "optionalObject" {
+  type    = object({other=number, prop=string})
+  default = null
+}
+output "optionalList" {
+  value = var.optionalList == null ? "null" : jsonencode(var.optionalList)
+}
+output "optionalMap" {
+  value = var.optionalMap == null ? "null" : jsonencode(var.optionalMap)
+}
+output "optionalObject" {
+  value = var.optionalObject == null ? "null" : jsonencode(var.optionalObject)
+}

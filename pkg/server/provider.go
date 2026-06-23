@@ -288,10 +288,7 @@ func (p *HCLProvider) Construct(ctx context.Context, req *pulumirpc.ConstructReq
 	// Convert inputs from protobuf to PropertyMap
 	inputs := resource.PropertyMap{}
 	if req.Inputs != nil {
-		inputs, err = plugin.UnmarshalProperties(req.Inputs, plugin.MarshalOptions{
-			KeepSecrets:   true,
-			KeepResources: true,
-		})
+		inputs, err = plugin.UnmarshalProperties(req.Inputs, constructMarshalOptions())
 		if err != nil {
 			return nil, fmt.Errorf("unmarshaling inputs: %w", err)
 		}
@@ -319,7 +316,7 @@ func (p *HCLProvider) Construct(ctx context.Context, req *pulumirpc.ConstructReq
 		replaceWith:             req.ReplaceWith,
 		customTimeouts:          req.CustomTimeouts,
 		replacementTrigger:      req.ReplacementTrigger,
-		moduleSchema:            p.schema,
+		mapOutputs:              p.schema.OutputsToPulumi,
 	}
 
 	// Set up config from inputs, prefixing with project name as the engine
@@ -364,10 +361,7 @@ func (p *HCLProvider) Construct(ctx context.Context, req *pulumirpc.ConstructReq
 	componentURN := resmon.componentURN
 
 	// Collect outputs from the resource monitor
-	outputsStruct, err := plugin.MarshalProperties(resource.ToResourcePropertyMap(resmon.outputs), plugin.MarshalOptions{
-		KeepSecrets:   true,
-		KeepResources: true,
-	})
+	outputsStruct, err := plugin.MarshalProperties(resource.ToResourcePropertyMap(resmon.outputs), constructMarshalOptions())
 	if err != nil {
 		return nil, fmt.Errorf("marshaling outputs: %w", err)
 	}
@@ -426,9 +420,20 @@ type constructResourceMonitor struct {
 	componentURN urn.URN
 	outputs      property.Map
 
-	// moduleSchema maps the component's snake_case HCL output names to the
-	// camelCase schema property names when registering its outputs.
-	moduleSchema *schema.ModuleSchema
+	// mapOutputs transforms the HCL module's top-level outputs into the
+	// component's output property map before they are registered.
+	mapOutputs func(property.Map) property.Map
+}
+
+// constructMarshalOptions are the property (un)marshal options used on every
+// hop across the Construct boundary.
+func constructMarshalOptions() plugin.MarshalOptions {
+	return plugin.MarshalOptions{
+		KeepUnknowns:     true,
+		KeepSecrets:      true,
+		KeepResources:    true,
+		KeepOutputValues: true,
+	}
 }
 
 // RegisterResource registers a resource.
@@ -484,10 +489,7 @@ func (m *constructResourceMonitor) RegisterResource(
 	}
 
 	// Convert PropertyMap to protobuf
-	inputs, err := plugin.MarshalProperties(resource.ToResourcePropertyMap(req.Inputs), plugin.MarshalOptions{
-		KeepSecrets:   true,
-		KeepResources: true,
-	})
+	inputs, err := plugin.MarshalProperties(resource.ToResourcePropertyMap(req.Inputs), constructMarshalOptions())
 	if err != nil {
 		return nil, fmt.Errorf("marshaling inputs: %w", err)
 	}
@@ -530,10 +532,7 @@ func (m *constructResourceMonitor) RegisterResource(
 	}
 
 	// Convert outputs back to PropertyMap
-	outputs, err := plugin.UnmarshalProperties(resp.Object, plugin.MarshalOptions{
-		KeepSecrets:   true,
-		KeepResources: true,
-	})
+	outputs, err := plugin.UnmarshalProperties(resp.Object, constructMarshalOptions())
 	if err != nil {
 		return nil, fmt.Errorf("unmarshaling outputs: %w", err)
 	}
@@ -608,14 +607,11 @@ func (m *constructResourceMonitor) RegisterResourceOutputs(
 	// names the schema declares, at every nesting depth. Child resources already
 	// carry their own correctly-cased property names.
 	if urn == m.componentURN {
-		outputs = m.moduleSchema.OutputsToPulumi(outputs)
+		outputs = m.mapOutputs(outputs)
 		m.outputs = outputs
 	}
 
-	outputsStruct, err := plugin.MarshalProperties(resource.ToResourcePropertyMap(outputs), plugin.MarshalOptions{
-		KeepSecrets:   true,
-		KeepResources: true,
-	})
+	outputsStruct, err := plugin.MarshalProperties(resource.ToResourcePropertyMap(outputs), constructMarshalOptions())
 	if err != nil {
 		return fmt.Errorf("marshaling outputs: %w", err)
 	}
@@ -632,10 +628,7 @@ func (m *constructResourceMonitor) Invoke(
 	ctx context.Context,
 	req run.InvokeRequest,
 ) (*run.InvokeResponse, error) {
-	argsStruct, err := plugin.MarshalProperties(resource.ToResourcePropertyMap(req.Args), plugin.MarshalOptions{
-		KeepSecrets:   true,
-		KeepResources: true,
-	})
+	argsStruct, err := plugin.MarshalProperties(resource.ToResourcePropertyMap(req.Args), constructMarshalOptions())
 	if err != nil {
 		return nil, fmt.Errorf("marshaling args: %w", err)
 	}
@@ -654,10 +647,7 @@ func (m *constructResourceMonitor) Invoke(
 		failures = append(failures, f.Reason)
 	}
 
-	ret, err := plugin.UnmarshalProperties(resp.Return, plugin.MarshalOptions{
-		KeepSecrets:   true,
-		KeepResources: true,
-	})
+	ret, err := plugin.UnmarshalProperties(resp.Return, constructMarshalOptions())
 	if err != nil {
 		return nil, fmt.Errorf("unmarshaling return: %w", err)
 	}
@@ -673,10 +663,7 @@ func (m *constructResourceMonitor) Call(
 	ctx context.Context,
 	req run.CallRequest,
 ) (*run.CallResponse, error) {
-	argsStruct, err := plugin.MarshalProperties(resource.ToResourcePropertyMap(req.Args), plugin.MarshalOptions{
-		KeepSecrets:   true,
-		KeepResources: true,
-	})
+	argsStruct, err := plugin.MarshalProperties(resource.ToResourcePropertyMap(req.Args), constructMarshalOptions())
 	if err != nil {
 		return nil, fmt.Errorf("marshaling args: %w", err)
 	}
@@ -694,10 +681,7 @@ func (m *constructResourceMonitor) Call(
 		failures = append(failures, f.Reason)
 	}
 
-	ret, err := plugin.UnmarshalProperties(resp.Return, plugin.MarshalOptions{
-		KeepSecrets:   true,
-		KeepResources: true,
-	})
+	ret, err := plugin.UnmarshalProperties(resp.Return, constructMarshalOptions())
 	if err != nil {
 		return nil, fmt.Errorf("unmarshaling return: %w", err)
 	}

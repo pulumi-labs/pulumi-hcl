@@ -1,0 +1,179 @@
+// Copyright 2026, Pulumi Corporation.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+package server
+
+import (
+	"path/filepath"
+	"testing"
+
+	p "github.com/pulumi/pulumi-go-provider"
+	"github.com/pulumi/pulumi/sdk/v3/go/common/resource"
+	"github.com/pulumi/pulumi/sdk/v3/go/property"
+	pulumirpc "github.com/pulumi/pulumi/sdk/v3/proto/go"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
+	"github.com/pulumi-labs/pulumi-hcl/pkg/hcl/modules"
+	"github.com/pulumi-labs/pulumi-hcl/pkg/hcl/parser"
+	"github.com/pulumi-labs/pulumi-hcl/pkg/hcl/resolve"
+)
+
+// stubResolver is a non-nil PackageResolverClient whose methods are never
+// reached by the validation tests below.
+type stubResolver struct {
+	pulumirpc.PackageResolverClient
+}
+
+func TestModuleConstructValidation(t *testing.T) {
+	t.Parallel()
+
+	urn := resource.URN("urn:pulumi:test::proj::hcl:index:Module::mod")
+
+	t.Run("before handshake", func(t *testing.T) {
+		t.Parallel()
+		// resolver is nil until a successful Handshake.
+		_, err := (&moduleProvider{}).construct(t.Context(), p.ConstructRequest{
+			Urn:    urn,
+			Inputs: property.NewMap(map[string]property.Value{"source": property.New("./mod")}),
+		})
+		require.EqualError(t, err, "Construct called before a successful Handshake")
+	})
+
+	t.Run("missing source", func(t *testing.T) {
+		t.Parallel()
+		_, err := (&moduleProvider{resolver: stubResolver{}}).construct(t.Context(), p.ConstructRequest{
+			Urn:    urn,
+			Inputs: property.NewMap(nil),
+		})
+		require.EqualError(t, err, `module requires a plain string "source" input`)
+	})
+
+	t.Run("non-string source", func(t *testing.T) {
+		t.Parallel()
+		_, err := (&moduleProvider{resolver: stubResolver{}}).construct(t.Context(), p.ConstructRequest{
+			Urn:    urn,
+			Inputs: property.NewMap(map[string]property.Value{"source": property.New(42.0)}),
+		})
+		require.EqualError(t, err, `module requires a plain string "source" input`)
+	})
+
+	t.Run("non-map inputs", func(t *testing.T) {
+		t.Parallel()
+		// source is valid, but inputs is the wrong shape and must be rejected
+		// rather than silently dropped.
+		_, err := (&moduleProvider{resolver: stubResolver{}}).construct(t.Context(), p.ConstructRequest{
+			Urn: urn,
+			Inputs: property.NewMap(map[string]property.Value{
+				"source": property.New("./mod"),
+				"inputs": property.New("not a map"),
+			}),
+		})
+		require.EqualError(t, err, `module "inputs" input must be a map`)
+	})
+
+	t.Run("non-string version", func(t *testing.T) {
+		t.Parallel()
+		// version is optional, but when present it must be a plain string.
+		_, err := (&moduleProvider{resolver: stubResolver{}}).construct(t.Context(), p.ConstructRequest{
+			Urn: urn,
+			Inputs: property.NewMap(map[string]property.Value{
+				"source":  property.New("./mod"),
+				"version": property.New(42.0),
+			}),
+		})
+		require.EqualError(t, err, `module "version" input must be a plain string`)
+	})
+}
+
+func TestModuleConstructRejectsUnknownInput(t *testing.T) {
+	t.Parallel()
+
+	dir, err := filepath.Abs(filepath.Join("testdata", "module-one-var"))
+	require.NoError(t, err)
+
+	// The module declares only "name"; any other input must be rejected rather
+	// than silently dropped. The check runs after the module loads but before any
+	// provider resolution, so the stub resolver is never called.
+	tests := []struct {
+		name    string
+		inputs  map[string]property.Value
+		wantErr string
+	}{
+		{
+			name:    "single unknown",
+			inputs:  map[string]property.Value{"name": property.New("ada"), "bogus": property.New("x")},
+			wantErr: "module has no variables declared for input: bogus",
+		},
+		{
+			name:    "multiple unknown reported sorted",
+			inputs:  map[string]property.Value{"zeta": property.New("z"), "alpha": property.New("a")},
+			wantErr: "module has no variables declared for inputs: alpha, zeta",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			m := &moduleProvider{moduleLoader: modules.NewLoader(t.Context()), resolver: stubResolver{}}
+			_, err := m.construct(t.Context(), p.ConstructRequest{
+				Urn: resource.URN("urn:pulumi:test::proj::hcl:index:Module::mod"),
+				Inputs: property.NewMap(map[string]property.Value{
+					"source": property.New(dir),
+					"inputs": property.New(property.NewMap(tt.inputs)),
+				}),
+			})
+			require.EqualError(t, err, tt.wantErr)
+		})
+	}
+}
+
+func TestRequirementSpecs(t *testing.T) {
+	t.Parallel()
+
+	const src = `terraform {
+  required_providers {
+    null = {
+      source  = "hashicorp/null"
+      version = "~> 3.2"
+    }
+    random = {
+      source = "pulumi/random"
+    }
+  }
+}
+
+# pulumi_stash uses the builtin "pulumi" provider (skipped); aws_s3_bucket
+# references an undeclared provider that defaults to "hashicorp/aws".
+resource "pulumi_stash" "s" {}
+
+resource "aws_s3_bucket" "b" {}
+`
+	cfg, diags := parser.NewParser().ParseSource("main.tf", []byte(src))
+	require.False(t, diags.HasErrors(), "diags: %v", diags)
+
+	got := (&moduleProvider{}).requirementSpecs(t.Context(), cfg, "")
+
+	assert.Equal(t, []resolve.Request{
+		{Alias: "aws", Spec: &pulumirpc.PackageSpec{
+			Source:     "terraform-provider",
+			Parameters: []string{"hashicorp/aws"},
+		}},
+		{Alias: "null", Spec: &pulumirpc.PackageSpec{
+			Source:     "terraform-provider",
+			Parameters: []string{"hashicorp/null", "~> 3.2"},
+		}},
+		{Alias: "random", Spec: &pulumirpc.PackageSpec{Source: "random"}},
+	}, got)
+}

@@ -2,36 +2,38 @@ package smoke_test
 
 import (
 	"bytes"
-	"encoding/json"
 	"fmt"
 	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"strings"
 	"testing"
 
 	"github.com/pulumi/pulumi/pkg/v3/engine"
 	"github.com/pulumi/pulumi/pkg/v3/testing/integration"
+	"github.com/pulumi/pulumi/sdk/v3/go/common/util/contract"
 	"github.com/stretchr/testify/require"
 )
 
-var langBinDir string = must(filepath.Abs(filepath.Join("..", "..", "bin")))
-
-func must[T any](v T, err error) T {
-	if err != nil {
-		panic(err)
-	}
-	return v
-}
-
 func TestMain(m *testing.M) {
-	cmd := exec.Command("make", "bin/pulumi-language-hcl")
+	langBinDir, err := filepath.Abs(filepath.Join("..", "..", "bin"))
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "finding plugin dir: %v\n", err)
+		os.Exit(1)
+	}
+	cmd := exec.Command("make", "bin/pulumi-language-hcl", "bin/pulumi-resource-hcl")
 	cmd.Dir = filepath.Dir(langBinDir)
 	cmd.Stdout = os.Stderr
 	cmd.Stderr = os.Stderr
 	if err := cmd.Run(); err != nil {
-		fmt.Fprintf(os.Stderr, "building pulumi-language-hcl: %v\n", err)
+		fmt.Fprintf(os.Stderr, "building plugins: %v\n", err)
+		os.Exit(1)
+	}
+
+	if err := os.Setenv("PATH", langBinDir+string(os.PathListSeparator)+os.Getenv("PATH")); err != nil {
+		fmt.Fprintf(os.Stderr, "setting PATH: %v\n", err)
 		os.Exit(1)
 	}
 
@@ -48,9 +50,6 @@ func TestSmoke(t *testing.T) {
 	integration.ProgramTest(t, &integration.ProgramTestOptions{
 		NoParallel: true,
 		Dir:        filepath.Join("testdata", "simple"),
-		Env: []string{
-			"PATH=" + langBinDir + ":" + os.Getenv("PATH"),
-		},
 		LocalProviders: []integration.LocalDependency{
 			{Package: "smoketest", Path: providerDir},
 		},
@@ -68,57 +67,25 @@ func TestSmoke(t *testing.T) {
 func TestSmokeRandom(t *testing.T) {
 	t.Parallel()
 
-	pulumiBin := "pulumi"
-
-	projectDir := copyDir(t, filepath.Join("testdata", "random"))
-
-	stateDir := filepath.Join(projectDir, "state")
-	require.NoError(t, os.MkdirAll(stateDir, 0o755))
-
-	env := append(os.Environ(),
-		"PATH="+langBinDir+string(os.PathListSeparator)+os.Getenv("PATH"),
-		"PULUMI_BACKEND_URL=file://"+stateDir,
-		"PULUMI_CONFIG_PASSPHRASE=smoke",
-	)
-
-	runPulumi := func(args ...string) []byte {
-		t.Helper()
-		var stdout bytes.Buffer
-		cmd := exec.Command(pulumiBin, args...)
-		cmd.Dir = projectDir
-		cmd.Env = env
-		cmd.Stdout = io.MultiWriter(&stdout, os.Stderr)
-		cmd.Stderr = os.Stderr
-		require.NoErrorf(t, cmd.Run(), "pulumi %v failed", args)
-		return stdout.Bytes()
-	}
-
-	runPulumi("stack", "init", "smoke-random")
-	t.Cleanup(func() {
-		cmd := exec.Command(pulumiBin, "stack", "rm", "--yes", "smoke-random")
-		cmd.Dir = projectDir
-		cmd.Env = env
-		_ = cmd.Run()
+	home := seedPluginCache(t, "terraform-provider")
+	integration.ProgramTest(t, &integration.ProgramTestOptions{
+		NoParallel:     true,
+		Dir:            filepath.Join("testdata", "random"),
+		PulumiHomeDir:  home,
+		PrepareProject: prepareWithPulumiInstall(home),
+		PostPrepareProject: func(e *engine.Projinfo) error {
+			sdkPath := filepath.Join(e.Root, "sdks", "random", "hcl.sdk.json")
+			_, err := os.Stat(sdkPath)
+			return err
+		},
+		ExtraRuntimeValidation: func(t *testing.T, stack integration.RuntimeValidationStackInfo) {
+			pet, ok := stack.Outputs["pet"].(string)
+			require.True(t, ok, "pet output must be a string, got %T (%v)",
+				stack.Outputs["pet"], stack.Outputs["pet"])
+			require.Regexp(t, regexp.MustCompile(`^[a-z]+-[a-z]+$`), pet,
+				"pet output should match '<word>-<word>'")
+		},
 	})
-
-	runPulumi("install")
-
-	// Assert `pulumi install` wrote the SDK descriptor where Run will look
-	// for it (per docs/providers.md): sdks/random/hcl.sdk.json.
-	sdkPath := filepath.Join(projectDir, "sdks", "random", "hcl.sdk.json")
-	_, err := os.Stat(sdkPath)
-	require.NoErrorf(t, err, "pulumi install must write %s", sdkPath)
-
-	runPulumi("up", "--yes", "--skip-preview")
-
-	// `length = 2` produces "<word>-<word>" (lowercase letters only).
-	outputs := parseStackOutput(t, runPulumi("stack", "output", "--json"))
-	pet, ok := outputs["pet"].(string)
-	require.True(t, ok, "pet output must be a string, got %T (%v)", outputs["pet"], outputs["pet"])
-	require.Regexp(t, regexp.MustCompile(`^[a-z]+-[a-z]+$`), pet,
-		"pet output should match '<word>-<word>'")
-
-	runPulumi("destroy", "--yes", "--skip-preview")
 }
 
 // TestSmokeModule proves a plain HCL module (no component or package block) can
@@ -130,94 +97,93 @@ func TestSmokeRandom(t *testing.T) {
 func TestSmokeModule(t *testing.T) {
 	t.Parallel()
 
-	pulumiBin := "pulumi"
+	home := seedPluginCache(t, "terraform-provider")
 
-	rootDir := copyTree(t, filepath.Join("testdata", "module"))
-	projectDir := filepath.Join(rootDir, "program")
+	// `pulumi package add` generates the SDK from a local module; the program
+	// references the component by the module's package name, "randommodule". The
+	// program (which package add and up mutate) is the copied ProgramTest dir, but
+	// the module lives outside it, so copy it under its package name and add it by
+	// absolute path.
+	moduleDir := filepath.Join(t.TempDir(), "randommodule")
+	copyDir(t, filepath.Join("testdata", "module", "randommodule"), moduleDir)
 
-	stateDir := filepath.Join(rootDir, "state")
-	require.NoError(t, os.MkdirAll(stateDir, 0o755))
+	// ProgramTest runs a `pulumi preview` before the update; with Verbose its
+	// stdout is captured here so the validation can assert the component output is
+	// unknown at preview.
+	var preview bytes.Buffer
 
-	env := append(os.Environ(),
-		"PATH="+langBinDir+string(os.PathListSeparator)+os.Getenv("PATH"),
-		"PULUMI_BACKEND_URL=file://"+stateDir,
-		"PULUMI_CONFIG_PASSPHRASE=smoke",
-	)
+	integration.ProgramTest(t, &integration.ProgramTestOptions{
+		NoParallel:    true,
+		Dir:           filepath.Join("testdata", "module", "program"),
+		PulumiHomeDir: home,
+		Verbose:       true,
+		Stdout:        &preview,
+		PrepareProject: func(e *engine.Projinfo) error {
+			cmd := exec.Command("pulumi", "package", "add", moduleDir)
+			cmd.Dir = e.Root
+			cmd.Env = append(os.Environ(), "PULUMI_HOME="+home)
+			cmd.Stdout, cmd.Stderr = os.Stderr, os.Stderr
+			return cmd.Run()
+		},
+		ExtraRuntimeValidation: func(t *testing.T, stack integration.RuntimeValidationStackInfo) {
+			// The pet name flows from a not-yet-created `random_pet` inside the
+			// component, so the component output is unknown during preview.
+			require.Regexp(t, regexp.MustCompile(`pet_name\s*:\s*\[unknown\]`), preview.String(),
+				"pet_name output should be unknown at preview")
 
-	runPulumi := func(t *testing.T, args ...string) []byte {
-		t.Helper()
-		var stdout bytes.Buffer
-		cmd := exec.CommandContext(t.Context(), pulumiBin, args...)
-		cmd.Dir = projectDir
-		cmd.Env = env
-		cmd.Stdout = io.MultiWriter(&stdout, os.Stderr)
-		cmd.Stderr = os.Stderr
-		require.NoErrorf(t, cmd.Run(), "pulumi %v failed", args)
-		return stdout.Bytes()
-	}
+			// The multi-word `pet_length`, nested object field `string_field`, and
+			// map value `user_key` all round-trip through the component, which only
+			// works if the boundary translates object/field names (but not map keys)
+			// in both directions: a snake_case HCL module exposed under a camelCase
+			// schema.
+			petName, ok := stack.Outputs["pet_name"].(string)
+			require.True(t, ok, "pet_name must be a string, got %T (%v)",
+				stack.Outputs["pet_name"], stack.Outputs["pet_name"])
+			require.Regexp(t, regexp.MustCompile(`^[a-z]+-[a-z]+-[a-z]+$`), petName,
+				"pet_length = 3 should yield a three-word pet name")
 
-	runPulumi(t, "stack", "init", "smoke-module")
-	t.Cleanup(func() {
-		cmd := exec.Command(pulumiBin, "stack", "rm", "--yes", "smoke-module")
-		cmd.Dir = projectDir
-		cmd.Env = env
-		_ = cmd.Run()
+			require.Equal(t, "hello", stack.Outputs["object_field"], "object field value should round-trip")
+			require.Equal(t, "world", stack.Outputs["map_field"], "map value (keyed by a preserved key) should round-trip")
+		},
 	})
-
-	runPulumi(t, "package", "add", "../randommodule")
-
-	// The pet name flows from a not-yet-created `random_pet` inside the
-	// component, so that output is unknown during preview.
-	require.Regexp(t, regexp.MustCompile(`pet_name\s*: \[unknown\]`), string(runPulumi(t, "preview")),
-		"pet_name output should be unknown at preview")
-
-	runPulumi(t, "up", "--yes", "--skip-preview")
-
-	// The multi-word `pet_length`, nested object field `string_field`, and map
-	// value `user_key` all round-trip through the component, which only works if
-	// the boundary translates object/field names (but not map keys) in both
-	// directions: a snake_case HCL module exposed under a camelCase schema.
-	outputs := parseStackOutput(t, runPulumi(t, "stack", "output", "--json"))
-
-	petName, ok := outputs["pet_name"].(string)
-	require.True(t, ok, "pet_name must be a string, got %T (%v)", outputs["pet_name"], outputs["pet_name"])
-	require.Regexp(t, regexp.MustCompile(`^[a-z]+-[a-z]+-[a-z]+$`), petName,
-		"pet_length = 3 should yield a three-word pet name")
-
-	require.Equal(t, "hello", outputs["object_field"], "object field value should round-trip")
-	require.Equal(t, "world", outputs["map_field"], "map value (keyed by a preserved key) should round-trip")
-
-	runPulumi(t, "destroy", "--yes", "--skip-preview")
 }
 
-// parseStackOutput parses `pulumi stack output --json` (a JSON object).
-func parseStackOutput(t *testing.T, raw []byte) map[string]any {
-	t.Helper()
-	var out map[string]any
-	require.NoError(t, json.Unmarshal(raw, &out), "parsing stack output: %s", raw)
-	return out
-}
+// TestSmokeDynamicModule exercises the fully dynamic MLC: a YAML program
+// instantiates the untyped hcl:index:Module resource (served by
+// pulumi-resource-hcl) with a module source supplied as a plain input. The
+// module references a native Pulumi provider (pulumi/random) and a bridged
+// Terraform provider (hashicorp/null); both are resolved at Construct time
+// through the schema loader, mapper, and resolver the engine exposes at
+// handshake. Hits the public Pulumi + TF registries.
+func TestSmokeDynamicModule(t *testing.T) {
+	t.Parallel()
 
-// copyDir copies src into a fresh t.TempDir() subdir and returns the new path.
-// Used so `pulumi install` can mutate Pulumi.yaml without dirtying testdata.
-func copyDir(t *testing.T, src string) string {
-	t.Helper()
-	dst := t.TempDir()
-	entries, err := os.ReadDir(src)
+	// The module source is a plain input known before Construct. LoadModule only
+	// parses a local source, so the fixture can be referenced in place by absolute
+	// path rather than copied.
+	moduleDir, err := filepath.Abs(filepath.Join("testdata", "dynamic", "module"))
 	require.NoError(t, err)
-	for _, e := range entries {
-		require.False(t, e.IsDir(), "nested dirs not supported")
-		copyFile(t, filepath.Join(src, e.Name()), filepath.Join(dst, e.Name()))
-	}
-	return dst
+
+	integration.ProgramTest(t, &integration.ProgramTestOptions{
+		NoParallel:    true,
+		Dir:           filepath.Join("testdata", "dynamic", "program"),
+		Config:        map[string]string{"moduleSource": moduleDir},
+		PulumiHomeDir: seedPluginCache(t, "random", "terraform-provider"),
+		ExtraRuntimeValidation: func(t *testing.T, stack integration.RuntimeValidationStackInfo) {
+			// The module's `name` output is "<prefix>-<random_string>"; its presence
+			// and shape prove both providers resolved and the outputs flowed back
+			// through the component's untyped `outputs` map.
+			name, ok := stack.Outputs["name"].(string)
+			require.True(t, ok, "name output must be a string, got %T (%v)",
+				stack.Outputs["name"], stack.Outputs["name"])
+			require.Regexp(t, regexp.MustCompile(`^smoke-[a-z0-9]{8}$`), name,
+				"name should be '<prefix>-<8 lowercase alphanumerics>'")
+		},
+	})
 }
 
-// copyTree recursively copies src into a fresh t.TempDir() and returns the new
-// path. Used for fixtures with subdirectories (e.g. a component module alongside
-// its consuming program) that `pulumi package add`/`install` mutate.
-func copyTree(t *testing.T, src string) string {
+func copyDir(t *testing.T, src, dst string) {
 	t.Helper()
-	dst := t.TempDir()
 	require.NoError(t, filepath.WalkDir(src, func(path string, d os.DirEntry, err error) error {
 		if err != nil {
 			return err
@@ -233,17 +199,63 @@ func copyTree(t *testing.T, src string) string {
 		copyFile(t, path, target)
 		return nil
 	}))
-	return dst
 }
 
 func copyFile(t *testing.T, src, dst string) {
 	t.Helper()
+	info, err := os.Stat(src)
+	require.NoError(t, err)
 	in, err := os.Open(src)
 	require.NoError(t, err)
-	defer func() { _ = in.Close() }()
-	out, err := os.Create(dst)
+	defer contract.IgnoreClose(in)
+	out, err := os.OpenFile(dst, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, info.Mode())
 	require.NoError(t, err)
-	defer func() { _ = out.Close() }()
+	defer contract.IgnoreClose(out)
 	_, err = io.Copy(out, in)
 	require.NoError(t, err)
+}
+
+func seedPluginCache(t *testing.T, plugins ...string) string {
+	t.Helper()
+	home := t.TempDir()
+	entries, err := os.ReadDir(hostPluginsDir())
+	if err != nil {
+		return home // No host cache to seed from; the test downloads as usual.
+	}
+	dst := filepath.Join(home, "plugins")
+	require.NoError(t, os.MkdirAll(dst, 0o755))
+	for _, e := range entries {
+		for _, name := range plugins {
+			if !strings.HasPrefix(e.Name(), "resource-"+name+"-v") {
+				continue
+			}
+			from, to := filepath.Join(hostPluginsDir(), e.Name()), filepath.Join(dst, e.Name())
+			if e.IsDir() {
+				copyDir(t, from, to)
+			} else {
+				copyFile(t, from, to)
+			}
+		}
+	}
+	return home
+}
+
+func hostPluginsDir() string {
+	if h := os.Getenv("PULUMI_HOME"); h != "" {
+		return filepath.Join(h, "plugins")
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return ""
+	}
+	return filepath.Join(home, ".pulumi", "plugins")
+}
+
+func prepareWithPulumiInstall(pulumiHome string) func(*engine.Projinfo) error {
+	return func(e *engine.Projinfo) error {
+		cmd := exec.Command("pulumi", "install")
+		cmd.Dir = e.Root
+		cmd.Env = append(os.Environ(), "PULUMI_HOME="+pulumiHome)
+		return cmd.Run()
+	}
 }

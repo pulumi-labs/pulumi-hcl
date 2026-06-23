@@ -2,7 +2,6 @@
   "name": "inference",
   "version": "0.0.0-dev",
   "config": {},
-  "provider": {},
   "resources": {
     "inference:index:inference": {
       "properties": {

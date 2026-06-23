@@ -1,0 +1,16 @@
+name: smoke-dynamic
+runtime: yaml
+description: Instantiates a Terraform module dynamically via hcl:index:Module.
+config:
+  # Set by the test to the absolute path of ../module.
+  moduleSource:
+    type: string
+resources:
+  mod:
+    type: hcl:index:Module
+    properties:
+      source: ${moduleSource}
+      inputs:
+        prefix: smoke
+outputs:
+  name: ${mod.outputs["name"]}

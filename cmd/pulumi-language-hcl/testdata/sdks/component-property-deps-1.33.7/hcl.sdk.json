@@ -4,5 +4,6 @@
   "Version": "1.33.7",
   "PluginDownloadURL": "",
   "Checksums": null,
-  "Parameterization": null
+  "Parameterization": null,
+  "ExtensionParameterization": null
 }

@@ -1,0 +1,6 @@
+kind: Improvements
+body: Add the `pulumi-resource-hcl` provider, exposing an `hcl:index:Module` resource that instantiates a module from a runtime `source`
+time: 2026-06-23T07:06:21Z
+custom:
+    Component: resource-host
+    PR: "282"
