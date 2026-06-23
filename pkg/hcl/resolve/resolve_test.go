@@ -69,7 +69,7 @@ func TestPackages(t *testing.T) {
 		}
 	}}
 
-	got, err := Packages(context.Background(), resolver, []Request{
+	got, err := Packages(t.Context(), resolver, []Request{
 		{Alias: "aws", Spec: &pulumirpc.PackageSpec{Source: "aws", Version: "~> 6.0"}},
 		{Alias: "random", Spec: &pulumirpc.PackageSpec{
 			Source:     "terraform-provider",
@@ -110,7 +110,7 @@ func TestPackagesResolverError(t *testing.T) {
 		return nil, errors.New("boom")
 	}}
 
-	_, err := Packages(context.Background(), resolver, []Request{
+	_, err := Packages(t.Context(), resolver, []Request{
 		{Alias: "aws", Spec: &pulumirpc.PackageSpec{Source: "aws"}},
 	})
 	assert.EqualError(t, err, `resolving provider "aws": boom`)

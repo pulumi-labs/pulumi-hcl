@@ -145,7 +145,7 @@ func (m *moduleProvider) construct(ctx context.Context, req p.ConstructRequest) 
 
 	sourceVal, ok := req.Inputs.GetOk("source")
 	if !ok || !sourceVal.IsString() {
-		return p.ConstructResponse{}, fmt.Errorf("Module requires a plain string %q input", "source")
+		return p.ConstructResponse{}, fmt.Errorf("module requires a plain string %q input", "source")
 	}
 	source := sourceVal.AsString()
 

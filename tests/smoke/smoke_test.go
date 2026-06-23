@@ -32,7 +32,10 @@ func TestMain(m *testing.M) {
 		os.Exit(1)
 	}
 
-	os.Setenv("PATH", langBinDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	if err := os.Setenv("PATH", langBinDir+string(os.PathListSeparator)+os.Getenv("PATH")); err != nil {
+		fmt.Fprintf(os.Stderr, "setting PATH: %v\n", err)
+		os.Exit(1)
+	}
 
 	os.Exit(m.Run())
 }
@@ -81,7 +84,6 @@ func TestSmokeRandom(t *testing.T) {
 				stack.Outputs["pet"], stack.Outputs["pet"])
 			require.Regexp(t, regexp.MustCompile(`^[a-z]+-[a-z]+$`), pet,
 				"pet output should match '<word>-<word>'")
-
 		},
 	})
 }
