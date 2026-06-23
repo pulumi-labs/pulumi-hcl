@@ -55,22 +55,29 @@ func TestParameterizeArgsRejected(t *testing.T) {
 
 	t.Run("before handshake", func(t *testing.T) {
 		t.Parallel()
-		_, err := (&moduleProvider{}).parameterizeArgs(t.Context(), []string{"acme/widget/aws"})
+		_, err := (&moduleProvider{}).parameterizeArgs(t.Context(), []string{"module", "acme/widget/aws"})
 		require.EqualError(t, err, "parameterize called before a successful handshake")
 	})
 
-	t.Run("no args", func(t *testing.T) {
+	t.Run("missing module keyword", func(t *testing.T) {
 		t.Parallel()
-		_, err := (&moduleProvider{resolver: stubResolver{}}).parameterizeArgs(t.Context(), nil)
-		require.EqualError(t, err, "the hcl provider is parameterized by a module source and an "+
-			"optional version constraint: expected 1 or 2 arguments, got 0")
+		_, err := (&moduleProvider{resolver: stubResolver{}}).parameterizeArgs(t.Context(), []string{"acme/widget/aws"})
+		require.EqualError(t, err,
+			`the hcl provider is parameterized by a module: expected "module" as the first argument`)
+	})
+
+	t.Run("no source", func(t *testing.T) {
+		t.Parallel()
+		_, err := (&moduleProvider{resolver: stubResolver{}}).parameterizeArgs(t.Context(), []string{"module"})
+		require.EqualError(t, err, `the hcl provider is parameterized as "module <source> [version]": `+
+			`expected a source and an optional version constraint, got 0 arguments after "module"`)
 	})
 
 	t.Run("too many args", func(t *testing.T) {
 		t.Parallel()
-		_, err := (&moduleProvider{resolver: stubResolver{}}).parameterizeArgs(t.Context(), []string{"a", "b", "c"})
-		require.EqualError(t, err, "the hcl provider is parameterized by a module source and an "+
-			"optional version constraint: expected 1 or 2 arguments, got 3")
+		_, err := (&moduleProvider{resolver: stubResolver{}}).parameterizeArgs(t.Context(), []string{"module", "a", "b", "c"})
+		require.EqualError(t, err, `the hcl provider is parameterized as "module <source> [version]": `+
+			`expected a source and an optional version constraint, got 3 arguments after "module"`)
 	})
 }
 
@@ -85,7 +92,7 @@ func TestParameterizeArgsServesTypedSchema(t *testing.T) {
 	require.NoError(t, err)
 
 	m := &moduleProvider{version: "1.2.3", resolver: stubResolver{}}
-	resp, err := m.parameterizeArgs(t.Context(), []string{dir})
+	resp, err := m.parameterizeArgs(t.Context(), []string{"module", dir})
 	require.NoError(t, err)
 	require.Equal(t, "module-one-var", resp.Name)
 	require.NotNil(t, m.param)

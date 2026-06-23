@@ -102,9 +102,9 @@ type resolvedEdge struct {
 }
 
 // parameterize configures the provider for a specific module source. Args is the
-// CLI path (`pulumi package add hcl <source> [version]`): it downloads the module
-// tree and bundles it. Value is the usage path: it unpacks a previously bundled
-// tree and resolves everything from it.
+// CLI path (`pulumi package add hcl module <source> [version]`): it downloads the
+// module tree and bundles it. Value is the usage path: it unpacks a previously
+// bundled tree and resolves everything from it.
 func (m *moduleProvider) parameterize(ctx context.Context, req p.ParameterizeRequest) (p.ParameterizeResponse, error) {
 	switch {
 	case req.Args != nil:
@@ -116,24 +116,32 @@ func (m *moduleProvider) parameterize(ctx context.Context, req p.ParameterizeReq
 	}
 }
 
-// parameterizeArgs handles `pulumi package add hcl <source> [version]`. It
-// downloads the module, generates its schema, and — recording every resolution
-// along the way — bundles the whole module tree into the parameterization Value.
+// parameterizeArgs handles `pulumi package add hcl module <source> [version]`.
+// It downloads the module, generates its schema, and — recording every
+// resolution along the way — bundles the whole module tree into the
+// parameterization Value.
 func (m *moduleProvider) parameterizeArgs(ctx context.Context, args []string) (p.ParameterizeResponse, error) {
 	if m.resolver == nil {
 		return p.ParameterizeResponse{}, fmt.Errorf("parameterize called before a successful handshake")
 	}
 
+	// The fixed "module" keyword leaves room for the provider to grow other
+	// parameterization kinds; today a module source is the only one.
+	if len(args) == 0 || args[0] != "module" {
+		return p.ParameterizeResponse{}, fmt.Errorf(
+			`the hcl provider is parameterized by a module: expected "module" as the first argument`)
+	}
+
 	var source, version string
-	switch len(args) {
+	switch rest := args[1:]; len(rest) {
 	case 1:
-		source = args[0]
+		source = rest[0]
 	case 2:
-		source, version = args[0], args[1]
+		source, version = rest[0], rest[1]
 	default:
 		return p.ParameterizeResponse{}, fmt.Errorf(
-			"the hcl provider is parameterized by a module source and an optional version "+
-				"constraint: expected 1 or 2 arguments, got %d", len(args))
+			`the hcl provider is parameterized as "module <source> [version]": `+
+				"expected a source and an optional version constraint, got %d arguments after \"module\"", len(rest))
 	}
 
 	// A recording loader resolves sources live while capturing where each one
