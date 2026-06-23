@@ -1,0 +1,17 @@
+name: smoke-parameterized
+runtime: yaml
+description: |
+  Consumes the randommodule Terraform module parameterized into
+  pulumi-resource-hcl via `pulumi package add hcl module <source>`, referencing
+  the generated typed component by its token.
+resources:
+  pet:
+    type: randommodule:index:Module
+    properties:
+      petLength: 3
+      objectValue:
+        stringField: hello
+      mapValue:
+        user_key: world
+outputs:
+  petName: ${pet.petName}

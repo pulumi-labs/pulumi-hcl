@@ -106,7 +106,7 @@ func TestParameterizeArgsServesTypedSchema(t *testing.T) {
 	require.NotNil(t, spec.Parameterization)
 	require.Equal(t, "hcl", spec.Parameterization.BaseProvider.Name)
 
-	res, ok := spec.Resources["module-one-var:index:module-one-var"]
+	res, ok := spec.Resources["module-one-var:index:Module"]
 	require.True(t, ok, "schema should declare the typed component")
 	require.True(t, res.IsComponent)
 	require.Equal(t, "string", res.InputProperties["name"].Type)

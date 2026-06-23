@@ -144,12 +144,12 @@ func NewHCLProvider(ctx context.Context, modulePath, addr string) (*HCLProvider,
 
 // moduleIdentity derives a module's component token and version. The terraform
 // `package` and `component` blocks take precedence; absent them defaultName
-// supplies the package name (and, by extension, the component name).
+// supplies the package name.
 //
-// The module segment defaults to "index" and the component name defaults to the
-// package name, so a module with no component block yields the single-segment
-// token "<package>:index:<package>", referenced in HCL by the bare package name
-// (e.g. `resource "foo"`), matching single-segment TF types like `external`.
+// The module segment defaults to "index" and the component name defaults to
+// "Module", so a module with no component block yields the token
+// "<package>:index:Module", referenced in HCL as `<package>_module` (mirroring
+// the dynamic hcl:index:Module resource).
 func moduleIdentity(loaded *modules.LoadedModule, defaultName string) (tokens.Type, semver.Version, error) {
 	module := "index"
 	pkgName := defaultName
@@ -175,7 +175,7 @@ func moduleIdentity(loaded *modules.LoadedModule, defaultName string) (tokens.Ty
 			}
 		}
 	}
-	componentName := pkgName
+	componentName := "Module"
 	if explicitComponentName != "" {
 		componentName = explicitComponentName
 	}

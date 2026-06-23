@@ -1,4 +1,4 @@
-resource "randommodule" "pet" {
+resource "randommodule_module" "pet" {
   pet_length = 3
   object_value = {
     string_field = "hello"
@@ -9,13 +9,13 @@ resource "randommodule" "pet" {
 }
 
 output "pet_name" {
-  value = randommodule.pet.pet_name
+  value = randommodule_module.pet.pet_name
 }
 
 output "object_field" {
-  value = randommodule.pet.echo_object.string_field
+  value = randommodule_module.pet.echo_object.string_field
 }
 
 output "map_field" {
-  value = randommodule.pet.echo_map.user_key
+  value = randommodule_module.pet.echo_map.user_key
 }
