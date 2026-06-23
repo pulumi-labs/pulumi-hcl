@@ -1,0 +1,9 @@
+{
+  "Name": "multi-argument-invoke",
+  "Kind": "resource",
+  "Version": "44.0.0",
+  "PluginDownloadURL": "",
+  "Checksums": null,
+  "Parameterization": null,
+  "ExtensionParameterization": null
+}

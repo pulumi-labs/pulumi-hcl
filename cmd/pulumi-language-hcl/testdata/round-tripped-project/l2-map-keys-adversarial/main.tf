@@ -20,6 +20,7 @@ data "primitive_invoke" "invoke_0" {
     "__version"                                                                                                                                            = false
     ""                                                                                                                                                     = true
     "Some $${common} \"characters\" 'that' need escaping: \\ (backslash), \t (tab), \u001b (escape), \u0007 (bell), \u0000 (null), \U000e0021 (tag space)" = false
+    "Format and glob specifiers: %percent ...ellipsis {open }close *asterisk ?question ,comma &&and ||or !not =>arrow ==equal :colon /slash"               = true
   }
 }
 
@@ -39,6 +40,7 @@ resource "primitive_resource" "res" {
     "__version"                                                                                                                                            = false
     ""                                                                                                                                                     = true
     "Some $${common} \"characters\" 'that' need escaping: \\ (backslash), \t (tab), \u001b (escape), \u0007 (bell), \u0000 (null), \U000e0021 (tag space)" = false
+    "Format and glob specifiers: %percent ...ellipsis {open }close *asterisk ?question ,comma &&and ||or !not =>arrow ==equal :colon /slash"               = true
   }
 }
 output "resourceBooleanMap" {

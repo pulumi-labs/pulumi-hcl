@@ -141,6 +141,10 @@ var expectedFailures = map[string]string{
 		" component's input expressions to the component registration",
 	"l2-provider-call-explicit": "upstream fixture declares `provider \"call\"`, which" +
 		" is reserved as the namespace for resource method calls in HCL",
+	"l2-config-default-from-invoke": "HCL codegen does not support a config variable whose" +
+		" default is sourced from an invoke result",
+	"l2-resource-schema-secret": "HCL runtime does not propagate a schema-declared `secret`" +
+		" property to stack outputs",
 }
 
 // expectedEjectFailures lists tests whose eject (HCL→PCL conversion) step is

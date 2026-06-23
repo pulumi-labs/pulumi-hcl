@@ -4,5 +4,6 @@
   "Version": "3.0.0-alpha.1.internal+exp.sha.12345678",
   "PluginDownloadURL": "",
   "Checksums": null,
-  "Parameterization": null
+  "Parameterization": null,
+  "ExtensionParameterization": null
 }

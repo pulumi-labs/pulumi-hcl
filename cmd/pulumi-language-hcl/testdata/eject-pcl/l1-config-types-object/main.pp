@@ -32,3 +32,27 @@ output "defaultUntypedObject" {
   value = optionalUntypedObject
 }
 
+config "optionalList" "list(string)" {
+  default = null
+}
+
+config "optionalMap" "map(string)" {
+  default = null
+}
+
+config "optionalObject" "object({other=int, prop=string})" {
+  default = null
+}
+
+output "optionalList" {
+  value = optionalList == null ? "null" : toJSON(optionalList)
+}
+
+output "optionalMap" {
+  value = optionalMap == null ? "null" : toJSON(optionalMap)
+}
+
+output "optionalObject" {
+  value = optionalObject == null ? "null" : toJSON(optionalObject)
+}
+

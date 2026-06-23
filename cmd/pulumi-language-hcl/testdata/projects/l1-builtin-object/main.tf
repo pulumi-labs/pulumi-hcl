@@ -10,3 +10,11 @@ output "lookupOutput" {
 output "lookupOutputDefault" {
   value = lookup(var.aMap, "keyMissing", "default")
 }
+# An untyped (dynamic) config value. Pins iterating dynamic entries in generated programs
+# (e.g. TypeScript's Object.entries over a value with no static type).
+variable "alternativeNames" {
+  default = {}
+}
+output "names" {
+  value = [for entry in entries(var.alternativeNames) : entry.value]
+}

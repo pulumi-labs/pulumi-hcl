@@ -1,0 +1,9 @@
+{
+  "Name": "optional-primitive-ref",
+  "Kind": "resource",
+  "Version": "40.0.0",
+  "PluginDownloadURL": "",
+  "Checksums": null,
+  "Parameterization": null,
+  "ExtensionParameterization": null
+}

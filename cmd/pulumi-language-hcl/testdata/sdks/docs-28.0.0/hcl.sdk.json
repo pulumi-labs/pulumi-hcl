@@ -1,0 +1,9 @@
+{
+  "Name": "docs",
+  "Kind": "resource",
+  "Version": "28.0.0",
+  "PluginDownloadURL": "",
+  "Checksums": null,
+  "Parameterization": null,
+  "ExtensionParameterization": null
+}

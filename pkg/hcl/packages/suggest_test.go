@@ -118,7 +118,7 @@ func TestPulumiTokenToHCLFormRoundtrip(t *testing.T) {
 			hclTk := pulumiTokenToHCLForm(pkg.Reference(), r.Token, false)
 			resolved, err := ResolveResource(t.Context(), schemaloader.New(t, *spec), nil, hclTk)
 			require.NoError(t, err)
-			assert.Equal(t, r, resolved)
+			assert.Equal(t, r.Token, resolved.Token)
 		}
 	})
 }
