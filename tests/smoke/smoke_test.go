@@ -172,7 +172,6 @@ func TestSmokeDynamicModule(t *testing.T) {
 		NoParallel: true,
 		Dir:        filepath.Join("testdata", "dynamic", "program"),
 		Config:     map[string]string{"moduleSource": moduleDir},
-		Quick:      true, // TODO: undo
 		ExtraRuntimeValidation: func(t *testing.T, stack integration.RuntimeValidationStackInfo) {
 			// The module's `name` output is "<prefix>-<random_string>"; its presence
 			// and shape prove both providers resolved and the outputs flowed back

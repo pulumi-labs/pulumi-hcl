@@ -182,7 +182,7 @@ func (m *moduleProvider) construct(ctx context.Context, req p.ConstructRequest) 
 
 	componentInputs, err := plugin.MarshalProperties(
 		resource.ToResourcePropertyMap(req.Inputs),
-		plugin.MarshalOptions{KeepSecrets: true, KeepResources: true},
+		constructMarshalOptions(),
 	)
 	if err != nil {
 		return p.ConstructResponse{}, fmt.Errorf("marshaling inputs: %w", err)
