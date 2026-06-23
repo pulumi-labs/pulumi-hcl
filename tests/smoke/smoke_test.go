@@ -2,7 +2,6 @@ package smoke_test
 
 import (
 	"bytes"
-	"encoding/json"
 	"fmt"
 	"io"
 	"os"
@@ -96,63 +95,55 @@ func TestSmokeRandom(t *testing.T) {
 func TestSmokeModule(t *testing.T) {
 	t.Parallel()
 
-	pulumiBin := "pulumi"
+	home := seedPluginCache(t, "terraform-provider")
 
-	rootDir := copyTree(t, filepath.Join("testdata", "module"))
-	projectDir := filepath.Join(rootDir, "program")
+	// `pulumi package add` generates the SDK from a local module; the program
+	// references the component by the module's package name, "randommodule". The
+	// program (which package add and up mutate) is the copied ProgramTest dir, but
+	// the module lives outside it, so copy it under its package name and add it by
+	// absolute path.
+	moduleDir := filepath.Join(t.TempDir(), "randommodule")
+	copyDir(t, filepath.Join("testdata", "module", "randommodule"), moduleDir)
 
-	stateDir := filepath.Join(rootDir, "state")
-	require.NoError(t, os.MkdirAll(stateDir, 0o755))
+	// ProgramTest runs a `pulumi preview` before the update; with Verbose its
+	// stdout is captured here so the validation can assert the component output is
+	// unknown at preview.
+	var preview bytes.Buffer
 
-	env := append(os.Environ(),
-		"PULUMI_BACKEND_URL=file://"+stateDir,
-		"PULUMI_CONFIG_PASSPHRASE=smoke",
-	)
+	integration.ProgramTest(t, &integration.ProgramTestOptions{
+		NoParallel:    true,
+		Dir:           filepath.Join("testdata", "module", "program"),
+		PulumiHomeDir: home,
+		Verbose:       true,
+		Stdout:        &preview,
+		PrepareProject: func(e *engine.Projinfo) error {
+			cmd := exec.Command("pulumi", "package", "add", moduleDir)
+			cmd.Dir = e.Root
+			cmd.Env = append(os.Environ(), "PULUMI_HOME="+home)
+			cmd.Stdout, cmd.Stderr = os.Stderr, os.Stderr
+			return cmd.Run()
+		},
+		ExtraRuntimeValidation: func(t *testing.T, stack integration.RuntimeValidationStackInfo) {
+			// The pet name flows from a not-yet-created `random_pet` inside the
+			// component, so the component output is unknown during preview.
+			require.Regexp(t, regexp.MustCompile(`pet_name\s*:\s*\[unknown\]`), preview.String(),
+				"pet_name output should be unknown at preview")
 
-	runPulumi := func(t *testing.T, args ...string) []byte {
-		t.Helper()
-		var stdout bytes.Buffer
-		cmd := exec.CommandContext(t.Context(), pulumiBin, args...)
-		cmd.Dir = projectDir
-		cmd.Env = env
-		cmd.Stdout = io.MultiWriter(&stdout, os.Stderr)
-		cmd.Stderr = os.Stderr
-		require.NoErrorf(t, cmd.Run(), "pulumi %v failed", args)
-		return stdout.Bytes()
-	}
+			// The multi-word `pet_length`, nested object field `string_field`, and
+			// map value `user_key` all round-trip through the component, which only
+			// works if the boundary translates object/field names (but not map keys)
+			// in both directions: a snake_case HCL module exposed under a camelCase
+			// schema.
+			petName, ok := stack.Outputs["pet_name"].(string)
+			require.True(t, ok, "pet_name must be a string, got %T (%v)",
+				stack.Outputs["pet_name"], stack.Outputs["pet_name"])
+			require.Regexp(t, regexp.MustCompile(`^[a-z]+-[a-z]+-[a-z]+$`), petName,
+				"pet_length = 3 should yield a three-word pet name")
 
-	runPulumi(t, "stack", "init", "smoke-module")
-	t.Cleanup(func() {
-		cmd := exec.Command(pulumiBin, "stack", "rm", "--yes", "smoke-module")
-		cmd.Dir = projectDir
-		cmd.Env = env
-		_ = cmd.Run()
+			require.Equal(t, "hello", stack.Outputs["object_field"], "object field value should round-trip")
+			require.Equal(t, "world", stack.Outputs["map_field"], "map value (keyed by a preserved key) should round-trip")
+		},
 	})
-
-	runPulumi(t, "package", "add", "../randommodule")
-
-	// The pet name flows from a not-yet-created `random_pet` inside the
-	// component, so that output is unknown during preview.
-	require.Regexp(t, regexp.MustCompile(`pet_name\s*: \[unknown\]`), string(runPulumi(t, "preview")),
-		"pet_name output should be unknown at preview")
-
-	runPulumi(t, "up", "--yes", "--skip-preview")
-
-	// The multi-word `pet_length`, nested object field `string_field`, and map
-	// value `user_key` all round-trip through the component, which only works if
-	// the boundary translates object/field names (but not map keys) in both
-	// directions: a snake_case HCL module exposed under a camelCase schema.
-	outputs := parseStackOutput(t, runPulumi(t, "stack", "output", "--json"))
-
-	petName, ok := outputs["pet_name"].(string)
-	require.True(t, ok, "pet_name must be a string, got %T (%v)", outputs["pet_name"], outputs["pet_name"])
-	require.Regexp(t, regexp.MustCompile(`^[a-z]+-[a-z]+-[a-z]+$`), petName,
-		"pet_length = 3 should yield a three-word pet name")
-
-	require.Equal(t, "hello", outputs["object_field"], "object field value should round-trip")
-	require.Equal(t, "world", outputs["map_field"], "map value (keyed by a preserved key) should round-trip")
-
-	runPulumi(t, "destroy", "--yes", "--skip-preview")
 }
 
 // TestSmokeDynamicModule exercises the fully dynamic MLC: a YAML program
@@ -187,23 +178,6 @@ func TestSmokeDynamicModule(t *testing.T) {
 				"name should be '<prefix>-<8 lowercase alphanumerics>'")
 		},
 	})
-}
-
-// parseStackOutput parses `pulumi stack output --json` (a JSON object).
-func parseStackOutput(t *testing.T, raw []byte) map[string]any {
-	t.Helper()
-	var out map[string]any
-	require.NoError(t, json.Unmarshal(raw, &out), "parsing stack output: %s", raw)
-	return out
-}
-
-// copyTree recursively copies src into a fresh t.TempDir() and returns the new
-// path.
-func copyTree(t *testing.T, src string) string {
-	t.Helper()
-	dst := t.TempDir()
-	copyDir(t, src, dst)
-	return dst
 }
 
 func copyDir(t *testing.T, src, dst string) {
