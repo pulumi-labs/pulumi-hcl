@@ -126,7 +126,7 @@ func TestModuleConstructRejectsUnknownInput(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			m := &moduleProvider{moduleLoader: modules.NewLoader(t.Context()), resolver: stubResolver{}}
+			m := &moduleProvider{moduleLoader: modules.NewLoader(modules.LiveResolver(t.Context())), resolver: stubResolver{}}
 			_, err := m.construct(t.Context(), p.ConstructRequest{
 				Urn: resource.URN("urn:pulumi:test::proj::hcl:index:Module::mod"),
 				Inputs: property.NewMap(map[string]property.Value{
@@ -163,7 +163,7 @@ resource "aws_s3_bucket" "b" {}
 	cfg, diags := parser.NewParser().ParseSource("main.tf", []byte(src))
 	require.False(t, diags.HasErrors(), "diags: %v", diags)
 
-	got := (&moduleProvider{}).requirementSpecs(t.Context(), cfg, "")
+	got := (&moduleProvider{}).requirementSpecs(t.Context(), nil, cfg, "")
 
 	assert.Equal(t, []resolve.Request{
 		{Alias: "aws", Spec: &pulumirpc.PackageSpec{

@@ -187,7 +187,8 @@ func (host *LanguageHost) GetRequiredPackages(
 	// (the terraform-provider plugin intersects them at resolve time, erroring on
 	// an empty intersection just as tofu does), and distinct sources are distinct
 	// installs.
-	tfSpecs, pulumiPkgs, aliases := collectRequirements(ctx, config, req.Info.ProgramDirectory)
+	tfSpecs, pulumiPkgs, aliases := collectRequirements(ctx, modules.NewLoader(modules.LiveResolver(ctx)),
+		config, req.Info.ProgramDirectory)
 
 	for _, alias := range sortedKeys(aliases) {
 		// A local SDK descriptor (written by `pulumi package add`) is the most
@@ -312,7 +313,7 @@ func readParameterizationInfos(dir string) (map[string]workspace.PackageDescript
 func missingNonPulumiSDKs(
 	ctx context.Context, config *ast.Config, sdks map[string]workspace.PackageDescriptor, workDir string,
 ) []string {
-	_, _, aliases := collectRequirements(ctx, config, workDir)
+	_, _, aliases := collectRequirements(ctx, modules.NewLoader(modules.LiveResolver(ctx)), config, workDir)
 	var missing []string
 	for _, alias := range sortedKeys(aliases) {
 		if isBuiltinProvider(alias) || aliases[alias].IsPulumi() {
@@ -358,15 +359,11 @@ func (v *versionSet) constraint() string { return strings.Join(sortedKeys(v.seen
 // own required_providers, else the "hashicorp/<name>" default), so a provider
 // declared only in a child module still resolves from its declared source.
 func collectRequirements(
-	ctx context.Context, config *ast.Config, workDir string,
+	ctx context.Context, loader *modules.Loader, config *ast.Config, workDir string,
 ) (tf map[string]*versionSet, pulumi map[string]string, aliases map[string]*ast.RequiredProvider) {
 	tf = map[string]*versionSet{}
 	pulumi = map[string]string{}
 	aliases = map[string]*ast.RequiredProvider{}
-	var loader *modules.Loader
-	if workDir != "" && config != nil && len(config.Modules) > 0 {
-		loader = modules.NewLoader(ctx)
-	}
 	collectRequirementsRec(config, workDir, tf, pulumi, aliases, loader, map[string]struct{}{})
 	return tf, pulumi, aliases
 }
@@ -558,6 +555,7 @@ func (host *LanguageHost) Run(
 		ProviderInfoSource:      providerInfoSource,
 		WorkDir:                 req.Info.ProgramDirectory,
 		RootDir:                 req.Info.RootDirectory,
+		ModuleLoader:            modules.NewLoader(modules.LiveResolver(ctx)),
 		Packages:                paramDescriptors,
 		Parallel:                int(req.Parallel),
 		AlwaysRegisterProviders: host.alwaysRegisterProviders,

@@ -59,13 +59,8 @@ type Loader struct {
 	parser    *parser.Parser
 	cache     map[string]*LoadedModule
 	callStack []string
-	cacheDir  string
 
-	fetcher *getmodules.PackageFetcher
-
-	// disco resolves a registry host to its modules.v1 endpoint via service
-	// discovery. Tests pre-seed it with an httptest.Server via ForceHostServices.
-	disco *disco.Disco
+	resolve func(packageSource, versionConstraint, callerDir string) (string, error)
 }
 
 // LoadedModule represents a loaded and parsed module.
@@ -74,14 +69,48 @@ type LoadedModule struct {
 	SourcePath string
 }
 
-// NewLoader creates a new module loader.
-func NewLoader(ctx context.Context) *Loader {
+type ResolverFunc = func(packageSource, versionConstraint, callerDir string) (string, error)
+
+// NewLoader creates a module loader that resolves sources from the filesystem,
+// the registry, and remote getters, downloading and caching as needed.
+func NewLoader(resolver ResolverFunc) *Loader {
 	return &Loader{
-		parser:   parser.NewParser(),
-		cache:    make(map[string]*LoadedModule),
+		parser:  parser.NewParser(),
+		cache:   make(map[string]*LoadedModule),
+		resolve: resolver,
+	}
+}
+
+// LiveResolver returns the default resolution strategy: filesystem sources
+// resolve directly, registry sources via the modules.v1 protocol, and everything
+// else through the remote getter, downloading and caching under PULUMI_HOME.
+func LiveResolver(ctx context.Context) ResolverFunc {
+	n := &networkResolver{
 		cacheDir: defaultCacheDir(),
 		fetcher:  getmodules.NewPackageFetcher(ctx, nil),
 		disco:    disco.New(),
+	}
+	return n.resolve
+}
+
+func (n *networkResolver) resolve(packageSource, versionConstraint, callerDir string) (string, error) {
+	switch {
+	case strings.HasPrefix(packageSource, "./") || strings.HasPrefix(packageSource, "../"):
+		resolved := filepath.Join(callerDir, packageSource)
+		absPath, err := filepath.Abs(resolved)
+		if err != nil {
+			return "", fmt.Errorf("resolving path: %w", err)
+		}
+		return statDir(absPath)
+	case filepath.IsAbs(packageSource):
+		return statDir(packageSource)
+	case isRegistrySource(packageSource):
+		return n.resolveRegistrySource(packageSource, versionConstraint)
+	default:
+		// Anything else (git::, github.com/..., bitbucket.org/..., http(s)://,
+		// s3::, gcs::, hg::, etc.) goes through the package fetcher, which
+		// runs the upstream opentofu detectors to normalize the address.
+		return n.fetchRemote(packageSource, "remote")
 	}
 }
 
@@ -135,47 +164,20 @@ func (l *Loader) LoadModule(source, versionConstraint, callerDir string) (*Loade
 // resolveSource resolves a module source to an absolute path on disk.
 // versionConstraint applies only to registry sources.
 func (l *Loader) resolveSource(source, versionConstraint, callerDir string) (string, error) {
-	source, subdir := getmodules.SplitPackageSubdir(source)
-
-	var resolvedPath string
-	var err error
-	switch {
-	case strings.HasPrefix(source, "./") || strings.HasPrefix(source, "../"):
-		resolvedPath, err = l.resolveLocalSource(source, callerDir)
-	case filepath.IsAbs(source):
-		resolvedPath, err = l.resolveAbsoluteSource(source)
-	case isRegistrySource(source):
-		resolvedPath, err = l.resolveRegistrySource(source, versionConstraint)
-	default:
-		// Anything else (git::, github.com/..., bitbucket.org/..., http(s)://,
-		// s3::, gcs::, hg::, etc.) goes through the package fetcher, which
-		// runs the upstream opentofu detectors to normalize the address.
-		resolvedPath, err = l.fetchRemote(source, "remote")
-	}
+	packageSource, subdir := getmodules.SplitPackageSubdir(source)
+	packageDir, err := l.resolve(packageSource, versionConstraint, callerDir)
 	if err != nil {
 		return "", err
 	}
 
 	if subdir != "" {
-		resolvedPath = filepath.Join(resolvedPath, subdir)
-		if info, statErr := os.Stat(resolvedPath); statErr != nil || !info.IsDir() {
+		resolved := filepath.Join(packageDir, subdir)
+		if info, statErr := os.Stat(resolved); statErr != nil || !info.IsDir() {
 			return "", fmt.Errorf("subdir %q does not exist in module", subdir)
 		}
+		return resolved, nil
 	}
-	return resolvedPath, nil
-}
-
-func (l *Loader) resolveLocalSource(source string, callerDir string) (string, error) {
-	resolved := filepath.Join(callerDir, source)
-	absPath, err := filepath.Abs(resolved)
-	if err != nil {
-		return "", fmt.Errorf("resolving path: %w", err)
-	}
-	return statDir(absPath)
-}
-
-func (l *Loader) resolveAbsoluteSource(source string) (string, error) {
-	return statDir(source)
+	return packageDir, nil
 }
 
 func statDir(p string) (string, error) {
@@ -194,7 +196,7 @@ func statDir(p string) (string, error) {
 
 // fetchRemote normalizes source and downloads it (if not cached) into
 // cacheDir/kind/<hash>. Returns the populated cache directory.
-func (l *Loader) fetchRemote(source, kind string) (string, error) {
+func (l *networkResolver) fetchRemote(source, kind string) (string, error) {
 	pkgAddr, detectedSubdir, err := getmodules.NormalizePackageAddress(source)
 	if err != nil {
 		return "", fmt.Errorf("normalizing module source %q: %w", source, err)
@@ -240,10 +242,16 @@ func dirHasFiles(dir string) bool {
 	return len(entries) > 0
 }
 
+type networkResolver struct {
+	cacheDir string
+	fetcher  *getmodules.PackageFetcher
+	disco    *disco.Disco
+}
+
 // resolveRegistrySource downloads a module via modules.v1. source is
 // `[host/]namespace/name/provider` with an optional ?version=…; versionConstraint
 // takes precedence over the query string.
-func (l *Loader) resolveRegistrySource(source, versionConstraint string) (string, error) {
+func (l *networkResolver) resolveRegistrySource(source, versionConstraint string) (string, error) {
 	baseSource := source
 	if before, query, ok := strings.Cut(source, "?"); ok {
 		baseSource = before
@@ -276,7 +284,7 @@ func (l *Loader) resolveRegistrySource(source, versionConstraint string) (string
 
 // registryBaseURLForHost resolves a registry host to its modules.v1 base URL
 // via service discovery.
-func (l *Loader) registryBaseURLForHost(host svchost.Hostname) (string, error) {
+func (l *networkResolver) registryBaseURLForHost(host svchost.Hostname) (string, error) {
 	u, err := l.disco.DiscoverServiceURL(context.Background(), host, "modules.v1")
 	if err != nil {
 		return "", fmt.Errorf("discovering registry %q: %w", host, err)
@@ -296,7 +304,7 @@ type registryModuleVersions struct {
 
 // getRegistryDownloadURL resolves a concrete download URL via the modules.v1
 // protocol. Empty versionConstraint means "highest published version".
-func (l *Loader) getRegistryDownloadURL(baseURL, namespace, name, provider, versionConstraint string) (string, error) {
+func (l *networkResolver) getRegistryDownloadURL(baseURL, namespace, name, provider, versionConstraint string) (string, error) {
 	chosen, err := l.selectRegistryVersion(baseURL, namespace, name, provider, versionConstraint)
 	if err != nil {
 		return "", err
@@ -350,7 +358,7 @@ func (l *Loader) getRegistryDownloadURL(baseURL, namespace, name, provider, vers
 
 // selectRegistryVersion returns the highest published version satisfying
 // versionConstraint, or the highest overall when it's empty.
-func (l *Loader) selectRegistryVersion(baseURL, namespace, name, provider, versionConstraint string) (string, error) {
+func (l *networkResolver) selectRegistryVersion(baseURL, namespace, name, provider, versionConstraint string) (string, error) {
 	versionsURL := fmt.Sprintf("%s/%s/%s/%s/versions", baseURL, namespace, name, provider)
 	resp, err := http.Get(versionsURL)
 	if err != nil {

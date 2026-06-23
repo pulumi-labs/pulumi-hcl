@@ -24,12 +24,14 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/blang/semver"
 	"github.com/pulumi-labs/pulumi-hcl/pkg/hcl/ast"
 	"github.com/pulumi-labs/pulumi-hcl/pkg/hcl/bridge"
 	"github.com/pulumi-labs/pulumi-hcl/pkg/hcl/eval"
 	"github.com/pulumi-labs/pulumi-hcl/pkg/hcl/transform"
 	pulumischema "github.com/pulumi/pulumi/pkg/v3/codegen/schema"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/resource/urn"
+	"github.com/pulumi/pulumi/sdk/v3/go/common/tokens"
 	"github.com/pulumi/pulumi/sdk/v3/go/property"
 	"github.com/zclconf/go-cty/cty"
 )
@@ -123,17 +125,16 @@ type PropertySpec struct {
 }
 
 // GenerateModuleSchema generates a Pulumi schema from an HCL module
-// configuration. binder types output expressions that reference resources, data
-// sources, or child modules; pass nil to leave those references untyped.
+// configuration.
 func GenerateModuleSchema(
 	ctx context.Context, config *ast.Config, binder *Binder,
-	pkgName, pkgVersion, componentName, module string,
+	token tokens.Type, version semver.Version,
 ) (*ModuleSchema, error) {
 	schema := &ModuleSchema{
-		PackageName:      pkgName,
-		Version:          pkgVersion,
-		ComponentName:    componentName,
-		Module:           module,
+		PackageName:      token.Package().Name().String(),
+		Version:          version.String(),
+		ComponentName:    token.Name().String(),
+		Module:           token.Module().Name().String(),
 		InputProperties:  make(map[string]*PropertySpec),
 		OutputProperties: make(map[string]*PropertySpec),
 	}

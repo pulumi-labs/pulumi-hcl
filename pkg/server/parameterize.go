@@ -1,0 +1,544 @@
+// Copyright 2026, Pulumi Corporation.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+package server
+
+import (
+	"archive/tar"
+	"bytes"
+	"compress/gzip"
+	"context"
+	"encoding/json"
+	"fmt"
+	"io"
+	"os"
+	"path"
+	"path/filepath"
+	"sort"
+	"strconv"
+	"strings"
+	"time"
+
+	"github.com/blang/semver"
+	regaddr "github.com/opentofu/registry-address/v2"
+	p "github.com/pulumi/pulumi-go-provider"
+	pulumiSchema "github.com/pulumi/pulumi/pkg/v3/codegen/schema"
+	"github.com/pulumi/pulumi/sdk/v3/go/common/tokens"
+	"github.com/pulumi/pulumi/sdk/v3/go/common/workspace"
+
+	"github.com/pulumi-labs/pulumi-hcl/pkg/hcl/ast"
+	"github.com/pulumi-labs/pulumi-hcl/pkg/hcl/modules"
+	"github.com/pulumi-labs/pulumi-hcl/pkg/hcl/packages"
+	"github.com/pulumi-labs/pulumi-hcl/pkg/hcl/resolve"
+	"github.com/pulumi-labs/pulumi-hcl/pkg/hcl/schema"
+	"github.com/pulumi-labs/pulumi-hcl/vendored/getmodules"
+)
+
+// bundleManifestName is the archive path of the manifest that records how every
+// module source resolves. It cannot collide with a package directory, which is
+// named by a numeric index.
+const bundleManifestName = "manifest.json"
+
+// parameterizedModule is the state of a moduleProvider that has been
+// parameterized by a specific module source. While set, the provider serves that
+// module's typed component schema rather than the generic hcl:index:Module.
+type parameterizedModule struct {
+	// schema is the typed schema, identical to the one the local-path MLC
+	// (HCLProvider) generates for the same module.
+	schema *schema.ModuleSchema
+	// loader resolves the module and its children. On the usage path it resolves
+	// entirely from the unpacked bundle, with no network access.
+	loader *modules.Loader
+	// rootSource and rootVersion address the root module through loader.
+	rootSource  string
+	rootVersion string
+	// value is the parameterization Value (the bundle archive), surfaced in the
+	// schema so a generated SDK can re-parameterize without re-downloading.
+	value []byte
+	name  string
+	// tempDir is the directory the bundle was unpacked into, removed on Cancel.
+	// Empty on the args (CLI) path, which reads the freshly-downloaded module.
+	tempDir string
+}
+
+// bundleManifest records how to resolve every module reference in a bundled tree
+// with no network access, and how to reach the root module. It is the only thing
+// the parameterization needs beyond the archived files: the schema and provider
+// set are recomputed from the module tree at usage.
+type bundleManifest struct {
+	// Root addresses the root module, as passed to `pulumi package add`.
+	Root moduleRef `json:"root"`
+	// Edges record, for every resolved module reference, the archive directory it
+	// resolves to.
+	Edges []resolvedEdge `json:"edges"`
+}
+
+// moduleRef is a module source and version constraint as written in a
+// configuration (or on the CLI).
+type moduleRef struct {
+	Source  string `json:"source"`
+	Version string `json:"version,omitempty"`
+}
+
+// resolvedEdge records that a module reference — the (Source, Version) requested
+// from the module at archive-relative directory Caller ("" for the root) —
+// resolves to the archive-relative package directory Target.
+type resolvedEdge struct {
+	Caller  string `json:"caller"`
+	Source  string `json:"source"`
+	Version string `json:"version,omitempty"`
+	Target  string `json:"target"`
+}
+
+// parameterize configures the provider for a specific module source. Args is the
+// CLI path (`pulumi package add hcl <source> [version]`): it downloads the module
+// tree and bundles it. Value is the usage path: it unpacks a previously bundled
+// tree and resolves everything from it.
+func (m *moduleProvider) parameterize(ctx context.Context, req p.ParameterizeRequest) (p.ParameterizeResponse, error) {
+	switch {
+	case req.Args != nil:
+		return m.parameterizeArgs(ctx, req.Args.Args)
+	case req.Value != nil:
+		return m.parameterizeValue(ctx, req.Value.Value)
+	default:
+		return p.ParameterizeResponse{}, fmt.Errorf("parameterize requires either arguments or a value")
+	}
+}
+
+// parameterizeArgs handles `pulumi package add hcl <source> [version]`. It
+// downloads the module, generates its schema, and — recording every resolution
+// along the way — bundles the whole module tree into the parameterization Value.
+func (m *moduleProvider) parameterizeArgs(ctx context.Context, args []string) (p.ParameterizeResponse, error) {
+	if m.resolver == nil {
+		return p.ParameterizeResponse{}, fmt.Errorf("parameterize called before a successful handshake")
+	}
+
+	var source, version string
+	switch len(args) {
+	case 1:
+		source = args[0]
+	case 2:
+		source, version = args[0], args[1]
+	default:
+		return p.ParameterizeResponse{}, fmt.Errorf(
+			"the hcl provider is parameterized by a module source and an optional version "+
+				"constraint: expected 1 or 2 arguments, got %d", len(args))
+	}
+
+	// A recording loader resolves sources live while capturing where each one
+	// landed, so the schema-generation and provider walks below populate a
+	// complete manifest as a side effect.
+	rec := newResolveRecorder(modules.LiveResolver(ctx))
+	loader := modules.NewLoader(rec.resolve)
+
+	loaded, err := loader.LoadModule(source, version, ".")
+	if err != nil {
+		return p.ParameterizeResponse{}, fmt.Errorf("loading module %q: %w", source, err)
+	}
+
+	token, pkgVer, err := moduleIdentity(loaded, defaultPackageName(source))
+	if err != nil {
+		return p.ParameterizeResponse{}, err
+	}
+
+	resolved, err := resolve.Packages(ctx, m.resolver, m.requirementSpecs(ctx, loader, loaded.Config, loaded.SourcePath))
+	if err != nil {
+		return p.ParameterizeResponse{}, fmt.Errorf("resolving module providers: %w", err)
+	}
+
+	sch, err := m.generateModuleSchema(ctx, loader, loaded, resolved, token, pkgVer)
+	if err != nil {
+		return p.ParameterizeResponse{}, fmt.Errorf("generating schema: %w", err)
+	}
+
+	value, err := rec.archive(moduleRef{Source: source, Version: version})
+	if err != nil {
+		return p.ParameterizeResponse{}, fmt.Errorf("bundling module %q: %w", source, err)
+	}
+
+	pkgName := token.Package().Name().String()
+	m.param = &parameterizedModule{
+		schema:      sch,
+		loader:      loader,
+		rootSource:  source,
+		rootVersion: version,
+		value:       value,
+		name:        pkgName,
+	}
+	return p.ParameterizeResponse{Name: pkgName, Version: pkgVer}, nil
+}
+
+// parameterizeValue handles re-parameterization from a generated SDK. It unpacks
+// the bundled tree, builds a loader that resolves every source from the bundle's
+// manifest with no network access, and recomputes the schema from the module.
+func (m *moduleProvider) parameterizeValue(ctx context.Context, value []byte) (p.ParameterizeResponse, error) {
+	if m.resolver == nil {
+		return p.ParameterizeResponse{}, fmt.Errorf("parameterize called before a successful handshake")
+	}
+
+	dir, err := os.MkdirTemp("", "pulumi-hcl-module-")
+	if err != nil {
+		return p.ParameterizeResponse{}, fmt.Errorf("creating unpack directory: %w", err)
+	}
+	if err := unpackArchive(value, dir); err != nil {
+		return p.ParameterizeResponse{}, fmt.Errorf("unpacking module bundle: %w", err)
+	}
+	manifest, err := readManifest(dir)
+	if err != nil {
+		return p.ParameterizeResponse{}, err
+	}
+
+	loader := modules.NewLoader(bundleResolver(dir, manifest))
+	loaded, err := loader.LoadModule(manifest.Root.Source, manifest.Root.Version, ".")
+	if err != nil {
+		return p.ParameterizeResponse{}, fmt.Errorf("loading bundled module %q: %w", manifest.Root.Source, err)
+	}
+
+	token, pkgVer, err := moduleIdentity(loaded, defaultPackageName(manifest.Root.Source))
+	if err != nil {
+		return p.ParameterizeResponse{}, err
+	}
+
+	resolved, err := resolve.Packages(ctx, m.resolver, m.requirementSpecs(ctx, loader, loaded.Config, loaded.SourcePath))
+	if err != nil {
+		return p.ParameterizeResponse{}, fmt.Errorf("resolving module providers: %w", err)
+	}
+
+	sch, err := m.generateModuleSchema(ctx, loader, loaded, resolved, token, pkgVer)
+	if err != nil {
+		return p.ParameterizeResponse{}, fmt.Errorf("generating schema: %w", err)
+	}
+
+	pkgName := token.Package().Name().String()
+	m.param = &parameterizedModule{
+		schema:      sch,
+		loader:      loader,
+		rootSource:  manifest.Root.Source,
+		rootVersion: manifest.Root.Version,
+		value:       value,
+		name:        pkgName,
+		tempDir:     dir,
+	}
+	return p.ParameterizeResponse{Name: pkgName, Version: pkgVer}, nil
+}
+
+// generateModuleSchema builds the typed schema for a loaded module, resolving
+// resource/data source references through the handshake schema loader and bridge
+// mapper, and child modules through loader, exactly as the local-path MLC
+// (NewHCLProvider) does.
+func (m *moduleProvider) generateModuleSchema(
+	ctx context.Context, loader *modules.Loader, loaded *modules.LoadedModule,
+	resolved map[string]workspace.PackageDescriptor,
+	token tokens.Type, version semver.Version,
+) (*schema.ModuleSchema, error) {
+	cachedLoader := pulumiSchema.NewCachedLoader(
+		packages.NewParameterizationAwareLoader(m.schemaLoader, resolved))
+	binder := &schema.Binder{
+		Resources: packages.NewResolver(cachedLoader, m.providerInfoSource, resolved, knownProviderNames(loaded.Config)),
+		Modules:   moduleLoaderAdapter{loader},
+		ModuleDir: loaded.SourcePath,
+	}
+	return schema.GenerateModuleSchema(ctx, loaded.Config, binder, token, version)
+}
+
+// knownProviderNames lists the local names the module's terraform block declares,
+// so resource/data type tokens split on the declared provider rather than the
+// first underscore.
+func knownProviderNames(config *ast.Config) []string {
+	if config.Terraform == nil {
+		return nil
+	}
+	names := make([]string, 0, len(config.Terraform.RequiredProviders))
+	for name := range config.Terraform.RequiredProviders {
+		names = append(names, name)
+	}
+	return names
+}
+
+// resolveRecorder wraps a resolver, recording where every module source resolves
+// so the tree can be archived and replayed offline. Each distinct package
+// directory is assigned a numeric archive-relative path; a source resolving
+// inside an already-seen package (a local reference) reuses that package's path.
+type resolveRecorder struct {
+	inner  modules.ResolverFunc
+	pkgRel map[string]string // absolute package directory -> archive-relative path
+	edges  []resolvedEdge
+}
+
+func newResolveRecorder(inner modules.ResolverFunc) *resolveRecorder {
+	return &resolveRecorder{inner: inner, pkgRel: map[string]string{}}
+}
+
+// resolve resolves a source through the wrapped resolver and records the edge.
+// The loader serializes calls under its lock, so the recorder needs none.
+func (r *resolveRecorder) resolve(packageSource, versionConstraint, callerDir string) (string, error) {
+	target, err := r.inner(packageSource, versionConstraint, callerDir)
+	if err != nil {
+		return "", err
+	}
+	r.edges = append(r.edges, resolvedEdge{
+		Caller:  r.rel(callerDir),
+		Source:  packageSource,
+		Version: versionConstraint,
+		Target:  r.rel(target),
+	})
+	return target, nil
+}
+
+// rel returns the archive-relative path for an absolute module directory. The
+// root caller (".") maps to "". A directory inside an already-seen package
+// reuses that package's path with the remaining sub-path appended; any other
+// directory starts a new package.
+func (r *resolveRecorder) rel(dir string) string {
+	if dir == "." || dir == "" {
+		return ""
+	}
+	for pkg, rel := range r.pkgRel {
+		if dir == pkg {
+			return rel
+		}
+		if strings.HasPrefix(dir, pkg+string(os.PathSeparator)) {
+			sub, _ := filepath.Rel(pkg, dir)
+			return path.Join(rel, filepath.ToSlash(sub))
+		}
+	}
+	rel := strconv.Itoa(len(r.pkgRel))
+	r.pkgRel[dir] = rel
+	return rel
+}
+
+// archive packs every recorded package directory and the manifest into a
+// deterministic tar.gz.
+func (r *resolveRecorder) archive(root moduleRef) ([]byte, error) {
+	dirs := make(map[string]string, len(r.pkgRel))
+	for absDir, rel := range r.pkgRel {
+		dirs[rel] = absDir
+	}
+	manifestJSON, err := json.Marshal(bundleManifest{Root: root, Edges: r.edges})
+	if err != nil {
+		return nil, err
+	}
+	return packArchive(dirs, manifestJSON)
+}
+
+// bundleResolver resolves module sources from an unpacked bundle's manifest, with
+// no network access. callerDir is mapped back to its archive-relative form so the
+// recorded edge matches regardless of where the bundle was unpacked.
+func bundleResolver(unpackDir string, manifest bundleManifest) modules.ResolverFunc {
+	type edgeKey struct{ caller, source, version string }
+	index := make(map[edgeKey]string, len(manifest.Edges))
+	for _, e := range manifest.Edges {
+		index[edgeKey{e.Caller, e.Source, e.Version}] = e.Target
+	}
+	return func(packageSource, versionConstraint, callerDir string) (string, error) {
+		caller := ""
+		if callerDir != "." && callerDir != "" {
+			rel, err := filepath.Rel(unpackDir, callerDir)
+			if err != nil {
+				return "", err
+			}
+			caller = filepath.ToSlash(rel)
+		}
+		target, ok := index[edgeKey{caller, packageSource, versionConstraint}]
+		if !ok {
+			return "", fmt.Errorf("module source %q is not present in the parameterization bundle", packageSource)
+		}
+		return filepath.Join(unpackDir, filepath.FromSlash(target)), nil
+	}
+}
+
+// readManifest reads the bundle manifest from an unpacked archive directory.
+func readManifest(dir string) (bundleManifest, error) {
+	data, err := os.ReadFile(filepath.Join(dir, bundleManifestName))
+	if err != nil {
+		return bundleManifest{}, fmt.Errorf("reading bundle manifest: %w", err)
+	}
+	var manifest bundleManifest
+	if err := json.Unmarshal(data, &manifest); err != nil {
+		return bundleManifest{}, fmt.Errorf("decoding bundle manifest: %w", err)
+	}
+	return manifest, nil
+}
+
+// defaultPackageName derives a Pulumi package name from a module source, used
+// when the module declares no terraform `package` block. Registry sources use
+// their module name segment; other sources use the last path component.
+func defaultPackageName(source string) string {
+	pkgSource, _ := getmodules.SplitPackageSubdir(source)
+	if mod, err := regaddr.ParseModuleSource(pkgSource); err == nil {
+		return sanitizePackageName(mod.Package.Name)
+	}
+	s := pkgSource
+	if i := strings.IndexByte(s, '?'); i >= 0 {
+		s = s[:i]
+	}
+	s = strings.TrimRight(s, "/")
+	if i := strings.LastIndexByte(s, '/'); i >= 0 {
+		s = s[i+1:]
+	}
+	s = strings.TrimSuffix(s, ".git")
+	return sanitizePackageName(s)
+}
+
+// sanitizePackageName reduces a name to the lowercase alphanumeric-and-hyphen
+// form Pulumi package names use, falling back to "module" when nothing remains.
+func sanitizePackageName(name string) string {
+	var b strings.Builder
+	for _, r := range strings.ToLower(name) {
+		switch {
+		case r >= 'a' && r <= 'z', r >= '0' && r <= '9', r == '-':
+			b.WriteRune(r)
+		case r == '_' || r == ' ':
+			b.WriteByte('-')
+		}
+	}
+	if out := strings.Trim(b.String(), "-"); out != "" {
+		return out
+	}
+	return "module"
+}
+
+// bundleEpoch is the fixed modification time stamped on every archive entry, so
+// the archive bytes — and thus the parameterization Value the engine hashes for
+// provider identity — are deterministic.
+var bundleEpoch = time.Unix(0, 0).UTC()
+
+// packArchive packs the manifest and each (archive-path → directory) tree into a
+// deterministic tar.gz: entries are sorted, modification times fixed, and only
+// regular files and directories are included.
+func packArchive(dirs map[string]string, manifestJSON []byte) ([]byte, error) {
+	type entry struct {
+		name    string
+		absPath string      // set for files copied from disk
+		data    []byte      // set for in-memory files (the manifest)
+		info    os.FileInfo // nil for in-memory files
+	}
+	files := []entry{{name: bundleManifestName, data: manifestJSON}}
+	for relPath, absDir := range dirs {
+		err := filepath.Walk(absDir, func(p string, info os.FileInfo, err error) error {
+			if err != nil {
+				return err
+			}
+			rel, err := filepath.Rel(absDir, p)
+			if err != nil {
+				return err
+			}
+			files = append(files, entry{name: path.Join(relPath, filepath.ToSlash(rel)), absPath: p, info: info})
+			return nil
+		})
+		if err != nil {
+			return nil, err
+		}
+	}
+	sort.Slice(files, func(i, j int) bool { return files[i].name < files[j].name })
+
+	var buf bytes.Buffer
+	gz := gzip.NewWriter(&buf)
+	tw := tar.NewWriter(gz)
+	for _, f := range files {
+		hdr := &tar.Header{Name: f.name, ModTime: bundleEpoch}
+		var data []byte
+		switch {
+		case f.info != nil && f.info.IsDir():
+			hdr.Typeflag = tar.TypeDir
+			hdr.Mode = 0o755
+			hdr.Name += "/"
+		case f.info != nil && !f.info.Mode().IsRegular():
+			continue // skip symlinks, devices, and other irregular entries
+		default:
+			hdr.Typeflag = tar.TypeReg
+			hdr.Mode = 0o644
+			data = f.data
+			if f.absPath != "" {
+				b, err := os.ReadFile(f.absPath)
+				if err != nil {
+					return nil, err
+				}
+				data = b
+			}
+			hdr.Size = int64(len(data))
+		}
+		if err := tw.WriteHeader(hdr); err != nil {
+			return nil, err
+		}
+		if hdr.Typeflag == tar.TypeReg {
+			if _, err := tw.Write(data); err != nil {
+				return nil, err
+			}
+		}
+	}
+	if err := tw.Close(); err != nil {
+		return nil, err
+	}
+	if err := gz.Close(); err != nil {
+		return nil, err
+	}
+	return buf.Bytes(), nil
+}
+
+// unpackArchive extracts a tar.gz produced by packArchive into destDir, rejecting
+// any entry that would escape destDir.
+func unpackArchive(data []byte, destDir string) error {
+	gz, err := gzip.NewReader(bytes.NewReader(data))
+	if err != nil {
+		return err
+	}
+	defer func() { _ = gz.Close() }()
+
+	tr := tar.NewReader(gz)
+	for {
+		hdr, err := tr.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return err
+		}
+		target, err := safeJoin(destDir, hdr.Name)
+		if err != nil {
+			return err
+		}
+		switch hdr.Typeflag {
+		case tar.TypeDir:
+			if err := os.MkdirAll(target, 0o755); err != nil {
+				return err
+			}
+		case tar.TypeReg:
+			if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+				return err
+			}
+			out, err := os.OpenFile(target, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o644)
+			if err != nil {
+				return err
+			}
+			if _, err := io.Copy(out, tr); err != nil { //nolint:gosec // archive is self-produced
+				_ = out.Close()
+				return err
+			}
+			if err := out.Close(); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+// safeJoin joins name onto base, returning an error if the result escapes base.
+func safeJoin(base, name string) (string, error) {
+	target := filepath.Join(base, filepath.FromSlash(name))
+	if target != base && !strings.HasPrefix(target, base+string(os.PathSeparator)) {
+		return "", fmt.Errorf("archive entry %q escapes the unpack directory", name)
+	}
+	return target, nil
+}

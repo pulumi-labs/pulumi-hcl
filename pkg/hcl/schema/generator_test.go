@@ -28,11 +28,17 @@ import (
 	"github.com/pulumi-labs/pulumi-hcl/pkg/hcl/parser"
 	pulumiSchema "github.com/pulumi/pulumi/pkg/v3/codegen/schema"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/resource"
+	"github.com/pulumi/pulumi/sdk/v3/go/common/tokens"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/util/cmdutil"
 	"github.com/pulumi/pulumi/sdk/v3/go/property"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+// componentToken assembles a component type token from its parts.
+func componentToken(pkg, module, component string) tokens.Type {
+	return tokens.Type(pkg + ":" + module + ":" + component)
+}
 
 // TestGenerateModuleSchemaGolden parses the HCL in each testdata case and
 // asserts the Pulumi package schema produced by GenerateModuleSchema followed by
@@ -71,7 +77,7 @@ func TestGenerateModuleSchemaGolden(t *testing.T) {
 			require.False(t, diags.HasErrors(), diags.Error())
 
 			moduleSchema, err := GenerateModuleSchema(
-				t.Context(), config, nil, tc.pkgName, tc.version, tc.componentName, tc.module)
+				t.Context(), config, nil, componentToken(tc.pkgName, tc.module, tc.componentName), semver.MustParse(tc.version))
 			require.NoError(t, err)
 
 			pkgSpec := moduleSchema.ToPulumiPackageSchema()
@@ -153,7 +159,7 @@ output "length" {
 	}}
 
 	moduleSchema, err := GenerateModuleSchema(
-		t.Context(), config, &Binder{Resources: resolver}, "pkg", "0.0.0-dev", "pkg", "index")
+		t.Context(), config, &Binder{Resources: resolver}, componentToken("pkg", "index", "pkg"), semver.MustParse("0.0.0-dev"))
 	require.NoError(t, err)
 
 	assert.Equal(t, map[string]*PropertySpec{
@@ -198,7 +204,7 @@ output "keyed_id" {
 		"random_pet": {Properties: []*pulumiSchema.Property{{Name: "length", Type: pulumiSchema.IntType}}},
 	}}
 	moduleSchema, err := GenerateModuleSchema(
-		t.Context(), config, &Binder{Resources: resolver}, "pkg", "0.0.0-dev", "pkg", "index")
+		t.Context(), config, &Binder{Resources: resolver}, componentToken("pkg", "index", "pkg"), semver.MustParse("0.0.0-dev"))
 	require.NoError(t, err)
 
 	elem := &PropertySpec{Type: "object", Properties: map[string]*PropertySpec{
@@ -267,7 +273,7 @@ output "n" {
 		ModuleDir: ".",
 	}
 	moduleSchema, err := GenerateModuleSchema(
-		t.Context(), config, binder, "pkg", "0.0.0-dev", "pkg", "index")
+		t.Context(), config, binder, componentToken("pkg", "index", "pkg"), semver.MustParse("0.0.0-dev"))
 	require.NoError(t, err)
 
 	assert.Equal(t, map[string]*PropertySpec{
@@ -293,7 +299,7 @@ output "id" {
 	require.False(t, diags.HasErrors(), diags.Error())
 
 	_, err := GenerateModuleSchema(
-		t.Context(), config, &Binder{Resources: stubResolver{}}, "pkg", "0.0.0-dev", "pkg", "index")
+		t.Context(), config, &Binder{Resources: stubResolver{}}, componentToken("pkg", "index", "pkg"), semver.MustParse("0.0.0-dev"))
 	require.EqualError(t, err, `resolving resource "mystery_thing.x": no schema for type "mystery_thing"`)
 }
 
@@ -336,7 +342,7 @@ output "z" {
 		Modules:   stubModuleLoader{configs: map[string]*ast.Config{"./a": a, "./b": b}},
 		ModuleDir: ".",
 	}
-	_, err := GenerateModuleSchema(t.Context(), root, binder, "pkg", "0.0.0-dev", "pkg", "index")
+	_, err := GenerateModuleSchema(t.Context(), root, binder, componentToken("pkg", "index", "pkg"), semver.MustParse("0.0.0-dev"))
 	require.Error(t, err)
 }
 
