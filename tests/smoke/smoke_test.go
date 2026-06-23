@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"strings"
 	"testing"
 
 	"github.com/pulumi/pulumi/pkg/v3/engine"
@@ -64,10 +65,12 @@ func TestSmoke(t *testing.T) {
 func TestSmokeRandom(t *testing.T) {
 	t.Parallel()
 
+	home := seedPluginCache(t, "terraform-provider")
 	integration.ProgramTest(t, &integration.ProgramTestOptions{
 		NoParallel:     true,
 		Dir:            filepath.Join("testdata", "random"),
-		PrepareProject: prepareWithPulumiInstall,
+		PulumiHomeDir:  home,
+		PrepareProject: prepareWithPulumiInstall(home),
 		PostPrepareProject: func(e *engine.Projinfo) error {
 			sdkPath := filepath.Join(e.Root, "sdks", "random", "hcl.sdk.json")
 			_, err := os.Stat(sdkPath)
@@ -169,9 +172,10 @@ func TestSmokeDynamicModule(t *testing.T) {
 	require.NoError(t, err)
 
 	integration.ProgramTest(t, &integration.ProgramTestOptions{
-		NoParallel: true,
-		Dir:        filepath.Join("testdata", "dynamic", "program"),
-		Config:     map[string]string{"moduleSource": moduleDir},
+		NoParallel:    true,
+		Dir:           filepath.Join("testdata", "dynamic", "program"),
+		Config:        map[string]string{"moduleSource": moduleDir},
+		PulumiHomeDir: seedPluginCache(t, "random", "terraform-provider"),
 		ExtraRuntimeValidation: func(t *testing.T, stack integration.RuntimeValidationStackInfo) {
 			// The module's `name` output is "<prefix>-<random_string>"; its presence
 			// and shape prove both providers resolved and the outputs flowed back
@@ -194,11 +198,16 @@ func parseStackOutput(t *testing.T, raw []byte) map[string]any {
 }
 
 // copyTree recursively copies src into a fresh t.TempDir() and returns the new
-// path. Used for fixtures with subdirectories (e.g. a component module alongside
-// its consuming program) that `pulumi package add`/`install` mutate.
+// path.
 func copyTree(t *testing.T, src string) string {
 	t.Helper()
 	dst := t.TempDir()
+	copyDir(t, src, dst)
+	return dst
+}
+
+func copyDir(t *testing.T, src, dst string) {
+	t.Helper()
 	require.NoError(t, filepath.WalkDir(src, func(path string, d os.DirEntry, err error) error {
 		if err != nil {
 			return err
@@ -214,23 +223,63 @@ func copyTree(t *testing.T, src string) string {
 		copyFile(t, path, target)
 		return nil
 	}))
-	return dst
 }
 
 func copyFile(t *testing.T, src, dst string) {
 	t.Helper()
+	info, err := os.Stat(src)
+	require.NoError(t, err)
 	in, err := os.Open(src)
 	require.NoError(t, err)
 	defer contract.IgnoreClose(in)
-	out, err := os.Create(dst)
+	out, err := os.OpenFile(dst, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, info.Mode())
 	require.NoError(t, err)
 	defer contract.IgnoreClose(out)
 	_, err = io.Copy(out, in)
 	require.NoError(t, err)
 }
 
-func prepareWithPulumiInstall(e *engine.Projinfo) error {
-	cmd := exec.Command("pulumi", "install")
-	cmd.Dir = e.Root
-	return cmd.Run()
+func seedPluginCache(t *testing.T, plugins ...string) string {
+	t.Helper()
+	home := t.TempDir()
+	entries, err := os.ReadDir(hostPluginsDir())
+	if err != nil {
+		return home // No host cache to seed from; the test downloads as usual.
+	}
+	dst := filepath.Join(home, "plugins")
+	require.NoError(t, os.MkdirAll(dst, 0o755))
+	for _, e := range entries {
+		for _, name := range plugins {
+			if !strings.HasPrefix(e.Name(), "resource-"+name+"-v") {
+				continue
+			}
+			from, to := filepath.Join(hostPluginsDir(), e.Name()), filepath.Join(dst, e.Name())
+			if e.IsDir() {
+				copyDir(t, from, to)
+			} else {
+				copyFile(t, from, to)
+			}
+		}
+	}
+	return home
+}
+
+func hostPluginsDir() string {
+	if h := os.Getenv("PULUMI_HOME"); h != "" {
+		return filepath.Join(h, "plugins")
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return ""
+	}
+	return filepath.Join(home, ".pulumi", "plugins")
+}
+
+func prepareWithPulumiInstall(pulumiHome string) func(*engine.Projinfo) error {
+	return func(e *engine.Projinfo) error {
+		cmd := exec.Command("pulumi", "install")
+		cmd.Dir = e.Root
+		cmd.Env = append(os.Environ(), "PULUMI_HOME="+pulumiHome)
+		return cmd.Run()
+	}
 }
