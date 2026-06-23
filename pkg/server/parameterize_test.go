@@ -175,6 +175,84 @@ func TestBundleRoundTripResolvesOffline(t *testing.T) {
 		"submodule must resolve inside the unpacked bundle, got %q", childAgain.SourcePath)
 }
 
+// TestBundleRoundTripEscapingTopology covers a package topology where a local
+// reference escapes the root package: root -> ./A -> ../../B, with B a sibling of
+// the root. B is outside the root package, so it must be bundled as its own
+// package; at usage the escaping "../../B" must resolve to that bundled package
+// from the manifest, not by walking ".." out of the unpacked tree (where nothing
+// exists). A non-escaping local sibling ./C stays inside the root package.
+func TestBundleRoundTripEscapingTopology(t *testing.T) {
+	t.Parallel()
+
+	base := t.TempDir()
+	write := func(rel, content string) {
+		t.Helper()
+		full := filepath.Join(base, rel)
+		require.NoError(t, os.MkdirAll(filepath.Dir(full), 0o755))
+		require.NoError(t, os.WriteFile(full, []byte(content), 0o600))
+	}
+	write("root/main.tf", `module "a" { source = "./A" }`+"\n"+`module "c" { source = "./C" }`)
+	write("root/A/main.tf", `module "b" { source = "../../B" }`)
+	write("root/C/main.tf", `output "from_c" { value = true }`)
+	write("B/main.tf", `output "from_b" { value = true }`)
+
+	rec := newResolveRecorder(modules.LiveResolver(t.Context()))
+	loader := modules.NewLoader(rec.resolve)
+
+	// Load the whole tree (root, its two children, and the escaping grandchild) so
+	// every reference is recorded.
+	rootDir := filepath.Join(base, "root")
+	root, err := loader.LoadModule(rootDir, "", ".")
+	require.NoError(t, err)
+	a, err := loader.LoadModule("./A", "", root.SourcePath)
+	require.NoError(t, err)
+	_, err = loader.LoadModule("./C", "", root.SourcePath)
+	require.NoError(t, err)
+	_, err = loader.LoadModule("../../B", "", a.SourcePath)
+	require.NoError(t, err)
+
+	value, err := rec.archive(moduleRef{Source: rootDir})
+	require.NoError(t, err)
+
+	dest := t.TempDir()
+	require.NoError(t, unpackArchive(value, dest))
+	manifest, err := readManifest(dest)
+	require.NoError(t, err)
+
+	// The escaping reference must be bundled as its own package, not as a path
+	// inside the root package "0".
+	var escaped *resolvedEdge
+	for i := range manifest.Edges {
+		if manifest.Edges[i].Source == "../../B" {
+			escaped = &manifest.Edges[i]
+		}
+	}
+	require.NotNil(t, escaped, "the ../../B reference should be recorded")
+	require.False(t, strings.HasPrefix(escaped.Target, "0/"),
+		"../../B escapes the root package, so it must be its own package, got target %q", escaped.Target)
+
+	offline := modules.NewLoader(bundleResolver(dest, manifest))
+	root2, err := offline.LoadModule(manifest.Root.Source, manifest.Root.Version, ".")
+	require.NoError(t, err)
+	require.True(t, strings.HasPrefix(root2.SourcePath, dest))
+
+	// The non-escaping local sibling resolves inside the root package.
+	c2, err := offline.LoadModule("./C", "", root2.SourcePath)
+	require.NoError(t, err)
+	require.Contains(t, c2.Config.Outputs, "from_c")
+	require.True(t, strings.HasPrefix(c2.SourcePath, dest))
+
+	// The escaping ../../B resolves to its bundled package, staying inside the
+	// unpack dir rather than walking ".." out of it.
+	a2, err := offline.LoadModule("./A", "", root2.SourcePath)
+	require.NoError(t, err)
+	b2, err := offline.LoadModule("../../B", "", a2.SourcePath)
+	require.NoError(t, err)
+	require.Contains(t, b2.Config.Outputs, "from_b")
+	require.True(t, strings.HasPrefix(b2.SourcePath, dest),
+		"escaping ../../B must resolve inside the bundle, got %q", b2.SourcePath)
+}
+
 func TestPackArchiveDeterministic(t *testing.T) {
 	t.Parallel()
 
@@ -188,4 +266,24 @@ func TestPackArchiveDeterministic(t *testing.T) {
 	second, err := packArchive(map[string]string{"root": dir}, []byte(`{"root":{"source":"x"}}`))
 	require.NoError(t, err)
 	require.Equal(t, first, second)
+}
+
+// TestDedupeEdges verifies edges are deduplicated (each reference is recorded by
+// both the provider and schema walks) and sorted, so the manifest is stable.
+func TestDedupeEdges(t *testing.T) {
+	t.Parallel()
+
+	got := dedupeEdges([]resolvedEdge{
+		{Caller: "0", Source: "b/m/aws", Target: "2"},
+		{Caller: "", Source: "root", Target: "0"},
+		{Caller: "0", Source: "a/m/aws", Target: "1"},
+		{Caller: "", Source: "root", Target: "0"},     // duplicate
+		{Caller: "0", Source: "b/m/aws", Target: "2"}, // duplicate
+	})
+
+	require.Equal(t, []resolvedEdge{
+		{Caller: "", Source: "root", Target: "0"},
+		{Caller: "0", Source: "a/m/aws", Target: "1"},
+		{Caller: "0", Source: "b/m/aws", Target: "2"},
+	}, got)
 }

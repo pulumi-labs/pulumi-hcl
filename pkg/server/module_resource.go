@@ -211,10 +211,9 @@ func (m *moduleProvider) construct(ctx context.Context, req p.ConstructRequest) 
 
 	// Resolve every provider the module references to a concrete descriptor, the
 	// dynamic equivalent of the on-disk sdks/ descriptors a source MLC reads.
-	resolved, err := resolve.Packages(ctx, resolver,
-		m.requirementSpecs(ctx, m.moduleLoader, loaded.Config, loaded.SourcePath))
+	resolved, err := m.resolvePackages(ctx, m.moduleLoader, loaded.Config, loaded.SourcePath)
 	if err != nil {
-		return p.ConstructResponse{}, fmt.Errorf("resolving module providers: %w", err)
+		return p.ConstructResponse{}, err
 	}
 
 	// A parameterization-aware loader lets the engine load the schemas of bridged
@@ -283,10 +282,9 @@ func (m *moduleProvider) constructParameterized(ctx context.Context, req p.Const
 		return p.ConstructResponse{}, fmt.Errorf("loading module %q: %w", param.name, err)
 	}
 
-	resolved, err := resolve.Packages(ctx, m.resolver,
-		m.requirementSpecs(ctx, param.loader, loaded.Config, loaded.SourcePath))
+	resolved, err := m.resolvePackages(ctx, param.loader, loaded.Config, loaded.SourcePath)
 	if err != nil {
-		return p.ConstructResponse{}, fmt.Errorf("resolving module providers: %w", err)
+		return p.ConstructResponse{}, err
 	}
 
 	monitorConn, err := grpc.NewClient(req.MonitorEndpoint,

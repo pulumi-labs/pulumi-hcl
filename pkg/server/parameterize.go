@@ -155,36 +155,15 @@ func (m *moduleProvider) parameterizeArgs(ctx context.Context, args []string) (p
 		return p.ParameterizeResponse{}, fmt.Errorf("loading module %q: %w", source, err)
 	}
 
-	token, pkgVer, err := moduleIdentity(loaded, defaultPackageName(source))
-	if err != nil {
-		return p.ParameterizeResponse{}, err
-	}
-
-	resolved, err := resolve.Packages(ctx, m.resolver, m.requirementSpecs(ctx, loader, loaded.Config, loaded.SourcePath))
-	if err != nil {
-		return p.ParameterizeResponse{}, fmt.Errorf("resolving module providers: %w", err)
-	}
-
-	sch, err := m.generateModuleSchema(ctx, loader, loaded, resolved, token, pkgVer)
-	if err != nil {
-		return p.ParameterizeResponse{}, fmt.Errorf("generating schema: %w", err)
-	}
-
-	value, err := rec.archive(moduleRef{Source: source, Version: version})
-	if err != nil {
-		return p.ParameterizeResponse{}, fmt.Errorf("bundling module %q: %w", source, err)
-	}
-
-	pkgName := token.Package().Name().String()
-	m.param = &parameterizedModule{
-		schema:      sch,
-		loader:      loader,
-		rootSource:  source,
-		rootVersion: version,
-		value:       value,
-		name:        pkgName,
-	}
-	return p.ParameterizeResponse{Name: pkgName, Version: pkgVer}, nil
+	// finishParameterize's schema and provider walks drive the recorder; archive
+	// the recorded tree once they have run.
+	return m.finishParameterize(ctx, loader, loaded, source, version, "", func() ([]byte, error) {
+		value, err := rec.archive(moduleRef{Source: source, Version: version})
+		if err != nil {
+			return nil, fmt.Errorf("bundling module %q: %w", source, err)
+		}
+		return value, nil
+	})
 }
 
 // parameterizeValue handles re-parameterization from a generated SDK. It unpacks
@@ -199,6 +178,15 @@ func (m *moduleProvider) parameterizeValue(ctx context.Context, value []byte) (p
 	if err != nil {
 		return p.ParameterizeResponse{}, fmt.Errorf("creating unpack directory: %w", err)
 	}
+	// On success the directory is owned by m.param and removed on Cancel; until
+	// then, clean it up if any step below fails.
+	keep := false
+	defer func() {
+		if !keep {
+			_ = os.RemoveAll(dir)
+		}
+	}()
+
 	if err := unpackArchive(value, dir); err != nil {
 		return p.ParameterizeResponse{}, fmt.Errorf("unpacking module bundle: %w", err)
 	}
@@ -213,14 +201,27 @@ func (m *moduleProvider) parameterizeValue(ctx context.Context, value []byte) (p
 		return p.ParameterizeResponse{}, fmt.Errorf("loading bundled module %q: %w", manifest.Root.Source, err)
 	}
 
-	token, pkgVer, err := moduleIdentity(loaded, defaultPackageName(manifest.Root.Source))
+	resp, err := m.finishParameterize(ctx, loader, loaded, manifest.Root.Source, manifest.Root.Version, dir,
+		func() ([]byte, error) { return value, nil })
+	if err != nil {
+		return p.ParameterizeResponse{}, err
+	}
+	keep = true
+	return resp, nil
+}
+
+func (m *moduleProvider) finishParameterize(
+	ctx context.Context, loader *modules.Loader, loaded *modules.LoadedModule,
+	rootSource, rootVersion, tempDir string, makeValue func() ([]byte, error),
+) (p.ParameterizeResponse, error) {
+	token, pkgVer, err := moduleIdentity(loaded, defaultPackageName(rootSource))
 	if err != nil {
 		return p.ParameterizeResponse{}, err
 	}
 
-	resolved, err := resolve.Packages(ctx, m.resolver, m.requirementSpecs(ctx, loader, loaded.Config, loaded.SourcePath))
+	resolved, err := m.resolvePackages(ctx, loader, loaded.Config, loaded.SourcePath)
 	if err != nil {
-		return p.ParameterizeResponse{}, fmt.Errorf("resolving module providers: %w", err)
+		return p.ParameterizeResponse{}, err
 	}
 
 	sch, err := m.generateModuleSchema(ctx, loader, loaded, resolved, token, pkgVer)
@@ -228,17 +229,34 @@ func (m *moduleProvider) parameterizeValue(ctx context.Context, value []byte) (p
 		return p.ParameterizeResponse{}, fmt.Errorf("generating schema: %w", err)
 	}
 
+	value, err := makeValue()
+	if err != nil {
+		return p.ParameterizeResponse{}, err
+	}
+
 	pkgName := token.Package().Name().String()
 	m.param = &parameterizedModule{
 		schema:      sch,
 		loader:      loader,
-		rootSource:  manifest.Root.Source,
-		rootVersion: manifest.Root.Version,
+		rootSource:  rootSource,
+		rootVersion: rootVersion,
 		value:       value,
 		name:        pkgName,
-		tempDir:     dir,
+		tempDir:     tempDir,
 	}
 	return p.ParameterizeResponse{Name: pkgName, Version: pkgVer}, nil
+}
+
+// resolvePackages resolves every provider the module tree references to a
+// concrete descriptor, walking child modules through loader.
+func (m *moduleProvider) resolvePackages(
+	ctx context.Context, loader *modules.Loader, config *ast.Config, workDir string,
+) (map[string]workspace.PackageDescriptor, error) {
+	resolved, err := resolve.Packages(ctx, m.resolver, m.requirementSpecs(ctx, loader, config, workDir))
+	if err != nil {
+		return nil, fmt.Errorf("resolving module providers: %w", err)
+	}
+	return resolved, nil
 }
 
 // generateModuleSchema builds the typed schema for a loaded module, resolving
@@ -333,11 +351,40 @@ func (r *resolveRecorder) archive(root moduleRef) ([]byte, error) {
 	for absDir, rel := range r.pkgRel {
 		dirs[rel] = absDir
 	}
-	manifestJSON, err := json.Marshal(bundleManifest{Root: root, Edges: r.edges})
+	manifestJSON, err := json.Marshal(bundleManifest{Root: root, Edges: dedupeEdges(r.edges)})
 	if err != nil {
 		return nil, err
 	}
 	return packArchive(dirs, manifestJSON)
+}
+
+// dedupeEdges drops duplicate edges — each reference is recorded once per walk
+// that loads it (provider resolution, schema generation) — and sorts the result,
+// so the manifest is stable regardless of how often a module was loaded.
+func dedupeEdges(edges []resolvedEdge) []resolvedEdge {
+	seen := make(map[resolvedEdge]struct{}, len(edges))
+	out := make([]resolvedEdge, 0, len(edges))
+	for _, e := range edges {
+		if _, ok := seen[e]; ok {
+			continue
+		}
+		seen[e] = struct{}{}
+		out = append(out, e)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		a, b := out[i], out[j]
+		if a.Caller != b.Caller {
+			return a.Caller < b.Caller
+		}
+		if a.Source != b.Source {
+			return a.Source < b.Source
+		}
+		if a.Version != b.Version {
+			return a.Version < b.Version
+		}
+		return a.Target < b.Target
+	})
+	return out
 }
 
 // bundleResolver resolves module sources from an unpacked bundle's manifest, with

@@ -442,7 +442,11 @@ func collectRequirementsRec(
 	if loader == nil {
 		return
 	}
-	for _, mod := range config.Modules {
+	// Iterate in a stable order: this walk drives the archive layout when a module
+	// is bundled for parameterization, so a map's random order would make the
+	// bundle non-deterministic.
+	for _, name := range slices.Sorted(maps.Keys(config.Modules)) {
+		mod := config.Modules[name]
 		if mod.Source == "" {
 			continue
 		}
