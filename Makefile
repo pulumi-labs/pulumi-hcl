@@ -10,17 +10,22 @@ BIN_DIR := bin
 # Binary names
 LANGUAGE_HOST := pulumi-language-hcl
 CONVERTER := pulumi-converter-hcl
+RESOURCE_PROVIDER := pulumi-resource-hcl
 
 _ := $(shell mkdir -p $(BIN_DIR))
 _ := $(shell go build -o $(BIN_DIR)/helpmakego github.com/iwahbe/helpmakego)
 
 all: build
 
-build: $(BIN_DIR)/$(LANGUAGE_HOST) $(BIN_DIR)/$(CONVERTER)
+build: $(BIN_DIR)/$(LANGUAGE_HOST) $(BIN_DIR)/$(CONVERTER) $(BIN_DIR)/$(RESOURCE_PROVIDER)
 
 $(BIN_DIR)/$(LANGUAGE_HOST): $(shell $(BIN_DIR)/helpmakego ./cmd/pulumi-language-hcl)
 	@mkdir -p $(BIN_DIR)
 	go build $(LDFLAGS) -o $@ ./cmd/pulumi-language-hcl
+
+$(BIN_DIR)/$(RESOURCE_PROVIDER): $(shell $(BIN_DIR)/helpmakego ./cmd/pulumi-resource-hcl)
+	@mkdir -p $(BIN_DIR)
+	go build $(LDFLAGS) -o $@ ./cmd/pulumi-resource-hcl
 
 $(BIN_DIR)/$(CONVERTER): $(shell $(BIN_DIR)/helpmakego ./cmd/pulumi-converter-hcl)
 	@mkdir -p $(BIN_DIR)

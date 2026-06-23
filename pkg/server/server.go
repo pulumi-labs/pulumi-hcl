@@ -802,14 +802,14 @@ func (host *LanguageHost) GenerateProgram(
 		if pkgErr != nil || pkg.Parameterization == nil {
 			continue
 		}
-		baseVersion := pkg.Parameterization.BaseProvider.Version
+		baseVersion := pkg.Parameterization.BasePlugin.Version
 		var paramVersion semver.Version
 		if pkg.Version != nil {
 			paramVersion = *pkg.Version
 		}
 		desc := workspace.PackageDescriptor{
 			PluginDescriptor: workspace.PluginDescriptor{
-				Name:    pkg.Parameterization.BaseProvider.Name,
+				Name:    pkg.Parameterization.BasePlugin.Name,
 				Version: &baseVersion,
 				Kind:    apitype.ResourcePlugin,
 			},

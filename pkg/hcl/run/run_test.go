@@ -3264,7 +3264,7 @@ module "child" {
 
 		SchemaLoader: schemaloader.New(t, schema.PackageSpec{
 			Name: "simple",
-			Provider: schema.ResourceSpec{
+			Provider: &schema.ResourceSpec{
 				InputProperties: map[string]schema.PropertySpec{
 					"prefix": {TypeSpec: schema.TypeSpec{Type: "string"}},
 				},
@@ -3368,7 +3368,7 @@ module "child" {
 		RootDir:         tmpDir,
 		SchemaLoader: schemaloader.New(t, schema.PackageSpec{
 			Name: "simple",
-			Provider: schema.ResourceSpec{
+			Provider: &schema.ResourceSpec{
 				InputProperties: map[string]schema.PropertySpec{
 					"prefix": {TypeSpec: schema.TypeSpec{Type: "string"}},
 				},

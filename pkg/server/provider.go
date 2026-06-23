@@ -319,7 +319,7 @@ func (p *HCLProvider) Construct(ctx context.Context, req *pulumirpc.ConstructReq
 		replaceWith:             req.ReplaceWith,
 		customTimeouts:          req.CustomTimeouts,
 		replacementTrigger:      req.ReplacementTrigger,
-		moduleSchema:            p.schema,
+		mapOutputs:              p.schema.OutputsToPulumi,
 	}
 
 	// Set up config from inputs, prefixing with project name as the engine
@@ -426,9 +426,9 @@ type constructResourceMonitor struct {
 	componentURN urn.URN
 	outputs      property.Map
 
-	// moduleSchema maps the component's snake_case HCL output names to the
-	// camelCase schema property names when registering its outputs.
-	moduleSchema *schema.ModuleSchema
+	// mapOutputs transforms the HCL module's top-level outputs into the
+	// component's output property map before they are registered.
+	mapOutputs func(property.Map) property.Map
 }
 
 // RegisterResource registers a resource.
@@ -556,7 +556,7 @@ func (m *constructResourceMonitor) RegisterResourceOutputs(
 	// names the schema declares, at every nesting depth. Child resources already
 	// carry their own correctly-cased property names.
 	if urn == m.componentURN {
-		outputs = m.moduleSchema.OutputsToPulumi(outputs)
+		outputs = m.mapOutputs(outputs)
 		m.outputs = outputs
 	}
 
