@@ -40,6 +40,12 @@ func moduleResourceSchema(version string) pulumischema.PackageSpec {
 			TypeSpec:    pulumischema.TypeSpec{Type: "string", Plain: true},
 			Description: "The module source address (a registry reference, URL, or local path).",
 		},
+		"version": {
+			// Plain, like source: the version constraint must be known at Construct
+			// time to resolve a registry module source.
+			TypeSpec:    pulumischema.TypeSpec{Type: "string", Plain: true},
+			Description: "An optional version constraint, used when source is a registry module reference.",
+		},
 		"inputs": {
 			TypeSpec:    mapOfAny(),
 			Description: "The module's input variables, keyed by variable name.",

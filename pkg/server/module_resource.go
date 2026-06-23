@@ -151,6 +151,14 @@ func (m *moduleProvider) construct(ctx context.Context, req p.ConstructRequest) 
 	}
 	source := sourceVal.AsString()
 
+	var version string
+	if v, ok := req.Inputs.GetOk("version"); ok {
+		if !v.IsString() {
+			return p.ConstructResponse{}, fmt.Errorf("module %q input must be a plain string", "version")
+		}
+		version = v.AsString()
+	}
+
 	var inputs property.Map
 	if v, ok := req.Inputs.GetOk("inputs"); ok && !v.IsComputed() {
 		if !v.IsMap() {
@@ -159,7 +167,7 @@ func (m *moduleProvider) construct(ctx context.Context, req p.ConstructRequest) 
 		inputs = v.AsMap()
 	}
 
-	loaded, err := m.moduleLoader.LoadModule(source, "", ".")
+	loaded, err := m.moduleLoader.LoadModule(source, version, ".")
 	if err != nil {
 		return p.ConstructResponse{}, fmt.Errorf("loading module %q: %w", source, err)
 	}

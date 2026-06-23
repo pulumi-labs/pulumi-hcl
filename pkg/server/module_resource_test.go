@@ -82,6 +82,19 @@ func TestModuleConstructValidation(t *testing.T) {
 		})
 		require.EqualError(t, err, `module "inputs" input must be a map`)
 	})
+
+	t.Run("non-string version", func(t *testing.T) {
+		t.Parallel()
+		// version is optional, but when present it must be a plain string.
+		_, err := (&moduleProvider{resolver: stubResolver{}}).construct(t.Context(), p.ConstructRequest{
+			Urn: urn,
+			Inputs: property.NewMap(map[string]property.Value{
+				"source":  property.New("./mod"),
+				"version": property.New(42.0),
+			}),
+		})
+		require.EqualError(t, err, `module "version" input must be a plain string`)
+	})
 }
 
 func TestModuleConstructRejectsUnknownInput(t *testing.T) {
@@ -101,7 +114,7 @@ func TestModuleConstructRejectsUnknownInput(t *testing.T) {
 		{
 			name:    "single unknown",
 			inputs:  map[string]property.Value{"name": property.New("ada"), "bogus": property.New("x")},
-			wantErr: "module has no variable declared for input: bogus",
+			wantErr: "module has no variables declared for input: bogus",
 		},
 		{
 			name:    "multiple unknown reported sorted",
