@@ -40,6 +40,7 @@ import (
 	"github.com/pulumi-labs/pulumi-hcl/pkg/hcl/parser"
 	"github.com/pulumi-labs/pulumi-hcl/vendored/getmodules"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/util/contract"
+	"github.com/pulumi/pulumi/sdk/v3/go/common/workspace"
 )
 
 // fetchMu serializes every PackageFetcher.FetchPackage call in the process.
@@ -85,11 +86,14 @@ func NewLoader(ctx context.Context) *Loader {
 }
 
 func defaultCacheDir() string {
-	home, err := os.UserHomeDir()
+	// Resolve "modules" under the Pulumi home the same way plugins resolve under
+	// it (workspace.GetPluginDir uses GetPulumiPath), so PULUMI_HOME relocates the
+	// module cache too.
+	dir, err := workspace.GetPulumiPath("modules")
 	if err != nil {
-		home = os.TempDir()
+		return filepath.Join(os.TempDir(), "modules")
 	}
-	return filepath.Join(home, ".pulumi", "modules")
+	return dir
 }
 
 // LoadModule loads a module from the given source. versionConstraint is a
