@@ -1,7 +1,7 @@
 # A file-reading function called from inside a child module must resolve a relative path
 # the way OpenTofu does — against the root module / process working directory — so that a
 # `"${path.module}/<file>"` argument locates the file inside the declaring module. The
-# child invokes every affected function against mod/aux.txt (and mod/tmpl.tftpl); both
+# child invokes every affected function against mod/data.txt (and mod/tmpl.tftpl); both
 # runtimes must compute identical outputs.
 module "m" {
   source = "./mod"
