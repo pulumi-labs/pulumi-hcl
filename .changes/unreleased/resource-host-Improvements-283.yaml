@@ -1,6 +1,0 @@
-kind: Improvements
-body: Make pulumi-resource-hcl parameterizable
-time: 2026-06-23T17:07:52.956574+02:00
-custom:
-    Component: resource-host
-    PR: "283"
