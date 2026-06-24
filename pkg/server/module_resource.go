@@ -123,7 +123,7 @@ func (m *moduleProvider) handshake(ctx context.Context, req p.HandshakeRequest) 
 
 	m.schemaLoader = schemaLoader
 	m.providerInfoSource = bridge.NewCache(bridge.NewMapperSource(mapperClient))
-	m.resolver = pulumirpc.NewPackageResolverClient(resolverConn)
+	m.resolver = resolve.NewCache(pulumirpc.NewPackageResolverClient(resolverConn))
 	if req.EngineAddress != "" && m.engine == nil {
 		if engineConn, err := grpc.NewClient(req.EngineAddress,
 			grpc.WithTransportCredentials(insecure.NewCredentials())); err == nil {
@@ -282,11 +282,6 @@ func (m *moduleProvider) constructParameterized(ctx context.Context, req p.Const
 		return p.ConstructResponse{}, fmt.Errorf("loading module %q: %w", param.name, err)
 	}
 
-	resolved, err := m.resolvePackages(ctx, param.loader, loaded.Config, loaded.SourcePath)
-	if err != nil {
-		return p.ConstructResponse{}, err
-	}
-
 	monitorConn, err := grpc.NewClient(req.MonitorEndpoint,
 		grpc.WithTransportCredentials(insecure.NewCredentials()),
 		grpc.WithUnaryInterceptor(rpcutil.OpenTracingClientInterceptor()),
@@ -306,6 +301,9 @@ func (m *moduleProvider) constructParameterized(ctx context.Context, req p.Const
 	resmon := m.newConstructMonitor(ctx, req,
 		pulumirpc.NewResourceMonitorClient(monitorConn), componentInputs, param.schema.OutputsToPulumi)
 
+	loader := pulumiSchema.NewCachedLoader(packages.NewParameterizationAwareLoader(
+		m.schemaLoader, param.packages))
+
 	engineRun := run.NewEngine(ctx, loaded.Config, &run.EngineOptions{
 		ProjectName:        string(req.Urn.Project()),
 		StackName:          string(req.Urn.Stack()),
@@ -314,9 +312,9 @@ func (m *moduleProvider) constructParameterized(ctx context.Context, req p.Const
 		RootDir:            loaded.SourcePath,
 		Config:             moduleConfig(string(req.Urn.Project()), param.schema.InputsToHCL(req.Inputs)),
 		ResourceMonitor:    resmon,
-		SchemaLoader:       pulumiSchema.NewCachedLoader(packages.NewParameterizationAwareLoader(m.schemaLoader, resolved)),
+		SchemaLoader:       loader,
 		ProviderInfoSource: m.providerInfoSource,
-		Packages:           resolved,
+		Packages:           param.packages,
 		ModuleLoader:       param.loader,
 		Parallel:           int(req.Parallel),
 	})

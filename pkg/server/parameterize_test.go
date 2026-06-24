@@ -22,8 +22,11 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/blang/semver"
 	p "github.com/pulumi/pulumi-go-provider"
 	pulumiSchema "github.com/pulumi/pulumi/pkg/v3/codegen/schema"
+	"github.com/pulumi/pulumi/sdk/v3/go/common/apitype"
+	"github.com/pulumi/pulumi/sdk/v3/go/common/workspace"
 	"github.com/stretchr/testify/require"
 
 	"github.com/pulumi-labs/pulumi-hcl/pkg/hcl/modules"
@@ -151,13 +154,14 @@ func TestBundleRoundTripResolvesOffline(t *testing.T) {
 	_, err = loader.LoadModule("acme/widget/aws", "", loaded.SourcePath)
 	require.NoError(t, err)
 
-	value, err := rec.archive(moduleRef{Source: root})
+	value, err := rec.bundle(moduleRef{Source: root}, nil)
 	require.NoError(t, err)
 
-	dest := t.TempDir()
-	require.NoError(t, unpackArchive(value, dest))
-	manifest, err := readManifest(dest)
+	b, err := decodeBundle(value)
 	require.NoError(t, err)
+	dest := t.TempDir()
+	require.NoError(t, unpackArchive(b.Archive, dest))
+	manifest := b.Manifest
 
 	// The bundle resolver has no network and no filesystem fallback: every
 	// source — the absolute-path root included — must come from the manifest.
@@ -211,13 +215,14 @@ func TestBundleRoundTripEscapingTopology(t *testing.T) {
 	_, err = loader.LoadModule("../../B", "", a.SourcePath)
 	require.NoError(t, err)
 
-	value, err := rec.archive(moduleRef{Source: rootDir})
+	value, err := rec.bundle(moduleRef{Source: rootDir}, nil)
 	require.NoError(t, err)
 
-	dest := t.TempDir()
-	require.NoError(t, unpackArchive(value, dest))
-	manifest, err := readManifest(dest)
+	b, err := decodeBundle(value)
 	require.NoError(t, err)
+	dest := t.TempDir()
+	require.NoError(t, unpackArchive(b.Archive, dest))
+	manifest := b.Manifest
 
 	// The escaping reference must be bundled as its own package, not as a path
 	// inside the root package "0".
@@ -261,11 +266,54 @@ func TestPackArchiveDeterministic(t *testing.T) {
 	require.NoError(t, os.MkdirAll(filepath.Join(dir, "sub"), 0o755))
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "sub", "b.tf"), []byte("b"), 0o600))
 
-	first, err := packArchive(map[string]string{"root": dir}, []byte(`{"root":{"source":"x"}}`))
+	first, err := packArchive(map[string]string{"root": dir})
 	require.NoError(t, err)
-	second, err := packArchive(map[string]string{"root": dir}, []byte(`{"root":{"source":"x"}}`))
+	second, err := packArchive(map[string]string{"root": dir})
 	require.NoError(t, err)
 	require.Equal(t, first, second)
+}
+
+// TestBundleBakesPackages verifies the resolved provider descriptors survive the
+// bundle round-trip — including a bridged provider's parameterization — so the
+// usage path can reuse them instead of re-resolving, and that the encoding is
+// deterministic (the engine hashes the Value for provider identity).
+func TestBundleBakesPackages(t *testing.T) {
+	t.Parallel()
+
+	awsVer := semver.MustParse("6.46.0")
+	tfVer := semver.MustParse("0.9.0")
+	packages := map[string]workspace.PackageDescriptor{
+		"aws": {
+			PluginDescriptor: workspace.PluginDescriptor{
+				Name:    "terraform-provider",
+				Kind:    apitype.ResourcePlugin,
+				Version: &tfVer,
+			},
+			Parameterization: &workspace.Parameterization{
+				Name:    "aws",
+				Version: awsVer,
+				Value:   []byte(`{"remote":{"url":"registry.opentofu.org/hashicorp/aws","version":"6.46.0"}}`),
+			},
+		},
+	}
+
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "main.tf"), []byte(`output "x" { value = 1 }`), 0o600))
+	rec := newResolveRecorder(func(string, string, string) (string, error) { return dir, nil })
+	loader := modules.NewLoader(rec.resolve)
+	_, err := loader.LoadModule(dir, "", ".")
+	require.NoError(t, err)
+
+	value, err := rec.bundle(moduleRef{Source: dir}, packages)
+	require.NoError(t, err)
+
+	again, err := rec.bundle(moduleRef{Source: dir}, packages)
+	require.NoError(t, err)
+	require.Equal(t, value, again, "the bundle encoding must be deterministic")
+
+	b, err := decodeBundle(value)
+	require.NoError(t, err)
+	require.Equal(t, packages, b.Packages)
 }
 
 // TestDedupeEdges verifies edges are deduplicated (each reference is recorded by

@@ -35,6 +35,7 @@ import (
 	p "github.com/pulumi/pulumi-go-provider"
 	pulumiSchema "github.com/pulumi/pulumi/pkg/v3/codegen/schema"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/tokens"
+	"github.com/pulumi/pulumi/sdk/v3/go/common/util/contract"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/workspace"
 
 	"github.com/pulumi-labs/pulumi-hcl/pkg/hcl/ast"
@@ -44,11 +45,6 @@ import (
 	"github.com/pulumi-labs/pulumi-hcl/pkg/hcl/schema"
 	"github.com/pulumi-labs/pulumi-hcl/vendored/getmodules"
 )
-
-// bundleManifestName is the archive path of the manifest that records how every
-// module source resolves. It cannot collide with a package directory, which is
-// named by a numeric index.
-const bundleManifestName = "manifest.json"
 
 // parameterizedModule is the state of a moduleProvider that has been
 // parameterized by a specific module source. While set, the provider serves that
@@ -63,7 +59,10 @@ type parameterizedModule struct {
 	// rootSource and rootVersion address the root module through loader.
 	rootSource  string
 	rootVersion string
-	// value is the parameterization Value (the bundle archive), surfaced in the
+	// packages are the resolved provider descriptors, baked into the bundle at
+	// `package add` time.
+	packages map[string]workspace.PackageDescriptor
+	// value is the parameterization Value (the encoded bundle), surfaced in the
 	// schema so a generated SDK can re-parameterize without re-downloading.
 	value []byte
 	name  string
@@ -72,10 +71,37 @@ type parameterizedModule struct {
 	tempDir string
 }
 
+// bundle is the parameterization Value: a self-contained, offline snapshot of a
+// module tree.
+type bundle struct {
+	// Manifest records how every module reference resolves within Archive, and
+	// how to reach the root module.
+	Manifest bundleManifest `json:"manifest"`
+	// Packages are the resolved provider descriptors, keyed by local provider
+	// name, computed once at `package add` time.
+	Packages map[string]workspace.PackageDescriptor `json:"packages"`
+	// Archive is the deterministic tar.gz of the module package directories.
+	Archive []byte `json:"archive"`
+}
+
+// encodeBundle serialises a bundle to the parameterization Value.
+func (b bundle) encode() []byte {
+	data, err := json.Marshal(b)
+	contract.AssertNoErrorf(err, "bundle is always serializable")
+	return data
+}
+
+// decodeBundle parses a parameterization Value produced by encodeBundle.
+func decodeBundle(value []byte) (bundle, error) {
+	var b bundle
+	if err := json.Unmarshal(value, &b); err != nil {
+		return bundle{}, fmt.Errorf("decoding bundle: %w", err)
+	}
+	return b, nil
+}
+
 // bundleManifest records how to resolve every module reference in a bundled tree
-// with no network access, and how to reach the root module. It is the only thing
-// the parameterization needs beyond the archived files: the schema and provider
-// set are recomputed from the module tree at usage.
+// with no network access, and how to reach the root module.
 type bundleManifest struct {
 	// Root addresses the root module, as passed to `pulumi package add`.
 	Root moduleRef `json:"root"`
@@ -155,10 +181,17 @@ func (m *moduleProvider) parameterizeArgs(ctx context.Context, args []string) (p
 		return p.ParameterizeResponse{}, fmt.Errorf("loading module %q: %w", source, err)
 	}
 
-	// finishParameterize's schema and provider walks drive the recorder; archive
-	// the recorded tree once they have run.
-	return m.finishParameterize(ctx, loader, loaded, source, version, "", func() ([]byte, error) {
-		value, err := rec.archive(moduleRef{Source: source, Version: version})
+	// Resolve every provider now, while the recording loader is active, so the
+	// descriptors can be baked into the bundle and reused offline at usage.
+	resolved, err := m.resolvePackages(ctx, loader, loaded.Config, loaded.SourcePath)
+	if err != nil {
+		return p.ParameterizeResponse{}, err
+	}
+
+	// finishParameterize's schema walk drives the recorder too; bundle the
+	// recorded tree once it has run.
+	return m.finishParameterize(ctx, loader, loaded, source, version, "", resolved, func() ([]byte, error) {
+		value, err := rec.bundle(moduleRef{Source: source, Version: version}, resolved)
 		if err != nil {
 			return nil, fmt.Errorf("bundling module %q: %w", source, err)
 		}
@@ -167,11 +200,17 @@ func (m *moduleProvider) parameterizeArgs(ctx context.Context, args []string) (p
 }
 
 // parameterizeValue handles re-parameterization from a generated SDK. It unpacks
-// the bundled tree, builds a loader that resolves every source from the bundle's
-// manifest with no network access, and recomputes the schema from the module.
+// the bundled module files, builds a loader that resolves every source from the
+// bundle's manifest with no network access, and reuses the bundle's baked
+// provider descriptors rather than re-resolving them through the engine.
 func (m *moduleProvider) parameterizeValue(ctx context.Context, value []byte) (p.ParameterizeResponse, error) {
 	if m.resolver == nil {
 		return p.ParameterizeResponse{}, fmt.Errorf("parameterize called before a successful handshake")
+	}
+
+	b, err := decodeBundle(value)
+	if err != nil {
+		return p.ParameterizeResponse{}, err
 	}
 
 	dir, err := os.MkdirTemp("", "pulumi-hcl-module-")
@@ -187,22 +226,18 @@ func (m *moduleProvider) parameterizeValue(ctx context.Context, value []byte) (p
 		}
 	}()
 
-	if err := unpackArchive(value, dir); err != nil {
+	if err := unpackArchive(b.Archive, dir); err != nil {
 		return p.ParameterizeResponse{}, fmt.Errorf("unpacking module bundle: %w", err)
 	}
-	manifest, err := readManifest(dir)
+
+	loader := modules.NewLoader(bundleResolver(dir, b.Manifest))
+	loaded, err := loader.LoadModule(b.Manifest.Root.Source, b.Manifest.Root.Version, ".")
 	if err != nil {
-		return p.ParameterizeResponse{}, err
+		return p.ParameterizeResponse{}, fmt.Errorf("loading bundled module %q: %w", b.Manifest.Root.Source, err)
 	}
 
-	loader := modules.NewLoader(bundleResolver(dir, manifest))
-	loaded, err := loader.LoadModule(manifest.Root.Source, manifest.Root.Version, ".")
-	if err != nil {
-		return p.ParameterizeResponse{}, fmt.Errorf("loading bundled module %q: %w", manifest.Root.Source, err)
-	}
-
-	resp, err := m.finishParameterize(ctx, loader, loaded, manifest.Root.Source, manifest.Root.Version, dir,
-		func() ([]byte, error) { return value, nil })
+	resp, err := m.finishParameterize(ctx, loader, loaded, b.Manifest.Root.Source, b.Manifest.Root.Version, dir,
+		b.Packages, func() ([]byte, error) { return value, nil })
 	if err != nil {
 		return p.ParameterizeResponse{}, err
 	}
@@ -212,14 +247,10 @@ func (m *moduleProvider) parameterizeValue(ctx context.Context, value []byte) (p
 
 func (m *moduleProvider) finishParameterize(
 	ctx context.Context, loader *modules.Loader, loaded *modules.LoadedModule,
-	rootSource, rootVersion, tempDir string, makeValue func() ([]byte, error),
+	rootSource, rootVersion, tempDir string,
+	resolved map[string]workspace.PackageDescriptor, makeValue func() ([]byte, error),
 ) (p.ParameterizeResponse, error) {
 	token, pkgVer, err := moduleIdentity(loaded, defaultPackageName(rootSource))
-	if err != nil {
-		return p.ParameterizeResponse{}, err
-	}
-
-	resolved, err := m.resolvePackages(ctx, loader, loaded.Config, loaded.SourcePath)
 	if err != nil {
 		return p.ParameterizeResponse{}, err
 	}
@@ -240,6 +271,7 @@ func (m *moduleProvider) finishParameterize(
 		loader:      loader,
 		rootSource:  rootSource,
 		rootVersion: rootVersion,
+		packages:    resolved,
 		value:       value,
 		name:        pkgName,
 		tempDir:     tempDir,
@@ -344,18 +376,20 @@ func (r *resolveRecorder) rel(dir string) string {
 	return rel
 }
 
-// archive packs every recorded package directory and the manifest into a
-// deterministic tar.gz.
-func (r *resolveRecorder) archive(root moduleRef) ([]byte, error) {
+func (r *resolveRecorder) bundle(root moduleRef, packages map[string]workspace.PackageDescriptor) ([]byte, error) {
 	dirs := make(map[string]string, len(r.pkgRel))
 	for absDir, rel := range r.pkgRel {
 		dirs[rel] = absDir
 	}
-	manifestJSON, err := json.Marshal(bundleManifest{Root: root, Edges: dedupeEdges(r.edges)})
+	archive, err := packArchive(dirs)
 	if err != nil {
 		return nil, err
 	}
-	return packArchive(dirs, manifestJSON)
+	return bundle{
+		Manifest: bundleManifest{Root: root, Edges: dedupeEdges(r.edges)},
+		Packages: packages,
+		Archive:  archive,
+	}.encode(), nil
 }
 
 // dedupeEdges drops duplicate edges — each reference is recorded once per walk
@@ -413,19 +447,6 @@ func bundleResolver(unpackDir string, manifest bundleManifest) modules.ResolverF
 	}
 }
 
-// readManifest reads the bundle manifest from an unpacked archive directory.
-func readManifest(dir string) (bundleManifest, error) {
-	data, err := os.ReadFile(filepath.Join(dir, bundleManifestName))
-	if err != nil {
-		return bundleManifest{}, fmt.Errorf("reading bundle manifest: %w", err)
-	}
-	var manifest bundleManifest
-	if err := json.Unmarshal(data, &manifest); err != nil {
-		return bundleManifest{}, fmt.Errorf("decoding bundle manifest: %w", err)
-	}
-	return manifest, nil
-}
-
 // defaultPackageName derives a Pulumi package name from a module source, used
 // when the module declares no terraform `package` block. Registry sources use
 // their module name segment; other sources use the last path component.
@@ -469,17 +490,17 @@ func sanitizePackageName(name string) string {
 // provider identity — are deterministic.
 var bundleEpoch = time.Unix(0, 0).UTC()
 
-// packArchive packs the manifest and each (archive-path → directory) tree into a
-// deterministic tar.gz: entries are sorted, modification times fixed, and only
-// regular files and directories are included.
-func packArchive(dirs map[string]string, manifestJSON []byte) ([]byte, error) {
+// packArchive packs each (archive-path → directory) tree into a deterministic
+// tar.gz: entries are sorted, modification times fixed, and only regular files
+// and directories are included.
+func packArchive(dirs map[string]string) ([]byte, error) {
 	type entry struct {
 		name    string
 		absPath string      // set for files copied from disk
-		data    []byte      // set for in-memory files (the manifest)
+		data    []byte      // set for in-memory files
 		info    os.FileInfo // nil for in-memory files
 	}
-	files := []entry{{name: bundleManifestName, data: manifestJSON}}
+	var files []entry
 	for relPath, absDir := range dirs {
 		err := filepath.Walk(absDir, func(p string, info os.FileInfo, err error) error {
 			if err != nil {
