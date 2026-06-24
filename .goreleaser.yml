@@ -39,15 +39,38 @@ builds:
     ldflags:
       - -w -s -X github.com/pulumi-labs/pulumi-hcl/pkg/version.version={{.Tag}}
 
+  - id: pulumi-resource-hcl
+    binary: pulumi-resource-hcl
+    main: ./cmd/pulumi-resource-hcl
+    env:
+      - CGO_ENABLED=0
+      - GO111MODULE=on
+    goos:
+      - darwin
+      - windows
+      - linux
+    goarch:
+      - amd64
+      - arm64
+    mod_timestamp: '{{ .CommitTimestamp }}'
+    flags:
+      - -trimpath
+    ldflags:
+      - -w -s -X github.com/pulumi-labs/pulumi-hcl/pkg/version.version={{.Tag}}
+
 archives:
   - id: pulumi-language-hcl
-    builds:
+    ids:
       - pulumi-language-hcl
     name_template: "pulumi-language-hcl-{{ .Tag }}-{{ .Os }}-{{ .Arch }}"
   - id: pulumi-converter-hcl
-    builds:
+    ids:
       - pulumi-converter-hcl
     name_template: "pulumi-converter-hcl-{{ .Tag }}-{{ .Os }}-{{ .Arch }}"
+  - id: pulumi-resource-hcl
+    ids:
+      - pulumi-resource-hcl
+    name_template: "pulumi-resource-hcl-{{ .Tag }}-{{ .Os }}-{{ .Arch }}"
 
 snapshot:
   version_template: "{{ .Tag }}-SNAPSHOT"
