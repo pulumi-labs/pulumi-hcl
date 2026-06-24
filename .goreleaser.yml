@@ -60,15 +60,15 @@ builds:
 
 archives:
   - id: pulumi-language-hcl
-    builds:
+    ids:
       - pulumi-language-hcl
     name_template: "pulumi-language-hcl-{{ .Tag }}-{{ .Os }}-{{ .Arch }}"
   - id: pulumi-converter-hcl
-    builds:
+    ids:
       - pulumi-converter-hcl
     name_template: "pulumi-converter-hcl-{{ .Tag }}-{{ .Os }}-{{ .Arch }}"
   - id: pulumi-resource-hcl
-    builds:
+    ids:
       - pulumi-resource-hcl
     name_template: "pulumi-resource-hcl-{{ .Tag }}-{{ .Os }}-{{ .Arch }}"
 
