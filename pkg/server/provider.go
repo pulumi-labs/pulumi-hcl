@@ -157,18 +157,14 @@ func moduleIdentity(loaded *modules.LoadedModule, defaultName string) (tokens.Ty
 	var explicitComponentName string
 	if tf := loaded.Config.Terraform; tf != nil {
 		if comp := tf.Component; comp != nil {
-			// Sanitize names from the package/component blocks so they cannot
-			// produce a malformed token; defaultName is already sanitized.
-			if comp.Name != "" {
-				explicitComponentName = sanitizePackageName(comp.Name)
-			}
+			explicitComponentName = comp.Name
 			if comp.Module != "" {
-				module = sanitizePackageName(comp.Module)
+				module = comp.Module
 			}
 		}
 		if pkg := tf.Package; pkg != nil {
 			if pkg.Name != "" {
-				pkgName = sanitizePackageName(pkg.Name)
+				pkgName = pkg.Name
 			}
 			if pkg.Version != "" {
 				pkgVersion = pkg.Version
