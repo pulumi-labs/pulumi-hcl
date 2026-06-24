@@ -223,7 +223,7 @@ type stubModuleLoader struct {
 	configs map[string]*ast.Config
 }
 
-func (s stubModuleLoader) LoadModule(source, _, _ string) (*ast.Config, string, error) {
+func (s stubModuleLoader) LoadModule(_ context.Context, source, _, _ string) (*ast.Config, string, error) {
 	cfg, ok := s.configs[source]
 	if !ok {
 		return nil, "", fmt.Errorf("no module %q", source)

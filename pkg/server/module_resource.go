@@ -200,7 +200,7 @@ func (m *moduleProvider) construct(ctx context.Context, req p.ConstructRequest) 
 		inputs = v.AsMap()
 	}
 
-	loaded, err := m.moduleLoader.LoadModule(source, version, ".")
+	loaded, err := m.moduleLoader.LoadModule(ctx, source, version, ".")
 	if err != nil {
 		return p.ConstructResponse{}, fmt.Errorf("loading module %q: %w", source, err)
 	}
@@ -277,7 +277,7 @@ func (m *moduleProvider) constructParameterized(ctx context.Context, req p.Const
 	}
 	param := m.param
 
-	loaded, err := param.loader.LoadModule(param.rootSource, param.rootVersion, ".")
+	loaded, err := param.loader.LoadModule(ctx, param.rootSource, param.rootVersion, ".")
 	if err != nil {
 		return p.ConstructResponse{}, fmt.Errorf("loading module %q: %w", param.name, err)
 	}

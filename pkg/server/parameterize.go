@@ -43,6 +43,7 @@ import (
 	"github.com/pulumi-labs/pulumi-hcl/pkg/hcl/packages"
 	"github.com/pulumi-labs/pulumi-hcl/pkg/hcl/resolve"
 	"github.com/pulumi-labs/pulumi-hcl/pkg/hcl/schema"
+	"github.com/pulumi-labs/pulumi-hcl/pkg/potel"
 	"github.com/pulumi-labs/pulumi-hcl/vendored/getmodules"
 )
 
@@ -176,7 +177,7 @@ func (m *moduleProvider) parameterizeArgs(ctx context.Context, args []string) (p
 	rec := newResolveRecorder(modules.LiveResolver(ctx))
 	loader := modules.NewLoader(rec.resolve)
 
-	loaded, err := loader.LoadModule(source, version, ".")
+	loaded, err := loader.LoadModule(ctx, source, version, ".")
 	if err != nil {
 		return p.ParameterizeResponse{}, fmt.Errorf("loading module %q: %w", source, err)
 	}
@@ -226,12 +227,13 @@ func (m *moduleProvider) parameterizeValue(ctx context.Context, value []byte) (p
 		}
 	}()
 
-	if err := unpackArchive(b.Archive, dir); err != nil {
+	err = unpackArchive(ctx, b.Archive, dir)
+	if err != nil {
 		return p.ParameterizeResponse{}, fmt.Errorf("unpacking module bundle: %w", err)
 	}
 
 	loader := modules.NewLoader(bundleResolver(dir, b.Manifest))
-	loaded, err := loader.LoadModule(b.Manifest.Root.Source, b.Manifest.Root.Version, ".")
+	loaded, err := loader.LoadModule(ctx, b.Manifest.Root.Source, b.Manifest.Root.Version, ".")
 	if err != nil {
 		return p.ParameterizeResponse{}, fmt.Errorf("loading bundled module %q: %w", b.Manifest.Root.Source, err)
 	}
@@ -300,6 +302,8 @@ func (m *moduleProvider) generateModuleSchema(
 	resolved map[string]workspace.PackageDescriptor,
 	token tokens.Type, version semver.Version,
 ) (*schema.ModuleSchema, error) {
+	ctx, span := potel.Start(ctx, "generateModuleSchema")
+	defer span.End()
 	cachedLoader := pulumiSchema.NewCachedLoader(
 		packages.NewParameterizationAwareLoader(m.schemaLoader, resolved))
 	binder := &schema.Binder{
@@ -565,7 +569,9 @@ func packArchive(dirs map[string]string) ([]byte, error) {
 
 // unpackArchive extracts a tar.gz produced by packArchive into destDir, rejecting
 // any entry that would escape destDir.
-func unpackArchive(data []byte, destDir string) error {
+func unpackArchive(ctx context.Context, data []byte, destDir string) error {
+	_, span := potel.Start(ctx, "unpackArchive")
+	defer span.End()
 	gz, err := gzip.NewReader(bytes.NewReader(data))
 	if err != nil {
 		return err

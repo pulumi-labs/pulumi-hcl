@@ -50,7 +50,9 @@ type ResourceTypeResolver interface {
 // directory, so module.<name>.<output> references can be typed by recursively
 // typing the child module's outputs.
 type ModuleLoader interface {
-	LoadModule(source, versionConstraint, callerDir string) (config *ast.Config, dir string, err error)
+	LoadModule(
+		ctx context.Context, source, versionConstraint, callerDir string,
+	) (config *ast.Config, dir string, err error)
 }
 
 // Binder supplies the external lookups used to type output expressions that
@@ -315,7 +317,7 @@ func seedModuleTypes(
 	}
 	for _, name := range slices.Sorted(maps.Keys(config.Modules)) {
 		call := config.Modules[name]
-		childConfig, dir, err := binder.Modules.LoadModule(call.Source, call.Version, binder.ModuleDir)
+		childConfig, dir, err := binder.Modules.LoadModule(ctx, call.Source, call.Version, binder.ModuleDir)
 		if err != nil {
 			return fmt.Errorf("loading module %q: %w", name, err)
 		}

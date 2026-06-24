@@ -260,7 +260,7 @@ func TestLoadModule_VersionConstraintPlumbedThroughToRegistry(t *testing.T) {
 		map[string]string{"4.0.1": tarURL})
 	l := newTestLoader(t, regSrv.URL)
 
-	loaded, err := l.LoadModule("acme/thing/aws", "~> 4.0", t.TempDir())
+	loaded, err := l.LoadModule(t.Context(), "acme/thing/aws", "~> 4.0", t.TempDir())
 	require.NoError(t, err)
 	require.NotNil(t, loaded.Config)
 	require.Contains(t, loaded.Config.Outputs, "ok",
@@ -285,7 +285,7 @@ func TestLoadModule_VersionQueryStringStillSupported(t *testing.T) {
 		map[string]string{"3.0.0": tarURL})
 	l := newTestLoader(t, regSrv.URL)
 
-	_, err := l.LoadModule("acme/thing/aws?version=3.0.0", "", t.TempDir())
+	_, err := l.LoadModule(t.Context(), "acme/thing/aws?version=3.0.0", "", t.TempDir())
 	require.NoError(t, err)
 	require.Equal(t, 1, reg.downloadHits["3.0.0"])
 }
@@ -334,7 +334,7 @@ func TestLoadModule_HostQualifiedRegistrySource(t *testing.T) {
 	}
 	l := NewLoader(n.resolve)
 
-	loaded, err := l.LoadModule(host+"/myorg/widget/aws", "", t.TempDir())
+	loaded, err := l.LoadModule(t.Context(), host+"/myorg/widget/aws", "", t.TempDir())
 	require.NoError(t, err)
 	require.NotNil(t, loaded.Config)
 	require.Contains(t, loaded.Config.Outputs, "ok")
@@ -353,7 +353,7 @@ func TestLoadModule_GitSubdirWithRef(t *testing.T) {
 	l := newTestLoader(t, "http://invalid.example")
 	source := "git::file://" + repo + "//modules/iam-policy?ref=v1"
 
-	loaded, err := l.LoadModule(source, "", t.TempDir())
+	loaded, err := l.LoadModule(t.Context(), source, "", t.TempDir())
 	require.NoError(t, err)
 	require.NotNil(t, loaded.Config)
 	require.Contains(t, loaded.Config.Outputs, "ok",
@@ -409,17 +409,17 @@ func TestLoaderResolvesViaCustomResolver(t *testing.T) {
 		return pkg, nil
 	})
 
-	root, err := l.LoadModule("acme/widget/aws", "~> 4.0", t.TempDir())
+	root, err := l.LoadModule(t.Context(), "acme/widget/aws", "~> 4.0", t.TempDir())
 	require.NoError(t, err)
 	require.Equal(t, pkg, root.SourcePath)
 
 	// Two subdir references into the one resolved package resolve under it; the
 	// resolver only ever sees the package source.
-	a, err := l.LoadModule("acme/widget/aws//a", "~> 4.0", t.TempDir())
+	a, err := l.LoadModule(t.Context(), "acme/widget/aws//a", "~> 4.0", t.TempDir())
 	require.NoError(t, err)
 	require.Equal(t, filepath.Join(pkg, "a"), a.SourcePath)
 
-	b, err := l.LoadModule("acme/widget/aws//b", "~> 4.0", t.TempDir())
+	b, err := l.LoadModule(t.Context(), "acme/widget/aws//b", "~> 4.0", t.TempDir())
 	require.NoError(t, err)
 	require.Equal(t, filepath.Join(pkg, "b"), b.SourcePath)
 }

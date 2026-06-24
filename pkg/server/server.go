@@ -364,11 +364,12 @@ func collectRequirements(
 	tf = map[string]*versionSet{}
 	pulumi = map[string]string{}
 	aliases = map[string]*ast.RequiredProvider{}
-	collectRequirementsRec(config, workDir, tf, pulumi, aliases, loader, map[string]struct{}{})
+	collectRequirementsRec(ctx, config, workDir, tf, pulumi, aliases, loader, map[string]struct{}{})
 	return tf, pulumi, aliases
 }
 
 func collectRequirementsRec(
+	ctx context.Context,
 	config *ast.Config, workDir string,
 	tf map[string]*versionSet, pulumi map[string]string, aliases map[string]*ast.RequiredProvider,
 	loader *modules.Loader, visited map[string]struct{},
@@ -450,7 +451,7 @@ func collectRequirementsRec(
 		if mod.Source == "" {
 			continue
 		}
-		loaded, err := loader.LoadModule(mod.Source, mod.Version, workDir)
+		loaded, err := loader.LoadModule(ctx, mod.Source, mod.Version, workDir)
 		if err != nil {
 			// `pulumi install` surfaces a concrete error later; don't block on it here.
 			logging.V(5).Infof("collectRequirements: loading module %q: %v", mod.Source, err)
@@ -460,7 +461,7 @@ func collectRequirementsRec(
 			continue
 		}
 		visited[loaded.SourcePath] = struct{}{}
-		collectRequirementsRec(loaded.Config, loaded.SourcePath, tf, pulumi, aliases, loader, visited)
+		collectRequirementsRec(ctx, loaded.Config, loaded.SourcePath, tf, pulumi, aliases, loader, visited)
 	}
 }
 

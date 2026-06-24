@@ -24,12 +24,24 @@ import (
 
 	"github.com/pulumi-labs/pulumi-hcl/pkg/converter"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/resource/plugin"
+	"github.com/pulumi/pulumi/sdk/v3/go/common/util/cmdutil"
+	"github.com/pulumi/pulumi/sdk/v3/go/common/util/logging"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/util/rpcutil"
 	pulumirpc "github.com/pulumi/pulumi/sdk/v3/proto/go"
 	"google.golang.org/grpc"
 )
 
 func main() {
+	serverOpts := rpcutil.OpenTracingServerInterceptorOptions(nil)
+	if otelEndpoint := os.Getenv("PULUMI_OTEL_EXPORTER_OTLP_ENDPOINT"); otelEndpoint != "" {
+		if err := cmdutil.InitOtelTracing("pulumi-converter-hcl", otelEndpoint); err != nil {
+			logging.V(3).Infof("failed to initialize OTel tracing: %v", err)
+		} else {
+			defer cmdutil.CloseOtelTracing()
+			serverOpts = rpcutil.OTelServerInterceptorOptions()
+		}
+	}
+
 	cancelch := make(chan bool)
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
 	go func() {
@@ -44,7 +56,7 @@ func main() {
 			pulumirpc.RegisterConverterServer(srv, plugin.NewConverterServer(converter.New()))
 			return nil
 		},
-		Options: rpcutil.OpenTracingServerInterceptorOptions(nil),
+		Options: serverOpts,
 	})
 	if err != nil {
 		log.Fatalf("fatal: %v", err)

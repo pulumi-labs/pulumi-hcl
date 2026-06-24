@@ -38,6 +38,7 @@ import (
 	"github.com/opentofu/svchost/disco"
 	"github.com/pulumi-labs/pulumi-hcl/pkg/hcl/ast"
 	"github.com/pulumi-labs/pulumi-hcl/pkg/hcl/parser"
+	"github.com/pulumi-labs/pulumi-hcl/pkg/potel"
 	"github.com/pulumi-labs/pulumi-hcl/vendored/getmodules"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/util/contract"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/workspace"
@@ -128,7 +129,10 @@ func defaultCacheDir() string {
 // LoadModule loads a module from the given source. versionConstraint is a
 // Terraform-style constraint (`~> 4.0`, `>= 1.0.0`, `4.2.1`); ignored for
 // non-registry sources.
-func (l *Loader) LoadModule(source, versionConstraint, callerDir string) (*LoadedModule, error) {
+func (l *Loader) LoadModule(ctx context.Context, source, versionConstraint, callerDir string) (*LoadedModule, error) {
+	_, loadSpan := potel.Start(ctx, "modules.LoadModule")
+	defer loadSpan.End()
+
 	l.mu.Lock()
 	defer l.mu.Unlock()
 

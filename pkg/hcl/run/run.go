@@ -39,6 +39,7 @@ import (
 	"github.com/pulumi-labs/pulumi-hcl/pkg/hcl/modules"
 	"github.com/pulumi-labs/pulumi-hcl/pkg/hcl/packages"
 	"github.com/pulumi-labs/pulumi-hcl/pkg/hcl/transform"
+	"github.com/pulumi-labs/pulumi-hcl/pkg/potel"
 	"github.com/pulumi-labs/pulumi-hcl/pkg/util"
 	"github.com/pulumi/pulumi/pkg/v3/codegen/schema"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/resource"
@@ -499,6 +500,8 @@ func NewEngine(ctx context.Context, config *ast.Config, opts *EngineOptions) *En
 
 // Run executes the HCL program.
 func (e *Engine) Run(ctx context.Context) error {
+	ctx, span := potel.Start(ctx, "Engine.Run")
+	defer span.End()
 	for alias, pkg := range e.packages {
 		ref, err := e.resmon.RegisterPackage(ctx, pkg)
 		if err != nil {
@@ -3011,7 +3014,8 @@ type moduleLoaderAdapter struct {
 }
 
 func (a *moduleLoaderAdapter) LoadModule(source, version, workDir string) (*graph.LoadedModule, error) {
-	loaded, err := a.loader.LoadModule(source, version, workDir)
+	// graph.ModuleLoader carries no context, so there is none to thread here.
+	loaded, err := a.loader.LoadModule(context.TODO(), source, version, workDir)
 	if err != nil {
 		return nil, err
 	}
@@ -3152,7 +3156,7 @@ func (e *Engine) processModuleInit(ctx context.Context, node *graph.Node) error 
 	if loaderWorkDir == "" {
 		loaderWorkDir = e.workDir
 	}
-	childMod, err := e.moduleLoader.LoadModule(mod.Source, mod.Version, loaderWorkDir)
+	childMod, err := e.moduleLoader.LoadModule(ctx, mod.Source, mod.Version, loaderWorkDir)
 	if err != nil {
 		return fmt.Errorf("loading module %s for input types: %w", mod.Source, err)
 	}

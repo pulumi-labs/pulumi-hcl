@@ -105,7 +105,7 @@ func NewHCLProvider(ctx context.Context, modulePath, addr string) (*HCLProvider,
 	}
 
 	// Load the module to generate schema
-	loaded, err := loader.LoadModule(modulePath, "", ".")
+	loaded, err := loader.LoadModule(ctx, modulePath, "", ".")
 	if err != nil {
 		return nil, fmt.Errorf("loading module: %w", err)
 	}
@@ -192,8 +192,11 @@ type moduleLoaderAdapter struct {
 	loader *modules.Loader
 }
 
-func (a moduleLoaderAdapter) LoadModule(source, versionConstraint, callerDir string) (*ast.Config, string, error) {
-	m, err := a.loader.LoadModule(source, versionConstraint, callerDir)
+func (a moduleLoaderAdapter) LoadModule(
+	ctx context.Context, source, versionConstraint, callerDir string,
+) (*ast.Config, string, error) {
+	// schema.ModuleLoader carries no context, so there is none to thread here.
+	m, err := a.loader.LoadModule(ctx, source, versionConstraint, callerDir)
 	if err != nil {
 		return nil, "", err
 	}
@@ -286,7 +289,7 @@ func (p *HCLProvider) Construct(ctx context.Context, req *pulumirpc.ConstructReq
 	monitor := pulumirpc.NewResourceMonitorClient(monitorConn)
 
 	// Load the module
-	loaded, err := p.moduleLoader.LoadModule(p.modulePath, "", ".")
+	loaded, err := p.moduleLoader.LoadModule(ctx, p.modulePath, "", ".")
 	if err != nil {
 		return nil, fmt.Errorf("loading module: %w", err)
 	}
