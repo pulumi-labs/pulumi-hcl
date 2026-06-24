@@ -24,6 +24,7 @@ import (
 
 	"github.com/hashicorp/hcl/v2"
 	"github.com/pulumi-labs/pulumi-hcl/pkg/codegen"
+	"github.com/pulumi-labs/pulumi-hcl/pkg/hcl/modules"
 	"github.com/pulumi-labs/pulumi-hcl/pkg/hcl/parser"
 	hclrun "github.com/pulumi-labs/pulumi-hcl/pkg/hcl/run"
 	"github.com/pulumi-labs/pulumi-hcl/tests/testutil"
@@ -1766,6 +1767,7 @@ output "instance_ami" {
 		ProjectName:     "test-project",
 		StackName:       "dev",
 		ResourceMonitor: mock,
+		ModuleLoader:    modules.NewLoader(modules.LiveResolver(t.Context())),
 		WorkDir:         t.TempDir(),
 		RootDir:         t.TempDir(),
 		SchemaLoader:    loader,
@@ -2116,6 +2118,7 @@ output "result" {
 		ProjectName:     "test-project",
 		StackName:       "dev",
 		ResourceMonitor: mock,
+		ModuleLoader:    modules.NewLoader(modules.LiveResolver(t.Context())),
 		WorkDir:         dir,
 		RootDir:         dir,
 		SchemaLoader:    loader,
@@ -2223,6 +2226,7 @@ resource "test_bucket" "bucket" {
 			StackName:       "dev",
 			ResourceMonitor: mock,
 			WorkDir:         dir,
+			ModuleLoader:    modules.NewLoader(modules.LiveResolver(t.Context())),
 			RootDir:         dir,
 			SchemaLoader:    loader,
 		})
@@ -2267,6 +2271,7 @@ data "test_getlen" "invoke_0" {
 			ProjectName:     "test-project",
 			StackName:       "dev",
 			ResourceMonitor: mock,
+			ModuleLoader:    modules.NewLoader(modules.LiveResolver(t.Context())),
 			WorkDir:         dir,
 			RootDir:         dir,
 			SchemaLoader:    loader,
@@ -2381,6 +2386,7 @@ func testConvertedPCLWithComponent(
 		StackName:       "dev",
 		ResourceMonitor: mock,
 		WorkDir:         outDir,
+		ModuleLoader:    modules.NewLoader(modules.LiveResolver(t.Context())),
 		RootDir:         outDir,
 		SchemaLoader:    loader,
 	})
@@ -2446,6 +2452,7 @@ output "instance_ami" {
 		ProjectName:     "test-project",
 		StackName:       "dev",
 		ResourceMonitor: mock,
+		ModuleLoader:    modules.NewLoader(modules.LiveResolver(t.Context())),
 		WorkDir:         t.TempDir(),
 		RootDir:         t.TempDir(),
 		SchemaLoader:    loader,
@@ -2538,6 +2545,7 @@ resource web "aws:index:Instance" {
 		ProjectName:     "test-project",
 		StackName:       "dev",
 		ResourceMonitor: mock,
+		ModuleLoader:    modules.NewLoader(modules.LiveResolver(t.Context())),
 		WorkDir:         outDir,
 		RootDir:         outDir,
 		SchemaLoader:    loader,
@@ -2595,6 +2603,7 @@ func TestReplaceOnChangesPathTranslated(t *testing.T) {
 		ResourceMonitor: mock,
 		WorkDir:         t.TempDir(),
 		RootDir:         t.TempDir(),
+		ModuleLoader:    modules.NewLoader(modules.LiveResolver(t.Context())),
 		SchemaLoader:    loader,
 	})
 	require.NoError(t, engine.Run(t.Context()))
@@ -2648,6 +2657,7 @@ func TestHideDiffsPathTranslated(t *testing.T) {
 		ProjectName:     "test-project",
 		StackName:       "dev",
 		ResourceMonitor: mock,
+		ModuleLoader:    modules.NewLoader(modules.LiveResolver(t.Context())),
 		WorkDir:         t.TempDir(),
 		RootDir:         t.TempDir(),
 		SchemaLoader:    loader,

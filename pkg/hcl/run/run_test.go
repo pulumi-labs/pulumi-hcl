@@ -167,6 +167,7 @@ resource "pulumi_stack_reference" "ref" {
 		ResourceMonitor: mock,
 		WorkDir:         t.TempDir(),
 		RootDir:         t.TempDir(),
+		ModuleLoader:    modules.NewLoader(modules.LiveResolver(t.Context())),
 		SchemaLoader:    schemaloader.Mock{"pulumi": pulumiPkg},
 	})
 
