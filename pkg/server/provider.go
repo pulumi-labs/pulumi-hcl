@@ -20,6 +20,7 @@ import (
 	"fmt"
 	"path/filepath"
 
+	"github.com/blang/semver"
 	"github.com/pulumi-labs/pulumi-hcl/pkg/hcl/ast"
 	"github.com/pulumi-labs/pulumi-hcl/pkg/hcl/bridge"
 	"github.com/pulumi-labs/pulumi-hcl/pkg/hcl/modules"
@@ -31,6 +32,7 @@ import (
 	"github.com/pulumi/pulumi/sdk/v3/go/common/resource"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/resource/plugin"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/resource/urn"
+	"github.com/pulumi/pulumi/sdk/v3/go/common/tokens"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/util/contract"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/util/logging"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/util/rpcutil"
@@ -68,11 +70,8 @@ type HCLProvider struct {
 	// host is the host callback client.
 	host pulumirpc.EngineClient
 
-	// name is the provider name.
-	name string
-
 	// version is the provider version.
-	version string
+	version semver.Version
 
 	// schema is the generated schema for the module.
 	schema *schema.ModuleSchema
@@ -80,7 +79,7 @@ type HCLProvider struct {
 
 // NewHCLProvider creates a new HCL component provider.
 func NewHCLProvider(ctx context.Context, modulePath, addr string) (*HCLProvider, error) {
-	loader := modules.NewLoader(ctx)
+	loader := modules.NewLoader(modules.LiveResolver(ctx))
 	pkgLoader, err := pulumiSchema.NewLoaderClient(addr)
 	if err != nil {
 		return nil, fmt.Errorf("unable to acquire schema loader: %w", err)
@@ -106,43 +105,14 @@ func NewHCLProvider(ctx context.Context, modulePath, addr string) (*HCLProvider,
 	}
 
 	// Load the module to generate schema
-	loaded, err := loader.LoadModule(modulePath, "", ".")
+	loaded, err := loader.LoadModule(ctx, modulePath, "", ".")
 	if err != nil {
 		return nil, fmt.Errorf("loading module: %w", err)
 	}
 
-	// The component block is optional. The module segment defaults to "index"
-	// and the component name defaults to the package name, so a module with no
-	// component block yields the single-segment token "<package>:index:<package>"
-	// and is referenced in HCL by the bare package name (e.g. `resource "foo"`),
-	// matching single-segment TF types like `external`.
-	componentModule := "index"
-	var explicitComponentName string
-	var pkg *ast.PackageBlock
-	if tf := loaded.Config.Terraform; tf != nil {
-		if comp := tf.Component; comp != nil {
-			explicitComponentName = comp.Name
-			if comp.Module != "" {
-				componentModule = comp.Module
-			}
-		}
-		pkg = tf.Package
-	}
-
-	pkgName := filepath.Base(modulePath)
-	pkgVersion := "0.0.0-dev"
-	if pkg != nil {
-		if pkg.Name != "" {
-			pkgName = pkg.Name
-		}
-		if pkg.Version != "" {
-			pkgVersion = pkg.Version
-		}
-	}
-
-	componentName := pkgName
-	if explicitComponentName != "" {
-		componentName = explicitComponentName
+	token, version, err := moduleIdentity(loaded, filepath.Base(modulePath))
+	if err != nil {
+		return nil, err
 	}
 
 	// Resolve resource/data source references in outputs against provider
@@ -150,20 +120,13 @@ func NewHCLProvider(ctx context.Context, modulePath, addr string) (*HCLProvider,
 	// the engine uses, so schema generation types them the way Run resolves them.
 	// The same module loader types references to child modules.
 	cachedLoader := pulumiSchema.NewCachedLoader(schemaLoader)
-	var knownProviders []string
-	if tf := loaded.Config.Terraform; tf != nil {
-		for name := range tf.RequiredProviders {
-			knownProviders = append(knownProviders, name)
-		}
-	}
 	binder := &schema.Binder{
-		Resources: packages.NewResolver(cachedLoader, providerInfoSource, paramDescriptors, knownProviders),
+		Resources: packages.NewResolver(cachedLoader, providerInfoSource, paramDescriptors, knownProviderNames(loaded.Config)),
 		Modules:   moduleLoaderAdapter{loader},
 		ModuleDir: loaded.SourcePath,
 	}
 
-	moduleSchema, err := schema.GenerateModuleSchema(
-		ctx, loaded.Config, binder, pkgName, pkgVersion, componentName, componentModule)
+	moduleSchema, err := schema.GenerateModuleSchema(ctx, loaded.Config, binder, token, version)
 	if err != nil {
 		return nil, fmt.Errorf("generating schema: %w", err)
 	}
@@ -174,10 +137,49 @@ func NewHCLProvider(ctx context.Context, modulePath, addr string) (*HCLProvider,
 		pkgLoader:          cachedLoader,
 		providerInfoSource: providerInfoSource,
 		packages:           paramDescriptors,
-		name:               pkgName,
-		version:            pkgVersion,
+		version:            version,
 		schema:             moduleSchema,
 	}, nil
+}
+
+// moduleIdentity derives a module's component token and version. The terraform
+// `package` and `component` blocks take precedence; absent them defaultName
+// supplies the package name.
+//
+// The module segment defaults to "index" and the component name defaults to
+// "Module", so a module with no component block yields the token
+// "<package>:index:Module", referenced in HCL as `<package>_module` (mirroring
+// the dynamic hcl:index:Module resource).
+func moduleIdentity(loaded *modules.LoadedModule, defaultName string) (tokens.Type, semver.Version, error) {
+	module := "index"
+	pkgName := defaultName
+	pkgVersion := "0.0.0-dev"
+	var explicitComponentName string
+	if tf := loaded.Config.Terraform; tf != nil {
+		if comp := tf.Component; comp != nil {
+			explicitComponentName = comp.Name
+			if comp.Module != "" {
+				module = comp.Module
+			}
+		}
+		if pkg := tf.Package; pkg != nil {
+			if pkg.Name != "" {
+				pkgName = pkg.Name
+			}
+			if pkg.Version != "" {
+				pkgVersion = pkg.Version
+			}
+		}
+	}
+	componentName := "Module"
+	if explicitComponentName != "" {
+		componentName = explicitComponentName
+	}
+	version, err := semver.ParseTolerant(pkgVersion)
+	if err != nil {
+		return "", version, fmt.Errorf("parsing module version %q: %w", pkgVersion, err)
+	}
+	return tokens.Type(fmt.Sprintf("%s:%s:%s", pkgName, module, componentName)), version, nil
 }
 
 // moduleLoaderAdapter adapts *modules.Loader to schema.ModuleLoader, so schema
@@ -186,8 +188,11 @@ type moduleLoaderAdapter struct {
 	loader *modules.Loader
 }
 
-func (a moduleLoaderAdapter) LoadModule(source, versionConstraint, callerDir string) (*ast.Config, string, error) {
-	m, err := a.loader.LoadModule(source, versionConstraint, callerDir)
+func (a moduleLoaderAdapter) LoadModule(
+	ctx context.Context, source, versionConstraint, callerDir string,
+) (*ast.Config, string, error) {
+	// schema.ModuleLoader carries no context, so there is none to thread here.
+	m, err := a.loader.LoadModule(ctx, source, versionConstraint, callerDir)
 	if err != nil {
 		return nil, "", err
 	}
@@ -280,7 +285,7 @@ func (p *HCLProvider) Construct(ctx context.Context, req *pulumirpc.ConstructReq
 	monitor := pulumirpc.NewResourceMonitorClient(monitorConn)
 
 	// Load the module
-	loaded, err := p.moduleLoader.LoadModule(p.modulePath, "", ".")
+	loaded, err := p.moduleLoader.LoadModule(ctx, p.modulePath, "", ".")
 	if err != nil {
 		return nil, fmt.Errorf("loading module: %w", err)
 	}
@@ -335,8 +340,8 @@ func (p *HCLProvider) Construct(ctx context.Context, req *pulumirpc.ConstructReq
 		}
 	}
 
-	// Create engine options
-	engineOpts := &run.EngineOptions{
+	// Create and run the engine
+	engine := run.NewEngine(ctx, loaded.Config, &run.EngineOptions{
 		ProjectName:        req.Project,
 		StackName:          req.Stack,
 		Organization:       req.Organization,
@@ -346,12 +351,10 @@ func (p *HCLProvider) Construct(ctx context.Context, req *pulumirpc.ConstructReq
 		Config:             config,
 		ResourceMonitor:    resmon,
 		SchemaLoader:       p.pkgLoader,
+		ModuleLoader:       modules.NewLoader(modules.LiveResolver(ctx)),
 		ProviderInfoSource: p.providerInfoSource,
 		Packages:           p.packages,
-	}
-
-	// Create and run the engine
-	engine := run.NewEngine(ctx, loaded.Config, engineOpts)
+	})
 
 	if err := engine.Run(ctx); err != nil {
 		return nil, fmt.Errorf("executing module: %w", err)
@@ -376,7 +379,7 @@ func (p *HCLProvider) Construct(ctx context.Context, req *pulumirpc.ConstructReq
 // GetPluginInfo returns plugin metadata.
 func (p *HCLProvider) GetPluginInfo(ctx context.Context, req *emptypb.Empty) (*pulumirpc.PluginInfo, error) {
 	return &pulumirpc.PluginInfo{
-		Version: p.version,
+		Version: p.version.String(),
 	}, nil
 }
 

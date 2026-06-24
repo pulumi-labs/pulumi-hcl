@@ -45,20 +45,18 @@ output "vpc_id" {
 ### `component` block
 
 Declares this module as a component resource. The block is optional; when it is
-omitted, the component name defaults to the package name and the module segment
-to `"index"`. When the block is present, `name` is required.
+omitted, the component name defaults to `"Module"` and the module segment to
+`"index"`. When the block is present, `name` is required.
 
-| Field    | Required | Default   | Description                                  |
-|----------|----------|-----------|----------------------------------------------|
-| `name`   | Yes      | -         | Component name (must be a valid Pulumi name) |
-| `module` | No       | `"index"` | Module segment of the resource token         |
+| Field    | Required | Default    | Description                                  |
+|----------|----------|------------|----------------------------------------------|
+| `name`   | Yes      | `"Module"` | Component name (must be a valid Pulumi name) |
+| `module` | No       | `"index"`  | Module segment of the resource token         |
 
-When the component name equals the package name (the default), the resource
-token collapses to a single segment and is referenced in HCL by the bare
-package name — e.g. a package `randommodule` is consumed as
-`resource "randommodule" "x" { ... }`, the same shape as a single-segment
-Terraform type like `external`. This requires the package name to be a valid
-Pulumi name (no hyphens), since it also becomes the token's member segment.
+With the default component name, the token is `{package}:index:Module` and is
+referenced in HCL as `{package}_module` — e.g. a package `randommodule` is
+consumed as `resource "randommodule_module" "x" { ... }`, mirroring the dynamic
+`hcl:index:Module` resource (referenced as `hcl_module`).
 
 ### `package` block
 

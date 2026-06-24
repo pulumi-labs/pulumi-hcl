@@ -18,6 +18,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
 	"sort"
 	"strings"
 	"time"
@@ -35,6 +36,7 @@ import (
 	pulumirpc "github.com/pulumi/pulumi/sdk/v3/proto/go"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/protobuf/types/known/structpb"
 
 	"github.com/pulumi-labs/pulumi-hcl/pkg/hcl/ast"
 	"github.com/pulumi-labs/pulumi-hcl/pkg/hcl/bridge"
@@ -59,6 +61,11 @@ type moduleProvider struct {
 	schemaLoader       pulumiSchema.ReferenceLoader
 	providerInfoSource bridge.ProviderInfoSource
 	resolver           pulumirpc.PackageResolverClient
+
+	// param is non-nil once the provider has been parameterized by a specific
+	// module source (via Parameterize). It makes the provider serve that module's
+	// typed component schema instead of the generic hcl:index:Module.
+	param *parameterizedModule
 }
 
 // NewModuleProvider builds the fully dynamic HCL provider on top of the raw
@@ -66,12 +73,13 @@ type moduleProvider struct {
 func NewModuleProvider(ctx context.Context, version string) p.Provider {
 	m := &moduleProvider{
 		version:      version,
-		moduleLoader: modules.NewLoader(ctx),
+		moduleLoader: modules.NewLoader(modules.LiveResolver(ctx)),
 	}
 	return p.Provider{
-		Handshake: m.handshake,
-		GetSchema: m.getSchema,
-		Configure: func(context.Context, p.ConfigureRequest) error { return nil },
+		Handshake:    m.handshake,
+		Parameterize: m.parameterize,
+		GetSchema:    m.getSchema,
+		Configure:    func(context.Context, p.ConfigureRequest) error { return nil },
 		CheckConfig: func(_ context.Context, req p.CheckRequest) (p.CheckResponse, error) {
 			return p.CheckResponse{Inputs: req.Inputs}, nil
 		},
@@ -79,6 +87,7 @@ func NewModuleProvider(ctx context.Context, version string) p.Provider {
 			return p.DiffResponse{}, nil
 		},
 		Construct: m.construct,
+		Cancel:    m.cancel,
 	}
 }
 
@@ -114,7 +123,7 @@ func (m *moduleProvider) handshake(ctx context.Context, req p.HandshakeRequest) 
 
 	m.schemaLoader = schemaLoader
 	m.providerInfoSource = bridge.NewCache(bridge.NewMapperSource(mapperClient))
-	m.resolver = pulumirpc.NewPackageResolverClient(resolverConn)
+	m.resolver = resolve.NewCache(pulumirpc.NewPackageResolverClient(resolverConn))
 	if req.EngineAddress != "" && m.engine == nil {
 		if engineConn, err := grpc.NewClient(req.EngineAddress,
 			grpc.WithTransportCredentials(insecure.NewCredentials())); err == nil {
@@ -125,13 +134,31 @@ func (m *moduleProvider) handshake(ctx context.Context, req p.HandshakeRequest) 
 	return p.HandshakeResponse{}, nil
 }
 
-// getSchema returns the static hcl:index:Module schema.
+// getSchema returns the static hcl:index:Module schema, or — once the provider
+// has been parameterized — the parameterized module's typed component schema with
+// its parameterization Value attached so a generated SDK can re-parameterize.
 func (m *moduleProvider) getSchema(context.Context, p.GetSchemaRequest) (p.GetSchemaResponse, error) {
-	b, err := json.Marshal(moduleResourceSchema(m.version))
+	spec := moduleResourceSchema(m.version)
+	if m.param != nil {
+		spec = m.param.schema.ToPulumiPackageSchema()
+		spec.Parameterization = &pulumiSchema.ParameterizationSpec{
+			BaseProvider: pulumiSchema.BaseProviderSpec{Name: "hcl", Version: m.version},
+			Parameter:    m.param.value,
+		}
+	}
+	b, err := json.Marshal(spec)
 	if err != nil {
 		return p.GetSchemaResponse{}, fmt.Errorf("marshaling schema: %w", err)
 	}
 	return p.GetSchemaResponse{Schema: string(b)}, nil
+}
+
+// cancel removes any unpacked module bundle when the provider shuts down.
+func (m *moduleProvider) cancel(context.Context) error {
+	if m.param != nil && m.param.tempDir != "" {
+		return os.RemoveAll(m.param.tempDir)
+	}
+	return nil
 }
 
 // construct loads the module named by the "source" input, resolves the providers
@@ -139,8 +166,14 @@ func (m *moduleProvider) getSchema(context.Context, p.GetSchemaRequest) (p.GetSc
 // under the component's single "outputs" property.
 func (m *moduleProvider) construct(ctx context.Context, req p.ConstructRequest) (p.ConstructResponse, error) {
 	logging.V(5).Infof("Construct: type=%s name=%s", req.Urn.Type(), req.Urn.Name())
+	if m.param != nil {
+		return m.constructParameterized(ctx, req)
+	}
+	if req.Urn.Type() != ModuleResourceToken {
+		return p.ConstructResponse{}, fmt.Errorf("unknown resource type: %q", req.Urn.Type())
+	}
 
-	schemaLoader, providerInfoSource, resolver, engine := m.schemaLoader, m.providerInfoSource, m.resolver, m.engine
+	schemaLoader, providerInfoSource, resolver := m.schemaLoader, m.providerInfoSource, m.resolver
 	if resolver == nil {
 		return p.ConstructResponse{}, fmt.Errorf("Construct called before a successful Handshake")
 	}
@@ -167,7 +200,7 @@ func (m *moduleProvider) construct(ctx context.Context, req p.ConstructRequest) 
 		inputs = v.AsMap()
 	}
 
-	loaded, err := m.moduleLoader.LoadModule(source, version, ".")
+	loaded, err := m.moduleLoader.LoadModule(ctx, source, version, ".")
 	if err != nil {
 		return p.ConstructResponse{}, fmt.Errorf("loading module %q: %w", source, err)
 	}
@@ -178,9 +211,9 @@ func (m *moduleProvider) construct(ctx context.Context, req p.ConstructRequest) 
 
 	// Resolve every provider the module references to a concrete descriptor, the
 	// dynamic equivalent of the on-disk sdks/ descriptors a source MLC reads.
-	resolved, err := resolve.Packages(ctx, resolver, m.requirementSpecs(ctx, loaded.Config, loaded.SourcePath))
+	resolved, err := m.resolvePackages(ctx, m.moduleLoader, loaded.Config, loaded.SourcePath)
 	if err != nil {
-		return p.ConstructResponse{}, fmt.Errorf("resolving module providers: %w", err)
+		return p.ConstructResponse{}, err
 	}
 
 	// A parameterization-aware loader lets the engine load the schemas of bridged
@@ -205,9 +238,108 @@ func (m *moduleProvider) construct(ctx context.Context, req p.ConstructRequest) 
 		return p.ConstructResponse{}, fmt.Errorf("marshaling inputs: %w", err)
 	}
 
-	resmon := &constructResourceMonitor{
-		client:                  pulumirpc.NewResourceMonitorClient(monitorConn),
-		engine:                  engine,
+	resmon := m.newConstructMonitor(ctx, req,
+		pulumirpc.NewResourceMonitorClient(monitorConn), componentInputs, wrapModuleOutputs)
+
+	engineRun := run.NewEngine(ctx, loaded.Config, &run.EngineOptions{
+		ProjectName:        string(req.Urn.Project()),
+		StackName:          string(req.Urn.Stack()),
+		DryRun:             req.DryRun,
+		WorkDir:            loaded.SourcePath,
+		RootDir:            loaded.SourcePath,
+		Config:             moduleConfig(string(req.Urn.Project()), inputs),
+		ResourceMonitor:    resmon,
+		SchemaLoader:       pulumiSchema.NewCachedLoader(loader),
+		ProviderInfoSource: providerInfoSource,
+		Packages:           resolved,
+		ModuleLoader:       m.moduleLoader,
+		Parallel:           int(req.Parallel),
+	})
+
+	if err := engineRun.Run(ctx); err != nil {
+		return p.ConstructResponse{}, fmt.Errorf("executing module %q: %w", source, err)
+	}
+
+	return p.ConstructResponse{
+		Urn:   resmon.componentURN,
+		State: resmon.outputs,
+	}, nil
+}
+
+// constructParameterized runs the parameterized module: it maps the typed
+// component inputs to the module's HCL variables, runs the engine against the
+// bundled (offline) module tree, and exposes the module's outputs under their
+// typed schema property names. It mirrors HCLProvider.Construct, the local-path
+// MLC equivalent.
+func (m *moduleProvider) constructParameterized(ctx context.Context, req p.ConstructRequest) (p.ConstructResponse, error) {
+	if m.resolver == nil {
+		return p.ConstructResponse{}, fmt.Errorf("Construct called before a successful Handshake")
+	}
+	param := m.param
+
+	loaded, err := param.loader.LoadModule(ctx, param.rootSource, param.rootVersion, ".")
+	if err != nil {
+		return p.ConstructResponse{}, fmt.Errorf("loading module %q: %w", param.name, err)
+	}
+
+	monitorConn, err := grpc.NewClient(req.MonitorEndpoint,
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+		grpc.WithUnaryInterceptor(rpcutil.OpenTracingClientInterceptor()),
+		grpc.WithStreamInterceptor(rpcutil.OpenTracingStreamClientInterceptor()),
+	)
+	if err != nil {
+		return p.ConstructResponse{}, fmt.Errorf("connecting to monitor: %w", err)
+	}
+	defer contract.IgnoreClose(monitorConn)
+
+	componentInputs, err := plugin.MarshalProperties(
+		resource.ToResourcePropertyMap(req.Inputs), constructMarshalOptions())
+	if err != nil {
+		return p.ConstructResponse{}, fmt.Errorf("marshaling inputs: %w", err)
+	}
+
+	resmon := m.newConstructMonitor(ctx, req,
+		pulumirpc.NewResourceMonitorClient(monitorConn), componentInputs, param.schema.OutputsToPulumi)
+
+	loader := pulumiSchema.NewCachedLoader(packages.NewParameterizationAwareLoader(
+		m.schemaLoader, param.packages))
+
+	engineRun := run.NewEngine(ctx, loaded.Config, &run.EngineOptions{
+		ProjectName:        string(req.Urn.Project()),
+		StackName:          string(req.Urn.Stack()),
+		DryRun:             req.DryRun,
+		WorkDir:            loaded.SourcePath,
+		RootDir:            loaded.SourcePath,
+		Config:             moduleConfig(string(req.Urn.Project()), param.schema.InputsToHCL(req.Inputs)),
+		ResourceMonitor:    resmon,
+		SchemaLoader:       loader,
+		ProviderInfoSource: m.providerInfoSource,
+		Packages:           param.packages,
+		ModuleLoader:       param.loader,
+		Parallel:           int(req.Parallel),
+	})
+
+	if err := engineRun.Run(ctx); err != nil {
+		return p.ConstructResponse{}, fmt.Errorf("executing module %q: %w", param.name, err)
+	}
+
+	return p.ConstructResponse{
+		Urn:   resmon.componentURN,
+		State: resmon.outputs,
+	}, nil
+}
+
+// newConstructMonitor builds the resource monitor that intercepts the engine's
+// stack registration and re-emits it as the component resource the Construct
+// caller expects. mapOutputs shapes the module's top-level outputs into the
+// component's output property map.
+func (m *moduleProvider) newConstructMonitor(
+	ctx context.Context, req p.ConstructRequest, client pulumirpc.ResourceMonitorClient,
+	componentInputs *structpb.Struct, mapOutputs func(property.Map) property.Map,
+) *constructResourceMonitor {
+	return &constructResourceMonitor{
+		client:                  client,
+		engine:                  m.engine,
 		ctx:                     ctx,
 		parentURN:               string(req.Parent),
 		componentType:           string(req.Urn.Type()),
@@ -224,31 +356,8 @@ func (m *moduleProvider) construct(ctx context.Context, req p.ConstructRequest) 
 		replaceOnChanges:        req.ReplaceOnChanges,
 		retainOnDelete:          req.RetainOnDelete,
 		customTimeouts:          customTimeoutsToProto(req.CustomTimeouts),
-		mapOutputs:              wrapModuleOutputs,
+		mapOutputs:              mapOutputs,
 	}
-
-	engineRun := run.NewEngine(ctx, loaded.Config, &run.EngineOptions{
-		ProjectName:        string(req.Urn.Project()),
-		StackName:          string(req.Urn.Stack()),
-		DryRun:             req.DryRun,
-		WorkDir:            loaded.SourcePath,
-		RootDir:            loaded.SourcePath,
-		Config:             moduleConfig(string(req.Urn.Project()), inputs),
-		ResourceMonitor:    resmon,
-		SchemaLoader:       pulumiSchema.NewCachedLoader(loader),
-		ProviderInfoSource: providerInfoSource,
-		Packages:           resolved,
-		Parallel:           int(req.Parallel),
-	})
-
-	if err := engineRun.Run(ctx); err != nil {
-		return p.ConstructResponse{}, fmt.Errorf("executing module %q: %w", source, err)
-	}
-
-	return p.ConstructResponse{
-		Urn:   resmon.componentURN,
-		State: resmon.outputs,
-	}, nil
 }
 
 // requirementSpecs turns every provider the module tree references into a
@@ -258,9 +367,9 @@ func (m *moduleProvider) construct(ctx context.Context, req p.ConstructRequest) 
 // specs. Built-in providers (pulumi, terraform) are handled by the engine and
 // are not resolved.
 func (m *moduleProvider) requirementSpecs(
-	ctx context.Context, config *ast.Config, workDir string,
+	ctx context.Context, loader *modules.Loader, config *ast.Config, workDir string,
 ) []resolve.Request {
-	tf, pulumi, aliases := collectRequirements(ctx, config, workDir)
+	tf, pulumi, aliases := collectRequirements(ctx, loader, config, workDir)
 	var reqs []resolve.Request
 	for _, alias := range sortedKeys(aliases) {
 		if isBuiltinProvider(alias) {

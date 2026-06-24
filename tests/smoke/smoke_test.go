@@ -88,13 +88,13 @@ func TestSmokeRandom(t *testing.T) {
 	})
 }
 
-// TestSmokeModule proves a plain HCL module (no component or package block) can
-// be served as a Multi-Language Component: `pulumi package add ../randommodule`
-// generates a local SDK, the consuming HCL program instantiates the component by
-// its bare package name (passing `length` in, reading `pet` out), the component's
-// `random_pet` (a bridged hashicorp/random resource) is created via Construct,
-// and the root output is unknown at preview and a three-word pet name after up.
-func TestSmokeModule(t *testing.T) {
+// TestSmokeInLanguageModule proves a plain HCL module (no component or package block) can
+// be served as a Multi-Language Component: `pulumi package add ../randommodule` generates
+// a local SDK, the consuming HCL program instantiates the component as
+// `randommodule_module` (passing `length` in, reading `pet` out), the component's
+// `random_pet` (a bridged hashicorp/random resource) is created via Construct, and the
+// root output is unknown at preview and a three-word pet name after up.
+func TestSmokeInLanguageModule(t *testing.T) {
 	t.Parallel()
 
 	home := seedPluginCache(t, "terraform-provider")
@@ -178,6 +178,57 @@ func TestSmokeDynamicModule(t *testing.T) {
 				stack.Outputs["name"], stack.Outputs["name"])
 			require.Regexp(t, regexp.MustCompile(`^smoke-[a-z0-9]{8}$`), name,
 				"name should be '<prefix>-<8 lowercase alphanumerics>'")
+		},
+	})
+}
+
+// TestSmokeParameterizedModule exercises the parameterization path through
+// pulumi-resource-hcl: `pulumi package add hcl module <source>` downloads and
+// bundles the same module TestSmokeInLanguageModule serves as a local-path MLC, generates
+// its typed component SDK, and a YAML program instantiates that component by its
+// token (`randommodule:index:Module`), passing `petLength` in and reading
+// `petName` out. The module's `random_pet` (a bridged hashicorp/random resource)
+// is resolved through terraform-provider parameterization, so this drives the
+// whole module-bundle-then-consume flow end-to-end. Hits the public Pulumi + TF
+// registries.
+func TestSmokeParameterizedModule(t *testing.T) {
+	t.Parallel()
+
+	home := seedPluginCache(t, "terraform-provider")
+
+	// The same fixture TestSmokeInLanguageModule serves as a local-path MLC; here it is
+	// loaded by path and bundled into the parameterization, leaving the program
+	// dir untouched, so the fixture can be referenced in place by absolute path.
+	moduleDir, err := filepath.Abs(filepath.Join("testdata", "module", "randommodule"))
+	require.NoError(t, err)
+
+	// `pulumi package add` resolves a bare plugin name (`hcl`) through the
+	// registry, which the locally-built plugin is not in; pointing it at the
+	// built binary on PATH parameterizes the plugin in place.
+	resourceBin, err := filepath.Abs(filepath.Join("..", "..", "bin", "pulumi-resource-hcl"))
+	require.NoError(t, err)
+
+	integration.ProgramTest(t, &integration.ProgramTestOptions{
+		NoParallel:    true,
+		Dir:           filepath.Join("testdata", "parameterized", "program"),
+		PulumiHomeDir: home,
+		PrepareProject: func(e *engine.Projinfo) error {
+			cmd := exec.Command("pulumi", "package", "add", resourceBin, "module", moduleDir)
+			cmd.Dir = e.Root
+			cmd.Env = append(os.Environ(), "PULUMI_HOME="+home)
+			cmd.Stdout, cmd.Stderr = os.Stderr, os.Stderr
+			return cmd.Run()
+		},
+		ExtraRuntimeValidation: func(t *testing.T, stack integration.RuntimeValidationStackInfo) {
+			// petLength = 3 flows into the module's random_pet through the
+			// camelCase->snake_case boundary, and the resulting three-word pet name
+			// flows back out, proving the parameterized component round-trips inputs
+			// and outputs.
+			petName, ok := stack.Outputs["petName"].(string)
+			require.True(t, ok, "petName must be a string, got %T (%v)",
+				stack.Outputs["petName"], stack.Outputs["petName"])
+			require.Regexp(t, regexp.MustCompile(`^[a-z]+-[a-z]+-[a-z]+$`), petName,
+				"petLength = 3 should yield a three-word pet name")
 		},
 	})
 }

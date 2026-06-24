@@ -73,16 +73,23 @@ func main() {
 	}
 
 	logging.InitLogging(false, 0, false)
-	if p.tracing != "" {
+
+	otelEndpoint := os.Getenv("PULUMI_OTEL_EXPORTER_OTLP_ENDPOINT")
+	if otelEndpoint == "" {
 		cmdutil.InitTracing("pulumi-language-hcl", "pulumi-language-hcl", p.tracing)
+	} else {
+		if err := cmdutil.InitOtelTracing("pulumi-language-hcl", otelEndpoint); err != nil {
+			logging.V(3).Infof("failed to initialize OTel tracing: %v", err)
+		}
+		defer cmdutil.CloseOtelTracing()
 	}
 
-	if err := run(p); err != nil {
+	if err := run(p, otelEndpoint); err != nil {
 		cmdutil.Exit(err)
 	}
 }
 
-func run(p *runParams) error {
+func run(p *runParams, otelEndpoint string) error {
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer cancel()
 
@@ -120,7 +127,7 @@ func run(p *runParams) error {
 			pulumirpc.RegisterLanguageRuntimeServer(srv, host)
 			return nil
 		},
-		Options: rpcutil.OpenTracingServerInterceptorOptions(nil),
+		Options: tracingServerOptions(otelEndpoint),
 	})
 	if err != nil {
 		return fmt.Errorf("could not start language host RPC server: %w", err)
@@ -135,4 +142,11 @@ func run(p *runParams) error {
 	}
 
 	return nil
+}
+
+func tracingServerOptions(otelEndpoint string) []grpc.ServerOption {
+	if otelEndpoint != "" {
+		return rpcutil.OTelServerInterceptorOptions()
+	}
+	return rpcutil.OpenTracingServerInterceptorOptions(nil)
 }

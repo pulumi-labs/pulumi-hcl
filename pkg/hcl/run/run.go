@@ -38,8 +38,8 @@ import (
 	"github.com/pulumi-labs/pulumi-hcl/pkg/hcl/modulepath"
 	"github.com/pulumi-labs/pulumi-hcl/pkg/hcl/modules"
 	"github.com/pulumi-labs/pulumi-hcl/pkg/hcl/packages"
-	"github.com/pulumi-labs/pulumi-hcl/pkg/hcl/parser"
 	"github.com/pulumi-labs/pulumi-hcl/pkg/hcl/transform"
+	"github.com/pulumi-labs/pulumi-hcl/pkg/potel"
 	"github.com/pulumi-labs/pulumi-hcl/pkg/util"
 	"github.com/pulumi/pulumi/pkg/v3/codegen/schema"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/resource"
@@ -444,6 +444,9 @@ type EngineOptions struct {
 	// The engine calls RegisterPackage on the resource monitor for each entry before running the program.
 	Packages map[string]workspace.PackageDescriptor
 
+	// ModuleLoader loads child module configurations. It must not be nil.
+	ModuleLoader *modules.Loader
+
 	Parallel int
 
 	// AlwaysRegisterProviders forces every `provider` block to be registered
@@ -458,9 +461,10 @@ type EngineOptions struct {
 
 // NewEngine creates a new execution engine.
 func NewEngine(ctx context.Context, config *ast.Config, opts *EngineOptions) *Engine {
-	contract.Assertf(opts.SchemaLoader != nil, "EngineOptions.SchemaLoader cannot be nil")
-	contract.Assertf(opts.WorkDir != "", "EngineOptions.WorkDir cannot be empty")
-	contract.Assertf(opts.RootDir != "", "EngineOptions.RootDir cannot be empty")
+	contract.Requiref(opts.SchemaLoader != nil, "opts.SchemaLoader", "EngineOptions.SchemaLoader cannot be nil")
+	contract.Requiref(opts.WorkDir != "", "opts.WorkDir", "EngineOptions.WorkDir cannot be empty")
+	contract.Requiref(opts.RootDir != "", "opts.RootDir", "EngineOptions.RootDir cannot be empty")
+	contract.Requiref(opts.ModuleLoader != nil, "EngineOptions.ModuleLoader", "cannot be empty")
 
 	evalCtx := eval.NewContext(opts.WorkDir, opts.RootDir, opts.WorkDir,
 		opts.StackName, opts.ProjectName, opts.Organization)
@@ -484,7 +488,7 @@ func NewEngine(ctx context.Context, config *ast.Config, opts *EngineOptions) *En
 		configSecretKeys:        opts.ConfigSecretKeys,
 		packages:                opts.Packages,
 		packageRefs:             make(map[string]PackageRef),
-		moduleLoader:            modules.NewLoader(ctx),
+		moduleLoader:            opts.ModuleLoader,
 		moduleInstances:         util.NewSyncMap[modulepath.Path, []*moduleInstance](),
 		parallel:                opts.Parallel,
 		failedNodes:             util.NewSyncMap[string, error](),
@@ -496,6 +500,8 @@ func NewEngine(ctx context.Context, config *ast.Config, opts *EngineOptions) *En
 
 // Run executes the HCL program.
 func (e *Engine) Run(ctx context.Context) error {
+	ctx, span := potel.Start(ctx, "Engine.Run")
+	defer span.End()
 	for alias, pkg := range e.packages {
 		ref, err := e.resmon.RegisterPackage(ctx, pkg)
 		if err != nil {
@@ -3008,7 +3014,8 @@ type moduleLoaderAdapter struct {
 }
 
 func (a *moduleLoaderAdapter) LoadModule(source, version, workDir string) (*graph.LoadedModule, error) {
-	loaded, err := a.loader.LoadModule(source, version, workDir)
+	// graph.ModuleLoader carries no context, so there is none to thread here.
+	loaded, err := a.loader.LoadModule(context.TODO(), source, version, workDir)
 	if err != nil {
 		return nil, err
 	}
@@ -3149,7 +3156,7 @@ func (e *Engine) processModuleInit(ctx context.Context, node *graph.Node) error 
 	if loaderWorkDir == "" {
 		loaderWorkDir = e.workDir
 	}
-	childMod, err := e.moduleLoader.LoadModule(mod.Source, mod.Version, loaderWorkDir)
+	childMod, err := e.moduleLoader.LoadModule(ctx, mod.Source, mod.Version, loaderWorkDir)
 	if err != nil {
 		return fmt.Errorf("loading module %s for input types: %w", mod.Source, err)
 	}
@@ -3577,25 +3584,6 @@ func providerRefFromCty(val cty.Value) (string, error) {
 		return urn + "::" + id, nil
 	}
 	return "", errors.New("provider value is not a resource reference")
-}
-
-// RunFromDirectory parses and executes an HCL program from a directory.
-func RunFromDirectory(ctx context.Context, dir string, opts *EngineOptions) error {
-	// Parse the configuration
-	p := parser.NewParser()
-	config, diags := p.ParseDirectory(dir)
-	if diags.HasErrors() {
-		return fmt.Errorf("parsing configuration: %s", diags.Error())
-	}
-
-	// Set the work dir if not specified
-	if opts.WorkDir == "" {
-		opts.WorkDir = dir
-	}
-
-	// Create and run the engine
-	engine := NewEngine(ctx, config, opts)
-	return engine.Run(ctx)
 }
 
 // Validate validates an HCL configuration without executing it.

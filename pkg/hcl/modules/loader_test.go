@@ -27,7 +27,6 @@ import (
 	regaddr "github.com/opentofu/registry-address/v2"
 	"github.com/opentofu/svchost"
 	"github.com/opentofu/svchost/disco"
-	"github.com/pulumi-labs/pulumi-hcl/pkg/hcl/parser"
 	"github.com/pulumi-labs/pulumi-hcl/vendored/getmodules"
 	"github.com/stretchr/testify/require"
 )
@@ -91,21 +90,24 @@ func versionsPayload(vs []string) []map[string]string {
 	return out
 }
 
-// newTestLoader builds a Loader whose default registry host resolves to
-// modulesV1BaseURL, standing in for the real modules.v1 endpoint.
-func newTestLoader(t *testing.T, modulesV1BaseURL string) *Loader {
+// newTestNetworkResolver builds a networkResolver whose default registry host
+// resolves to modulesV1BaseURL, standing in for the real modules.v1 endpoint.
+func newTestNetworkResolver(t *testing.T, modulesV1BaseURL string) *networkResolver {
 	t.Helper()
 	d := disco.New()
 	d.ForceHostServices(regaddr.DefaultModuleRegistryHost, map[string]any{
 		"modules.v1": modulesV1BaseURL + "/",
 	})
-	return &Loader{
-		parser:   parser.NewParser(),
-		cache:    map[string]*LoadedModule{},
+	return &networkResolver{
 		cacheDir: t.TempDir(),
 		fetcher:  getmodules.NewPackageFetcher(t.Context(), nil),
 		disco:    d,
 	}
+}
+
+func newTestLoader(t *testing.T, modulesV1BaseURL string) *Loader {
+	t.Helper()
+	return NewLoader(newTestNetworkResolver(t, modulesV1BaseURL).resolve)
 }
 
 func TestIsRegistrySource(t *testing.T) {
@@ -142,9 +144,9 @@ func TestGetRegistryDownloadURL_NoConstraintPicksLatest(t *testing.T) {
 	srv, reg := newFakeRegistry(t,
 		[]string{"1.0.0", "3.2.1", "4.0.0", "4.2.0", "2.9.9"},
 		map[string]string{"4.2.0": "https://example.com/v420.tar.gz"})
-	l := newTestLoader(t, srv.URL)
+	n := newTestNetworkResolver(t, srv.URL)
 
-	got, err := l.getRegistryDownloadURL(srv.URL, "acme", "thing", "aws", "")
+	got, err := n.getRegistryDownloadURL(srv.URL, "acme", "thing", "aws", "")
 	require.NoError(t, err)
 	require.Equal(t, "https://example.com/v420.tar.gz", got)
 	require.Equal(t, 1, reg.versionsHits)
@@ -156,9 +158,9 @@ func TestGetRegistryDownloadURL_ConstraintPicksHighestMatching(t *testing.T) {
 	srv, reg := newFakeRegistry(t,
 		[]string{"3.0.0", "3.5.0", "4.0.0", "4.0.1", "4.1.0", "5.0.0"},
 		map[string]string{"4.1.0": "https://example.com/v410.tar.gz"})
-	l := newTestLoader(t, srv.URL)
+	n := newTestNetworkResolver(t, srv.URL)
 
-	got, err := l.getRegistryDownloadURL(srv.URL, "acme", "thing", "aws", "~> 4.0")
+	got, err := n.getRegistryDownloadURL(srv.URL, "acme", "thing", "aws", "~> 4.0")
 	require.NoError(t, err)
 	require.Equal(t, "https://example.com/v410.tar.gz", got)
 	require.Equal(t, 1, reg.downloadHits["4.1.0"])
@@ -169,9 +171,9 @@ func TestGetRegistryDownloadURL_ExactVersionPin(t *testing.T) {
 	srv, _ := newFakeRegistry(t,
 		[]string{"1.0.0", "2.0.0", "3.0.0"},
 		map[string]string{"2.0.0": "https://example.com/v200.tar.gz"})
-	l := newTestLoader(t, srv.URL)
+	n := newTestNetworkResolver(t, srv.URL)
 
-	got, err := l.getRegistryDownloadURL(srv.URL, "acme", "thing", "aws", "2.0.0")
+	got, err := n.getRegistryDownloadURL(srv.URL, "acme", "thing", "aws", "2.0.0")
 	require.NoError(t, err)
 	require.Equal(t, "https://example.com/v200.tar.gz", got)
 }
@@ -181,9 +183,9 @@ func TestGetRegistryDownloadURL_NoMatchingVersionErrors(t *testing.T) {
 	srv, _ := newFakeRegistry(t,
 		[]string{"1.0.0", "2.0.0"},
 		map[string]string{})
-	l := newTestLoader(t, srv.URL)
+	n := newTestNetworkResolver(t, srv.URL)
 
-	_, err := l.getRegistryDownloadURL(srv.URL, "acme", "thing", "aws", "~> 99.0")
+	_, err := n.getRegistryDownloadURL(srv.URL, "acme", "thing", "aws", "~> 99.0")
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "no published version")
 	require.Contains(t, err.Error(), "~> 99.0")
@@ -217,8 +219,8 @@ func TestGetRegistryDownloadURL_OpenTofuStyle_JSONBody(t *testing.T) {
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
 
-	l := newTestLoader(t, srv.URL)
-	got, err := l.getRegistryDownloadURL(srv.URL, "acme", "thing", "aws", "")
+	n := newTestNetworkResolver(t, srv.URL)
+	got, err := n.getRegistryDownloadURL(srv.URL, "acme", "thing", "aws", "")
 	require.NoError(t, err)
 	require.Equal(t, wantURL, got)
 }
@@ -228,9 +230,9 @@ func TestGetRegistryDownloadURL_InvalidConstraintErrors(t *testing.T) {
 	srv, _ := newFakeRegistry(t,
 		[]string{"1.0.0"},
 		map[string]string{"1.0.0": "https://example.com/x.tar.gz"})
-	l := newTestLoader(t, srv.URL)
+	n := newTestNetworkResolver(t, srv.URL)
 
-	_, err := l.getRegistryDownloadURL(srv.URL, "acme", "thing", "aws", "not-a-constraint")
+	_, err := n.getRegistryDownloadURL(srv.URL, "acme", "thing", "aws", "not-a-constraint")
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "parsing version constraint")
 }
@@ -258,7 +260,7 @@ func TestLoadModule_VersionConstraintPlumbedThroughToRegistry(t *testing.T) {
 		map[string]string{"4.0.1": tarURL})
 	l := newTestLoader(t, regSrv.URL)
 
-	loaded, err := l.LoadModule("acme/thing/aws", "~> 4.0", t.TempDir())
+	loaded, err := l.LoadModule(t.Context(), "acme/thing/aws", "~> 4.0", t.TempDir())
 	require.NoError(t, err)
 	require.NotNil(t, loaded.Config)
 	require.Contains(t, loaded.Config.Outputs, "ok",
@@ -283,7 +285,7 @@ func TestLoadModule_VersionQueryStringStillSupported(t *testing.T) {
 		map[string]string{"3.0.0": tarURL})
 	l := newTestLoader(t, regSrv.URL)
 
-	_, err := l.LoadModule("acme/thing/aws?version=3.0.0", "", t.TempDir())
+	_, err := l.LoadModule(t.Context(), "acme/thing/aws?version=3.0.0", "", t.TempDir())
 	require.NoError(t, err)
 	require.Equal(t, 1, reg.downloadHits["3.0.0"])
 }
@@ -325,15 +327,14 @@ func TestLoadModule_HostQualifiedRegistrySource(t *testing.T) {
 	d := disco.New()
 	d.ForceHostServices(hostname, map[string]any{"modules.v1": srv.URL + "/v1/modules/"})
 
-	l := &Loader{
-		parser:   parser.NewParser(),
-		cache:    map[string]*LoadedModule{},
+	n := &networkResolver{
 		cacheDir: t.TempDir(),
 		fetcher:  getmodules.NewPackageFetcher(t.Context(), nil),
 		disco:    d,
 	}
+	l := NewLoader(n.resolve)
 
-	loaded, err := l.LoadModule(host+"/myorg/widget/aws", "", t.TempDir())
+	loaded, err := l.LoadModule(t.Context(), host+"/myorg/widget/aws", "", t.TempDir())
 	require.NoError(t, err)
 	require.NotNil(t, loaded.Config)
 	require.Contains(t, loaded.Config.Outputs, "ok")
@@ -352,7 +353,7 @@ func TestLoadModule_GitSubdirWithRef(t *testing.T) {
 	l := newTestLoader(t, "http://invalid.example")
 	source := "git::file://" + repo + "//modules/iam-policy?ref=v1"
 
-	loaded, err := l.LoadModule(source, "", t.TempDir())
+	loaded, err := l.LoadModule(t.Context(), source, "", t.TempDir())
 	require.NoError(t, err)
 	require.NotNil(t, loaded.Config)
 	require.Contains(t, loaded.Config.Outputs, "ok",
@@ -384,6 +385,43 @@ func git(t *testing.T, dir string, args ...string) {
 	cmd.Dir = dir
 	out, err := cmd.CombinedOutput()
 	require.NoErrorf(t, err, "git %s: %s", strings.Join(args, " "), out)
+}
+
+// TestLoaderResolvesViaCustomResolver verifies a loader built from a custom
+// resolver (the mechanism a bundle loader uses) resolves a package and joins
+// subdir references under it, with the resolver seeing only the package source.
+func TestLoaderResolvesViaCustomResolver(t *testing.T) {
+	t.Parallel()
+
+	pkg := t.TempDir()
+	require.NoError(t, os.WriteFile(
+		filepath.Join(pkg, "main.tf"), []byte(`output "root" { value = 1 }`), 0o600))
+	for _, sub := range []string{"a", "b"} {
+		dir := filepath.Join(pkg, sub)
+		require.NoError(t, os.MkdirAll(dir, 0o755))
+		require.NoError(t, os.WriteFile(
+			filepath.Join(dir, "main.tf"), []byte(`output "leaf" { value = 1 }`), 0o600))
+	}
+
+	l := NewLoader(func(packageSource, versionConstraint, _ string) (string, error) {
+		require.Equal(t, "acme/widget/aws", packageSource)
+		require.Equal(t, "~> 4.0", versionConstraint)
+		return pkg, nil
+	})
+
+	root, err := l.LoadModule(t.Context(), "acme/widget/aws", "~> 4.0", t.TempDir())
+	require.NoError(t, err)
+	require.Equal(t, pkg, root.SourcePath)
+
+	// Two subdir references into the one resolved package resolve under it; the
+	// resolver only ever sees the package source.
+	a, err := l.LoadModule(t.Context(), "acme/widget/aws//a", "~> 4.0", t.TempDir())
+	require.NoError(t, err)
+	require.Equal(t, filepath.Join(pkg, "a"), a.SourcePath)
+
+	b, err := l.LoadModule(t.Context(), "acme/widget/aws//b", "~> 4.0", t.TempDir())
+	require.NoError(t, err)
+	require.Equal(t, filepath.Join(pkg, "b"), b.SourcePath)
 }
 
 // buildModuleTarGz packs `files` (name → content) into a gzipped tar archive

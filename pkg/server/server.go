@@ -187,7 +187,8 @@ func (host *LanguageHost) GetRequiredPackages(
 	// (the terraform-provider plugin intersects them at resolve time, erroring on
 	// an empty intersection just as tofu does), and distinct sources are distinct
 	// installs.
-	tfSpecs, pulumiPkgs, aliases := collectRequirements(ctx, config, req.Info.ProgramDirectory)
+	tfSpecs, pulumiPkgs, aliases := collectRequirements(ctx, modules.NewLoader(modules.LiveResolver(ctx)),
+		config, req.Info.ProgramDirectory)
 
 	for _, alias := range sortedKeys(aliases) {
 		// A local SDK descriptor (written by `pulumi package add`) is the most
@@ -312,7 +313,7 @@ func readParameterizationInfos(dir string) (map[string]workspace.PackageDescript
 func missingNonPulumiSDKs(
 	ctx context.Context, config *ast.Config, sdks map[string]workspace.PackageDescriptor, workDir string,
 ) []string {
-	_, _, aliases := collectRequirements(ctx, config, workDir)
+	_, _, aliases := collectRequirements(ctx, modules.NewLoader(modules.LiveResolver(ctx)), config, workDir)
 	var missing []string
 	for _, alias := range sortedKeys(aliases) {
 		if isBuiltinProvider(alias) || aliases[alias].IsPulumi() {
@@ -358,20 +359,17 @@ func (v *versionSet) constraint() string { return strings.Join(sortedKeys(v.seen
 // own required_providers, else the "hashicorp/<name>" default), so a provider
 // declared only in a child module still resolves from its declared source.
 func collectRequirements(
-	ctx context.Context, config *ast.Config, workDir string,
+	ctx context.Context, loader *modules.Loader, config *ast.Config, workDir string,
 ) (tf map[string]*versionSet, pulumi map[string]string, aliases map[string]*ast.RequiredProvider) {
 	tf = map[string]*versionSet{}
 	pulumi = map[string]string{}
 	aliases = map[string]*ast.RequiredProvider{}
-	var loader *modules.Loader
-	if workDir != "" && config != nil && len(config.Modules) > 0 {
-		loader = modules.NewLoader(ctx)
-	}
-	collectRequirementsRec(config, workDir, tf, pulumi, aliases, loader, map[string]struct{}{})
+	collectRequirementsRec(ctx, config, workDir, tf, pulumi, aliases, loader, map[string]struct{}{})
 	return tf, pulumi, aliases
 }
 
 func collectRequirementsRec(
+	ctx context.Context,
 	config *ast.Config, workDir string,
 	tf map[string]*versionSet, pulumi map[string]string, aliases map[string]*ast.RequiredProvider,
 	loader *modules.Loader, visited map[string]struct{},
@@ -445,11 +443,15 @@ func collectRequirementsRec(
 	if loader == nil {
 		return
 	}
-	for _, mod := range config.Modules {
+	// Iterate in a stable order: this walk drives the archive layout when a module
+	// is bundled for parameterization, so a map's random order would make the
+	// bundle non-deterministic.
+	for _, name := range slices.Sorted(maps.Keys(config.Modules)) {
+		mod := config.Modules[name]
 		if mod.Source == "" {
 			continue
 		}
-		loaded, err := loader.LoadModule(mod.Source, mod.Version, workDir)
+		loaded, err := loader.LoadModule(ctx, mod.Source, mod.Version, workDir)
 		if err != nil {
 			// `pulumi install` surfaces a concrete error later; don't block on it here.
 			logging.V(5).Infof("collectRequirements: loading module %q: %v", mod.Source, err)
@@ -459,7 +461,7 @@ func collectRequirementsRec(
 			continue
 		}
 		visited[loaded.SourcePath] = struct{}{}
-		collectRequirementsRec(loaded.Config, loaded.SourcePath, tf, pulumi, aliases, loader, visited)
+		collectRequirementsRec(ctx, loaded.Config, loaded.SourcePath, tf, pulumi, aliases, loader, visited)
 	}
 }
 
@@ -558,6 +560,7 @@ func (host *LanguageHost) Run(
 		ProviderInfoSource:      providerInfoSource,
 		WorkDir:                 req.Info.ProgramDirectory,
 		RootDir:                 req.Info.RootDirectory,
+		ModuleLoader:            modules.NewLoader(modules.LiveResolver(ctx)),
 		Packages:                paramDescriptors,
 		Parallel:                int(req.Parallel),
 		AlwaysRegisterProviders: host.alwaysRegisterProviders,

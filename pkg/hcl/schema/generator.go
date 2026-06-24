@@ -24,12 +24,14 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/blang/semver"
 	"github.com/pulumi-labs/pulumi-hcl/pkg/hcl/ast"
 	"github.com/pulumi-labs/pulumi-hcl/pkg/hcl/bridge"
 	"github.com/pulumi-labs/pulumi-hcl/pkg/hcl/eval"
 	"github.com/pulumi-labs/pulumi-hcl/pkg/hcl/transform"
 	pulumischema "github.com/pulumi/pulumi/pkg/v3/codegen/schema"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/resource/urn"
+	"github.com/pulumi/pulumi/sdk/v3/go/common/tokens"
 	"github.com/pulumi/pulumi/sdk/v3/go/property"
 	"github.com/zclconf/go-cty/cty"
 )
@@ -48,7 +50,9 @@ type ResourceTypeResolver interface {
 // directory, so module.<name>.<output> references can be typed by recursively
 // typing the child module's outputs.
 type ModuleLoader interface {
-	LoadModule(source, versionConstraint, callerDir string) (config *ast.Config, dir string, err error)
+	LoadModule(
+		ctx context.Context, source, versionConstraint, callerDir string,
+	) (config *ast.Config, dir string, err error)
 }
 
 // Binder supplies the external lookups used to type output expressions that
@@ -123,17 +127,16 @@ type PropertySpec struct {
 }
 
 // GenerateModuleSchema generates a Pulumi schema from an HCL module
-// configuration. binder types output expressions that reference resources, data
-// sources, or child modules; pass nil to leave those references untyped.
+// configuration.
 func GenerateModuleSchema(
 	ctx context.Context, config *ast.Config, binder *Binder,
-	pkgName, pkgVersion, componentName, module string,
+	token tokens.Type, version semver.Version,
 ) (*ModuleSchema, error) {
 	schema := &ModuleSchema{
-		PackageName:      pkgName,
-		Version:          pkgVersion,
-		ComponentName:    componentName,
-		Module:           module,
+		PackageName:      token.Package().Name().String(),
+		Version:          version.String(),
+		ComponentName:    token.Name().String(),
+		Module:           token.Module().Name().String(),
 		InputProperties:  make(map[string]*PropertySpec),
 		OutputProperties: make(map[string]*PropertySpec),
 	}
@@ -314,7 +317,7 @@ func seedModuleTypes(
 	}
 	for _, name := range slices.Sorted(maps.Keys(config.Modules)) {
 		call := config.Modules[name]
-		childConfig, dir, err := binder.Modules.LoadModule(call.Source, call.Version, binder.ModuleDir)
+		childConfig, dir, err := binder.Modules.LoadModule(ctx, call.Source, call.Version, binder.ModuleDir)
 		if err != nil {
 			return fmt.Errorf("loading module %q: %w", name, err)
 		}
