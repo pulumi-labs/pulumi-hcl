@@ -35,7 +35,7 @@ type Resolver struct {
 	loader             schema.ReferenceLoader
 	providerInfoSource bridge.ProviderInfoSource
 	packages           map[string]workspace.PackageDescriptor
-	knownProviders     []string
+	knownProviders     Providers
 }
 
 // NewResolver builds a Resolver. providerInfoSource and packages may be nil/empty
@@ -45,7 +45,7 @@ func NewResolver(
 	loader schema.ReferenceLoader,
 	providerInfoSource bridge.ProviderInfoSource,
 	pkgs map[string]workspace.PackageDescriptor,
-	knownProviders []string,
+	knownProviders Providers,
 ) *Resolver {
 	return &Resolver{
 		loader:             loader,

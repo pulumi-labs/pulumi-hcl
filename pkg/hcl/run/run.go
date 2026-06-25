@@ -2169,13 +2169,13 @@ func (e *Engine) packageRefForType(hclToken string) PackageRef {
 	return e.packageRefs[packageNameFromResourceType(hclToken)]
 }
 
-func knownProviders(tfBlock *ast.Terraform) []string {
+func knownProviders(tfBlock *ast.Terraform) packages.Providers {
 	if tfBlock == nil {
 		return nil
 	}
-	providers := make([]string, 0, len(tfBlock.RequiredProviders))
-	for name := range tfBlock.RequiredProviders {
-		providers = append(providers, name)
+	providers := make(packages.Providers, len(tfBlock.RequiredProviders))
+	for name, req := range tfBlock.RequiredProviders {
+		providers[name] = req.PackageName()
 	}
 	return providers
 }

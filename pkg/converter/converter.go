@@ -32,6 +32,7 @@ import (
 	"github.com/hashicorp/hcl/v2"
 	"github.com/hashicorp/hcl/v2/hclsyntax"
 	"github.com/hashicorp/hcl/v2/hclwrite"
+	"github.com/pulumi-labs/pulumi-hcl/pkg/hcl/ast"
 	"github.com/pulumi-labs/pulumi-hcl/pkg/hcl/comments"
 	"github.com/pulumi-labs/pulumi-hcl/pkg/hcl/packages"
 	"github.com/pulumi-labs/pulumi-hcl/pkg/hcl/transform"
@@ -225,9 +226,9 @@ type fileTransformer struct {
 	// expression byte slicing (e.g. for notImplemented() fall-throughs) works
 	// correctly when expressions from one file are inlined into another.
 	sources        map[string][]byte
-	knownHCLTypes  map[string]bool // set of HCL type labels used in resource blocks
-	stackRefNames  map[string]bool // set of logical names of pulumi_stackreference resources
-	knownProviders []string        // provider names from pulumi.required_providers
+	knownHCLTypes  map[string]bool    // set of HCL type labels used in resource blocks
+	stackRefNames  map[string]bool    // set of logical names of pulumi_stackreference resources
+	knownProviders packages.Providers // local name → package name
 	// providerAliases is the set of "<pkg>.<alias>" pairs declared by
 	// `provider` blocks; used to detect provider references in traversals.
 	providerAliases map[string]bool
@@ -304,6 +305,7 @@ func newProjectTransformer(
 		nameRewrites:    make(map[string]string),
 		functionSchemas: make(map[string]*schema.Function),
 		providerAliases: make(map[string]bool),
+		knownProviders:  make(packages.Providers),
 	}
 	// Phase 1: collect pulumi.required_providers across every body so that
 	// later resolution sees the full set regardless of which file declared it.
@@ -321,10 +323,6 @@ func newProjectTransformer(
 }
 
 func (ft *fileTransformer) scanProviders(body *hclsyntax.Body) {
-	seen := make(map[string]bool, len(ft.knownProviders))
-	for _, name := range ft.knownProviders {
-		seen[name] = true
-	}
 	for _, block := range body.Blocks {
 		if block.Type != "terraform" {
 			continue
@@ -333,12 +331,22 @@ func (ft *fileTransformer) scanProviders(body *hclsyntax.Body) {
 			if sub.Type != "required_providers" {
 				continue
 			}
-			for name := range sub.Body.Attributes {
-				if seen[name] {
+			for name, attr := range sub.Body.Attributes {
+				if _, seen := ft.knownProviders[name]; seen {
 					continue
 				}
-				seen[name] = true
-				ft.knownProviders = append(ft.knownProviders, name)
+				provider := ast.RequiredProvider{Name: name}
+				if pairs, mapDiags := hcl.ExprMap(attr.Expr); !mapDiags.HasErrors() {
+					for _, pair := range pairs {
+						if hcl.ExprAsKeyword(pair.Key) != "source" {
+							continue
+						}
+						if v, vd := pair.Value.Value(nil); !vd.HasErrors() && v.Type() == cty.String && !v.IsNull() {
+							provider.Source = v.AsString()
+						}
+					}
+				}
+				ft.knownProviders[name] = provider.PackageName()
 			}
 		}
 	}
@@ -1442,7 +1450,7 @@ func (ft *fileTransformer) transformTraversal(e *hclsyntax.ScopeTraversalExpr) h
 	// Trailing snake_case attrs become camelCase; the synthetic provider
 	// outputs need a casing hint so `URL` doesn't get mangled to `Url`.
 	// Defer to the call-inlining path when the alias names a call block.
-	if ft.isKnownProvider(root) && len(e.Traversal) >= 2 {
+	if ft.knownProviders.IsKnown(root) && len(e.Traversal) >= 2 {
 		if attr, ok := e.Traversal[1].(hcl.TraverseAttr); ok &&
 			ft.providerAliases[root+"."+attr.Name] {
 			isCallMethod := false
@@ -1710,10 +1718,6 @@ var providerSyntheticOutputs = []*schema.Property{
 	{Name: "urn", Type: schema.StringType},
 	{Name: "version", Type: schema.StringType},
 	{Name: "pluginDownloadURL", Type: schema.StringType},
-}
-
-func (ft *fileTransformer) isKnownProvider(name string) bool {
-	return slices.Contains(ft.knownProviders, name)
 }
 
 // rewriteTraversalRoot replaces the root name of a traversal if the name has

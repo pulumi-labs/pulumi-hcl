@@ -949,3 +949,80 @@ func TestEjectMultiFileHCL(t *testing.T) {
 		"providers.pp": "",
 	}, pclFiles)
 }
+
+func TestEjectProviderLocalNameDiffersFromPackage(t *testing.T) {
+	t.Parallel()
+
+	loader := schemaloader.New(t, schema.PackageSpec{
+		Name:    "example",
+		Version: "1.0.0",
+		Resources: map[string]schema.ResourceSpec{
+			"example:index:Resource": {
+				InputProperties: map[string]schema.PropertySpec{
+					"value": {TypeSpec: schema.TypeSpec{Type: "string"}},
+				},
+				ObjectTypeSpec: schema.ObjectTypeSpec{
+					Properties: map[string]schema.PropertySpec{
+						"value": {TypeSpec: schema.TypeSpec{Type: "string"}},
+					},
+				},
+			},
+		},
+		Functions: map[string]schema.FunctionSpec{
+			"example:index:function": {
+				Inputs: &schema.ObjectTypeSpec{
+					Properties: map[string]schema.PropertySpec{
+						"name": {TypeSpec: schema.TypeSpec{Type: "string"}},
+					},
+				},
+				Outputs: &schema.ObjectTypeSpec{
+					Properties: map[string]schema.PropertySpec{
+						"result": {TypeSpec: schema.TypeSpec{Type: "string"}},
+					},
+				},
+			},
+		},
+	})
+
+	src := []byte(`terraform {
+  required_providers {
+    renamed = {
+      source  = "pulumi/example"
+      version = "1.0.0"
+    }
+  }
+}
+
+data "renamed_function" "f" {
+  name = "x"
+}
+
+resource "renamed_resource" "app" {
+  value = "y"
+}
+
+output "f-of-x" {
+  value = data.renamed_function.f.result
+}
+`)
+
+	out := hclwrite.NewEmptyFile()
+	diags := transformSingleFile(t, src, "main.tf", out.Body(), loader, nil)
+	require.False(t, diags.HasErrors(), diags.Error())
+
+	expected := `resource "app" "example:index:Resource" {
+  value = "y"
+  options {
+    deleteBeforeReplace = true
+  }
+}
+
+output "f-of-x" {
+  value = invoke("example:index:function", {
+    name = "x"
+  }).result
+}
+
+`
+	assert.Equal(t, expected, string(out.Bytes()))
+}

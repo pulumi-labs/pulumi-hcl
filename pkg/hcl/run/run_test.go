@@ -3532,3 +3532,78 @@ module "child" {
 	assert.Equal(t, rootRef, childResource.Provider,
 		"a child resource with no provider block must inherit the root default provider")
 }
+
+func TestEngine_ProviderLocalNameDiffersFromPackage(t *testing.T) {
+	t.Parallel()
+
+	pkgSpec := schema.PackageSpec{
+		Name:    "example",
+		Version: "1.0.0",
+		Resources: map[string]schema.ResourceSpec{
+			"example:index:Resource": {
+				InputProperties: map[string]schema.PropertySpec{
+					"value": {TypeSpec: schema.TypeSpec{Type: "string"}},
+				},
+				ObjectTypeSpec: schema.ObjectTypeSpec{
+					Properties: map[string]schema.PropertySpec{
+						"value": {TypeSpec: schema.TypeSpec{Type: "string"}},
+					},
+				},
+			},
+		},
+		Functions: map[string]schema.FunctionSpec{
+			"example:index:function": {
+				Inputs: &schema.ObjectTypeSpec{
+					Properties: map[string]schema.PropertySpec{
+						"name": {TypeSpec: schema.TypeSpec{Type: "string"}},
+					},
+				},
+				Outputs: &schema.ObjectTypeSpec{
+					Properties: map[string]schema.PropertySpec{
+						"result": {TypeSpec: schema.TypeSpec{Type: "string"}},
+					},
+				},
+			},
+		},
+	}
+
+	src := []byte(`
+terraform {
+  required_providers {
+    renamed = {
+      source = "pulumi/example"
+    }
+  }
+}
+
+data "renamed_function" "f" {
+  name = "x"
+}
+
+resource "renamed_resource" "app" {
+  value = "y"
+}
+`)
+
+	config, diags := parser.NewParser().ParseSource("test.hcl", src)
+	require.Empty(t, diags)
+
+	mock := &testutil.MockResourceMonitor{}
+	engine := run.NewEngine(t.Context(), config, &run.EngineOptions{
+		ModuleLoader:    testModuleLoader(t),
+		ProjectName:     "test-project",
+		StackName:       "dev",
+		ResourceMonitor: mock,
+		WorkDir:         t.TempDir(),
+		RootDir:         t.TempDir(),
+		SchemaLoader:    schemaloader.New(t, pkgSpec),
+	})
+
+	require.NoError(t, engine.Run(t.Context()))
+
+	require.Len(t, mock.RegisteredResources, 2, "expected stack + resource")
+	assert.Equal(t, "example:index:Resource", mock.RegisteredResources[1].Type)
+
+	require.Len(t, mock.InvokedFunctions, 1)
+	assert.Equal(t, "example:index:function", mock.InvokedFunctions[0].Token)
+}

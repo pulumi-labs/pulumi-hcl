@@ -121,7 +121,7 @@ func TestResolveResource(t *testing.T) {
 
 	tests := []struct {
 		name           string
-		knownProviders []string
+		knownProviders Providers
 		token          string
 		wantToken      string
 		wantErr        error
@@ -130,43 +130,49 @@ func TestResolveResource(t *testing.T) {
 	}{
 		{
 			name:           "basic resource",
-			knownProviders: []string{"aws"},
+			knownProviders: Providers{"aws": ""},
 			token:          "aws_s3_bucket",
 			wantToken:      "aws:s3:Bucket",
 		},
 		{
+			name:           "local name differs from package",
+			knownProviders: Providers{"myaws": "aws"},
+			token:          "myaws_s3_bucket",
+			wantToken:      "aws:s3:Bucket",
+		},
+		{
 			name:           "bridged-style module embeds member name",
-			knownProviders: []string{"bridged"},
+			knownProviders: Providers{"bridged": ""},
 			token:          "bridged_iam_role",
 			wantToken:      "bridged:iam/Role:Role",
 		},
 		{
 			name:           "index module",
-			knownProviders: []string{"aws"},
+			knownProviders: Providers{"aws": ""},
 			token:          "aws_instance",
 			wantToken:      "aws:index:Instance",
 		},
 		{
 			name:           "multi-part module",
-			knownProviders: []string{"aws"},
+			knownProviders: Providers{"aws": ""},
 			token:          "aws_ec2_vpc",
 			wantToken:      "aws:ec2:Vpc",
 		},
 		{
 			name:           "gcp provider",
-			knownProviders: []string{"gcp"},
+			knownProviders: Providers{"gcp": ""},
 			token:          "gcp_storage_bucket",
 			wantToken:      "gcp:storage:Bucket",
 		},
 		{
 			name:           "single-segment token matches same-named provider",
-			knownProviders: []string{"external"},
+			knownProviders: Providers{"external": ""},
 			token:          "external",
 			wantToken:      "external:index/external:External",
 		},
 		{
 			name:           "single-segment token with no same-named resource is not found",
-			knownProviders: []string{"aws"},
+			knownProviders: Providers{"aws": ""},
 			token:          "aws",
 			wantErr:        ErrNotFound,
 		},
@@ -178,7 +184,7 @@ func TestResolveResource(t *testing.T) {
 		},
 		{
 			name:           "resource not found",
-			knownProviders: []string{"aws"},
+			knownProviders: Providers{"aws": ""},
 			token:          "aws_nonexistent",
 			wantErr:        ErrNotFound,
 		},
@@ -189,19 +195,19 @@ func TestResolveResource(t *testing.T) {
 		},
 		{
 			name:           "underscore package name",
-			knownProviders: []string{"fail_on_create", "simple"},
+			knownProviders: Providers{"fail_on_create": "", "simple": ""},
 			token:          "fail_on_create_resource",
 			wantToken:      "fail_on_create:index:Resource",
 		},
 		{
 			name:           "ambiguous token",
-			knownProviders: []string{"foo", "foo_bar"},
+			knownProviders: Providers{"foo": "", "foo_bar": ""},
 			token:          "foo_bar_thing",
 			errContains:    "ambiguous token",
 		},
 		{
 			name:           "provider as resource (pulumi_providers_ prefix)",
-			knownProviders: []string{"aws"},
+			knownProviders: Providers{"aws": ""},
 			token:          "pulumi_providers_aws",
 			errContains:    "is a provider type and cannot be declared with a resource block",
 		},
@@ -304,7 +310,7 @@ func TestResolveFunction(t *testing.T) {
 
 	tests := []struct {
 		name           string
-		knownProviders []string
+		knownProviders Providers
 		token          string
 		wantToken      string
 		wantErr        error
@@ -313,43 +319,49 @@ func TestResolveFunction(t *testing.T) {
 	}{
 		{
 			name:           "direct function match",
-			knownProviders: []string{"aws"},
+			knownProviders: Providers{"aws": ""},
 			token:          "aws_s3_getbucket",
 			wantToken:      "aws:s3:getBucket",
 		},
 		{
+			name:           "local name differs from package",
+			knownProviders: Providers{"myaws": "aws"},
+			token:          "myaws_s3_getbucket",
+			wantToken:      "aws:s3:getBucket",
+		},
+		{
 			name:           "index module function",
-			knownProviders: []string{"aws"},
+			knownProviders: Providers{"aws": ""},
 			token:          "aws_getinstance",
 			wantToken:      "aws:index:getInstance",
 		},
 		{
 			name:           "implicit get prefix",
-			knownProviders: []string{"aws"},
+			knownProviders: Providers{"aws": ""},
 			token:          "aws_s3_bucket",
 			wantToken:      "aws:s3:getBucket",
 		},
 		{
 			name:           "implicit get prefix multi-part",
-			knownProviders: []string{"aws"},
+			knownProviders: Providers{"aws": ""},
 			token:          "aws_ec2_vpc",
 			wantToken:      "aws:ec2:getVpc",
 		},
 		{
 			name:           "gcp implicit get",
-			knownProviders: []string{"gcp"},
+			knownProviders: Providers{"gcp": ""},
 			token:          "gcp_storage_bucket",
 			wantToken:      "gcp:storage:getBucket",
 		},
 		{
 			name:           "list function",
-			knownProviders: []string{"aws"},
+			knownProviders: Providers{"aws": ""},
 			token:          "aws_s3_listbuckets",
 			wantToken:      "aws:s3:listBuckets",
 		},
 		{
 			name:           "single-segment data source matches same-named provider via implicit get",
-			knownProviders: []string{"external"},
+			knownProviders: Providers{"external": ""},
 			token:          "external",
 			wantToken:      "external:index/getExternal:getExternal",
 		},
@@ -361,31 +373,31 @@ func TestResolveFunction(t *testing.T) {
 		},
 		{
 			name:           "non-standard module format",
-			knownProviders: []string{"mypkg"},
+			knownProviders: Providers{"mypkg": ""},
 			token:          "mypkg_mod_concatworld",
 			wantToken:      "mypkg:mod_concatWorld:concatWorld",
 		},
 		{
 			name:           "non-standard module format with nested slash",
-			knownProviders: []string{"mypkg"},
+			knownProviders: Providers{"mypkg": ""},
 			token:          "mypkg_mod_nested_concatworld",
 			wantToken:      "mypkg:mod/nested_concatWorld:concatWorld",
 		},
 		{
 			name:           "bridged-style data source implicit get",
-			knownProviders: []string{"bridged"},
+			knownProviders: Providers{"bridged": ""},
 			token:          "bridged_iam_role",
 			wantToken:      "bridged:iam/getRole:getRole",
 		},
 		{
 			name:           "bridged-style index module implicit get",
-			knownProviders: []string{"bridged"},
+			knownProviders: Providers{"bridged": ""},
 			token:          "bridged_availability_zone",
 			wantToken:      "bridged:index/getAvailabilityZone:getAvailabilityZone",
 		},
 		{
 			name:           "function not found",
-			knownProviders: []string{"aws"},
+			knownProviders: Providers{"aws": ""},
 			token:          "aws_nonexistent",
 			wantErr:        ErrNotFound,
 		},

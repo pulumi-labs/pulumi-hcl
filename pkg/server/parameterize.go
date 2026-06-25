@@ -314,18 +314,15 @@ func (m *moduleProvider) generateModuleSchema(
 	return schema.GenerateModuleSchema(ctx, loaded.Config, binder, token, version)
 }
 
-// knownProviderNames lists the local names the module's terraform block declares,
-// so resource/data type tokens split on the declared provider rather than the
-// first underscore.
-func knownProviderNames(config *ast.Config) []string {
+func knownProviderNames(config *ast.Config) packages.Providers {
 	if config.Terraform == nil {
 		return nil
 	}
-	names := make([]string, 0, len(config.Terraform.RequiredProviders))
-	for name := range config.Terraform.RequiredProviders {
-		names = append(names, name)
+	providers := make(packages.Providers, len(config.Terraform.RequiredProviders))
+	for name, req := range config.Terraform.RequiredProviders {
+		providers[name] = req.PackageName()
 	}
-	return names
+	return providers
 }
 
 // resolveRecorder wraps a resolver, recording where every module source resolves

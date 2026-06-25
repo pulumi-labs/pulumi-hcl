@@ -102,3 +102,18 @@ type RequiredProvider struct {
 func (p *RequiredProvider) IsPulumi() bool {
 	return p != nil && strings.HasPrefix(p.Source, "pulumi/")
 }
+
+// PackageName returns the Pulumi package name implied by the provider's source
+// (its last "/"-delimited segment), falling back to the local name when no
+// source is set. This may differ from the local name, which is the prefix on
+// HCL resource and data source types.
+func (p *RequiredProvider) PackageName() string {
+	if p == nil {
+		return ""
+	}
+	if p.Source == "" {
+		return p.Name
+	}
+	parts := strings.Split(p.Source, "/")
+	return parts[len(parts)-1]
+}

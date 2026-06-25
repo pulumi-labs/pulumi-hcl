@@ -386,12 +386,14 @@ func collectRequirementsRec(
 	// declares so that local names containing underscores (e.g. "snake_names")
 	// aren't mis-split at the first underscore. Undeclared (implicit) providers
 	// fall back to the first underscore-delimited segment inside PackageFromToken.
-	known := make([]string, 0, len(required)+len(config.Providers))
-	for alias := range required {
-		known = append(known, alias)
+	known := make(packages.Providers, len(required)+len(config.Providers))
+	for alias, req := range required {
+		known[alias] = req.PackageName()
 	}
 	for _, p := range config.Providers {
-		known = append(known, p.Name)
+		if !known.IsKnown(p.Name) {
+			known[p.Name] = ""
+		}
 	}
 
 	add := func(alias string) {

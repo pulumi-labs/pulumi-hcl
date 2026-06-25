@@ -113,19 +113,18 @@ func pulumiTokenToHCL(pkg schema.PackageReference, token string, isFunction bool
 	return hclToken + "_" + camelToSnake(name), nil
 }
 
-// PackageFromToken determines the package name from an HCL token and the list of
-// known providers from required_providers.
+// PackageFromToken returns the provider local name (the token prefix) from an
+// HCL token and the known providers from required_providers.
 //
 // If exactly one known provider matches as a prefix of the token (or matches
 // the token exactly, for single-segment tokens like `data "external"` whose
 // provider and type names are the same word), that provider name is returned.
 // If multiple known providers match, an error is returned to surface the
 // ambiguity. If no known provider matches, the first underscore-delimited
-// segment is used as the package name, or the whole token if it has no
-// underscore.
-func PackageFromToken(knownProviders []string, token string) (string, error) {
+// segment is used, or the whole token if it has no underscore.
+func PackageFromToken(known Providers, token string) (string, error) {
 	var matches []string
-	for _, p := range knownProviders {
+	for p := range known {
 		if strings.HasPrefix(token, p+"_") || token == p {
 			matches = append(matches, p)
 		}
@@ -141,6 +140,28 @@ func PackageFromToken(knownProviders []string, token string) (string, error) {
 	default:
 		return "", fmt.Errorf("ambiguous token %q: matches multiple providers %v", token, matches)
 	}
+}
+
+// Providers maps each provider's required_providers local name (the prefix on
+// HCL resource and data source types) to its Pulumi package name. An empty or
+// absent package value falls back to the local name.
+type Providers map[string]string
+
+func (p Providers) IsKnown(name string) bool {
+	_, ok := p[name]
+	return ok
+}
+
+func (p Providers) providerForToken(token string) (localName, pkgName string, err error) {
+	localName, err = PackageFromToken(p, token)
+	if err != nil {
+		return "", "", err
+	}
+	pkgName = p[localName]
+	if pkgName == "" {
+		pkgName = localName
+	}
+	return localName, pkgName, nil
 }
 
 // ProviderAsResourceError is returned by ResolveResource when an HCL token
@@ -165,7 +186,7 @@ func (e *ProviderAsResourceError) Error() string {
 // function token. Pair with pkg.Provider() when you need the Provider
 // schema — ResolveResource rejects provider tokens.
 func ResolvePackage(
-	ctx context.Context, loader schema.ReferenceLoader, knownProviders []string, token string,
+	ctx context.Context, loader schema.ReferenceLoader, known Providers, token string,
 ) (schema.PackageReference, error) {
 	if token == "" {
 		return nil, InvalidToken{token: token, reason: "Pulumi HCL tokens must be non-empty"}
@@ -176,7 +197,7 @@ func ResolvePackage(
 	if isStackReferenceToken(token) {
 		return resolvePackage(ctx, loader, &schema.PackageDescriptor{Name: "pulumi"})
 	}
-	pkgName, err := PackageFromToken(knownProviders, token)
+	_, pkgName, err := known.providerForToken(token)
 	if err != nil {
 		return nil, err
 	}
@@ -189,13 +210,13 @@ func isStackReferenceToken(token string) bool {
 	return token == "pulumi_stack_reference" || token == "pulumi_stackreference"
 }
 
-func ResolveResource(ctx context.Context, loader schema.ReferenceLoader, knownProviders []string, token string) (*schema.Resource, error) {
-	pkg, err := resolvePackageForToken(ctx, loader, knownProviders, token)
+func ResolveResource(ctx context.Context, loader schema.ReferenceLoader, known Providers, token string) (*schema.Resource, error) {
+	pkg, err := resolvePackageForToken(ctx, loader, known, token)
 	if err != nil {
 		return nil, err
 	}
 
-	res, err := findResource(pkg, knownProviders, token)
+	res, err := findResource(pkg, known, token)
 	if err != nil {
 		return nil, err
 	}
@@ -208,7 +229,7 @@ func ResolveResource(ctx context.Context, loader schema.ReferenceLoader, knownPr
 // resolvePackageForToken collapses package-load failures to ErrNotFound;
 // structural errors (InvalidToken, ambiguous matches) propagate.
 func resolvePackageForToken(
-	ctx context.Context, loader schema.ReferenceLoader, knownProviders []string, token string,
+	ctx context.Context, loader schema.ReferenceLoader, known Providers, token string,
 ) (schema.PackageReference, error) {
 	if token == "" {
 		return nil, InvalidToken{token: token, reason: "Pulumi HCL tokens must be non-empty"}
@@ -227,7 +248,7 @@ func resolvePackageForToken(
 		}
 		return pkg, nil
 	}
-	pkgName, err := PackageFromToken(knownProviders, token)
+	_, pkgName, err := known.providerForToken(token)
 	if err != nil {
 		return nil, err
 	}
@@ -238,7 +259,7 @@ func resolvePackageForToken(
 	return pkg, nil
 }
 
-func findResource(pkg schema.PackageReference, knownProviders []string, token string) (*schema.Resource, error) {
+func findResource(pkg schema.PackageReference, known Providers, token string) (*schema.Resource, error) {
 	if strings.HasPrefix(token, "pulumi_providers_") {
 		return pkg.Provider()
 	}
@@ -247,11 +268,11 @@ func findResource(pkg schema.PackageReference, knownProviders []string, token st
 		contract.Assertf(ok, "stack references are there")
 		return r, err
 	}
-	pkgName, err := PackageFromToken(knownProviders, token)
+	localName, _, err := known.providerForToken(token)
 	if err != nil {
 		return nil, err
 	}
-	key := resourceLookupKey(pkgName, token)
+	key := resourceLookupKey(localName, token)
 	for iter := pkg.Resources().Range(); iter.Next(); {
 		if tokenSearchKey(pkg, iter.Token()) == key {
 			return iter.Resource()
@@ -262,14 +283,14 @@ func findResource(pkg schema.PackageReference, knownProviders []string, token st
 
 // resourceLookupKey returns the normalized member-name key used to match an
 // HCL token against tokenSearchKey-derived keys. For multi-segment tokens
-// it's the underscore-stripped suffix after the provider prefix; for
-// single-segment tokens (where the type name equals the provider name) the
+// it's the underscore-stripped suffix after the provider's local-name prefix;
+// for single-segment tokens (where the type name equals the provider name) the
 // whole token is the member name.
-func resourceLookupKey(pkgName, token string) string {
-	if token == pkgName {
+func resourceLookupKey(localName, token string) string {
+	if token == localName {
 		return token
 	}
-	return strings.ReplaceAll(token[len(pkgName)+1:], "_", "")
+	return strings.ReplaceAll(token[len(localName)+1:], "_", "")
 }
 
 func notFoundWithSuggestion(pkg schema.PackageReference, hclToken string, isFunction bool) error {
@@ -372,12 +393,12 @@ func (l *ParameterizationAwareLoader) LoadPackageReferenceV2(ctx context.Context
 
 var _ schema.ReferenceLoader = (*ParameterizationAwareLoader)(nil)
 
-func ResolveFunction(ctx context.Context, loader schema.ReferenceLoader, knownProviders []string, token string) (*schema.Function, error) {
+func ResolveFunction(ctx context.Context, loader schema.ReferenceLoader, known Providers, token string) (*schema.Function, error) {
 	if token == "" {
 		return nil, InvalidToken{token: token, reason: "Pulumi HCL tokens must be non-empty"}
 	}
 
-	pkgName, err := PackageFromToken(knownProviders, token)
+	localName, pkgName, err := known.providerForToken(token)
 	if err != nil {
 		return nil, err
 	}
@@ -388,8 +409,8 @@ func ResolveFunction(ctx context.Context, loader schema.ReferenceLoader, knownPr
 	}
 
 	suffix := token
-	if token != pkgName {
-		suffix = token[len(pkgName)+1:]
+	if token != localName {
+		suffix = token[len(localName)+1:]
 	}
 	suffixParts := strings.Split(suffix, "_")
 
