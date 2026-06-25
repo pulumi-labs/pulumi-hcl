@@ -64,9 +64,13 @@ jobs:
         with:
           ref: sdk-releases
           token: ${{ secrets.RELEASE_TOKEN }}
+      - name: Read the Go toolchain from the released source
+        run: |
+          git fetch --depth 1 origin "refs/tags/${VERSION}"
+          git show "FETCH_HEAD:go.mod" > "${RUNNER_TEMP}/source-go.mod"
       - uses: actions/setup-go@v6
         with:
-          go-version: '1.25'
+          go-version-file: ${{ runner.temp }}/source-go.mod
       - uses: pulumi/actions@v7
         env:
           GITHUB_TOKEN: ${{ secrets.RELEASE_TOKEN }}
@@ -90,11 +94,12 @@ jobs:
           rm -rf sdk/go
           pulumi package gen-sdk "${RUNNER_TEMP}/pulumi-resource-hcl"
           cd sdk/go && go mod tidy
-      - name: Copy README and LICENSE from the release
+      - name: Copy README and LICENSE into the Go SDK module
         if: steps.already-tagged.outputs.exists == 'false'
         run: |
           git fetch --depth 1 origin "refs/tags/${VERSION}"
-          git checkout FETCH_HEAD -- README.md LICENSE
+          git show "FETCH_HEAD:README.md" > sdk/go/README.md
+          git show "FETCH_HEAD:LICENSE" > sdk/go/LICENSE
       - name: Commit, tag, and push
         if: steps.already-tagged.outputs.exists == 'false'
         run: |
