@@ -71,7 +71,7 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.RELEASE_TOKEN }}
       - name: Check if the Go SDK tag already exists
-        id: go-tag
+        id: already-tagged
         run: |
           if git ls-remote --exit-code --tags origin "refs/tags/sdk/go/${VERSION}" >/dev/null 2>&1; then
             echo "exists=true" >> "$GITHUB_OUTPUT"
@@ -79,19 +79,24 @@ jobs:
             echo "exists=false" >> "$GITHUB_OUTPUT"
           fi
       - name: Download the released provider binary
-        if: steps.go-tag.outputs.exists == 'false'
+        if: steps.already-tagged.outputs.exists == 'false'
         run: |
           asset="pulumi-resource-hcl-${VERSION}-linux-amd64.tar.gz"
           gh release download "${VERSION}" --pattern "${asset}" --dir "${RUNNER_TEMP}"
           tar -xzf "${RUNNER_TEMP}/${asset}" -C "${RUNNER_TEMP}" pulumi-resource-hcl
       - name: Generate the Go SDK into the sdk-releases branch
-        if: steps.go-tag.outputs.exists == 'false'
+        if: steps.already-tagged.outputs.exists == 'false'
         run: |
           rm -rf sdk/go
           pulumi package gen-sdk "${RUNNER_TEMP}/pulumi-resource-hcl"
           cd sdk/go && go mod tidy
+      - name: Copy README and LICENSE from the release
+        if: steps.already-tagged.outputs.exists == 'false'
+        run: |
+          git fetch --depth 1 origin "refs/tags/${VERSION}"
+          git checkout FETCH_HEAD -- README.md LICENSE
       - name: Commit, tag, and push
-        if: steps.go-tag.outputs.exists == 'false'
+        if: steps.already-tagged.outputs.exists == 'false'
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
@@ -105,7 +110,7 @@ jobs:
           git tag "sdk/go/${VERSION}"
           git push origin "sdk/go/${VERSION}"
       - name: Warm the Go module proxy
-        if: steps.go-tag.outputs.exists == 'false'
+        if: steps.already-tagged.outputs.exists == 'false'
         continue-on-error: true
         run: |
           warmdir="$(mktemp -d)"
