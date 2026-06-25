@@ -56,7 +56,7 @@ func (l *Loader) LoadDirectory(dir string) (map[string]*hcl.File, hcl.Diagnostic
 		}
 
 		name := entry.Name()
-		if !isTerraformFile(name) {
+		if isIgnoredFile(name) || !isTerraformFile(name) {
 			continue
 		}
 
@@ -112,4 +112,12 @@ func (l *Loader) Files() map[string]*hcl.File {
 // isTerraformFile returns true if the filename indicates a Terraform configuration file.
 func isTerraformFile(name string) bool {
 	return strings.HasSuffix(name, ".tf") || strings.HasSuffix(name, ".tf.json")
+}
+
+// isIgnoredFile returns true if the filename should be skipped because it is a
+// hidden file or an editor temporary file rather than a configuration file.
+func isIgnoredFile(name string) bool {
+	return strings.HasPrefix(name, ".") || // Unix-like hidden files
+		strings.HasSuffix(name, "~") || // vim
+		strings.HasPrefix(name, "#") && strings.HasSuffix(name, "#") // emacs
 }

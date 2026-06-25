@@ -146,7 +146,7 @@ func TestGetRegistryDownloadURL_NoConstraintPicksLatest(t *testing.T) {
 		map[string]string{"4.2.0": "https://example.com/v420.tar.gz"})
 	n := newTestNetworkResolver(t, srv.URL)
 
-	got, err := n.getRegistryDownloadURL(srv.URL, "acme", "thing", "aws", "")
+	got, err := n.getRegistryDownloadURL(regaddr.DefaultModuleRegistryHost, srv.URL, "acme", "thing", "aws", "")
 	require.NoError(t, err)
 	require.Equal(t, "https://example.com/v420.tar.gz", got)
 	require.Equal(t, 1, reg.versionsHits)
@@ -160,7 +160,7 @@ func TestGetRegistryDownloadURL_ConstraintPicksHighestMatching(t *testing.T) {
 		map[string]string{"4.1.0": "https://example.com/v410.tar.gz"})
 	n := newTestNetworkResolver(t, srv.URL)
 
-	got, err := n.getRegistryDownloadURL(srv.URL, "acme", "thing", "aws", "~> 4.0")
+	got, err := n.getRegistryDownloadURL(regaddr.DefaultModuleRegistryHost, srv.URL, "acme", "thing", "aws", "~> 4.0")
 	require.NoError(t, err)
 	require.Equal(t, "https://example.com/v410.tar.gz", got)
 	require.Equal(t, 1, reg.downloadHits["4.1.0"])
@@ -173,7 +173,7 @@ func TestGetRegistryDownloadURL_ExactVersionPin(t *testing.T) {
 		map[string]string{"2.0.0": "https://example.com/v200.tar.gz"})
 	n := newTestNetworkResolver(t, srv.URL)
 
-	got, err := n.getRegistryDownloadURL(srv.URL, "acme", "thing", "aws", "2.0.0")
+	got, err := n.getRegistryDownloadURL(regaddr.DefaultModuleRegistryHost, srv.URL, "acme", "thing", "aws", "2.0.0")
 	require.NoError(t, err)
 	require.Equal(t, "https://example.com/v200.tar.gz", got)
 }
@@ -185,7 +185,7 @@ func TestGetRegistryDownloadURL_NoMatchingVersionErrors(t *testing.T) {
 		map[string]string{})
 	n := newTestNetworkResolver(t, srv.URL)
 
-	_, err := n.getRegistryDownloadURL(srv.URL, "acme", "thing", "aws", "~> 99.0")
+	_, err := n.getRegistryDownloadURL(regaddr.DefaultModuleRegistryHost, srv.URL, "acme", "thing", "aws", "~> 99.0")
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "no published version")
 	require.Contains(t, err.Error(), "~> 99.0")
@@ -220,7 +220,7 @@ func TestGetRegistryDownloadURL_OpenTofuStyle_JSONBody(t *testing.T) {
 	t.Cleanup(srv.Close)
 
 	n := newTestNetworkResolver(t, srv.URL)
-	got, err := n.getRegistryDownloadURL(srv.URL, "acme", "thing", "aws", "")
+	got, err := n.getRegistryDownloadURL(regaddr.DefaultModuleRegistryHost, srv.URL, "acme", "thing", "aws", "")
 	require.NoError(t, err)
 	require.Equal(t, wantURL, got)
 }
@@ -232,7 +232,7 @@ func TestGetRegistryDownloadURL_InvalidConstraintErrors(t *testing.T) {
 		map[string]string{"1.0.0": "https://example.com/x.tar.gz"})
 	n := newTestNetworkResolver(t, srv.URL)
 
-	_, err := n.getRegistryDownloadURL(srv.URL, "acme", "thing", "aws", "not-a-constraint")
+	_, err := n.getRegistryDownloadURL(regaddr.DefaultModuleRegistryHost, srv.URL, "acme", "thing", "aws", "not-a-constraint")
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "parsing version constraint")
 }
