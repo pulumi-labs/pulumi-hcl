@@ -86,10 +86,11 @@ func NewLoader(resolver ResolverFunc) *Loader {
 // resolve directly, registry sources via the modules.v1 protocol, and everything
 // else through the remote getter, downloading and caching under PULUMI_HOME.
 func LiveResolver(ctx context.Context) ResolverFunc {
+	creds := newCloudRegistryCredentials(os.Getenv("PULUMI_API"), os.Getenv("PULUMI_ACCESS_TOKEN"))
 	n := &networkResolver{
 		cacheDir: defaultCacheDir(),
 		fetcher:  getmodules.NewPackageFetcher(ctx, nil),
-		disco:    disco.New(),
+		disco:    disco.New(disco.WithCredentials(creds)),
 	}
 	return n.resolve
 }
@@ -277,7 +278,7 @@ func (l *networkResolver) resolveRegistrySource(source, versionConstraint string
 		return "", err
 	}
 
-	downloadURL, err := l.getRegistryDownloadURL(baseURL, pkg.Namespace, pkg.Name, pkg.TargetSystem, versionConstraint)
+	downloadURL, err := l.getRegistryDownloadURL(pkg.Host, baseURL, pkg.Namespace, pkg.Name, pkg.TargetSystem, versionConstraint)
 	if err != nil {
 		return "", err
 	}
@@ -296,6 +297,20 @@ func (l *networkResolver) registryBaseURLForHost(host svchost.Hostname) (string,
 	return strings.TrimSuffix(u.String(), "/"), nil
 }
 
+// registryGet performs a GET against a modules.v1 endpoint on host. When host is the discovered
+// Pulumi Cloud module registry, the request carries the engine-provided access token; for any other
+// host it is anonymous, exactly like the service-discovery requests.
+func (l *networkResolver) registryGet(host svchost.Hostname, rawURL string) (*http.Response, error) {
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, rawURL, nil)
+	if err != nil {
+		return nil, err
+	}
+	if creds, err := l.disco.CredentialsForHost(context.Background(), host); err == nil && creds != nil {
+		creds.PrepareRequest(req)
+	}
+	return http.DefaultClient.Do(req)
+}
+
 type registryModuleVersion struct {
 	Version string `json:"version"`
 }
@@ -307,15 +322,16 @@ type registryModuleVersions struct {
 }
 
 // getRegistryDownloadURL resolves a concrete download URL via the modules.v1
-// protocol. Empty versionConstraint means "highest published version".
-func (l *networkResolver) getRegistryDownloadURL(baseURL, namespace, name, provider, versionConstraint string) (string, error) {
-	chosen, err := l.selectRegistryVersion(baseURL, namespace, name, provider, versionConstraint)
+// protocol. Empty versionConstraint means "highest published version". host
+// identifies the registry for credential lookup; see registryGet.
+func (l *networkResolver) getRegistryDownloadURL(host svchost.Hostname, baseURL, namespace, name, provider, versionConstraint string) (string, error) {
+	chosen, err := l.selectRegistryVersion(host, baseURL, namespace, name, provider, versionConstraint)
 	if err != nil {
 		return "", err
 	}
 
 	downloadURL := fmt.Sprintf("%s/%s/%s/%s/%s/download", baseURL, namespace, name, provider, chosen)
-	resp, err := http.Get(downloadURL)
+	resp, err := l.registryGet(host, downloadURL)
 	if err != nil {
 		return "", fmt.Errorf("getting download URL: %w", err)
 	}
@@ -362,9 +378,9 @@ func (l *networkResolver) getRegistryDownloadURL(baseURL, namespace, name, provi
 
 // selectRegistryVersion returns the highest published version satisfying
 // versionConstraint, or the highest overall when it's empty.
-func (l *networkResolver) selectRegistryVersion(baseURL, namespace, name, provider, versionConstraint string) (string, error) {
+func (l *networkResolver) selectRegistryVersion(host svchost.Hostname, baseURL, namespace, name, provider, versionConstraint string) (string, error) {
 	versionsURL := fmt.Sprintf("%s/%s/%s/%s/versions", baseURL, namespace, name, provider)
-	resp, err := http.Get(versionsURL)
+	resp, err := l.registryGet(host, versionsURL)
 	if err != nil {
 		return "", fmt.Errorf("querying registry versions: %w", err)
 	}
