@@ -15,7 +15,6 @@
 package modules
 
 import (
-	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -98,7 +97,7 @@ func TestCloudRegistryCredentialsLoggedOut(t *testing.T) {
 	creds := newCloudRegistryCredentials("", "")
 	host, err := svchost.ForComparison("tfe.pulumi.com")
 	require.NoError(t, err)
-	hc, err := creds.ForHost(context.Background(), host)
+	hc, err := creds.ForHost(t.Context(), host)
 	require.NoError(t, err)
 	assert.Nil(t, hc)
 }
@@ -107,7 +106,7 @@ func TestCloudRegistryCredentialsLoggedOut(t *testing.T) {
 // they set, or "" when no credentials apply.
 func authHeaderFor(t *testing.T, creds svcauth.CredentialsSource, host svchost.Hostname) string {
 	t.Helper()
-	hc, err := creds.ForHost(context.Background(), host)
+	hc, err := creds.ForHost(t.Context(), host)
 	require.NoError(t, err)
 	if hc == nil {
 		return ""
@@ -182,18 +181,16 @@ func TestRegistryGetScopesTokenToDiscoveredHost(t *testing.T) {
 		disco:    d,
 	}
 
-	t.Run("discovered host receives the token", func(t *testing.T) {
-		_, err := n.getRegistryDownloadURL(regHost, srv.URL, "acme", "thing", "aws", "")
-		require.NoError(t, err)
-		assert.Equal(t, "Bearer secret-token", gotAuth)
-	})
+	// The discovered host receives the token.
+	_, err = n.getRegistryDownloadURL(regHost, srv.URL, "acme", "thing", "aws", "")
+	require.NoError(t, err)
+	assert.Equal(t, "Bearer secret-token", gotAuth)
 
-	t.Run("other host receives no token", func(t *testing.T) {
-		gotAuth = "sentinel"
-		other, err := svchost.ForComparison("registry.terraform.io")
-		require.NoError(t, err)
-		_, err = n.getRegistryDownloadURL(other, srv.URL, "acme", "thing", "aws", "")
-		require.NoError(t, err)
-		assert.Equal(t, "", gotAuth)
-	})
+	// Any other host receives nothing.
+	gotAuth = "sentinel"
+	other, err := svchost.ForComparison("registry.terraform.io")
+	require.NoError(t, err)
+	_, err = n.getRegistryDownloadURL(other, srv.URL, "acme", "thing", "aws", "")
+	require.NoError(t, err)
+	assert.Equal(t, "", gotAuth)
 }
