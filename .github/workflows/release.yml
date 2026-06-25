@@ -17,6 +17,8 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+    outputs:
+      version: ${{ steps.version.outputs.version }}
     steps:
       - uses: actions/checkout@v6
       - uses: jdx/mise-action@v4
@@ -24,10 +26,12 @@ jobs:
         with:
           go-version-file: go.mod
       - name: Add env vars
+        id: version
         run: |
           LATEST="$(changie latest)"
           echo "GORELEASER_CURRENT_TAG=$LATEST" >> "$GITHUB_ENV"
           echo "RELEASE_NOTES_PATH=.changes/$LATEST.md" >> "$GITHUB_ENV"
+          echo "version=$LATEST" >> "$GITHUB_OUTPUT"
       - name: Check if release tag already exists
         id: check-release
         run: |
@@ -45,3 +49,65 @@ jobs:
           args: release --clean --release-notes=${{ env.RELEASE_NOTES_PATH }} --skip=validate
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  # Publish the Go SDK to our sdk-releases branch, then tag it.
+  publish-go-sdk:
+    needs: release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      VERSION: ${{ needs.release.outputs.version }}
+      GH_TOKEN: ${{ secrets.RELEASE_TOKEN }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: sdk-releases
+          token: ${{ secrets.RELEASE_TOKEN }}
+      - uses: actions/setup-go@v6
+        with:
+          go-version: '1.25'
+      - uses: pulumi/actions@v7
+        env:
+          GITHUB_TOKEN: ${{ secrets.RELEASE_TOKEN }}
+      - name: Check if the Go SDK tag already exists
+        id: go-tag
+        run: |
+          if git ls-remote --exit-code --tags origin "refs/tags/sdk/go/${VERSION}" >/dev/null 2>&1; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Download the released provider binary
+        if: steps.go-tag.outputs.exists == 'false'
+        run: |
+          asset="pulumi-resource-hcl-${VERSION}-linux-amd64.tar.gz"
+          gh release download "${VERSION}" --pattern "${asset}" --dir "${RUNNER_TEMP}"
+          tar -xzf "${RUNNER_TEMP}/${asset}" -C "${RUNNER_TEMP}" pulumi-resource-hcl
+      - name: Generate the Go SDK into the sdk-releases branch
+        if: steps.go-tag.outputs.exists == 'false'
+        run: |
+          rm -rf sdk/go
+          pulumi package gen-sdk "${RUNNER_TEMP}/pulumi-resource-hcl"
+          cd sdk/go && go mod tidy
+      - name: Commit, tag, and push
+        if: steps.go-tag.outputs.exists == 'false'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          if git diff --cached --quiet; then
+            echo "No SDK changes for ${VERSION}; mirror branch already up to date."
+          else
+            git commit -m "${VERSION}"
+            git push origin sdk-releases
+          fi
+          git tag "sdk/go/${VERSION}"
+          git push origin "sdk/go/${VERSION}"
+      - name: Warm the Go module proxy
+        if: steps.go-tag.outputs.exists == 'false'
+        continue-on-error: true
+        run: |
+          warmdir="$(mktemp -d)"
+          (cd "$warmdir" && go mod init warm &&
+            go get "github.com/pulumi-labs/pulumi-hcl/sdk/go@${VERSION}")

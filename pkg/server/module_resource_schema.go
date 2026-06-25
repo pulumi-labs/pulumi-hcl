@@ -24,6 +24,8 @@ import (
 // fully dynamic provider serves.
 const ModuleResourceToken = "hcl:index:Module"
 
+const goImportBasePath = "github.com/pulumi-labs/pulumi-hcl/sdk/go/hcl"
+
 // moduleResourceSchema returns the static schema for the fully dynamic provider.
 func moduleResourceSchema(version string) pulumischema.PackageSpec {
 	mapOfAny := func() pulumischema.TypeSpec {
@@ -64,8 +66,16 @@ func moduleResourceSchema(version string) pulumischema.PackageSpec {
 
 	return pulumischema.PackageSpec{
 		Name:        "hcl",
+		DisplayName: "Any HCL Module",
+		Publisher:   "Pulumi",
 		Version:     version,
-		Description: "Instantiate a Terraform/OpenTofu module as a Pulumi component, resolving its providers dynamically.",
+		Description: "Instantiate a Terraform/OpenTofu module as a Pulumi component.",
+		Repository:  "https://github.com/pulumi-labs/pulumi-hcl",
+		Meta:        &pulumischema.MetadataSpec{SupportPack: true},
+		Language: map[string]pulumischema.RawMessage{
+			"go": pulumischema.RawMessage(
+				`{"importBasePath":"` + goImportBasePath + `","respectSchemaVersion":true}`),
+		},
 		Resources: map[string]pulumischema.ResourceSpec{
 			ModuleResourceToken: {
 				ObjectTypeSpec: pulumischema.ObjectTypeSpec{

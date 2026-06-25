@@ -26,8 +26,6 @@ jobs:
         with:
           go-version-file: go.mod
       - uses: pulumi/actions@v7
-        with:
-          pulumi-version: pr#23654
         env:
           GITHUB_TOKEN: ${{ secrets.RELEASE_TOKEN }}
       - uses: opentofu/setup-opentofu@v2
@@ -46,6 +44,45 @@ jobs:
         with:
           files: coverage.out
           token: ${{ secrets.CODECOV_TOKEN }}
+
+  build-sdk:
+    # Generate every SDK and confirm each one builds with its native toolchain.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          # The generated build.gradle pins a Java 11 toolchain.
+          java-version: '11'
+      - uses: gradle/actions/setup-gradle@v4
+      - uses: pulumi/actions@v7
+        env:
+          GITHUB_TOKEN: ${{ secrets.RELEASE_TOKEN }}
+      - run: make bin/pulumi-resource-hcl
+      - run: pulumi package gen-sdk ./bin/pulumi-resource-hcl
+      - name: Build Go SDK
+        run: cd sdk/go && go mod tidy && go build ./...
+      - name: Build Node.js SDK
+        run: cd sdk/nodejs && npm install && npm run build
+      - name: Build Python SDK
+        run: cd sdk/python && python -m pip install build && python -m build
+      - name: Build .NET SDK
+        run: cd sdk/dotnet && dotnet build
+      - name: Build Java SDK
+        run: cd sdk/java && gradle build
 
   vendored-drift:
     # Ensures the vendored/ tree matches what `go generate ./vendored`
