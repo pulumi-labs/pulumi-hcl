@@ -67,8 +67,7 @@ jobs:
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
-          # The generated build.gradle pins a Java 11 toolchain.
-          java-version: '11'
+          java-version: '17'
       - uses: gradle/actions/setup-gradle@v4
       - uses: pulumi/actions@v7
         with:
