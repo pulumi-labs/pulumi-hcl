@@ -26,6 +26,8 @@ jobs:
         with:
           go-version-file: go.mod
       - uses: pulumi/actions@v7
+        with:
+          pulumi-version: "latest"
         env:
           GITHUB_TOKEN: ${{ secrets.RELEASE_TOKEN }}
       - uses: opentofu/setup-opentofu@v2
@@ -69,6 +71,8 @@ jobs:
           java-version: '11'
       - uses: gradle/actions/setup-gradle@v4
       - uses: pulumi/actions@v7
+        with:
+          pulumi-version: "latest"
         env:
           GITHUB_TOKEN: ${{ secrets.RELEASE_TOKEN }}
       - run: make bin/pulumi-resource-hcl

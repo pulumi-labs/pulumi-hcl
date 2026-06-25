@@ -72,6 +72,8 @@ jobs:
         with:
           go-version-file: ${{ runner.temp }}/source-go.mod
       - uses: pulumi/actions@v7
+        with:
+          pulumi-version: "latest"
         env:
           GITHUB_TOKEN: ${{ secrets.RELEASE_TOKEN }}
       - name: Check if the Go SDK tag already exists
