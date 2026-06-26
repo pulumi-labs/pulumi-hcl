@@ -1155,6 +1155,14 @@ func convertToSchemaCtyType(path string, val cty.Value, typ schema.Type) (cty.Va
 // type-checks against the TF-convention `identity[0].oidc[0]` traversal written
 // in HCL. A nil mapping falls back to the snake_case-of-Pulumi-name convention.
 func ctyTypeFromType(typ schema.Type, mapping *bridge.BodyMapping) cty.Type {
+	return ctyTypeFromTypeRec(typ, mapping, map[any]bool{})
+}
+
+// ctyTypeFromTypeRec is the cycle-guarded core of ctyTypeFromType. seen holds the
+// object and resource types on the current recursion path. A cyclic schema type
+// has no finite cty representation, so revisiting a type already on the path
+// yields DynamicPseudoType; every level reached before the cycle keeps its type.
+func ctyTypeFromTypeRec(typ schema.Type, mapping *bridge.BodyMapping, seen map[any]bool) cty.Type {
 	typ = codegen.UnwrapType(typ)
 
 	switch typ {
@@ -1174,32 +1182,42 @@ func ctyTypeFromType(typ schema.Type, mapping *bridge.BodyMapping) cty.Type {
 
 	switch typ := typ.(type) {
 	case *schema.ArrayType:
-		et := ctyTypeFromType(typ.ElementType, mapping)
+		et := ctyTypeFromTypeRec(typ.ElementType, mapping, seen)
 		if ctyTypeContainsDynamic(et) {
 			return cty.DynamicPseudoType
 		}
 		return cty.List(et)
 	case *schema.MapType:
-		et := ctyTypeFromType(typ.ElementType, mapping)
+		et := ctyTypeFromTypeRec(typ.ElementType, mapping, seen)
 		if ctyTypeContainsDynamic(et) {
 			return cty.DynamicPseudoType
 		}
 		return cty.Map(et)
 	case *schema.EnumType:
-		return ctyTypeFromType(typ.ElementType, mapping)
+		return ctyTypeFromTypeRec(typ.ElementType, mapping, seen)
 	case *schema.ObjectType:
-		return ctyObjectType(typ.Properties, nil, mapping)
+		if seen[typ] {
+			return cty.DynamicPseudoType
+		}
+		seen[typ] = true
+		defer delete(seen, typ)
+		return ctyObjectTypeRec(typ.Properties, nil, mapping, seen)
 	case *schema.ResourceType:
 		if typ.Resource == nil {
 			return cty.DynamicPseudoType
 		}
-		return ctyObjectType(typ.Resource.Properties,
-			map[string]cty.Type{"__ref": eval.ResourceReferenceCapsuleType}, mapping)
+		if seen[typ.Resource] {
+			return cty.DynamicPseudoType
+		}
+		seen[typ.Resource] = true
+		defer delete(seen, typ.Resource)
+		return ctyObjectTypeRec(typ.Resource.Properties,
+			map[string]cty.Type{"__ref": eval.ResourceReferenceCapsuleType}, mapping, seen)
 	case *schema.InvalidType:
 		return cty.DynamicPseudoType
 	case *schema.TokenType:
 		if typ.UnderlyingType != nil {
-			return ctyTypeFromType(typ.UnderlyingType, mapping)
+			return ctyTypeFromTypeRec(typ.UnderlyingType, mapping, seen)
 		}
 		return cty.DynamicPseudoType
 	case *schema.UnionType:
@@ -1207,15 +1225,15 @@ func ctyTypeFromType(typ schema.Type, mapping *bridge.BodyMapping) cty.Type {
 		// Otherwise fall back to DynamicPseudoType so any union member is
 		// accepted without forcing conversion to one arbitrary member's type.
 		var common cty.Type
-		seen := false
+		found := false
 		consider := func(t schema.Type) bool {
-			ct := ctyTypeFromType(t, mapping)
+			ct := ctyTypeFromTypeRec(t, mapping, seen)
 			if ct == cty.NilType {
 				return true
 			}
-			if !seen {
+			if !found {
 				common = ct
-				seen = true
+				found = true
 				return true
 			}
 			return common.Equals(ct)
@@ -1228,7 +1246,7 @@ func ctyTypeFromType(typ schema.Type, mapping *bridge.BodyMapping) cty.Type {
 				return cty.DynamicPseudoType
 			}
 		}
-		if !seen {
+		if !found {
 			return cty.NilType
 		}
 		return common
@@ -1244,6 +1262,14 @@ func ctyTypeFromType(typ schema.Type, mapping *bridge.BodyMapping) cty.Type {
 func ctyObjectType(
 	properties []*schema.Property, seed map[string]cty.Type, mapping *bridge.BodyMapping,
 ) cty.Type {
+	return ctyObjectTypeRec(properties, seed, mapping, map[any]bool{})
+}
+
+// ctyObjectTypeRec is the cycle-guarded core of ctyObjectType; see
+// ctyTypeFromTypeRec for how seen bounds recursion through a cyclic type graph.
+func ctyObjectTypeRec(
+	properties []*schema.Property, seed map[string]cty.Type, mapping *bridge.BodyMapping, seen map[any]bool,
+) cty.Type {
 	attrs := make(map[string]cty.Type, len(properties)+len(seed))
 	var optional []string
 	for k, v := range seed {
@@ -1255,7 +1281,7 @@ func ctyObjectType(
 		if !p.IsRequired() {
 			optional = append(optional, key)
 		}
-		t := ctyTypeFromType(p.Type, nestedMappingFor(p.Name, mapping))
+		t := ctyTypeFromTypeRec(p.Type, nestedMappingFor(p.Name, mapping), seen)
 		// The bridge flattens a MaxItems=1 block to an object, but TF models it
 		// as a list; re-wrap it as a list so a reference like `r.settings[0].x`
 		// types the same way it resolves at runtime (see propertyObjectToCtyMap).
