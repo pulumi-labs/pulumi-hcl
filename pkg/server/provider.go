@@ -27,6 +27,7 @@ import (
 	"github.com/pulumi-labs/pulumi-hcl/pkg/hcl/packages"
 	"github.com/pulumi-labs/pulumi-hcl/pkg/hcl/run"
 	"github.com/pulumi-labs/pulumi-hcl/pkg/hcl/schema"
+	"github.com/pulumi-labs/pulumi-hcl/pkg/hcl/transform"
 	"github.com/pulumi/pulumi/pkg/v3/codegen/convert"
 	pulumiSchema "github.com/pulumi/pulumi/pkg/v3/codegen/schema"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/resource"
@@ -327,17 +328,11 @@ func (p *HCLProvider) Construct(ctx context.Context, req *pulumirpc.ConstructReq
 	// Set up config from inputs, prefixing with project name as the engine
 	// expects. Inputs arrive under their camelCase schema property names (with
 	// camelCase object fields); map them to the snake_case names the HCL module
-	// declares, at every nesting depth.
-	config := make(map[string]string)
-	hclInputs := resource.ToResourcePropertyMap(p.schema.InputsToHCL(resource.FromResourcePropertyMap(inputs)))
-	for k, v := range hclInputs {
-		configKey := req.Project + ":" + string(k)
-		if v.IsString() {
-			config[configKey] = v.StringValue()
-		} else {
-			jsonVal, _ := json.Marshal(v.Mappable())
-			config[configKey] = string(jsonVal)
-		}
+	// declares, at every nesting depth. Values are passed through as already-typed
+	// cty values, preserving structure, unknowns, and marks (e.g. secrets).
+	config := make(map[string]run.ConfigValue)
+	for k, v := range p.schema.InputsToHCL(resource.FromResourcePropertyMap(inputs)).All {
+		config[req.Project+":"+string(k)] = run.TypedConfigValue(transform.PropertyValueToCty(v))
 	}
 
 	// Create and run the engine

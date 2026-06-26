@@ -510,7 +510,14 @@ func (host *LanguageHost) Run(
 		}, nil
 	}
 
-	configMap := maps.Clone(req.Config)
+	secretConfigKeys := make(map[string]bool, len(req.ConfigSecretKeys))
+	for _, k := range req.ConfigSecretKeys {
+		secretConfigKeys[k] = true
+	}
+	configMap := make(map[string]run.ConfigValue, len(req.Config))
+	for k, v := range req.Config {
+		configMap[k] = run.UntypedConfigValue(v, secretConfigKeys[k])
+	}
 
 	schemaLoader, err := schema.NewLoaderClient(req.LoaderTarget)
 	if err != nil {
@@ -553,7 +560,6 @@ func (host *LanguageHost) Run(
 		StackName:               req.Stack,
 		Organization:            req.Organization,
 		Config:                  configMap,
-		ConfigSecretKeys:        req.ConfigSecretKeys,
 		DryRun:                  req.DryRun,
 		ResourceMonitor:         resmon,
 		SchemaLoader:            schema.NewCachedLoader(loader),

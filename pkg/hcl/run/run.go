@@ -375,10 +375,7 @@ type Engine struct {
 	workDir string
 
 	// pulumiConfig contains Pulumi stack configuration values.
-	pulumiConfig map[string]string
-
-	// configSecretKeys lists keys that should be treated as secrets.
-	configSecretKeys []string
+	pulumiConfig map[string]ConfigValue
 
 	// moduleLoader loads and caches module configurations.
 	moduleLoader *modules.Loader
@@ -405,6 +402,35 @@ type Engine struct {
 	alwaysRegisterProviders bool
 }
 
+// ConfigValue is a value supplied for a root variable. See [UntypedConfigValue] or
+// [TypedConfigValue] to create one.
+type ConfigValue struct {
+	// Exactly one form is set: untyped holds a raw string parsed according to the
+	// consuming variable's declared type (the Pulumi config / TF_VAR_ path), while
+	// typed holds an already-structured value (the Construct path) whose marks —
+	// secrets in particular — are preserved as-is. secret carries the secret bit for
+	// an untyped value, whose raw string cannot itself carry a mark; a typed value
+	// records its secretness on the value instead.
+
+	untyped *string
+	secret  bool
+	typed   cty.Value
+}
+
+// UntypedConfigValue builds a ConfigValue from a raw string. The string is
+// parsed according to the consuming variable's declared type, mirroring how
+// OpenTofu parses -var / TF_VAR_ values. secret marks the value sensitive.
+func UntypedConfigValue(s string, secret bool) ConfigValue {
+	return ConfigValue{untyped: &s, secret: secret}
+}
+
+// TypedConfigValue builds a ConfigValue from an already-typed value, preserving
+// any marks (such as secrets) it carries. Used when the caller already holds
+// structured values, e.g. component Construct inputs.
+func TypedConfigValue(v cty.Value) ConfigValue {
+	return ConfigValue{typed: v}
+}
+
 // EngineOptions configures the engine.
 type EngineOptions struct {
 	// ProjectName is the Pulumi project name.
@@ -416,11 +442,9 @@ type EngineOptions struct {
 	// Organization is the Pulumi organization name.
 	Organization string
 
-	// Config contains the Pulumi configuration values.
-	Config map[string]string
-
-	// ConfigSecretKeys lists keys that should be treated as secrets.
-	ConfigSecretKeys []string
+	// Config contains the values supplied for root variables, keyed by variable
+	// name (optionally project-prefixed)
+	Config map[string]ConfigValue
 
 	// DryRun indicates this is a preview operation.
 	DryRun bool
@@ -485,7 +509,6 @@ func NewEngine(ctx context.Context, config *ast.Config, opts *EngineOptions) *En
 		dryRun:                  opts.DryRun,
 		workDir:                 opts.WorkDir,
 		pulumiConfig:            opts.Config,
-		configSecretKeys:        opts.ConfigSecretKeys,
 		packages:                opts.Packages,
 		packageRefs:             make(map[string]PackageRef),
 		moduleLoader:            opts.ModuleLoader,
@@ -662,24 +685,23 @@ func (e *Engine) processVariable(_ context.Context, node *graph.Node) error {
 		val = cty.StringVal(envVal)
 		valueSource = "environment"
 	} else if e.pulumiConfig != nil {
-		// Check Pulumi stack config with project prefix
+		// Check Pulumi stack config, preferring the project-prefixed key.
 		configKey := e.projectName + ":" + varName
-		if configVal, ok := e.pulumiConfig[configKey]; ok {
-			val = cty.StringVal(configVal)
-			valueSource = "config"
-			// Check if it's a secret
-			for _, secretKey := range e.configSecretKeys {
-				if secretKey == configKey || secretKey == varName {
-					isSecret = true
-					break
-				}
-			}
-		} else if configVal, ok := e.pulumiConfig[varName]; ok {
-			// Also check without project prefix
-			val = cty.StringVal(configVal)
-			valueSource = "config"
-			if slices.Contains(e.configSecretKeys, varName) {
-				isSecret = true
+		cv, ok := e.pulumiConfig[configKey]
+		if !ok {
+			cv, ok = e.pulumiConfig[varName]
+		}
+		if ok {
+			if cv.untyped != nil {
+				// A raw string parsed below according to the declared type.
+				val = cty.StringVal(*cv.untyped)
+				valueSource = "config"
+				isSecret = cv.secret
+			} else {
+				// An already-typed value; its marks (e.g. secrets) ride along,
+				// so it bypasses string parsing.
+				val = cv.typed
+				valueSource = "config-typed"
 			}
 		}
 	}
