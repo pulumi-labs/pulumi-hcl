@@ -1255,7 +1255,14 @@ func ctyObjectType(
 		if !p.IsRequired() {
 			optional = append(optional, key)
 		}
-		attrs[key] = ctyTypeFromType(p.Type, nestedMappingFor(p.Name, mapping))
+		t := ctyTypeFromType(p.Type, nestedMappingFor(p.Name, mapping))
+		// The bridge flattens a MaxItems=1 block to an object, but TF models it
+		// as a list; re-wrap it as a list so a reference like `r.settings[0].x`
+		// types the same way it resolves at runtime (see propertyObjectToCtyMap).
+		if fieldIsSingularBlock(mapping, p.Name) && !t.IsListType() && !t.IsTupleType() {
+			t = cty.List(t)
+		}
+		attrs[key] = t
 	}
 	return cty.ObjectWithOptionalAttrs(attrs, optional)
 }
