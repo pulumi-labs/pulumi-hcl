@@ -938,8 +938,7 @@ func TestResourceOutputToCtyDoesNotErrorOnValidValues(t *testing.T) {
 	t.Parallel()
 
 	rapid.Check(t, func(rt *rapid.T) {
-		objectCycles := func(p *schema.Package) bool { return !hasObjectCycle(p) }
-		pkg := rapidschema.Package().Filter(objectCycles).Draw(rt, "pkg")
+		pkg := rapidschema.Package().Draw(rt, "pkg")
 		for _, res := range pkg.Resources {
 			if res.IsProvider {
 				continue
@@ -949,63 +948,6 @@ func TestResourceOutputToCtyDoesNotErrorOnValidValues(t *testing.T) {
 			require.NoError(t, err)
 		}
 	})
-}
-
-// hasObjectCycle reports whether any ObjectType in the package's type graph
-// reaches itself via property types. transform.ctyTypeFromType recurses
-// unguardedly through ObjectType.Properties, so cyclic types blow the stack
-// before any list-element-type check could fire.
-func hasObjectCycle(pkg *schema.Package) bool {
-	visited := map[schema.Type]bool{}
-	var walk func(t schema.Type, stack map[schema.Type]bool) bool
-	walk = func(t schema.Type, stack map[schema.Type]bool) bool {
-		if t == nil {
-			return false
-		}
-		if stack[t] {
-			return true
-		}
-		if visited[t] {
-			return false
-		}
-		stack[t] = true
-		defer func() {
-			delete(stack, t)
-			visited[t] = true
-		}()
-		switch tt := t.(type) {
-		case *schema.OptionalType:
-			return walk(tt.ElementType, stack)
-		case *schema.ArrayType:
-			return walk(tt.ElementType, stack)
-		case *schema.MapType:
-			return walk(tt.ElementType, stack)
-		case *schema.ObjectType:
-			for _, p := range tt.Properties {
-				if walk(p.Type, stack) {
-					return true
-				}
-			}
-		case *schema.UnionType:
-			if walk(tt.DefaultType, stack) {
-				return true
-			}
-			for _, et := range tt.ElementTypes {
-				if walk(et, stack) {
-					return true
-				}
-			}
-		}
-		return false
-	}
-	for _, r := range pkg.Resources {
-		for _, p := range r.Properties {
-			if walk(p.Type, map[schema.Type]bool{}) {
-				return true
-			}
-		}
-	}
-	return false
 }
 
 func TestResourceOutputToCtyUnionTypeCollapse(t *testing.T) {
@@ -1498,4 +1440,183 @@ func TestSelectUnionMemberByConst_IntDiscriminator(t *testing.T) {
 	require.ErrorAs(t, err, &unrecognized)
 	assert.Equal(t, []string{"1", "2"}, unrecognized.Allowed)
 	assert.Equal(t, "99", unrecognized.Actual)
+}
+
+// recursiveResourceSchema builds a resource whose type graph reaches itself: A.b
+// is a B, and B.as is a list of A, so A and B form a cycle. The object types
+// share pointers, the way a loaded schema binds them.
+func recursiveResourceSchema() *schema.Resource {
+	a := &schema.ObjectType{Token: "test:index:A"}
+	b := &schema.ObjectType{
+		Token: "test:index:B",
+		Properties: []*schema.Property{
+			{Name: "name", Type: schema.StringType},
+			{Name: "as", Type: &schema.ArrayType{ElementType: a}},
+		},
+	}
+	a.Properties = []*schema.Property{
+		{Name: "name", Type: schema.StringType},
+		{Name: "b", Type: b},
+	}
+	return &schema.Resource{
+		Token: "test:index:Res",
+		Properties: []*schema.Property{
+			{Name: "a", Type: a},
+		},
+	}
+}
+
+// A concrete value of a recursive schema is finite, so converting it to cty must
+// terminate and every level the value reaches must keep its precise type.
+func TestResourceOutputToCtyRecursiveValue(t *testing.T) {
+	t.Parallel()
+
+	// Descends two levels; the deepest A has no b, so the data terminates there.
+	outputs := property.NewMap(map[string]property.Value{
+		"a": property.New(property.NewMap(map[string]property.Value{
+			"name": property.New("outer"),
+			"b": property.New(property.NewMap(map[string]property.Value{
+				"name": property.New("middle"),
+				"as": property.New(property.NewArray([]property.Value{
+					property.New(property.NewMap(map[string]property.Value{
+						"name": property.New("inner"),
+					})),
+				})),
+			})),
+		})),
+	})
+
+	result, err := ResourceOutputToCty(outputs, recursiveResourceSchema(), nil, false)
+	require.NoError(t, err)
+
+	a := result["a"]
+	require.True(t, a.Type().IsObjectType())
+	assert.Equal(t, cty.String, a.GetAttr("name").Type())
+	assert.Equal(t, "outer", a.GetAttr("name").AsString())
+
+	b := a.GetAttr("b")
+	require.True(t, b.Type().IsObjectType())
+	assert.Equal(t, cty.String, b.GetAttr("name").Type())
+	assert.Equal(t, "middle", b.GetAttr("name").AsString())
+
+	as := b.GetAttr("as")
+	require.True(t, as.Type().IsListType() || as.Type().IsTupleType())
+	require.Equal(t, 1, as.LengthInt())
+
+	inner := as.Index(cty.NumberIntVal(0))
+	require.True(t, inner.Type().IsObjectType())
+	assert.Equal(t, cty.String, inner.GetAttr("name").Type())
+	assert.Equal(t, "inner", inner.GetAttr("name").AsString())
+
+	// b was absent in the data, so the type stops unfolding here.
+	assert.True(t, inner.GetAttr("b").IsNull())
+}
+
+// During preview a recursive output comes back unknown, so there is no value to
+// bound the recursion; conversion must still terminate.
+func TestResourceOutputToCtyRecursiveUnknown(t *testing.T) {
+	t.Parallel()
+
+	outputs := property.NewMap(map[string]property.Value{
+		"a": property.New(property.Computed),
+	})
+
+	result, err := ResourceOutputToCty(outputs, recursiveResourceSchema(), nil, true)
+	require.NoError(t, err)
+	assert.False(t, result["a"].IsKnown())
+}
+
+// Typing a reference to a recursive resource has no value to bound the recursion,
+// so the type unfolds its precise structure until the cycle closes, and only the
+// frontier degrades to a dynamic type.
+func TestResourceReferenceTypeRecursiveSchema(t *testing.T) {
+	t.Parallel()
+
+	ty := ResourceReferenceType(recursiveResourceSchema(), nil)
+	require.True(t, ty.IsObjectType())
+
+	a := ty.AttributeType("a")
+	require.True(t, a.IsObjectType())
+	assert.Equal(t, cty.String, a.AttributeType("name"))
+
+	b := a.AttributeType("b")
+	require.True(t, b.IsObjectType())
+	assert.Equal(t, cty.String, b.AttributeType("name"))
+
+	// b.as re-enters A, closing the cycle, so this is the frontier.
+	assert.Equal(t, cty.DynamicPseudoType, b.AttributeType("as"))
+}
+
+// A single array can hold cyclic objects nested to different depths. Because the
+// type is derived from each value, every element keeps the precise typing for its
+// own depth rather than being forced to one shared element type.
+func TestResourceOutputToCtyRecursiveArrayMixedDepth(t *testing.T) {
+	t.Parallel()
+
+	a := &schema.ObjectType{Token: "test:index:A"}
+	b := &schema.ObjectType{
+		Token: "test:index:B",
+		Properties: []*schema.Property{
+			{Name: "name", Type: schema.StringType},
+			{Name: "as", Type: &schema.ArrayType{ElementType: a}},
+		},
+	}
+	a.Properties = []*schema.Property{
+		{Name: "name", Type: schema.StringType},
+		{Name: "b", Type: b},
+	}
+	res := &schema.Resource{
+		Token: "test:index:Res",
+		Properties: []*schema.Property{
+			{Name: "items", Type: &schema.ArrayType{ElementType: a}},
+		},
+	}
+
+	// Three A values in one array at increasing depth: d0 stops at the top, d1
+	// goes one level into b, d2 goes a further level into b.as.
+	d0 := property.NewMap(map[string]property.Value{
+		"name": property.New("d0"),
+	})
+	d1 := property.NewMap(map[string]property.Value{
+		"name": property.New("d1"),
+		"b": property.New(property.NewMap(map[string]property.Value{
+			"name": property.New("d1b"),
+		})),
+	})
+	d2 := property.NewMap(map[string]property.Value{
+		"name": property.New("d2"),
+		"b": property.New(property.NewMap(map[string]property.Value{
+			"name": property.New("d2b"),
+			"as": property.New(property.NewArray([]property.Value{
+				property.New(property.NewMap(map[string]property.Value{
+					"name": property.New("d2c"),
+				})),
+			})),
+		})),
+	})
+
+	outputs := property.NewMap(map[string]property.Value{
+		"items": property.New(property.NewArray([]property.Value{
+			property.New(d0), property.New(d1), property.New(d2),
+		})),
+	})
+
+	result, err := ResourceOutputToCty(outputs, res, nil, false)
+	require.NoError(t, err)
+
+	items := result["items"]
+	require.True(t, items.Type().IsTupleType() || items.Type().IsListType())
+	require.Equal(t, 3, items.LengthInt())
+
+	e0 := items.Index(cty.NumberIntVal(0))
+	assert.Equal(t, cty.String, e0.GetAttr("name").Type())
+	assert.Equal(t, "d0", e0.GetAttr("name").AsString())
+
+	e1 := items.Index(cty.NumberIntVal(1))
+	assert.Equal(t, "d1b", e1.GetAttr("b").GetAttr("name").AsString())
+
+	e2 := items.Index(cty.NumberIntVal(2))
+	deep := e2.GetAttr("b").GetAttr("as").Index(cty.NumberIntVal(0)).GetAttr("name")
+	assert.Equal(t, cty.String, deep.Type())
+	assert.Equal(t, "d2c", deep.AsString())
 }
