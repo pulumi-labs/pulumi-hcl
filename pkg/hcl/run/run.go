@@ -1365,6 +1365,27 @@ func (e *Engine) registerResourceInstanceInContext(
 	}
 	outputObj["urn"] = cty.StringVal(string(urn)).Mark(eval.SyntheticMark)
 
+	// Expose the resource's self-reference so it can be passed by value as a
+	// resource-reference input — e.g. an aws-apigateway route's
+	// `event_handler = aws_lambda_function.fn`. Without a `__ref`,
+	// ctyToResourceProperty marshals such an input as Computed (unknown), which
+	// makes a remote component's Construct outputs come back unresolved.
+	var selfID property.Value
+	switch {
+	case resSchema.IsComponent:
+		selfID = property.New(property.Null)
+	case id != "":
+		selfID = property.New(id)
+	case e.dryRun:
+		selfID = property.New(property.Computed)
+	default:
+		selfID = property.New(property.Null)
+	}
+	selfRef := property.ResourceReference{URN: urn, ID: selfID}
+	// NB: do not SyntheticMark this — stripSyntheticAttributes would remove it
+	// before ctyToResourceProperty can read it for resource-reference inputs.
+	outputObj["__ref"] = cty.CapsuleVal(eval.ResourceReferenceCapsuleType, &selfRef)
+
 	markedOutputs := cty.ObjectVal(outputObj).Mark(eval.DepMark(urn))
 
 	e.resourceOutputs.Set(instance.Key, markedOutputs)

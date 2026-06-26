@@ -511,6 +511,75 @@ resource "aws_subnet" "main" {
 	}
 }
 
+// TestEngine_WholeResourceReferenceInput is a regression test for
+// https://github.com/pulumi-labs/pulumi-hcl/issues/298. A resource passed by
+// value as a resource-reference input (e.g. an aws-apigateway route's
+// `event_handler = aws_lambda_function.fn`) must marshal as an actual
+// ResourceReference, not as Computed. The Computed (unknown) variant caused a
+// remote component's Construct outputs to come back unresolved.
+func TestEngine_WholeResourceReferenceInput(t *testing.T) {
+	t.Parallel()
+
+	src := []byte(`
+resource "test_fn" "fn" {
+}
+
+resource "test_handler" "h" {
+  target = test_fn.fn
+}
+`)
+
+	p := parser.NewParser()
+	config, diags := p.ParseSource("test.hcl", src)
+	if diags.HasErrors() {
+		t.Fatalf("parse error: %s", diags.Error())
+	}
+
+	mock := &testutil.MockResourceMonitor{}
+	engine := run.NewEngine(t.Context(), config, &run.EngineOptions{
+		ModuleLoader:    testModuleLoader(t),
+		ProjectName:     "test-project",
+		StackName:       "dev",
+		ResourceMonitor: mock,
+		WorkDir:         t.TempDir(),
+		RootDir:         t.TempDir(),
+		SchemaLoader: schemaloader.New(t, schema.PackageSpec{
+			Name: "test",
+			Resources: map[string]schema.ResourceSpec{
+				"test:index:Fn": {},
+				"test:index:Handler": {
+					InputProperties: map[string]schema.PropertySpec{
+						"target": {TypeSpec: schema.TypeSpec{Ref: "#/resources/test:index:Fn"}},
+					},
+					ObjectTypeSpec: schema.ObjectTypeSpec{
+						Properties: map[string]schema.PropertySpec{
+							"target": {TypeSpec: schema.TypeSpec{Ref: "#/resources/test:index:Fn"}},
+						},
+					},
+				},
+			},
+		}),
+	})
+
+	if err := engine.Run(t.Context()); err != nil {
+		t.Fatalf("run error: %v", err)
+	}
+
+	var handler *run.RegisterResourceRequest
+	for i := range mock.RegisteredResources {
+		if mock.RegisteredResources[i].Type == "test:index:Handler" {
+			handler = &mock.RegisteredResources[i]
+		}
+	}
+	require.NotNil(t, handler, "handler resource was not registered")
+
+	target := handler.Inputs.Get("target")
+	assert.False(t, target.IsComputed(), "target marshaled as Computed (unknown); want a ResourceReference")
+	require.True(t, target.IsResourceReference(), "target = %v; want a ResourceReference", target)
+	assert.Equal(t, "urn:pulumi:test::project::test:index:Fn::fn",
+		string(target.AsResourceReference().URN))
+}
+
 func TestValidate(t *testing.T) {
 	t.Parallel()
 

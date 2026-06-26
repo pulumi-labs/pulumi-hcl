@@ -1018,7 +1018,10 @@ func ResourceReferenceType(r *schema.Resource, mapping *bridge.BodyMapping) cty.
 			&schema.Property{Name: "pluginDownloadURL", Type: schema.StringType},
 		)
 	}
-	return ctyObjectType(properties, map[string]cty.Type{"id": cty.String}, mapping)
+	return ctyObjectType(properties, map[string]cty.Type{
+		"id":    cty.String,
+		"__ref": eval.ResourceReferenceCapsuleType,
+	}, mapping)
 }
 
 // DataSourceReferenceType returns the cty type of a `data.<type>.<name>`
