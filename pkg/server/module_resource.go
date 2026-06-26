@@ -431,6 +431,7 @@ func validateModuleInputs(inputs property.Map, config *ast.Config) error {
 func moduleConfig(project string, inputs property.Map) map[string]string {
 	config := make(map[string]string, inputs.Len())
 	for k, v := range resource.ToResourcePropertyMap(inputs) {
+		v = unwrapPropertyValue(v)
 		key := project + ":" + string(k)
 		if v.IsString() {
 			config[key] = v.StringValue()
@@ -440,6 +441,41 @@ func moduleConfig(project string, inputs property.Map) map[string]string {
 		config[key] = string(jsonVal)
 	}
 	return config
+}
+
+// unwrapPropertyValue strips Output and Secret wrappers from a PropertyValue,
+// recursing through arrays and objects, to yield the plain underlying value.
+// The HCL engine consumes resolved values; without unwrapping, an Output-typed
+// input (e.g. one wired from another resource's output) serializes as its
+// wrapper struct — {"Element":{"V":"..."}} — instead of the value Terraform
+// expects. Unknown outputs are left intact for the caller to handle.
+func unwrapPropertyValue(v resource.PropertyValue) resource.PropertyValue {
+	switch {
+	case v.IsOutput():
+		o := v.OutputValue()
+		if !o.Known {
+			return v
+		}
+		return unwrapPropertyValue(o.Element)
+	case v.IsSecret():
+		return unwrapPropertyValue(v.SecretValue().Element)
+	case v.IsArray():
+		arr := v.ArrayValue()
+		out := make([]resource.PropertyValue, len(arr))
+		for i, e := range arr {
+			out[i] = unwrapPropertyValue(e)
+		}
+		return resource.NewArrayProperty(out)
+	case v.IsObject():
+		obj := v.ObjectValue()
+		out := make(resource.PropertyMap, len(obj))
+		for key, e := range obj {
+			out[key] = unwrapPropertyValue(e)
+		}
+		return resource.NewObjectProperty(out)
+	default:
+		return v
+	}
 }
 
 // wrapModuleOutputs exposes the module's top-level outputs under the component's

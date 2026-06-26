@@ -331,6 +331,7 @@ func (p *HCLProvider) Construct(ctx context.Context, req *pulumirpc.ConstructReq
 	config := make(map[string]string)
 	hclInputs := resource.ToResourcePropertyMap(p.schema.InputsToHCL(resource.FromResourcePropertyMap(inputs)))
 	for k, v := range hclInputs {
+		v = unwrapPropertyValue(v)
 		configKey := req.Project + ":" + string(k)
 		if v.IsString() {
 			config[configKey] = v.StringValue()
