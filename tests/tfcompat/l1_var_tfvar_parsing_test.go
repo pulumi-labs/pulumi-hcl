@@ -22,20 +22,18 @@ import (
 
 // TestL1VarTFVarParsing pins pulumi-hcl's string-sourced variable parsing
 // (`-var` / TF_VAR_ / Pulumi config) to OpenTofu's: the declared type selects
-// the parsing mode. Primitives are taken literally then converted; complex types
-// are parsed as HCL expressions; an untyped variable keeps its literal string.
-// `str`, `items`, and `untyped` share the identical input `["a", "b"]`, so their
-// differing results prove parsing is type-driven and not a blind JSON/HCL decode.
+// the parsing mode.
 func TestL1VarTFVarParsing(t *testing.T) {
 	t.Parallel()
 	tfcompat.RunCase(t, "l1_var_tfvar_parsing", tfcompat.Case{
 		Config: map[string]string{
-			"str":     `["a", "b"]`,
-			"num":     "42",
-			"flag":    "true",
-			"tags":    `{ environment = "prod" }`,
-			"items":   `["a", "b"]`,
-			"untyped": `["a", "b"]`,
+			"str":      `["a", "b"]`,
+			"num":      "42",
+			"flag":     "true",
+			"tags":     `{ environment = "prod" }`,
+			"items":    `["a", "b"]`,
+			"untyped":  `["a", "b"]`,
+			"anyTyped": `["a", "b"]`,
 		},
 	})
 }

@@ -19,6 +19,7 @@ output "outputTryFailure" {
 # A dynamically typed value, whose field accesses will not be type errors (since the type is not known to the type
 # checker), but may fail dynamically, and can thus be used as test inputs to can.
 variable "anObject" {
+  type = any
 }
 output "dynamicTrySuccess" {
   value = can(var.anObject.a)

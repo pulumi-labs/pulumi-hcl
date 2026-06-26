@@ -723,10 +723,11 @@ func (e *Engine) processVariable(_ context.Context, node *graph.Node) error {
 	}
 
 	// A value from a string source (env/config) is parsed according to the declared
-	// type. An untyped variable keeps its literal string value, matching OpenTofu's
-	// VariableParseLiteral default for variables declared without a type.
+	// type. A variable declared without a type keeps its literal string value,
+	// matching OpenTofu's VariableParseLiteral default; one declared with any type
+	// — including `any` — parses its value as HCL (VariableParseHCL).
 	if (valueSource == "environment" || valueSource == "config") &&
-		v.TypeConstraint != cty.NilType && v.TypeConstraint != cty.DynamicPseudoType {
+		v.TypeConstraint != cty.NilType {
 		converted, err := convertStringToType(val.AsString(), v.TypeConstraint)
 		if err != nil {
 			return fmt.Errorf("variable %q: %w", varName, err)

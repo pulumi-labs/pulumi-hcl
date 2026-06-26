@@ -571,7 +571,11 @@ func (ft *fileTransformer) emitFile(
 			labels := []string{pclName}
 
 			if typeAttr, ok := block.Body.Attributes["type"]; ok {
-				labels = append(labels, convertHCLTypeExpr(src, typeAttr.Expr))
+				// A PCL config with no type label is already `any`, so omit an
+				// explicit `any` rather than emit the redundant label.
+				if pclType := convertHCLTypeExpr(src, typeAttr.Expr); pclType != "any" {
+					labels = append(labels, pclType)
+				}
 			}
 			blk := out.AppendNewBlock("config", labels)
 			if pclName != name {
