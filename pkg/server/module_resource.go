@@ -44,6 +44,7 @@ import (
 	"github.com/pulumi-labs/pulumi-hcl/pkg/hcl/packages"
 	"github.com/pulumi-labs/pulumi-hcl/pkg/hcl/resolve"
 	"github.com/pulumi-labs/pulumi-hcl/pkg/hcl/run"
+	"github.com/pulumi-labs/pulumi-hcl/pkg/hcl/transform"
 )
 
 // moduleProvider is the fully dynamic HCL provider. It serves the single
@@ -425,19 +426,13 @@ func validateModuleInputs(inputs property.Map, config *ast.Config) error {
 	}
 }
 
-// moduleConfig maps the module's input variables to the engine's config map,
-// keyed <project>:<variable>. Non-string values are JSON-encoded, the form the
-// HCL engine decodes config values from.
-func moduleConfig(project string, inputs property.Map) map[string]string {
-	config := make(map[string]string, inputs.Len())
-	for k, v := range resource.ToResourcePropertyMap(inputs) {
-		key := project + ":" + string(k)
-		if v.IsString() {
-			config[key] = v.StringValue()
-			continue
-		}
-		jsonVal, _ := json.Marshal(v.Mappable())
-		config[key] = string(jsonVal)
+// moduleConfig maps the module's input variables to the engine's config, keyed
+// <project>:<variable>. The values are passed through as already-typed cty values, so
+// structure, unknowns, and marks are preserved across the component boundary.
+func moduleConfig(project string, inputs property.Map) map[string]run.ConfigValue {
+	config := make(map[string]run.ConfigValue, inputs.Len())
+	for k, v := range inputs.All {
+		config[project+":"+string(k)] = run.TypedConfigValue(transform.PropertyValueToCty(v))
 	}
 	return config
 }

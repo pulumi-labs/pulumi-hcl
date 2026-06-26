@@ -1,0 +1,6 @@
+kind: bug-fixes
+body: Preserve secrets and structured values passed as inputs to module components
+time: 2026-06-26T14:39:39.663042+02:00
+custom:
+    Component: runtime
+    PR: "294"

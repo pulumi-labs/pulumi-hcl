@@ -878,8 +878,8 @@ output "region_value" {
 				},
 			},
 		}),
-		Config: map[string]string{
-			"test-project:region": "us-west-2",
+		Config: map[string]run.ConfigValue{
+			"test-project:region": run.UntypedConfigValue("us-west-2", false),
 		},
 	})
 
@@ -899,6 +899,51 @@ output "region_value" {
 	if regionOutput.AsString() != "us-west-2" {
 		t.Errorf("expected region_value=%q from config, got %q", "us-west-2", regionOutput.AsString())
 	}
+}
+
+// TestEngine_VariableFromSecretConfig covers the untyped-secret path: a config
+// value supplied as an untyped string and flagged secret marks the variable
+// sensitive, so a value derived from it surfaces as a secret while round-tripping
+// intact.
+func TestEngine_VariableFromSecretConfig(t *testing.T) {
+	t.Parallel()
+
+	src := []byte(`
+variable "region" {
+  type = string
+}
+
+output "region_value" {
+  value = var.region
+}
+`)
+
+	p := parser.NewParser()
+	config, diags := p.ParseSource("test.hcl", src)
+	require.False(t, diags.HasErrors(), "parse error: %s", diags.Error())
+
+	mock := &testutil.MockResourceMonitor{}
+	engine := run.NewEngine(t.Context(), config, &run.EngineOptions{
+		ModuleLoader:    testModuleLoader(t),
+		ProjectName:     "test-project",
+		StackName:       "dev",
+		ResourceMonitor: mock,
+		WorkDir:         t.TempDir(),
+		RootDir:         t.TempDir(),
+		SchemaLoader:    schemaloader.New(t, schema.PackageSpec{Name: "aws"}),
+		Config: map[string]run.ConfigValue{
+			"test-project:region": run.UntypedConfigValue("us-west-2", true),
+		},
+	})
+
+	require.NoError(t, engine.Run(t.Context()))
+
+	regionOutput, ok := mock.StackOutputs.GetOk("region_value")
+	require.True(t, ok, "expected region_value output")
+	require.True(t, regionOutput.Secret(),
+		"a secret config value should make the variable, and a value derived from it, secret")
+	require.Equal(t, "us-west-2", regionOutput.AsString(),
+		"the secret value should reach the program intact")
 }
 
 func TestEngine_VariableFromEnv(t *testing.T) {
@@ -945,8 +990,8 @@ output "region_value" {
 				},
 			},
 		}),
-		Config: map[string]string{
-			"test-project:region": "us-west-2", // This should be ignored
+		Config: map[string]run.ConfigValue{
+			"test-project:region": run.UntypedConfigValue("us-west-2", false), // This should be ignored
 		},
 	})
 
