@@ -218,6 +218,75 @@ output "keyed_id" {
 	}, moduleSchema.OutputProperties)
 }
 
+// mappingResolver resolves resources and their bridge body mappings by TF type,
+// so output typing that depends on the mapping (e.g. MaxItemsOne block shape)
+// can be tested without a live provider.
+type mappingResolver struct {
+	resources map[string]*pulumiSchema.Resource
+	mappings  map[string]*bridge.BodyMapping
+}
+
+func (s mappingResolver) ResolveResource(_ context.Context, tfType string) (*pulumiSchema.Resource, error) {
+	return s.resources[tfType], nil
+}
+
+func (mappingResolver) ResolveFunction(_ context.Context, _ string) (*pulumiSchema.Function, error) {
+	return nil, nil
+}
+
+func (s mappingResolver) ResourceBodyMapping(_ context.Context, tfType string) *bridge.BodyMapping {
+	return s.mappings[tfType]
+}
+
+func (mappingResolver) DataSourceBodyMapping(_ context.Context, _ string) *bridge.BodyMapping {
+	return nil
+}
+
+// a MaxItems:1 block is flattened to a single object on the Pulumi side, but TF/OpenTofu
+// models it as a list, so HCL indexes it as `block[0].attr`. Output typing must re-wrap
+// the flattened object as a list — mirroring the runtime — so the numeric index types
+// instead of failing with "Invalid index".
+func TestSingularBlockIndexedOutputIsTyped(t *testing.T) {
+	t.Parallel()
+
+	const src = `
+resource "blocky_thing" "t" {
+}
+
+output "mode" {
+  value = blocky_thing.t.settings[0].mode
+}
+`
+	config, diags := parser.NewParser().ParseSource("main.tf", []byte(src))
+	require.False(t, diags.HasErrors(), diags.Error())
+
+	resolver := mappingResolver{
+		resources: map[string]*pulumiSchema.Resource{
+			"blocky_thing": {Properties: []*pulumiSchema.Property{
+				{Name: "settings", Type: &pulumiSchema.ObjectType{Properties: []*pulumiSchema.Property{
+					{Name: "mode", Type: pulumiSchema.StringType},
+				}}},
+			}},
+		},
+		mappings: map[string]*bridge.BodyMapping{
+			"blocky_thing": {Fields: map[string]*bridge.FieldMapping{
+				"settings": {
+					TFName: "settings", PulumiName: "settings", TFBlock: true, MaxItemsOne: true,
+					Nested: &bridge.BodyMapping{Fields: map[string]*bridge.FieldMapping{
+						"mode": {TFName: "mode", PulumiName: "mode"},
+					}},
+				},
+			}},
+		},
+	}
+
+	moduleSchema, err := GenerateModuleSchema(
+		t.Context(), config, &Binder{Resources: resolver}, componentToken("pkg", "index", "pkg"), semver.MustParse("0.0.0-dev"))
+	require.NoError(t, err)
+
+	assert.Equal(t, map[string]*PropertySpec{"mode": {Type: "string"}}, moduleSchema.OutputProperties)
+}
+
 // stubModuleLoader resolves child modules from parsed configs keyed by source.
 type stubModuleLoader struct {
 	configs map[string]*ast.Config

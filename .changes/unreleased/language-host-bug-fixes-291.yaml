@@ -1,0 +1,6 @@
+kind: bug-fixes
+body: "Support `[0]` indexing of `MaxItems: 1` blocks in Multi-Language Component outputs"
+time: 2026-06-26T14:07:30Z
+custom:
+    Component: language-host
+    PR: "291"
