@@ -36,6 +36,7 @@ import (
 	regaddr "github.com/opentofu/registry-address/v2"
 	"github.com/opentofu/svchost"
 	"github.com/opentofu/svchost/disco"
+	"github.com/opentofu/svchost/svcauth"
 	"github.com/pulumi-labs/pulumi-hcl/pkg/hcl/ast"
 	"github.com/pulumi-labs/pulumi-hcl/pkg/hcl/parser"
 	"github.com/pulumi-labs/pulumi-hcl/pkg/potel"
@@ -86,11 +87,23 @@ func NewLoader(resolver ResolverFunc) *Loader {
 // resolve directly, registry sources via the modules.v1 protocol, and everything
 // else through the remote getter, downloading and caching under PULUMI_HOME.
 func LiveResolver(ctx context.Context) ResolverFunc {
-	creds := newCloudRegistryCredentials(os.Getenv("PULUMI_API"), os.Getenv("PULUMI_ACCESS_TOKEN"))
+	cloud := newCloudRegistryCredentials(os.Getenv("PULUMI_API"), os.Getenv("PULUMI_ACCESS_TOKEN"))
+	cfg := loadTerraformCLIConfig()
+
+	// Precedence matches OpenTofu: an explicit TF_TOKEN_<host> or a `credentials`
+	// block wins over the auto-injected Pulumi Cloud token, which only ever
+	// matches the discovered cloud host anyway.
+	d := disco.New(disco.WithCredentials(svcauth.Credentials{
+		tfTokenCredentials(),
+		cliConfigCredentials(cfg),
+		cloud,
+	}))
+	applyHostServiceOverrides(d, cfg)
+
 	n := &networkResolver{
 		cacheDir: defaultCacheDir(),
 		fetcher:  getmodules.NewPackageFetcher(ctx, nil),
-		disco:    disco.New(disco.WithCredentials(creds)),
+		disco:    d,
 	}
 	return n.resolve
 }
