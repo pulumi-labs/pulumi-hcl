@@ -1772,13 +1772,17 @@ func (g *generator) genReplaceOnChanges(body *hclwrite.Body, schemaPaths []strin
 func (g *generator) genConfigVariable(body *hclwrite.Body, cv *pcl.ConfigVariable) hcl.Diagnostics {
 	block := body.AppendNewBlock("variable", []string{cv.LogicalName()})
 
-	// Set the type constraint if the config has a type label.
+	// Emit a type constraint. An explicitly typed config keeps its declared type;
+	// an untyped one is `any`, so its structured config value is parsed as HCL
+	// rather than kept as a literal string (HCL treats a typeless `variable {}` as
+	// VariableParseLiteral, which would not decode an object or list value).
+	hclTypeStr := "any"
 	if len(cv.SyntaxNode().(*hclsyntax.Block).Labels) == 2 {
-		hclTypeStr := pclTypeToHCL(cv.Type())
-		block.Body().SetAttributeRaw("type", hclwrite.Tokens{
-			{Type: hclsyntax.TokenIdent, Bytes: []byte(hclTypeStr)},
-		})
+		hclTypeStr = pclTypeToHCL(cv.Type())
 	}
+	block.Body().SetAttributeRaw("type", hclwrite.Tokens{
+		{Type: hclsyntax.TokenIdent, Bytes: []byte(hclTypeStr)},
+	})
 
 	// Set the default value if present.
 	if cv.DefaultValue != nil {

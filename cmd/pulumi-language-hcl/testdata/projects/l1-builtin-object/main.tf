@@ -13,6 +13,7 @@ output "lookupOutputDefault" {
 # An untyped (dynamic) config value. Pins iterating dynamic entries in generated programs
 # (e.g. TypeScript's Object.entries over a value with no static type).
 variable "alternativeNames" {
+  type    = any
   default = {}
 }
 output "names" {

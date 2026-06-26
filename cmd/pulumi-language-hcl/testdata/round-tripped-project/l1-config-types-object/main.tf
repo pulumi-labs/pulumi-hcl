@@ -14,11 +14,13 @@ output "theObject" {
   value = var.anObject.prop[0]
 }
 variable "anyObject" {
+  type = any
 }
 output "theThing" {
   value = var.anyObject.a + var.anyObject.b
 }
 variable "optionalUntypedObject" {
+  type = any
   default = {
     "key" = "value"
   }

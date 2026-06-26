@@ -3,6 +3,7 @@ variable "anObject" {
   type = object({property=string})
 }
 variable "anyObject" {
+  type = any
 }
 locals {
   l = sensitive([1])

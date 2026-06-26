@@ -31,6 +31,7 @@ import (
 	"time"
 
 	"github.com/hashicorp/hcl/v2"
+	"github.com/hashicorp/hcl/v2/hclsyntax"
 	"github.com/pulumi-labs/pulumi-hcl/pkg/hcl/ast"
 	"github.com/pulumi-labs/pulumi-hcl/pkg/hcl/bridge"
 	"github.com/pulumi-labs/pulumi-hcl/pkg/hcl/eval"
@@ -51,8 +52,6 @@ import (
 	"github.com/pulumi/pulumi/sdk/v3/go/property"
 	"github.com/zclconf/go-cty/cty"
 	ctyconvert "github.com/zclconf/go-cty/cty/convert"
-	"github.com/zclconf/go-cty/cty/function/stdlib"
-	"github.com/zclconf/go-cty/cty/json"
 )
 
 // PackageRef is an opaque reference returned by RegisterPackage that routes
@@ -723,20 +722,17 @@ func (e *Engine) processVariable(_ context.Context, node *graph.Node) error {
 		}
 	}
 
-	// Type conversion if value came from string source (env/config)
-	if valueSource == "environment" || valueSource == "config" {
-		if v.TypeConstraint != cty.NilType && v.TypeConstraint != cty.DynamicPseudoType {
-			converted, err := convertStringToType(val.AsString(), v.TypeConstraint)
-			if err != nil {
-				return fmt.Errorf("variable %q: %w", varName, err)
-			}
-			val = converted
-		} else {
-			// No type constraint: try JSON parsing for structured values.
-			if parsed, err := parseJSONAuto(val.AsString()); err == nil {
-				val = parsed
-			}
+	// A value from a string source (env/config) is parsed according to the declared
+	// type. A variable declared without a type keeps its literal string value,
+	// matching OpenTofu's VariableParseLiteral default; one declared with any type
+	// — including `any` — parses its value as HCL (VariableParseHCL).
+	if (valueSource == "environment" || valueSource == "config") &&
+		v.TypeConstraint != cty.NilType {
+		converted, err := convertStringToType(val.AsString(), v.TypeConstraint)
+		if err != nil {
+			return fmt.Errorf("variable %q: %w", varName, err)
 		}
+		val = converted
 	}
 
 	// Fill in optional()-attribute defaults before sensitive marking.
@@ -798,57 +794,29 @@ func runVariableValidations(ev *eval.Evaluator, varName string, validations []*a
 	return nil
 }
 
-// convertStringToType converts a string value to the specified cty type.
+// convertStringToType converts a string-sourced variable value (Pulumi config
+// or a TF_VAR_ environment variable) to the variable's declared type.
 func convertStringToType(s string, targetType cty.Type) (cty.Value, error) {
-	switch {
-	case targetType == cty.String:
-		return cty.StringVal(s), nil
-	case targetType == cty.Number:
-		// Parse as number
-		var f float64
-		if _, err := fmt.Sscanf(s, "%f", &f); err != nil {
-			return cty.NilVal, fmt.Errorf("cannot convert %q to number: %w", s, err)
+	var val cty.Value
+	if targetType.IsPrimitiveType() {
+		val = cty.StringVal(s)
+	} else {
+		expr, diags := hclsyntax.ParseExpression([]byte(s), "<variable value>", hcl.Pos{Line: 1, Column: 1})
+		if diags.HasErrors() {
+			return cty.NilVal, fmt.Errorf("cannot parse %q as an HCL expression: %s", s, diags.Error())
 		}
-		return cty.NumberFloatVal(f), nil
-	case targetType == cty.Bool:
-		switch strings.ToLower(s) {
-		case "true", "1", "yes", "on":
-			return cty.True, nil
-		case "false", "0", "no", "off":
-			return cty.False, nil
-		default:
-			return cty.NilVal, fmt.Errorf("cannot convert %q to bool", s)
+		v, valDiags := expr.Value(nil)
+		if valDiags.HasErrors() {
+			return cty.NilVal, fmt.Errorf("cannot evaluate %q: %s", s, valDiags.Error())
 		}
-	case targetType.IsListType() || targetType.IsTupleType() || targetType.IsSetType():
-		// For complex types, try JSON parsing
-		return parseJSONValue(s, targetType)
-	case targetType.IsMapType() || targetType.IsObjectType():
-		return parseJSONValue(s, targetType)
-	default:
-		// For other types, try to use it as-is
-		return cty.StringVal(s), nil
+		val = v
 	}
-}
 
-// parseJSONValue parses a JSON string into a cty value.
-func parseJSONValue(s string, targetType cty.Type) (cty.Value, error) {
-	// Use cty's built-in JSON unmarshaling
-	val, err := json.Unmarshal([]byte(s), targetType)
+	converted, err := ctyconvert.Convert(val, targetType)
 	if err != nil {
-		return cty.NilVal, fmt.Errorf("cannot parse JSON value: %w", err)
+		return cty.NilVal, fmt.Errorf("cannot convert %q to %s: %w", s, targetType.FriendlyName(), err)
 	}
-	return val, nil
-}
-
-// parseJSONAuto parses a JSON string into a cty value, automatically inferring the type.
-// This uses cty's jsondecode function, which handles plain JSON (objects, arrays, strings, etc.)
-// without requiring a type descriptor.
-func parseJSONAuto(s string) (cty.Value, error) {
-	result, err := stdlib.JSONDecodeFunc.Call([]cty.Value{cty.StringVal(s)})
-	if err != nil {
-		return cty.NilVal, err
-	}
-	return result, nil
+	return converted, nil
 }
 
 // processLocal processes a local value definition.
