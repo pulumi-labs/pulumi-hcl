@@ -88,6 +88,11 @@ type Context struct {
 
 	// self contains the current resource for self references
 	self cty.Value
+
+	// typeInference makes HCLContext serve type-preserving function variants
+	// (see TypeInferenceFunctions). It is set only when the context is used to
+	// infer output/local types from unknown values during schema generation.
+	typeInference bool
 }
 
 // PathContext contains path-related values.
@@ -504,10 +509,23 @@ func (c *Context) HCLContext() *hcl.EvalContext {
 		vars["self"] = c.self
 	}
 
+	functions := Functions(c.rootModuleDir)
+	if c.typeInference {
+		functions = TypeInferenceFunctions(c.rootModuleDir)
+	}
 	return &hcl.EvalContext{
 		Variables: vars,
-		Functions: Functions(c.rootModuleDir),
+		Functions: functions,
 	}
+}
+
+// UseTypeInferenceFunctions switches the context to type-preserving function
+// variants, for inferring types from unknown values during schema generation.
+// See TypeInferenceFunctions.
+func (c *Context) UseTypeInferenceFunctions() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.typeInference = true
 }
 
 // HCLContextWithIteration returns an hcl.EvalContext like HCLContext, but with
