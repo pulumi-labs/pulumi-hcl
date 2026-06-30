@@ -42,6 +42,7 @@ import (
 	"github.com/pulumi-labs/pulumi-hcl/pkg/hcl/transform"
 	"github.com/pulumi-labs/pulumi-hcl/pkg/potel"
 	"github.com/pulumi-labs/pulumi-hcl/pkg/util"
+	"github.com/pulumi/pulumi/pkg/v3/codegen"
 	"github.com/pulumi/pulumi/pkg/v3/codegen/schema"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/resource"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/resource/urn"
@@ -2971,7 +2972,7 @@ func (e *Engine) resolveResourceRefsInOutputs(
 ) (property.Map, error) {
 	resolved := outputs
 	for _, p := range resSchema.Properties {
-		resType, ok := p.Type.(*schema.ResourceType)
+		resType, ok := codegen.UnwrapType(p.Type).(*schema.ResourceType)
 		if !ok {
 			continue
 		}

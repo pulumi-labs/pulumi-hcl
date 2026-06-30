@@ -2965,6 +2965,99 @@ resource "test_component" "comp" {
 		ID:  property.New("fn-id"),
 	}, handler.AsResourceReference())
 }
+func TestEngine_FieldAccessOnComponentReferenceOutput(t *testing.T) {
+	t.Parallel()
+
+	componentSchema := schema.PackageSpec{
+		Name: "test",
+		Resources: map[string]schema.ResourceSpec{
+			"test:index:Resource": {
+				InputProperties: map[string]schema.PropertySpec{
+					"value": {TypeSpec: schema.TypeSpec{Type: "string"}},
+				},
+				ObjectTypeSpec: schema.ObjectTypeSpec{
+					Properties: map[string]schema.PropertySpec{
+						"value": {TypeSpec: schema.TypeSpec{Type: "string"}},
+					},
+				},
+			},
+			"test:index:Component": {
+				IsComponent: true,
+				ObjectTypeSpec: schema.ObjectTypeSpec{
+					Properties: map[string]schema.PropertySpec{
+						"ref": {TypeSpec: schema.TypeSpec{Ref: "#/resources/test:index:Resource"}},
+					},
+				},
+			},
+		},
+	}
+
+	const innerURN = "urn:pulumi:test::project::test:index:Resource::inner"
+
+	src := []byte(`
+resource "test_component" "comp" {
+}
+
+resource "test_resource" "consumer" {
+  value = test_component.comp.ref.value
+}
+`)
+
+	p := parser.NewParser()
+	config, diags := p.ParseSource("test.hcl", src)
+	require.False(t, diags.HasErrors(), diags.Error())
+
+	mock := &testutil.MockResourceMonitor{
+		// The component returns a reference to a resource it created.
+		RegisterResourceHandler: func(_ context.Context, req run.RegisterResourceRequest) (*run.RegisterResourceResponse, error) {
+			resURN := urn.URN("urn:pulumi:test::project::" + req.Type + "::" + req.Name)
+			outputs := req.Inputs
+			if req.Type == "test:index:Component" {
+				outputs = property.NewMap(map[string]property.Value{
+					"ref": property.New(property.ResourceReference{
+						URN: innerURN,
+						ID:  property.New("inner-id"),
+					}),
+				})
+			}
+			return &run.RegisterResourceResponse{URN: resURN, ID: req.Name + "-id", Outputs: outputs}, nil
+		},
+		// getResource on the referenced resource returns its state.
+		InvokeHandler: func(_ context.Context, req run.InvokeRequest) (*run.InvokeResponse, error) {
+			if req.Token == "pulumi:pulumi:getResource" {
+				return &run.InvokeResponse{Return: property.NewMap(map[string]property.Value{
+					"state": property.New(property.NewMap(map[string]property.Value{
+						"value": property.New("hello-from-ref"),
+					})),
+				})}, nil
+			}
+			return &run.InvokeResponse{Return: property.NewMap(nil)}, nil
+		},
+	}
+	engine := run.NewEngine(t.Context(), config, &run.EngineOptions{
+		ModuleLoader:    testModuleLoader(t),
+		ProjectName:     "test-project",
+		StackName:       "dev",
+		ResourceMonitor: mock,
+		WorkDir:         t.TempDir(),
+		RootDir:         t.TempDir(),
+		SchemaLoader:    schemaloader.New(t, componentSchema),
+	})
+	require.NoError(t, engine.Run(t.Context()))
+
+	var consumer *run.RegisterResourceRequest
+	for i := range mock.RegisteredResources {
+		if mock.RegisteredResources[i].Name == "consumer" {
+			consumer = &mock.RegisteredResources[i]
+		}
+	}
+	require.NotNil(t, consumer, "consumer resource should be registered")
+
+	value, ok := consumer.Inputs.GetOk("value")
+	require.True(t, ok, "consumer should receive the value input")
+	require.Equal(t, "hello-from-ref", value.AsString(),
+		"a field read off a component's reference output should resolve to the referenced resource's state")
+}
 
 func TestEngine_ReplaceTriggeredBy(t *testing.T) {
 	t.Parallel()
