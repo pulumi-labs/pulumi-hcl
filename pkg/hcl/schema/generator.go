@@ -190,6 +190,7 @@ func buildTypeScope(
 	ctx context.Context, config *ast.Config, binder *Binder, path map[string]bool,
 ) (*eval.Context, error) {
 	scope := eval.NewContext(".", ".", ".", "", "", "")
+	scope.UseTypeInferenceFunctions()
 
 	for name, v := range config.Variables {
 		t := v.TypeConstraint

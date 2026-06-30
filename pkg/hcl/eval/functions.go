@@ -280,6 +280,62 @@ var canFunc = function.New(&function.Spec{
 	},
 })
 
+// TypeInferenceFunctions returns the Terraform-compatible function set with the
+// functions whose result type collapses to dynamic on not-wholly-known inputs
+// replaced by type-preserving variants. Schema generation evaluates every
+// reference as an unknown of its static type, so the runtime functions would
+// report such an output as the "any" type; these variants recover the type the
+// output takes on the runtime happy path.
+func TypeInferenceFunctions(baseDir string) map[string]function.Function {
+	funcs := Functions(baseDir)
+	funcs["try"] = typeInferenceTryFunc
+	return funcs
+}
+
+// typeInferenceTryFunc is a type-inference-only variant of tryfunc.TryFunc.
+//
+// The upstream try() returns a dynamic value as soon as an argument is not
+// wholly known, because once the unknowns resolve a different argument might win
+// and the result type could change. Schema generation evaluates references as
+// unknowns of their static type, so that conservative rule would type every
+// try()-wrapped output as the "any" type. This variant returns the type of the
+// first argument that evaluates without error — e.g. try(aws_vpc.this[0].id,
+// null) is a string.
+var typeInferenceTryFunc = function.New(&function.Spec{
+	VarParam: &function.Parameter{
+		Name: "expressions",
+		Type: customdecode.ExpressionClosureType,
+	},
+	Type: func(args []cty.Value) (cty.Type, error) {
+		v, err := typeInferenceTry(args)
+		if err != nil {
+			return cty.NilType, err
+		}
+		return v.Type(), nil
+	},
+	Impl: func(args []cty.Value, _ cty.Type) (cty.Value, error) {
+		return typeInferenceTry(args)
+	},
+})
+
+// typeInferenceTry returns the first argument expression that evaluates without
+// error. Unlike tryfunc's try it does not fall back to a dynamic value when the
+// result is not wholly known, so the argument's static type is preserved.
+func typeInferenceTry(args []cty.Value) (cty.Value, error) {
+	if len(args) == 0 {
+		return cty.NilVal, errors.New("at least one argument is required")
+	}
+	for _, arg := range args {
+		closure := customdecode.ExpressionClosureFromVal(arg)
+		v, diags := closure.Value()
+		if diags.HasErrors() {
+			continue
+		}
+		return v, nil
+	}
+	return cty.NilVal, errors.New("no expression succeeded")
+}
+
 // String functions
 
 // replaceFunc matches OpenTofu's `replace`, which interprets a search string

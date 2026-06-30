@@ -287,6 +287,38 @@ output "mode" {
 	assert.Equal(t, map[string]*PropertySpec{"mode": {Type: "string"}}, moduleSchema.OutputProperties)
 }
 
+func TestTryWrappedScalarOutputIsTyped(t *testing.T) {
+	t.Parallel()
+
+	const src = `
+resource "random_pet" "this" {
+  length = 2
+}
+
+output "bare_id" {
+  value = random_pet.this.id
+}
+
+output "try_id" {
+  value = try(random_pet.this.id, null)
+}
+`
+	config, diags := parser.NewParser().ParseSource("main.tf", []byte(src))
+	require.False(t, diags.HasErrors(), diags.Error())
+
+	resolver := stubResolver{resources: map[string]*pulumiSchema.Resource{
+		"random_pet": {Properties: []*pulumiSchema.Property{{Name: "length", Type: pulumiSchema.IntType}}},
+	}}
+	moduleSchema, err := GenerateModuleSchema(
+		t.Context(), config, &Binder{Resources: resolver}, componentToken("pkg", "index", "pkg"), semver.MustParse("0.0.0-dev"))
+	require.NoError(t, err)
+
+	assert.Equal(t, map[string]*PropertySpec{
+		"bare_id": {Type: "string"},
+		"try_id":  {Type: "string"},
+	}, moduleSchema.OutputProperties)
+}
+
 // stubModuleLoader resolves child modules from parsed configs keyed by source.
 type stubModuleLoader struct {
 	configs map[string]*ast.Config
