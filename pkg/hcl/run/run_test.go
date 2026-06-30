@@ -25,6 +25,7 @@ import (
 	"github.com/pulumi-labs/pulumi-hcl/pkg/hcl/modules"
 	"github.com/pulumi-labs/pulumi-hcl/pkg/hcl/parser"
 	"github.com/pulumi-labs/pulumi-hcl/pkg/hcl/run"
+	"github.com/pulumi-labs/pulumi-hcl/pkg/hcl/transform"
 	"github.com/pulumi-labs/pulumi-hcl/tests/testutil"
 	"github.com/pulumi-labs/pulumi-hcl/tests/testutil/schemaloader"
 	"github.com/pulumi/pulumi/pkg/v3/codegen/schema"
@@ -2965,6 +2966,7 @@ resource "test_component" "comp" {
 		ID:  property.New("fn-id"),
 	}, handler.AsResourceReference())
 }
+
 func TestEngine_FieldAccessOnComponentReferenceOutput(t *testing.T) {
 	t.Parallel()
 
@@ -3057,6 +3059,146 @@ resource "test_resource" "consumer" {
 	require.True(t, ok, "consumer should receive the value input")
 	require.Equal(t, "hello-from-ref", value.AsString(),
 		"a field read off a component's reference output should resolve to the referenced resource's state")
+}
+
+// TestEngine_SecretResourceReferenceConfig locks in that a secret resource
+// reference keeps its mark across the component boundary: when a secret
+// reference is supplied as config and its state is fetched, the resolved outputs
+// are secret too, so a value derived from one of its fields stays secret.
+func TestEngine_SecretResourceReferenceConfig(t *testing.T) {
+	t.Parallel()
+
+	src := []byte(`
+variable "handler" {
+}
+
+resource "test_resource" "consumer" {
+  value = var.handler.value
+}
+`)
+
+	p := parser.NewParser()
+	config, diags := p.ParseSource("test.hcl", src)
+	require.False(t, diags.HasErrors(), diags.Error())
+
+	ref := property.New(property.ResourceReference{
+		URN: "urn:pulumi:test::project::test:index:Resource::inner",
+		ID:  property.New("inner-id"),
+	}).WithSecret(true)
+
+	mock := &testutil.MockResourceMonitor{
+		InvokeHandler: func(_ context.Context, req run.InvokeRequest) (*run.InvokeResponse, error) {
+			if req.Token == "pulumi:pulumi:getResource" {
+				return &run.InvokeResponse{Return: property.NewMap(map[string]property.Value{
+					"state": property.New(property.NewMap(map[string]property.Value{
+						"value": property.New("secret-val"),
+					})),
+				})}, nil
+			}
+			return &run.InvokeResponse{Return: property.NewMap(nil)}, nil
+		},
+	}
+	engine := run.NewEngine(t.Context(), config, &run.EngineOptions{
+		ModuleLoader:    testModuleLoader(t),
+		ProjectName:     "test-project",
+		StackName:       "dev",
+		ResourceMonitor: mock,
+		WorkDir:         t.TempDir(),
+		RootDir:         t.TempDir(),
+		SchemaLoader: schemaloader.New(t, schema.PackageSpec{
+			Name: "test",
+			Resources: map[string]schema.ResourceSpec{
+				"test:index:Resource": {
+					InputProperties: map[string]schema.PropertySpec{
+						"value": {TypeSpec: schema.TypeSpec{Type: "string"}},
+					},
+					ObjectTypeSpec: schema.ObjectTypeSpec{
+						Properties: map[string]schema.PropertySpec{
+							"value": {TypeSpec: schema.TypeSpec{Type: "string"}},
+						},
+					},
+				},
+			},
+		}),
+		Config: map[string]run.ConfigValue{
+			"test-project:handler": run.TypedConfigValue(transform.PropertyValueToCty(ref)),
+		},
+	})
+	require.NoError(t, engine.Run(t.Context()))
+
+	var consumer *run.RegisterResourceRequest
+	for i := range mock.RegisteredResources {
+		if mock.RegisteredResources[i].Name == "consumer" {
+			consumer = &mock.RegisteredResources[i]
+		}
+	}
+	require.NotNil(t, consumer, "consumer resource should be registered")
+
+	value, ok := consumer.Inputs.GetOk("value")
+	require.True(t, ok, "consumer should receive the value input")
+	require.Equal(t, "secret-val", value.AsString(),
+		"the field should resolve to the referenced resource's fetched state")
+	require.True(t, value.Secret(),
+		"a value derived from a secret resource reference must stay secret")
+}
+
+// TestEngine_WholeResourceModuleOutput covers returning a resource the program
+// created as a whole: a module/component output `value = test_resource.r`
+// exposes the resource's fields to the caller. (This is the run-engine view of
+// what a component returns; the construct boundary only wraps these outputs.)
+func TestEngine_WholeResourceModuleOutput(t *testing.T) {
+	t.Parallel()
+
+	src := []byte(`
+resource "test_resource" "r" {
+  value = "exported"
+}
+
+output "exported" {
+  value = test_resource.r
+}
+`)
+
+	p := parser.NewParser()
+	config, diags := p.ParseSource("test.hcl", src)
+	require.False(t, diags.HasErrors(), diags.Error())
+
+	mock := &testutil.MockResourceMonitor{}
+	engine := run.NewEngine(t.Context(), config, &run.EngineOptions{
+		ModuleLoader:    testModuleLoader(t),
+		ProjectName:     "test-project",
+		StackName:       "dev",
+		ResourceMonitor: mock,
+		WorkDir:         t.TempDir(),
+		RootDir:         t.TempDir(),
+		SchemaLoader: schemaloader.New(t, schema.PackageSpec{
+			Name: "test",
+			Resources: map[string]schema.ResourceSpec{
+				"test:index:Resource": {
+					InputProperties: map[string]schema.PropertySpec{
+						"value": {TypeSpec: schema.TypeSpec{Type: "string"}},
+					},
+					ObjectTypeSpec: schema.ObjectTypeSpec{
+						Properties: map[string]schema.PropertySpec{
+							"value": {TypeSpec: schema.TypeSpec{Type: "string"}},
+						},
+					},
+				},
+			},
+		}),
+	})
+	require.NoError(t, engine.Run(t.Context()))
+
+	exported, ok := mock.StackOutputs.GetOk("exported")
+	require.True(t, ok, "expected the exported output")
+	out := exported.AsMap()
+
+	value, ok := out.GetOk("value")
+	require.True(t, ok, "the whole-resource output should expose the resource's value field")
+	require.Equal(t, "exported", value.AsString())
+
+	_, hasURN := out.GetOk("urn")
+	require.False(t, hasURN, "the synthetic urn attribute must not leak into the output")
 }
 
 func TestEngine_ReplaceTriggeredBy(t *testing.T) {

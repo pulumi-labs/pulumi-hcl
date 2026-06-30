@@ -654,7 +654,7 @@ func (e *Engine) processGraph(ctx context.Context, g *graph.Graph) error {
 }
 
 // processVariable processes a variable definition.
-func (e *Engine) processVariable(_ context.Context, node *graph.Node) error {
+func (e *Engine) processVariable(ctx context.Context, node *graph.Node) error {
 	v := node.Variable
 	if v == nil {
 		return fmt.Errorf("variable node missing Variable field")
@@ -746,6 +746,19 @@ func (e *Engine) processVariable(_ context.Context, node *graph.Node) error {
 		!val.IsNull() && val.IsKnown() {
 		if converted, err := ctyconvert.Convert(val, v.TypeConstraint); err == nil {
 			val = converted
+		}
+	}
+
+	// A resource reference supplied as a typed config value — e.g. a component
+	// input from a calling program — carries only its identity. Fetch the
+	// referenced resource's state so the program can read its fields.
+	if valueSource == "config-typed" {
+		if u, ok := eval.ResourceReferenceURN(val); ok {
+			resolved, err := e.resolveConfigResourceReference(ctx, val, u)
+			if err != nil {
+				return fmt.Errorf("variable %q: %w", varName, err)
+			}
+			val = resolved
 		}
 	}
 
@@ -2994,6 +3007,49 @@ func (e *Engine) resolveResourceRefsInOutputs(
 		resolved = resolved.Set(p.Name, property.New(refMap))
 	}
 	return resolved, nil
+}
+
+// resolveConfigResourceReference enriches a resource reference supplied as a
+// typed config value with the referenced resource's state, so a program
+// consuming this module as a component can read the resource's fields, not just
+// its id. The referenced resource lives in the calling program, so its state is
+// fetched through the monitor. Best-effort: an unfetchable or preview-unknown
+// reference is returned unchanged.
+func (e *Engine) resolveConfigResourceReference(ctx context.Context, val cty.Value, u urn.URN) (cty.Value, error) {
+	contract.Requiref(e.resmon != nil, "e.resmon", "cannot resolve a resource reference without a resource monitor")
+	unmarked, marks := val.Unmark()
+	contract.Assertf(unmarked.Type().IsObjectType() && unmarked.Type().HasAttribute("id"),
+		"a resource reference must be an object with an id attribute, got %s", unmarked.Type().FriendlyName())
+
+	idAttr, _ := unmarked.GetAttr("id").Unmark()
+	if !idAttr.IsKnown() {
+		// During preview the referenced resource's id is unknown and its state
+		// cannot be fetched; the bare reference flows through unchanged.
+		return val, nil
+	}
+	ref := property.ResourceReference{URN: u, ID: property.New(property.Null)}
+	switch {
+	case idAttr.IsNull():
+		// A component reference has a null id; getResource keys on the URN.
+	case idAttr.Type() == cty.String:
+		ref.ID = property.New(idAttr.AsString())
+	default:
+		return cty.Value{}, fmt.Errorf("resource reference %s has a non-string id of type %s",
+			u, idAttr.Type().FriendlyName())
+	}
+
+	state, err := e.getResourceState(ctx, ref)
+	if err != nil {
+		return cty.Value{}, fmt.Errorf("fetching state of resource reference %s: %w", u, err)
+	}
+	attrs := transform.PropertyMapToCty(state).AsValueMap()
+	if attrs == nil {
+		attrs = map[string]cty.Value{}
+	}
+	attrs["id"] = unmarked.GetAttr("id")
+
+	obj := cty.ObjectVal(attrs).WithMarks(marks)
+	return eval.MarkResourceReference(obj, u), nil
 }
 
 // processModule processes a module call.

@@ -15,6 +15,8 @@
 package server
 
 import (
+	"context"
+	"net"
 	"path/filepath"
 	"testing"
 
@@ -24,6 +26,8 @@ import (
 	pulumirpc "github.com/pulumi/pulumi/sdk/v3/proto/go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"google.golang.org/grpc"
+	"google.golang.org/protobuf/types/known/structpb"
 
 	"github.com/pulumi-labs/pulumi-hcl/pkg/hcl/modules"
 	"github.com/pulumi-labs/pulumi-hcl/pkg/hcl/parser"
@@ -176,4 +180,78 @@ resource "aws_s3_bucket" "b" {}
 		}},
 		{Alias: "random", Spec: &pulumirpc.PackageSpec{Source: "random"}},
 	}, got)
+}
+
+// refMonitorServer adds getResource support to captureMonitorServer so a
+// construct test can resolve a resource passed in by reference.
+type refMonitorServer struct {
+	captureMonitorServer
+}
+
+func (s *refMonitorServer) Invoke(
+	_ context.Context, req *pulumirpc.ResourceInvokeRequest,
+) (*pulumirpc.InvokeResponse, error) {
+	if req.Tok != "pulumi:pulumi:getResource" {
+		return &pulumirpc.InvokeResponse{}, nil
+	}
+	ret, err := structpb.NewStruct(map[string]any{
+		"state": map[string]any{"value": "from-handler"},
+	})
+	if err != nil {
+		return nil, err
+	}
+	return &pulumirpc.InvokeResponse{Return: ret}, nil
+}
+
+// TestModuleConstructResourceReferenceInput drives construct with a whole
+// resource passed by reference as a module input and asserts the module can read
+// the referenced resource's fields: the runtime fetches its state (via
+// getResource) so `var.handler.value` resolves to the resource's value, not just
+// its id.
+func TestModuleConstructResourceReferenceInput(t *testing.T) {
+	t.Parallel()
+
+	lis, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	srv := grpc.NewServer()
+	pulumirpc.RegisterResourceMonitorServer(srv, &refMonitorServer{})
+	go func() { _ = srv.Serve(lis) }()
+	t.Cleanup(srv.Stop)
+
+	dir, err := filepath.Abs(filepath.Join("testdata", "module-resource-ref"))
+	require.NoError(t, err)
+
+	m := &moduleProvider{
+		moduleLoader: modules.NewLoader(modules.LiveResolver(t.Context())),
+		resolver:     stubResolver{},
+	}
+
+	resp, err := m.construct(t.Context(), p.ConstructRequest{
+		Urn:             resource.URN("urn:pulumi:test::proj::hcl:index:Module::mod"),
+		MonitorEndpoint: lis.Addr().String(),
+		Inputs: property.NewMap(map[string]property.Value{
+			"source": property.New(dir),
+			"inputs": property.New(property.NewMap(map[string]property.Value{
+				"handler": property.New(property.ResourceReference{
+					URN: "urn:pulumi:test::proj::aws:lambda/function:Function::fn",
+					ID:  property.New("fn-id"),
+				}),
+			})),
+		}),
+	})
+	require.NoError(t, err)
+
+	outputs, ok := resp.State.GetOk("outputs")
+	require.True(t, ok, "construct response should expose an outputs map")
+	out := outputs.AsMap()
+
+	value, ok := out.GetOk("handler_value")
+	require.True(t, ok, "module should expose a handler_value output")
+	require.Equal(t, "from-handler", value.AsString(),
+		"reading a field off the passed-in reference should resolve the referenced resource's state")
+
+	id, ok := out.GetOk("handler_id")
+	require.True(t, ok, "module should expose a handler_id output")
+	require.Equal(t, "fn-id", id.AsString(),
+		"the reference's own id should remain readable")
 }
