@@ -97,6 +97,9 @@ type ModuleSchema struct {
 
 	// OutputProperties are the module's outputs.
 	OutputProperties map[string]*PropertySpec `json:"outputProperties,omitempty"`
+
+	// RequiredOutputs lists output property names that are never null.
+	RequiredOutputs []string `json:"requiredOutputs,omitempty"`
 }
 
 // PropertySpec describes a property in the schema.
@@ -121,6 +124,9 @@ type PropertySpec struct {
 
 	// Properties describes object properties.
 	Properties map[string]*PropertySpec `json:"properties,omitempty"`
+
+	// Required lists the names of object properties that are never null.
+	Required []string `json:"required,omitempty"`
 
 	// Ref is a reference to another type definition.
 	Ref string `json:"$ref,omitempty"`
@@ -152,6 +158,11 @@ func GenerateModuleSchema(
 		if v.Default == nil && !v.Nullable {
 			schema.RequiredInputs = append(schema.RequiredInputs, v.Name)
 		}
+
+		// Inputs are echoed as outputs, so a non-null input is a required output.
+		if !v.Nullable {
+			schema.RequiredOutputs = append(schema.RequiredOutputs, v.Name)
+		}
 	}
 
 	scope, err := buildTypeScope(ctx, config, binder, map[string]bool{})
@@ -160,18 +171,22 @@ func GenerateModuleSchema(
 	}
 	evaluator := eval.NewEvaluator(scope)
 	for _, o := range config.Outputs {
-		ty, err := inferOutputType(evaluator, o)
+		val, err := inferOutputType(evaluator, o)
 		if err != nil {
 			return nil, fmt.Errorf("typing output %q: %w", o.Name, err)
 		}
-		prop, err := outputToPropertySpec(o, ty)
+		prop, err := outputToPropertySpec(o, val)
 		if err != nil {
 			return nil, fmt.Errorf("processing output %q: %w", o.Name, err)
 		}
 		schema.OutputProperties[o.Name] = prop
+		if !val.Range().CouldBeNull() {
+			schema.RequiredOutputs = append(schema.RequiredOutputs, o.Name)
+		}
 	}
 
 	sort.Strings(schema.RequiredInputs)
+	sort.Strings(schema.RequiredOutputs)
 
 	return schema, nil
 }
@@ -197,7 +212,7 @@ func buildTypeScope(
 		if t == cty.NilType {
 			t = cty.DynamicPseudoType
 		}
-		scope.SetVariable(name, cty.UnknownVal(t))
+		scope.SetVariable(name, refinedUnknown(t, v.Nullable))
 	}
 
 	if binder != nil {
@@ -283,7 +298,7 @@ func seedResourceTypes(
 		}
 		mapping := resolver.ResourceBodyMapping(ctx, res.Type)
 		ty := rangedType(transform.ResourceReferenceType(schemaRes, mapping), res.Count != nil, res.ForEach != nil)
-		scope.SetResource(key, urn.URN(""), cty.UnknownVal(ty))
+		scope.SetResource(key, urn.URN(""), refinedUnknown(ty, false))
 	}
 
 	for _, key := range slices.Sorted(maps.Keys(config.DataSources)) {
@@ -297,7 +312,7 @@ func seedResourceTypes(
 		}
 		mapping := resolver.DataSourceBodyMapping(ctx, ds.Type)
 		ty := rangedType(transform.DataSourceReferenceType(fn, mapping), ds.Count != nil, ds.ForEach != nil)
-		scope.SetDataSource(key, cty.UnknownVal(ty))
+		scope.SetDataSource(key, refinedUnknown(ty, false))
 	}
 	return nil
 }
@@ -334,32 +349,68 @@ func seedModuleTypes(
 		}
 
 		childEval := eval.NewEvaluator(childScope)
-		attrs := make(map[string]cty.Type, len(childConfig.Outputs))
+		attrs := make(map[string]cty.Value, len(childConfig.Outputs))
 		for _, o := range childConfig.Outputs {
-			ty, err := inferOutputType(childEval, o)
+			val, err := inferOutputType(childEval, o)
 			if err != nil {
 				return fmt.Errorf("typing module %q output %q: %w", name, o.Name, err)
 			}
-			attrs[o.Name] = ty
+			attrs[o.Name] = val
 		}
-		ty := rangedType(cty.Object(attrs), call.Count != nil, call.ForEach != nil)
-		scope.SetModule(name, cty.UnknownVal(ty))
+		// A direct reference resolves attribute by attribute, so the object
+		// value carries each output's nullability. A ranged reference is indexed
+		// first, dropping that refinement, so seed a non-null list/map instead.
+		obj := cty.ObjectVal(attrs)
+		var val cty.Value
+		switch {
+		case call.Count != nil:
+			val = cty.UnknownVal(cty.List(obj.Type())).RefineNotNull()
+		case call.ForEach != nil:
+			val = cty.UnknownVal(cty.Map(obj.Type())).RefineNotNull()
+		default:
+			val = obj
+		}
+		scope.SetModule(name, val)
 	}
 	return nil
 }
 
 // inferOutputType evaluates an output's value expression against the type scope
-// and returns its type. An output with no value, or whose expression cannot be
-// evaluated against the scope, is an error.
-func inferOutputType(evaluator *eval.Evaluator, o *ast.Output) (cty.Type, error) {
+// and returns the resulting unknown value, whose type and nullability describe
+// the output. An output with no value, or one that cannot be evaluated against
+// the scope, is an error. The value is unmarked so its range can be read.
+func inferOutputType(evaluator *eval.Evaluator, o *ast.Output) (cty.Value, error) {
 	if o.Value == nil {
-		return cty.NilType, fmt.Errorf("output has no value expression")
+		return cty.NilVal, fmt.Errorf("output has no value expression")
 	}
 	val, diags := evaluator.Evaluate(o.Value)
 	if diags.HasErrors() {
-		return cty.NilType, fmt.Errorf("%s", diags.Error())
+		return cty.NilVal, fmt.Errorf("%s", diags.Error())
 	}
-	return val.Type(), nil
+	unmarked, _ := val.UnmarkDeep()
+	return unmarked, nil
+}
+
+// refinedUnknown returns an unknown value of type t that refines required
+// (non-optional) object attributes not-null and leaves optional ones nullable.
+// It recurses into nested objects so attribute access preserves the refinement;
+// collections are leaves, since indexing drops refinements and their element
+// types already carry optional-attribute metadata.
+func refinedUnknown(t cty.Type, nullable bool) cty.Value {
+	if t.IsObjectType() && !nullable {
+		optional := t.OptionalAttributes()
+		attrs := make(map[string]cty.Value, len(t.AttributeTypes()))
+		for name, attrType := range t.AttributeTypes() {
+			_, isOptional := optional[name]
+			attrs[name] = refinedUnknown(attrType, isOptional)
+		}
+		return cty.ObjectVal(attrs)
+	}
+	u := cty.UnknownVal(t)
+	if nullable {
+		return u
+	}
+	return u.RefineNotNull()
 }
 
 // variableToPropertySpec converts an HCL variable to a PropertySpec.
@@ -422,17 +473,44 @@ func ctyToConstant(val cty.Value) (any, bool) {
 	}
 }
 
-// outputToPropertySpec converts an HCL output to a PropertySpec. typ is the type
-// inferred from the output's value expression; a DynamicPseudoType maps to the
-// "object" (any) type.
-func outputToPropertySpec(o *ast.Output, typ cty.Type) (*PropertySpec, error) {
-	prop, err := ctyTypeToPropertySpec(typ)
+// outputToPropertySpec converts an HCL output to a PropertySpec. val is the
+// unknown value inferred from the output's value expression; its type gives the
+// property shape and its per-attribute nullability gives nested required fields.
+// A DynamicPseudoType maps to the "object" (any) type.
+func outputToPropertySpec(o *ast.Output, val cty.Value) (*PropertySpec, error) {
+	prop, err := ctyValueToPropertySpec(val)
 	if err != nil {
 		return nil, err
 	}
 	prop.Description = o.Description
 	prop.Secret = o.Sensitive
 	return prop, nil
+}
+
+// ctyValueToPropertySpec converts an inferred unknown value to a PropertySpec.
+// For object types it reads each attribute's nullability from the value's
+// refinements to populate Required; collections fall back to ctyTypeToPropertySpec,
+// where nested object fields' requiredness rides on optional-attribute metadata.
+func ctyValueToPropertySpec(v cty.Value) (*PropertySpec, error) {
+	t := v.Type()
+	if !t.IsObjectType() {
+		return ctyTypeToPropertySpec(t)
+	}
+	props := make(map[string]*PropertySpec, len(t.AttributeTypes()))
+	var required []string
+	for name := range t.AttributeTypes() {
+		attr := v.GetAttr(name)
+		propSpec, err := ctyValueToPropertySpec(attr)
+		if err != nil {
+			return nil, err
+		}
+		props[name] = propSpec
+		if !attr.Range().CouldBeNull() {
+			required = append(required, name)
+		}
+	}
+	sort.Strings(required)
+	return &PropertySpec{Type: "object", Properties: props, Required: required}, nil
 }
 
 // ctyTypeToPropertySpec converts a cty.Type to a PropertySpec.
@@ -500,17 +578,24 @@ func ctyTypeToPropertySpec(t cty.Type) (*PropertySpec, error) {
 		}, nil
 
 	case t.IsObjectType():
+		optional := t.OptionalAttributes()
 		props := make(map[string]*PropertySpec)
+		var required []string
 		for name, attrType := range t.AttributeTypes() {
 			propSpec, err := ctyTypeToPropertySpec(attrType)
 			if err != nil {
 				return nil, err
 			}
 			props[name] = propSpec
+			if _, isOptional := optional[name]; !isOptional {
+				required = append(required, name)
+			}
 		}
+		sort.Strings(required)
 		return &PropertySpec{
 			Type:       "object",
 			Properties: props,
+			Required:   required,
 		}, nil
 
 	default:
@@ -637,6 +722,18 @@ func (s *ModuleSchema) ToPulumiPackageSchema() pulumischema.PackageSpec {
 	}
 	sort.Strings(requiredInputs)
 
+	// Dedup in case an input and an output share a name, collapsing to one
+	// output property.
+	requiredSet := make(map[string]struct{}, len(s.RequiredOutputs))
+	for _, name := range s.RequiredOutputs {
+		requiredSet[pulumiCase(name)] = struct{}{}
+	}
+	requiredOutputs := make([]string, 0, len(requiredSet))
+	for name := range requiredSet {
+		requiredOutputs = append(requiredOutputs, name)
+	}
+	sort.Strings(requiredOutputs)
+
 	return pulumischema.PackageSpec{
 		Name:        s.PackageName,
 		Version:     s.Version,
@@ -648,6 +745,7 @@ func (s *ModuleSchema) ToPulumiPackageSchema() pulumischema.PackageSpec {
 					Type:        "object",
 					Description: s.Description,
 					Properties:  outputProps,
+					Required:    requiredOutputs,
 				},
 				IsComponent:     true,
 				InputProperties: inputProps,
@@ -694,8 +792,13 @@ func (s *ModuleSchema) schemaType(
 			camel := pulumiCase(name)
 			fields[camel] = s.schemaProperty(field, typeName+pascalCase(camel), types)
 		}
+		required := make([]string, 0, len(prop.Required))
+		for _, name := range prop.Required {
+			required = append(required, pulumiCase(name))
+		}
+		sort.Strings(required)
 		types[token] = pulumischema.ComplexTypeSpec{
-			ObjectTypeSpec: pulumischema.ObjectTypeSpec{Type: "object", Properties: fields},
+			ObjectTypeSpec: pulumischema.ObjectTypeSpec{Type: "object", Properties: fields, Required: required},
 		}
 		return pulumischema.TypeSpec{Ref: "#/types/" + token}
 	case prop.AdditionalProperties != nil:

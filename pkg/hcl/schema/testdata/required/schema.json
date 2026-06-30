@@ -20,6 +20,11 @@
         }
       },
       "type": "object",
+      "required": [
+        "stringA",
+        "stringB",
+        "stringC"
+      ],
       "inputProperties": {
         "stringA": {
           "type": "string"

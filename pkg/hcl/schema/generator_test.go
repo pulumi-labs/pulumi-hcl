@@ -210,7 +210,7 @@ output "keyed_id" {
 	elem := &PropertySpec{Type: "object", Properties: map[string]*PropertySpec{
 		"id":     {Type: "string"},
 		"length": {Type: "number"},
-	}}
+	}, Required: []string{"length"}}
 	assert.Equal(t, map[string]*PropertySpec{
 		"counted_id":  {Type: "string"},
 		"keyed_id":    {Type: "string"},
@@ -319,6 +319,66 @@ output "try_id" {
 	}, moduleSchema.OutputProperties)
 }
 
+// TestOutputRequiredness shows that an output is required exactly when its value
+// can never be null: non-null literals, non-null inputs, and required resource
+// attributes are required, while nullable inputs, optional attributes,
+// try(_, null), and a null conditional branch make the output optional. Inputs
+// are echoed as outputs, so a non-null input is also a required output.
+func TestOutputRequiredness(t *testing.T) {
+	t.Parallel()
+
+	const src = `
+variable "req" {
+  type     = string
+  nullable = false
+}
+
+variable "opt" {
+  type = string
+}
+
+resource "random_pet" "this" {
+  length = 2
+}
+
+output "literal"      { value = "x" }
+output "from_req_var" { value = var.req }
+output "from_opt_var" { value = var.opt }
+output "req_attr"     { value = random_pet.this.length }
+output "opt_attr"     { value = random_pet.this.nick }
+output "try_null"     { value = try(random_pet.this.length, null) }
+output "conditional"  { value = var.opt != null ? random_pet.this.length : null }
+output "config"       { value = random_pet.this.config }
+`
+	config, diags := parser.NewParser().ParseSource("main.tf", []byte(src))
+	require.False(t, diags.HasErrors(), diags.Error())
+
+	resolver := stubResolver{resources: map[string]*pulumiSchema.Resource{
+		"random_pet": {Properties: []*pulumiSchema.Property{
+			{Name: "length", Type: pulumiSchema.IntType},
+			{Name: "nick", Type: &pulumiSchema.OptionalType{ElementType: pulumiSchema.StringType}},
+			{Name: "config", Type: &pulumiSchema.ObjectType{Properties: []*pulumiSchema.Property{
+				{Name: "host", Type: pulumiSchema.StringType},
+				{Name: "port", Type: &pulumiSchema.OptionalType{ElementType: pulumiSchema.IntType}},
+			}}},
+		}},
+	}}
+	moduleSchema, err := GenerateModuleSchema(
+		t.Context(), config, &Binder{Resources: resolver}, componentToken("pkg", "index", "pkg"), semver.MustParse("0.0.0-dev"))
+	require.NoError(t, err)
+
+	assert.Equal(t, []string{"config", "from_req_var", "literal", "req", "req_attr"}, moduleSchema.RequiredOutputs)
+
+	assert.Equal(t, &PropertySpec{
+		Type:     "object",
+		Required: []string{"host"},
+		Properties: map[string]*PropertySpec{
+			"host": {Type: "string"},
+			"port": {Type: "number"},
+		},
+	}, moduleSchema.OutputProperties["config"])
+}
+
 // stubModuleLoader resolves child modules from parsed configs keyed by source.
 type stubModuleLoader struct {
 	configs map[string]*ast.Config
@@ -381,6 +441,56 @@ output "n" {
 		"greeting": {Type: "string"},
 		"n":        {Type: "number"},
 	}, moduleSchema.OutputProperties)
+}
+
+// TestModuleOutputRequirednessPropagates shows that a child module output's
+// nullability rides through a module.<name>.<output> reference, so the parent
+// output is required exactly when the child output can never be null.
+func TestModuleOutputRequirednessPropagates(t *testing.T) {
+	t.Parallel()
+
+	child, childDiags := parser.NewParser().ParseSource("child.tf", []byte(`
+variable "name" {
+  type     = string
+  nullable = false
+}
+
+output "always" {
+  value = "hello ${var.name}"
+}
+
+output "maybe" {
+  value = try(var.name, null)
+}
+`))
+	require.False(t, childDiags.HasErrors(), childDiags.Error())
+
+	const parent = `
+module "child" {
+  source = "./child"
+  name   = "world"
+}
+
+output "always" {
+  value = module.child.always
+}
+
+output "maybe" {
+  value = module.child.maybe
+}
+`
+	config, diags := parser.NewParser().ParseSource("main.tf", []byte(parent))
+	require.False(t, diags.HasErrors(), diags.Error())
+
+	binder := &Binder{
+		Modules:   stubModuleLoader{configs: map[string]*ast.Config{"./child": child}},
+		ModuleDir: ".",
+	}
+	moduleSchema, err := GenerateModuleSchema(
+		t.Context(), config, binder, componentToken("pkg", "index", "pkg"), semver.MustParse("0.0.0-dev"))
+	require.NoError(t, err)
+
+	assert.Equal(t, []string{"always"}, moduleSchema.RequiredOutputs)
 }
 
 // TestUnresolvableResourceIsError shows that a resource whose type cannot be

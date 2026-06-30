@@ -26,6 +26,11 @@
         }
       },
       "type": "object",
+      "required": [
+        "stringOutput",
+        "stringValue",
+        "templateOutput"
+      ],
       "inputProperties": {
         "boolValue": {
           "type": "boolean",
