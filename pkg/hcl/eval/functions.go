@@ -56,7 +56,6 @@ import (
 	"github.com/pulumi/pulumi/sdk/v3/go/common/resource/asset"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/resource/urn"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/util/contract"
-	"github.com/pulumi/pulumi/sdk/v3/go/property"
 	ctyyaml "github.com/zclconf/go-cty-yaml"
 	"github.com/zclconf/go-cty/cty"
 	"github.com/zclconf/go-cty/cty/convert"
@@ -72,9 +71,6 @@ var (
 
 	// ArchiveCapsuleType is the cty capsule type for Pulumi archives.
 	ArchiveCapsuleType = cty.Capsule("Archive", reflect.TypeFor[archive.Archive]())
-
-	// ResourceReferenceCapsuleType is the cty capsule type for Pulumi resource references.
-	ResourceReferenceCapsuleType = cty.Capsule("ResourceReference", reflect.TypeFor[property.ResourceReference]())
 )
 
 // Functions returns a map of all Terraform-compatible functions.

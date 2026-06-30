@@ -857,8 +857,8 @@ func TestPropertyValueToCty_Secret(t *testing.T) {
 
 // TestPropertyValueToCty_ResourceReference covers the schemaless path a
 // resource reference takes into a dynamic module input: without a schema to
-// type the referenced resource, the value is the bare __ref capsule rather than
-// a dropped null.
+// type the referenced resource, the value is its outputs object (here just id)
+// marked as a reference, rather than a dropped null.
 func TestPropertyValueToCty_ResourceReference(t *testing.T) {
 	t.Parallel()
 
@@ -869,10 +869,12 @@ func TestPropertyValueToCty_ResourceReference(t *testing.T) {
 
 	result := PropertyValueToCty(property.New(ref))
 
-	require.True(t, result.Type().IsObjectType(), "expected an object carrying __ref")
-	refAttr := result.GetAttr("__ref")
-	require.Equal(t, eval.ResourceReferenceCapsuleType, refAttr.Type())
-	require.Equal(t, &ref, refAttr.EncapsulatedValue().(*property.ResourceReference))
+	gotURN, ok := eval.ResourceReferenceURN(result)
+	require.True(t, ok, "the value should be identifiable as a resource reference")
+	require.Equal(t, ref.URN, gotURN)
+
+	unmarked, _ := result.Unmark()
+	require.Equal(t, ref, resourceReferenceFromOutputs(gotURN, unmarked.AsValueMap()))
 }
 
 func TestCtyToPropertyMap(t *testing.T) {

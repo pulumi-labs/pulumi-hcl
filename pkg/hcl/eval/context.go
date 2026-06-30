@@ -218,7 +218,12 @@ type resourceMark struct {
 	resHash int
 }
 
-func resourceValue(urn urn.URN, value cty.Value) cty.Value {
+// MarkResourceReference tags value as a reference to the resource identified by
+// urn: it strips synthetic attributes and applies a resourceMark whose hash
+// matches the resulting value. ResourceReferenceURN recovers the URN, and the
+// value's own attributes (its outputs) are read transparently — so a reference
+// to a resource and the resource itself are the same kind of value.
+func MarkResourceReference(value cty.Value, urn urn.URN) cty.Value {
 	r := stripSyntheticAttributes(value)
 	hashable, _ := r.UnmarkDeep()
 	return r.Mark(resourceMark{urn, hashable.Hash()})
@@ -246,7 +251,7 @@ func ResourceReferenceURN(val cty.Value) (urn.URN, bool) {
 func (c *Context) SetResource(key string, urn urn.URN, value cty.Value) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	c.resources[key] = resourceValue(urn, value)
+	c.resources[key] = MarkResourceReference(value, urn)
 }
 
 // SetCountResource stores a resource instance from count expansion.
@@ -255,7 +260,7 @@ func (c *Context) SetCountResource(baseKey string, index int, urn urn.URN, value
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.rangedResources[baseKey] = append(c.rangedResources[baseKey], rangedInstance{
-		value: resourceValue(urn, value), index: index, isCount: true,
+		value: MarkResourceReference(value, urn), index: index, isCount: true,
 	})
 }
 
@@ -265,7 +270,7 @@ func (c *Context) SetEachResource(baseKey string, eachKey string, urn urn.URN, v
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.rangedResources[baseKey] = append(c.rangedResources[baseKey], rangedInstance{
-		value: resourceValue(urn, value), eachKey: eachKey, isEach: true,
+		value: MarkResourceReference(value, urn), eachKey: eachKey, isEach: true,
 	})
 }
 

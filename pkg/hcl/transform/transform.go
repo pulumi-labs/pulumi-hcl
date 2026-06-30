@@ -756,24 +756,11 @@ func ctyToResourceProperty(path string, val cty.Value, prop schema.Type, expr hc
 		if !val.Type().IsObjectType() {
 			return property.Value{}, fmt.Errorf("expected object at %q for resource reference, found %#v", path, val.Type())
 		}
-		attrs := val.AsValueMap()
-		// A call/method/provider result carries an explicit __ref capsule.
-		if refAttr, hasRef := attrs["__ref"]; hasRef {
-			refAttr, _ = refAttr.Unmark()
-			if !refAttr.IsKnown() {
-				return property.New(property.Computed), nil
-			}
-			ref, ok := refAttr.EncapsulatedValue().(*property.ResourceReference)
-			if !ok {
-				return property.Value{}, fmt.Errorf("expected resource reference capsule at %q", path)
-			}
-			return property.New(*ref), nil
-		}
-		// A whole-resource reference arrives as the referenced resource's outputs
+		// A resource reference arrives as the referenced resource's outputs
 		// object: its identity comes from the resourceMark (captured above), its
 		// ID from the resource's id attribute.
 		if isResRef {
-			return property.New(resourceReferenceFromOutputs(resRefURN, attrs)), nil
+			return property.New(resourceReferenceFromOutputs(resRefURN, val.AsValueMap())), nil
 		}
 		return property.New(property.Computed), nil
 	case *schema.ObjectType:
@@ -859,6 +846,24 @@ func resourceReferenceFromOutputs(u resource.URN, attrs map[string]cty.Value) pr
 		ref.ID = property.New(property.Null)
 	}
 	return ref
+}
+
+func resourceReferenceCty(outputs map[string]cty.Value, id property.Value, u resource.URN) cty.Value {
+	attrs := make(map[string]cty.Value, len(outputs)+1)
+	maps.Copy(attrs, outputs)
+	attrs["id"] = resourceRefIDCty(id)
+	return eval.MarkResourceReference(cty.ObjectVal(attrs), u)
+}
+
+func resourceRefIDCty(id property.Value) cty.Value {
+	switch {
+	case id.IsComputed():
+		return cty.UnknownVal(cty.String)
+	case id.IsString():
+		return cty.StringVal(id.AsString())
+	default:
+		return cty.NullVal(cty.String)
+	}
 }
 
 func camelCaseFromSnakeCase(s string, props []*schema.Property) (string, *schema.Property) {
@@ -1248,7 +1253,7 @@ func ctyTypeFromTypeRec(typ schema.Type, mapping *bridge.BodyMapping, seen map[a
 		seen[typ.Resource] = true
 		defer delete(seen, typ.Resource)
 		return ctyObjectTypeRec(typ.Resource.Properties,
-			map[string]cty.Type{"__ref": eval.ResourceReferenceCapsuleType}, mapping, seen)
+			map[string]cty.Type{"id": cty.String}, mapping, seen)
 	case *schema.InvalidType:
 		return cty.DynamicPseudoType
 	case *schema.TokenType:
@@ -1293,8 +1298,8 @@ func ctyTypeFromTypeRec(typ schema.Type, mapping *bridge.BodyMapping, seen map[a
 
 // ctyObjectType builds an object type whose attributes are named by the
 // mapping's TF names (snake_case-of-Pulumi-name when mapping is nil). seed
-// pre-populates always-optional synthetic attributes (e.g. the
-// resource-reference `__ref`).
+// pre-populates always-optional synthetic attributes (e.g. a resource
+// reference's `id`).
 func ctyObjectType(
 	properties []*schema.Property, seed map[string]cty.Type, mapping *bridge.BodyMapping,
 ) cty.Type {
@@ -1497,16 +1502,27 @@ func propertyValueToCtyWithMapping(path string, v property.Value, typ schema.Typ
 			if err != nil {
 				return cty.Value{}, err
 			}
+			// resolveResourceRefsInOutputs carries a resource reference and any
+			// fetched state through the map's __ref key; the rest of the map is
+			// the referenced resource's outputs.
+			var ref *property.ResourceReference
 			if refVal, ok := v.AsMap().GetOk("__ref"); ok && refVal.IsResourceReference() {
-				ref := refVal.AsResourceReference()
-				result["__ref"] = cty.CapsuleVal(eval.ResourceReferenceCapsuleType, &ref)
+				r := refVal.AsResourceReference()
+				ref = &r
+				result["id"] = resourceRefIDCty(r.ID)
 			}
-			if mapping != nil {
-				// Mapping-aware: keys are TF names which the schema-derived
-				// type won't accept; emit the literal object value instead.
-				return cty.ObjectVal(result), nil
+			obj := cty.ObjectVal(result)
+			if mapping == nil {
+				// Mapping-aware values keep TF names the schema type rejects, so
+				// only convert when there is no mapping.
+				if obj, err = convertToSchemaCtyType(path, obj, typ); err != nil {
+					return cty.Value{}, err
+				}
 			}
-			return convertToSchemaCtyType(path, cty.ObjectVal(result), typ)
+			if ref != nil {
+				obj = eval.MarkResourceReference(obj, ref.URN)
+			}
+			return obj, nil
 		case *schema.ObjectType:
 			m, err := propertyObjectToCtyMap(path, v.AsMap(), typ.Properties, mapping, dryRun)
 			if err != nil {
@@ -1582,8 +1598,7 @@ func propertyValueToCtyWithMapping(path string, v property.Value, typ schema.Typ
 		if err != nil {
 			return cty.Value{}, err
 		}
-		result["__ref"] = cty.CapsuleVal(eval.ResourceReferenceCapsuleType, &ref)
-		return cty.ObjectVal(result), nil
+		return resourceReferenceCty(result, ref.ID, ref.URN), nil
 
 	case v.IsAsset():
 		return cty.CapsuleVal(eval.AssetCapsuleType, v.AsAsset()), nil
@@ -1650,13 +1665,10 @@ func PropertyValueToCty(pv property.Value) cty.Value {
 		return cty.CapsuleVal(eval.ArchiveCapsuleType, pv.AsArchive())
 
 	case pv.IsResourceReference():
-		// No schema here to type the referenced resource's attributes, so the
-		// value is the bare __ref capsule. ctyToResourceProperty reads the
-		// capsule back when this flows into a resource-typed input.
+		// No schema here to type the referenced resource's outputs, so the value
+		// carries only the id attribute and the identifying resourceMark.
 		ref := pv.AsResourceReference()
-		return cty.ObjectVal(map[string]cty.Value{
-			"__ref": cty.CapsuleVal(eval.ResourceReferenceCapsuleType, &ref),
-		})
+		return resourceReferenceCty(nil, ref.ID, ref.URN)
 
 	default:
 		return cty.NullVal(cty.DynamicPseudoType)
