@@ -1,6 +1,0 @@
-kind: bug-fixes
-body: Match TF_VAR parsing to Terraform
-time: 2026-06-26T14:08:59.093312+02:00
-custom:
-    Component: runtime
-    PR: "295"
