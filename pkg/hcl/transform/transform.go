@@ -685,6 +685,11 @@ func getDefault(path string, d *schema.DefaultValue, typ schema.Type) (property.
 // ctyToResourceProperty's expr, when non-nil, lets union-discrimination
 // failures attach an HCL source range to the returned error.
 func ctyToResourceProperty(path string, val cty.Value, prop schema.Type, expr hcl.Expression, alreadyInSecret bool) (property.Value, error) {
+	// A whole-resource reference (e.g. `handler = aws_lambda_function.fn`) is
+	// identified by its resourceMark; capture the URN before the unmark below
+	// strips it, so the *schema.ResourceType case can build a reference from it.
+	resRefURN, isResRef := eval.ResourceReferenceURN(val)
+
 	if val.IsMarked() {
 		var marks cty.ValueMarks
 		val, marks = val.Unmark()
@@ -751,18 +756,26 @@ func ctyToResourceProperty(path string, val cty.Value, prop schema.Type, expr hc
 		if !val.Type().IsObjectType() {
 			return property.Value{}, fmt.Errorf("expected object at %q for resource reference, found %#v", path, val.Type())
 		}
-		refAttr, hasRef := val.AsValueMap()["__ref"]
-		if hasRef {
+		attrs := val.AsValueMap()
+		// A call/method/provider result carries an explicit __ref capsule.
+		if refAttr, hasRef := attrs["__ref"]; hasRef {
 			refAttr, _ = refAttr.Unmark()
+			if !refAttr.IsKnown() {
+				return property.New(property.Computed), nil
+			}
+			ref, ok := refAttr.EncapsulatedValue().(*property.ResourceReference)
+			if !ok {
+				return property.Value{}, fmt.Errorf("expected resource reference capsule at %q", path)
+			}
+			return property.New(*ref), nil
 		}
-		if !hasRef || !refAttr.IsKnown() {
-			return property.New(property.Computed), nil
+		// A whole-resource reference arrives as the referenced resource's outputs
+		// object: its identity comes from the resourceMark (captured above), its
+		// ID from the resource's id attribute.
+		if isResRef {
+			return property.New(resourceReferenceFromOutputs(resRefURN, attrs)), nil
 		}
-		ref, ok := refAttr.EncapsulatedValue().(*property.ResourceReference)
-		if !ok {
-			return property.Value{}, fmt.Errorf("expected resource reference capsule at %q", path)
-		}
-		return property.New(*ref), nil
+		return property.New(property.Computed), nil
 	case *schema.ObjectType:
 		if !val.Type().IsObjectType() {
 			return property.Value{}, fmt.Errorf("expected object at %q, found %#v", path, val.Type())
@@ -823,6 +836,29 @@ func ctyToResourceProperty(path string, val cty.Value, prop schema.Type, expr hc
 	default:
 		return property.Value{}, fmt.Errorf("%q: unknown schema type %s when converting %#v", path, prop, val.Type())
 	}
+}
+
+// resourceReferenceFromOutputs builds a reference to a whole resource. The URN
+// comes from the resourceMark; the ID from the resource's id output attribute,
+// which is unknown during preview (mapped to a computed ID) and null for a
+// component, mirroring the cases a Pulumi resource reference distinguishes.
+func resourceReferenceFromOutputs(u resource.URN, attrs map[string]cty.Value) property.ResourceReference {
+	ref := property.ResourceReference{URN: u}
+	idAttr, ok := attrs["id"]
+	if !ok {
+		ref.ID = property.New(property.Null)
+		return ref
+	}
+	idAttr, _ = idAttr.Unmark()
+	switch {
+	case !idAttr.IsKnown():
+		ref.ID = property.New(property.Computed)
+	case idAttr.Type() == cty.String && !idAttr.IsNull():
+		ref.ID = property.New(idAttr.AsString())
+	default:
+		ref.ID = property.New(property.Null)
+	}
+	return ref
 }
 
 func camelCaseFromSnakeCase(s string, props []*schema.Property) (string, *schema.Property) {
@@ -1612,6 +1648,15 @@ func PropertyValueToCty(pv property.Value) cty.Value {
 
 	case pv.IsArchive():
 		return cty.CapsuleVal(eval.ArchiveCapsuleType, pv.AsArchive())
+
+	case pv.IsResourceReference():
+		// No schema here to type the referenced resource's attributes, so the
+		// value is the bare __ref capsule. ctyToResourceProperty reads the
+		// capsule back when this flows into a resource-typed input.
+		ref := pv.AsResourceReference()
+		return cty.ObjectVal(map[string]cty.Value{
+			"__ref": cty.CapsuleVal(eval.ResourceReferenceCapsuleType, &ref),
+		})
 
 	default:
 		return cty.NullVal(cty.DynamicPseudoType)

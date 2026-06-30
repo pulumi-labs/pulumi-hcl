@@ -2889,6 +2889,83 @@ func hasRegisteredResource(mock *testutil.MockResourceMonitor, typ string) bool 
 	return false
 }
 
+// TestEngine_WholeResourceReferenceAsComponentInput covers passing a whole
+// resource by value into a component (MLC) input typed as a resource reference,
+func TestEngine_WholeResourceReferenceAsComponentInput(t *testing.T) {
+	t.Parallel()
+
+	componentSchema := schema.PackageSpec{
+		Name: "test",
+		Resources: map[string]schema.ResourceSpec{
+			"test:index:Resource": {
+				InputProperties: map[string]schema.PropertySpec{
+					"field": {TypeSpec: schema.TypeSpec{Type: "string"}},
+				},
+				ObjectTypeSpec: schema.ObjectTypeSpec{
+					Properties: map[string]schema.PropertySpec{
+						"field": {TypeSpec: schema.TypeSpec{Type: "string"}},
+					},
+				},
+			},
+			"test:index:Component": {
+				IsComponent: true,
+				InputProperties: map[string]schema.PropertySpec{
+					"handler": {TypeSpec: schema.TypeSpec{Ref: "#/resources/test:index:Resource"}},
+				},
+				ObjectTypeSpec: schema.ObjectTypeSpec{
+					Properties: map[string]schema.PropertySpec{
+						"url": {TypeSpec: schema.TypeSpec{Type: "string"}},
+					},
+				},
+			},
+		},
+	}
+
+	src := []byte(`
+resource "test_resource" "fn" {
+  field = "value"
+}
+
+resource "test_component" "comp" {
+  handler = test_resource.fn
+}
+`)
+
+	p := parser.NewParser()
+	config, diags := p.ParseSource("test.hcl", src)
+	require.False(t, diags.HasErrors(), diags.Error())
+
+	mock := &testutil.MockResourceMonitor{}
+	engine := run.NewEngine(t.Context(), config, &run.EngineOptions{
+		ModuleLoader:    testModuleLoader(t),
+		ProjectName:     "test-project",
+		StackName:       "dev",
+		ResourceMonitor: mock,
+		WorkDir:         t.TempDir(),
+		RootDir:         t.TempDir(),
+		SchemaLoader:    schemaloader.New(t, componentSchema),
+	})
+	require.NoError(t, engine.Run(t.Context()))
+
+	var component *run.RegisterResourceRequest
+	for i := range mock.RegisteredResources {
+		if mock.RegisteredResources[i].Type == "test:index:Component" {
+			component = &mock.RegisteredResources[i]
+		}
+	}
+	require.NotNil(t, component, "component resource should be registered")
+
+	handler, ok := component.Inputs.GetOk("handler")
+	require.True(t, ok, "component should receive the handler input")
+	require.True(t, handler.IsResourceReference(),
+		"the whole-resource input should reach the component as a resource reference, not %s",
+		handler.GoString())
+	require.Equal(t, property.ResourceReference{
+		URN: "urn:pulumi:test::project::test:index:Resource::fn",
+		ID:  property.New("fn-id"),
+	}, handler.AsResourceReference())
+}
+
 func TestEngine_ReplaceTriggeredBy(t *testing.T) {
 	t.Parallel()
 

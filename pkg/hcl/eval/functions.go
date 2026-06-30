@@ -2228,18 +2228,8 @@ func resourceUrnFuncHelper(fnName string, f func(urn.URN) (cty.Value, error)) fu
 			if !res.IsKnown() {
 				return cty.UnknownVal(cty.String), nil
 			}
-			_, marks := res.Unmark()
-			hashable, _ := res.UnmarkDeep()
-			hash := hashable.Hash()
-			for m := range marks {
-				rP, ok := m.(resourceMark)
-				if !ok {
-					continue
-				}
-
-				if rP.resHash == hash {
-					return f(rP.urn)
-				}
+			if u, ok := ResourceReferenceURN(res); ok {
+				return f(u)
 			}
 			return cty.NilVal, fmt.Errorf("%s: argument must be a resource reference", fnName)
 		},

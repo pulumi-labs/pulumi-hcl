@@ -224,6 +224,23 @@ func resourceValue(urn urn.URN, value cty.Value) cty.Value {
 	return r.Mark(resourceMark{urn, hashable.Hash()})
 }
 
+// ResourceReferenceURN reports the URN val refers to when val is a
+// whole-resource reference.
+func ResourceReferenceURN(val cty.Value) (urn.URN, bool) {
+	if !val.IsKnown() {
+		return "", false
+	}
+	_, marks := val.Unmark()
+	hashable, _ := val.UnmarkDeep()
+	hash := hashable.Hash()
+	for m := range marks {
+		if rm, ok := m.(resourceMark); ok && rm.resHash == hash {
+			return rm.urn, true
+		}
+	}
+	return "", false
+}
+
 // SetResource sets a resource's output values.
 // The key should be "type.name" (e.g., "aws_instance.web").
 func (c *Context) SetResource(key string, urn urn.URN, value cty.Value) {
