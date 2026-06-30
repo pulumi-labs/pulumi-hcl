@@ -22,7 +22,6 @@ import (
 	"github.com/pulumi-labs/pulumi-hcl/pkg/hcl/eval"
 	"github.com/pulumi/pulumi/pkg/v3/codegen/schema"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/resource"
-	"github.com/pulumi/pulumi/sdk/v3/go/property"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/zclconf/go-cty/cty"
@@ -36,13 +35,10 @@ func TestProviderRefFromCty(t *testing.T) {
 		"id":  cty.StringVal("provider-id-123"),
 	})
 
-	ref := property.ResourceReference{
-		URN: resource.URN("urn:pulumi:dev::p::pulumi:providers:aws::aws-west"),
-		ID:  property.New("provider-id-123"),
-	}
-	callResult := cty.ObjectVal(map[string]cty.Value{
-		"__ref": cty.CapsuleVal(eval.ResourceReferenceCapsuleType, &ref),
-	})
+	callResult := eval.MarkResourceReference(
+		cty.ObjectVal(map[string]cty.Value{"id": cty.StringVal("provider-id-123")}),
+		resource.URN("urn:pulumi:dev::p::pulumi:providers:aws::aws-west"),
+	)
 
 	nonProviderResource := cty.ObjectVal(map[string]cty.Value{
 		"name": cty.StringVal("my-bucket"),

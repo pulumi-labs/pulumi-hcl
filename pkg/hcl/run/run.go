@@ -42,6 +42,7 @@ import (
 	"github.com/pulumi-labs/pulumi-hcl/pkg/hcl/transform"
 	"github.com/pulumi-labs/pulumi-hcl/pkg/potel"
 	"github.com/pulumi-labs/pulumi-hcl/pkg/util"
+	"github.com/pulumi/pulumi/pkg/v3/codegen"
 	"github.com/pulumi/pulumi/pkg/v3/codegen/schema"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/resource"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/resource/urn"
@@ -653,7 +654,7 @@ func (e *Engine) processGraph(ctx context.Context, g *graph.Graph) error {
 }
 
 // processVariable processes a variable definition.
-func (e *Engine) processVariable(_ context.Context, node *graph.Node) error {
+func (e *Engine) processVariable(ctx context.Context, node *graph.Node) error {
 	v := node.Variable
 	if v == nil {
 		return fmt.Errorf("variable node missing Variable field")
@@ -745,6 +746,19 @@ func (e *Engine) processVariable(_ context.Context, node *graph.Node) error {
 		!val.IsNull() && val.IsKnown() {
 		if converted, err := ctyconvert.Convert(val, v.TypeConstraint); err == nil {
 			val = converted
+		}
+	}
+
+	// A resource reference supplied as a typed config value — e.g. a component
+	// input from a calling program — carries only its identity. Fetch the
+	// referenced resource's state so the program can read its fields.
+	if valueSource == "config-typed" {
+		if u, ok := eval.ResourceReferenceURN(val); ok {
+			resolved, err := e.resolveConfigResourceReference(ctx, val, u)
+			if err != nil {
+				return fmt.Errorf("variable %q: %w", varName, err)
+			}
+			val = resolved
 		}
 	}
 
@@ -2971,7 +2985,7 @@ func (e *Engine) resolveResourceRefsInOutputs(
 ) (property.Map, error) {
 	resolved := outputs
 	for _, p := range resSchema.Properties {
-		resType, ok := p.Type.(*schema.ResourceType)
+		resType, ok := codegen.UnwrapType(p.Type).(*schema.ResourceType)
 		if !ok {
 			continue
 		}
@@ -2993,6 +3007,49 @@ func (e *Engine) resolveResourceRefsInOutputs(
 		resolved = resolved.Set(p.Name, property.New(refMap))
 	}
 	return resolved, nil
+}
+
+// resolveConfigResourceReference enriches a resource reference supplied as a
+// typed config value with the referenced resource's state, so a program
+// consuming this module as a component can read the resource's fields, not just
+// its id. The referenced resource lives in the calling program, so its state is
+// fetched through the monitor. Best-effort: an unfetchable or preview-unknown
+// reference is returned unchanged.
+func (e *Engine) resolveConfigResourceReference(ctx context.Context, val cty.Value, u urn.URN) (cty.Value, error) {
+	contract.Requiref(e.resmon != nil, "e.resmon", "cannot resolve a resource reference without a resource monitor")
+	unmarked, marks := val.Unmark()
+	contract.Assertf(unmarked.Type().IsObjectType() && unmarked.Type().HasAttribute("id"),
+		"a resource reference must be an object with an id attribute, got %s", unmarked.Type().FriendlyName())
+
+	idAttr, _ := unmarked.GetAttr("id").Unmark()
+	if !idAttr.IsKnown() {
+		// During preview the referenced resource's id is unknown and its state
+		// cannot be fetched; the bare reference flows through unchanged.
+		return val, nil
+	}
+	ref := property.ResourceReference{URN: u, ID: property.New(property.Null)}
+	switch {
+	case idAttr.IsNull():
+		// A component reference has a null id; getResource keys on the URN.
+	case idAttr.Type() == cty.String:
+		ref.ID = property.New(idAttr.AsString())
+	default:
+		return cty.Value{}, fmt.Errorf("resource reference %s has a non-string id of type %s",
+			u, idAttr.Type().FriendlyName())
+	}
+
+	state, err := e.getResourceState(ctx, ref)
+	if err != nil {
+		return cty.Value{}, fmt.Errorf("fetching state of resource reference %s: %w", u, err)
+	}
+	attrs := transform.PropertyMapToCty(state).AsValueMap()
+	if attrs == nil {
+		attrs = map[string]cty.Value{}
+	}
+	attrs["id"] = unmarked.GetAttr("id")
+
+	obj := cty.ObjectVal(attrs).WithMarks(marks)
+	return eval.MarkResourceReference(obj, u), nil
 }
 
 // processModule processes a module call.
@@ -3535,9 +3592,13 @@ func (e *Engine) processOutput(_ context.Context, name string, output *ast.Outpu
 // The value must be one of:
 //   - a resource-outputs object with direct `urn` and `id` string attributes
 //     (provider blocks like `aws.west` or pulumi_providers_* resources), or
-//   - an object carrying an `__ref` ResourceReference capsule (e.g., the result
-//     of a `call.<resource>.<method>` that returns a provider).
+//   - a resource reference carrying its URN in a resourceMark (e.g., the result
+//     of a `call.<resource>.<method>` that returns a provider), with its id in
+//     the object's id attribute.
 func providerRefFromCty(val cty.Value) (string, error) {
+	// Capture the reference's URN before the unmark below strips its resourceMark.
+	refURN, isRef := eval.ResourceReferenceURN(val)
+
 	if val.IsMarked() {
 		val, _ = val.Unmark()
 	}
@@ -3550,21 +3611,6 @@ func providerRefFromCty(val cty.Value) (string, error) {
 	if !val.Type().IsObjectType() {
 		return "", fmt.Errorf("provider value must be an object, got %s", val.Type().FriendlyName())
 	}
-	if val.Type().HasAttribute("__ref") {
-		refVal, _ := val.GetAttr("__ref").Unmark()
-		if refVal.Type() != eval.ResourceReferenceCapsuleType {
-			return "", fmt.Errorf("provider value has __ref of unexpected type %s", refVal.Type().FriendlyName())
-		}
-		if refVal.IsNull() {
-			return "", errors.New("provider value has null __ref")
-		}
-		ref := refVal.EncapsulatedValue().(*property.ResourceReference)
-		id := ""
-		if ref.ID.IsString() {
-			id = ref.ID.AsString()
-		}
-		return string(ref.URN) + "::" + id, nil
-	}
 	if val.Type().HasAttribute("urn") && val.Type().HasAttribute("id") {
 		urn := ctyAsString(val.GetAttr("urn"))
 		id := ctyAsString(val.GetAttr("id"))
@@ -3572,6 +3618,15 @@ func providerRefFromCty(val cty.Value) (string, error) {
 			return "", fmt.Errorf("provider value urn/id must be non-empty strings, got urn=%q id=%q", urn, id)
 		}
 		return urn + "::" + id, nil
+	}
+	if isRef {
+		id := ""
+		if val.Type().HasAttribute("id") {
+			if idAttr, _ := val.GetAttr("id").Unmark(); idAttr.Type() == cty.String && idAttr.IsKnown() && !idAttr.IsNull() {
+				id = idAttr.AsString()
+			}
+		}
+		return string(refURN) + "::" + id, nil
 	}
 	return "", errors.New("provider value is not a resource reference")
 }
