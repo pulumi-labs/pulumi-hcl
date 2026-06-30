@@ -318,22 +318,39 @@ var typeInferenceTryFunc = function.New(&function.Spec{
 	},
 })
 
-// typeInferenceTry returns the first argument expression that evaluates without
-// error. Unlike tryfunc's try it does not fall back to a dynamic value when the
-// result is not wholly known, so the argument's static type is preserved.
+// typeInferenceTry returns an unknown of the first argument that evaluates
+// without error, preserving its static type rather than falling back to a
+// dynamic value like tryfunc's try. Since try() may fall through to a later
+// argument at runtime (such as the null in try(x, null)), the result is refined
+// not-null only when every candidate is.
 func typeInferenceTry(args []cty.Value) (cty.Value, error) {
 	if len(args) == 0 {
 		return cty.NilVal, errors.New("at least one argument is required")
 	}
+	var result cty.Value
+	found, couldBeNull := false, false
 	for _, arg := range args {
 		closure := customdecode.ExpressionClosureFromVal(arg)
 		v, diags := closure.Value()
 		if diags.HasErrors() {
 			continue
 		}
-		return v, nil
+		v, _ = v.UnmarkDeep()
+		if !found {
+			result = v
+			found = true
+		}
+		if v.Range().CouldBeNull() {
+			couldBeNull = true
+		}
 	}
-	return cty.NilVal, errors.New("no expression succeeded")
+	if !found {
+		return cty.NilVal, errors.New("no expression succeeded")
+	}
+	if couldBeNull {
+		return cty.UnknownVal(result.Type()), nil
+	}
+	return cty.UnknownVal(result.Type()).RefineNotNull(), nil
 }
 
 // String functions
