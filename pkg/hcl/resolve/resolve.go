@@ -18,7 +18,6 @@ package resolve
 
 import (
 	"context"
-	"crypto/des"
 	"fmt"
 
 	"github.com/blang/semver"
