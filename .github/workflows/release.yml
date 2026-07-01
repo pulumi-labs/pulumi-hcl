@@ -6,6 +6,7 @@ on:
       - master
     paths:
       - CHANGELOG.md
+  workflow_dispatch:
 
 jobs:
   ci:
@@ -67,10 +68,11 @@ jobs:
       - name: Read the Go toolchain from the released source
         run: |
           git fetch --depth 1 origin "refs/tags/${VERSION}"
-          git show "FETCH_HEAD:go.mod" > "${RUNNER_TEMP}/source-go.mod"
+          mkdir -p "${RUNNER_TEMP}/go-toolchain"
+          git show "FETCH_HEAD:go.mod" > "${RUNNER_TEMP}/go-toolchain/go.mod"
       - uses: actions/setup-go@v6
         with:
-          go-version-file: ${{ runner.temp }}/source-go.mod
+          go-version-file: ${{ runner.temp }}/go-toolchain/go.mod
       - uses: pulumi/actions@v7
         with:
           pulumi-version: "latest"
