@@ -25,6 +25,11 @@ import (
 	"github.com/pulumi/pulumi/sdk/v3/go/common/util/contract"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/workspace"
 	pulumirpc "github.com/pulumi/pulumi/sdk/v3/proto/go"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
+	"golang.org/x/sync/errgroup"
+
+	"github.com/pulumi-labs/pulumi-hcl/pkg/potel"
 )
 
 // Request names one provider to resolve. Alias is the provider's local name in
@@ -41,19 +46,53 @@ type Request struct {
 func Packages(
 	ctx context.Context, resolver pulumirpc.PackageResolverClient, reqs []Request,
 ) (map[string]workspace.PackageDescriptor, error) {
-	out := make(map[string]workspace.PackageDescriptor, len(reqs))
-	for _, r := range reqs {
-		dep, err := resolver.ResolvePackage(ctx, r.Spec)
-		if err != nil {
-			return nil, fmt.Errorf("resolving provider %q: %w", r.Alias, err)
-		}
-		desc, err := dependencyToDescriptor(dep)
-		if err != nil {
-			return nil, fmt.Errorf("provider %q: %w", r.Alias, err)
-		}
-		out[r.Alias] = desc
+	type response struct {
+		alias      string
+		descriptor workspace.PackageDescriptor
 	}
-	return out, nil
+	out := make([]response, len(reqs))
+	var wg errgroup.Group
+	for i, r := range reqs {
+		wg.Go(func() error {
+			dep, err := resolveOne(ctx, resolver, r)
+			if err != nil {
+				return fmt.Errorf("resolving provider %q: %w", r.Alias, err)
+			}
+			desc, err := dependencyToDescriptor(dep)
+			if err != nil {
+				return fmt.Errorf("provider %q: %w", r.Alias, err)
+			}
+			out[i] = response{r.Alias, desc}
+			return nil
+		})
+	}
+
+	if err := wg.Wait(); err != nil {
+		return nil, err
+	}
+
+	outMap := make(map[string]workspace.PackageDescriptor, len(reqs))
+	for _, v := range out {
+		outMap[v.alias] = v.descriptor
+	}
+
+	return outMap, nil
+}
+
+// resolveOne resolves a single request, recording a span so the per-provider
+// cost (the engine installing and parameterizing the provider plugin) is
+// visible in traces.
+func resolveOne(
+	ctx context.Context, resolver pulumirpc.PackageResolverClient, r Request,
+) (*pulumirpc.PackageDependency, error) {
+	ctx, span := potel.Start(ctx, "resolve.ResolvePackage",
+		trace.WithAttributes(
+			attribute.String("alias", r.Alias),
+			attribute.String("version", r.Spec.GetVersion()),
+			attribute.String("source", r.Spec.GetSource()),
+		))
+	defer span.End()
+	return resolver.ResolvePackage(ctx, r.Spec)
 }
 
 func dependencyToDescriptor(dep *pulumirpc.PackageDependency) (workspace.PackageDescriptor, error) {

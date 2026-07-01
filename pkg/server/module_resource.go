@@ -45,6 +45,7 @@ import (
 	"github.com/pulumi-labs/pulumi-hcl/pkg/hcl/resolve"
 	"github.com/pulumi-labs/pulumi-hcl/pkg/hcl/run"
 	"github.com/pulumi-labs/pulumi-hcl/pkg/hcl/transform"
+	"github.com/pulumi-labs/pulumi-hcl/pkg/potel"
 )
 
 // moduleProvider is the fully dynamic HCL provider. It serves the single
@@ -116,15 +117,14 @@ func (m *moduleProvider) handshake(ctx context.Context, req p.HandshakeRequest) 
 		return p.HandshakeResponse{}, fmt.Errorf("dial mapper at %s: %w", *req.MapperAddress, err)
 	}
 
-	resolverConn, err := grpc.NewClient(*req.ResolverAddress,
-		grpc.WithTransportCredentials(insecure.NewCredentials()))
+	resolverClient, err := newPackageResolverClient(*req.ResolverAddress)
 	if err != nil {
 		return p.HandshakeResponse{}, fmt.Errorf("dial resolver at %s: %w", *req.ResolverAddress, err)
 	}
 
 	m.schemaLoader = schemaLoader
 	m.providerInfoSource = bridge.NewCache(bridge.NewMapperSource(mapperClient))
-	m.resolver = resolve.NewCache(pulumirpc.NewPackageResolverClient(resolverConn))
+	m.resolver = resolve.NewCache(resolverClient)
 	if req.EngineAddress != "" && m.engine == nil {
 		if engineConn, err := grpc.NewClient(req.EngineAddress,
 			grpc.WithTransportCredentials(insecure.NewCredentials())); err == nil {
@@ -370,6 +370,8 @@ func (m *moduleProvider) newConstructMonitor(
 func (m *moduleProvider) requirementSpecs(
 	ctx context.Context, loader *modules.Loader, config *ast.Config, workDir string,
 ) []resolve.Request {
+	ctx, span := potel.Start(ctx, "requirementSpecs")
+	defer span.End()
 	tf, pulumi, aliases := collectRequirements(ctx, loader, config, workDir)
 	var reqs []resolve.Request
 	for _, alias := range sortedKeys(aliases) {

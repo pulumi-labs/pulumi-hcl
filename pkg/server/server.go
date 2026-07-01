@@ -1469,3 +1469,18 @@ func formatTimeoutSeconds(seconds float64) string {
 	}
 	return time.Duration(seconds * float64(time.Second)).String()
 }
+
+func newPackageResolverClient(target string) (pulumirpc.PackageResolverClient, error) {
+	contract.Assertf(target != "", "unexpected empty target for package resolver")
+
+	dialOpts := append(
+		rpcutil.TracingInterceptorDialOptions(),
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+		rpcutil.GrpcChannelOptions(),
+	)
+	conn, err := grpc.NewClient(target, dialOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return pulumirpc.NewPackageResolverClient(conn), nil
+}
