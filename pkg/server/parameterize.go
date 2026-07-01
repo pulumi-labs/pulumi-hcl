@@ -286,6 +286,8 @@ func (m *moduleProvider) finishParameterize(
 func (m *moduleProvider) resolvePackages(
 	ctx context.Context, loader *modules.Loader, config *ast.Config, workDir string,
 ) (map[string]workspace.PackageDescriptor, error) {
+	ctx, span := potel.Start(ctx, "resolvePackages")
+	defer span.End()
 	resolved, err := resolve.Packages(ctx, m.resolver, m.requirementSpecs(ctx, loader, config, workDir))
 	if err != nil {
 		return nil, fmt.Errorf("resolving module providers: %w", err)

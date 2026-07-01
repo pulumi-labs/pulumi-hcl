@@ -25,6 +25,10 @@ import (
 	"github.com/pulumi/pulumi/sdk/v3/go/common/util/contract"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/workspace"
 	pulumirpc "github.com/pulumi/pulumi/sdk/v3/proto/go"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
+
+	"github.com/pulumi-labs/pulumi-hcl/pkg/potel"
 )
 
 // Request names one provider to resolve. Alias is the provider's local name in
@@ -43,7 +47,7 @@ func Packages(
 ) (map[string]workspace.PackageDescriptor, error) {
 	out := make(map[string]workspace.PackageDescriptor, len(reqs))
 	for _, r := range reqs {
-		dep, err := resolver.ResolvePackage(ctx, r.Spec)
+		dep, err := resolveOne(ctx, resolver, r)
 		if err != nil {
 			return nil, fmt.Errorf("resolving provider %q: %w", r.Alias, err)
 		}
@@ -54,6 +58,22 @@ func Packages(
 		out[r.Alias] = desc
 	}
 	return out, nil
+}
+
+// resolveOne resolves a single request, recording a span so the per-provider
+// cost (the engine installing and parameterizing the provider plugin) is
+// visible in traces.
+func resolveOne(
+	ctx context.Context, resolver pulumirpc.PackageResolverClient, r Request,
+) (*pulumirpc.PackageDependency, error) {
+	ctx, span := potel.Start(ctx, "resolve.ResolvePackage",
+		trace.WithAttributes(
+			attribute.String("alias", r.Alias),
+			attribute.String("version", r.Spec.GetVersion()),
+			attribute.String("source", r.Spec.GetSource()),
+		))
+	defer span.End()
+	return resolver.ResolvePackage(ctx, r.Spec)
 }
 
 func dependencyToDescriptor(dep *pulumirpc.PackageDependency) (workspace.PackageDescriptor, error) {
