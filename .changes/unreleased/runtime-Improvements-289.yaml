@@ -1,6 +1,0 @@
-kind: Improvements
-body: Authenticate to module registries with `TF_TOKEN_<host>` and honor `host` service overrides from the Terraform CLI configuration
-time: 2026-06-25T23:29:51.000000+02:00
-custom:
-    Component: runtime
-    PR: "289"

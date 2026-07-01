@@ -1,6 +1,0 @@
-kind: Improvements
-body: Release the `pulumi-resource-hcl` plugin as part of the goreleaser build
-time: 2026-06-24T08:14:24+00:00
-custom:
-    Component: resource-host
-    PR: "285"

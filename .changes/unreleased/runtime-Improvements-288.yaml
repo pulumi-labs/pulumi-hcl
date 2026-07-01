@@ -1,6 +1,0 @@
-kind: Improvements
-body: Authenticate to the Pulumi Cloud module registry automaticly
-time: 2026-06-25T16:36:40.439763+02:00
-custom:
-    Component: runtime
-    PR: "288"
