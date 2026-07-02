@@ -65,13 +65,14 @@ func moduleResourceSchema(version string) pulumischema.PackageSpec {
 	maps.Copy(outputs, inputs)
 
 	return pulumischema.PackageSpec{
-		Name:        "hcl",
-		DisplayName: "Any HCL Module",
-		Publisher:   "Pulumi",
-		Version:     version,
-		Description: "Instantiate a Terraform/OpenTofu module as a Pulumi component.",
-		Repository:  "https://github.com/pulumi-labs/pulumi-hcl",
-		Meta:        &pulumischema.MetadataSpec{SupportPack: true},
+		Name:              "hcl",
+		DisplayName:       "Any HCL Module",
+		Publisher:         "Pulumi",
+		Version:           version,
+		Description:       "Instantiate a Terraform/OpenTofu module as a Pulumi component.",
+		Repository:        "https://github.com/pulumi-labs/pulumi-hcl",
+		PluginDownloadURL: "github://api.github.com/pulumi-labs/pulumi-hcl",
+		Meta:              &pulumischema.MetadataSpec{SupportPack: true},
 		Language: map[string]pulumischema.RawMessage{
 			"go": pulumischema.RawMessage(
 				`{"importBasePath":"` + goImportBasePath + `","respectSchemaVersion":true}`),
