@@ -125,3 +125,54 @@ jobs:
           warmdir="$(mktemp -d)"
           (cd "$warmdir" && go mod init warm &&
             go get "github.com/pulumi-labs/pulumi-hcl/sdk/go@${VERSION}")
+
+  # Publish the TypeScript SDK to npm as @pulumi/hcl.
+  #
+  # publish-go-sdk regenerates every language's SDK onto the sdk-releases branch
+  # (it runs `pulumi package gen-sdk` with no --language filter), so by the time
+  # this job runs the branch holds the freshly versioned nodejs source.
+  #
+  # Publishing uses npm trusted publishing (OIDC): the id-token permission plus
+  # the publish-npm environment stand in for an npm token. This requires a
+  # trusted publisher for @pulumi/hcl configured on npmjs.org, bound to this
+  # repository, workflow file, and environment.
+  publish-nodejs:
+    needs: publish-go-sdk
+    runs-on: ubuntu-latest
+    environment: publish-npm
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: sdk-releases
+      - uses: actions/setup-node@v4
+        with:
+          # Trusted publishing requires Node >= 22.14 and npm >= 11.5.1.
+          node-version: '22'
+          registry-url: 'https://registry.npmjs.org'
+      - name: Ensure npm meets the trusted-publishing floor
+        run: npm install -g npm@11.5.1
+      - name: Check if this version is already on npm
+        id: published
+        working-directory: sdk/nodejs
+        run: |
+          NAME="$(node -p "require('./package.json').name")"
+          VER="$(node -p "require('./package.json').version")"
+          if npm view "${NAME}@${VER}" version >/dev/null 2>&1; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Build
+        if: steps.published.outputs.exists == 'false'
+        working-directory: sdk/nodejs
+        run: |
+          npm install
+          npm run build
+          cp package.json README.md bin/
+      - name: Publish
+        if: steps.published.outputs.exists == 'false'
+        working-directory: sdk/nodejs/bin
+        run: npm publish --access public

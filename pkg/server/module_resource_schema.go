@@ -76,6 +76,7 @@ func moduleResourceSchema(version string) pulumischema.PackageSpec {
 		Language: map[string]pulumischema.RawMessage{
 			"go": pulumischema.RawMessage(
 				`{"importBasePath":"` + goImportBasePath + `","respectSchemaVersion":true}`),
+			"nodejs": pulumischema.RawMessage(`{"packageName":"@pulumi-labs/hcl"}`),
 		},
 		Resources: map[string]pulumischema.ResourceSpec{
 			ModuleResourceToken: {
