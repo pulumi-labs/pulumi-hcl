@@ -112,7 +112,10 @@ func (s *MapperSource) GetProviderInfo(
 		}
 	}
 
-	data, err := s.mapper.GetMapping(ctx, tfProvider, mapperHint)
+	// The HCL runtime executes Terraform programs, so it always consumes
+	// "terraform" mappings regardless of the conversion key the engine
+	// configured the mapper with (`pulumi import --from hcl` keys it "hcl").
+	data, err := s.mapper.GetMapping(ctx, tfProvider, mapperHint, "terraform")
 	if err != nil {
 		return nil, fmt.Errorf("mapper GetMapping(%q): %w", tfProvider, err)
 	}
