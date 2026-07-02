@@ -20,11 +20,9 @@ import (
 	pulumischema "github.com/pulumi/pulumi/pkg/v3/codegen/schema"
 )
 
-// ModuleResourceToken is the token of the single, statically-known resource the
+// moduleResourceToken is the token of the single, statically-known resource the
 // fully dynamic provider serves.
-const ModuleResourceToken = "hcl:index:Module"
-
-const goImportBasePath = "github.com/pulumi-labs/pulumi-hcl/sdk/go/hcl"
+const moduleResourceToken = "hcl:index:Module"
 
 // moduleResourceSchema returns the static schema for the fully dynamic provider.
 func moduleResourceSchema(version string) pulumischema.PackageSpec {
@@ -75,11 +73,12 @@ func moduleResourceSchema(version string) pulumischema.PackageSpec {
 		Meta:              &pulumischema.MetadataSpec{SupportPack: true},
 		Language: map[string]pulumischema.RawMessage{
 			"go": pulumischema.RawMessage(
-				`{"importBasePath":"` + goImportBasePath + `","respectSchemaVersion":true}`),
+				`{"importBasePath":"github.com/pulumi-labs/pulumi-hcl/sdk/go/hcl","respectSchemaVersion":true}`),
 			"nodejs": pulumischema.RawMessage(`{"packageName":"@pulumi-labs/hcl"}`),
+			"python": pulumischema.RawMessage(`{"packageName":"pulumi_labs_hcl"}`),
 		},
 		Resources: map[string]pulumischema.ResourceSpec{
-			ModuleResourceToken: {
+			moduleResourceToken: {
 				ObjectTypeSpec: pulumischema.ObjectTypeSpec{
 					Type:        "object",
 					Description: "A Terraform/OpenTofu module instantiated as a component resource.",

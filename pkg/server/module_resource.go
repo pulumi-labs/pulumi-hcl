@@ -170,7 +170,7 @@ func (m *moduleProvider) construct(ctx context.Context, req p.ConstructRequest) 
 	if m.param != nil {
 		return m.constructParameterized(ctx, req)
 	}
-	if req.Urn.Type() != ModuleResourceToken {
+	if req.Urn.Type() != moduleResourceToken {
 		return p.ConstructResponse{}, fmt.Errorf("unknown resource type: %q", req.Urn.Type())
 	}
 
