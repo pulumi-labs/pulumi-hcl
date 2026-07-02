@@ -1,0 +1,6 @@
+kind: bug-fixes
+body: Add PluginDownloadURL on the resource schema
+time: 2026-07-02T08:55:05.723698+02:00
+custom:
+    Component: resource-host
+    PR: "306"
