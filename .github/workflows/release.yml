@@ -214,3 +214,49 @@ jobs:
         with:
           packages-dir: sdk/python/dist
           skip-existing: true
+
+  # Publish the .NET SDK to NuGet as Pulumi.Labs.Hcl.
+  #
+  # As with the other SDKs, publish-go-sdk has already regenerated the versioned
+  # dotnet source onto sdk-releases. The codegen pins the library to net6.0 for
+  # maximum consumer compatibility (it runs fine on .NET 8+); the .NET 8 SDK
+  # builds it without the 6.0 SDK because the net6.0 reference assemblies restore
+  # from NuGet.
+  #
+  # NuGet trusted publishing (OIDC): NuGet/login exchanges the GitHub OIDC token
+  # (id-token: write) for a short-lived, single-use API key. This requires a
+  # trusted publishing policy configured on nuget.org, bound to this repository,
+  # workflow file, and the publish-nuget environment. NUGET_USER is the nuget.org
+  # profile or org slug that owns that policy (public, but kept as a secret per
+  # NuGet's guidance). --skip-duplicate makes re-runs idempotent.
+  publish-dotnet:
+    needs: publish-go-sdk
+    runs-on: ubuntu-latest
+    environment: publish-nuget
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: sdk-releases
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+      - name: Build
+        working-directory: sdk/dotnet
+        run: dotnet build -c Release
+      - name: Pack
+        working-directory: sdk/dotnet
+        run: dotnet pack -c Release -o nupkgs --no-build
+      - uses: NuGet/login@v1
+        id: nuget-login
+        with:
+          user: ${{ secrets.NUGET_USER }}
+      - name: Push
+        working-directory: sdk/dotnet
+        run: |
+          dotnet nuget push 'nupkgs/*.nupkg' \
+            --source https://api.nuget.org/v3/index.json \
+            --api-key "${{ steps.nuget-login.outputs.NUGET_API_KEY }}" \
+            --skip-duplicate
