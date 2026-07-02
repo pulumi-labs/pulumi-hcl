@@ -68,6 +68,7 @@ func moduleResourceSchema(version string) pulumischema.PackageSpec {
 		Publisher:         "Pulumi",
 		Version:           version,
 		Description:       "Instantiate a Terraform/OpenTofu module as a Pulumi component.",
+		License:           "Apache-2.0",
 		Repository:        "https://github.com/pulumi-labs/pulumi-hcl",
 		PluginDownloadURL: "github://api.github.com/pulumi-labs/pulumi-hcl",
 		Meta:              &pulumischema.MetadataSpec{SupportPack: true},
