@@ -18,6 +18,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -69,6 +70,13 @@ func testLiveModuleLoader(t *testing.T) *modules.Loader {
 	return modules.NewLoader(modules.LiveResolver(t.Context()))
 }
 
+func newTestEngine(t *testing.T, config *ast.Config, opts *run.EngineOptions) *run.Engine {
+	t.Helper()
+	engine, err := run.NewEngine(t.Context(), config, opts)
+	require.NoError(t, err)
+	return engine
+}
+
 func TestEngine_BasicResource(t *testing.T) {
 	t.Parallel()
 
@@ -91,7 +99,7 @@ resource "aws_instance" "web" {
 	}
 
 	mock := &testutil.MockResourceMonitor{}
-	engine := run.NewEngine(t.Context(), config, &run.EngineOptions{
+	engine := newTestEngine(t, config, &run.EngineOptions{
 		ModuleLoader:    testModuleLoader(t),
 		ProjectName:     "test-project",
 		StackName:       "dev",
@@ -178,7 +186,7 @@ resource "pulumi_stack_reference" "ref" {
 	require.Empty(t, diag)
 
 	mock := &testutil.MockResourceMonitor{}
-	engine := run.NewEngine(t.Context(), config, &run.EngineOptions{
+	engine := newTestEngine(t, config, &run.EngineOptions{
 		ProjectName:     "test-project",
 		StackName:       "dev",
 		ResourceMonitor: mock,
@@ -221,7 +229,7 @@ output "name" {
 	require.Empty(t, diags)
 
 	mock := &testutil.MockResourceMonitor{}
-	engine := run.NewEngine(t.Context(), config, &run.EngineOptions{
+	engine := newTestEngine(t, config, &run.EngineOptions{
 		ModuleLoader:    testModuleLoader(t),
 		ProjectName:     "test-project",
 		StackName:       "dev",
@@ -280,7 +288,7 @@ output "each_name" {
 	require.Empty(t, diags)
 
 	mock := &testutil.MockResourceMonitor{}
-	engine := run.NewEngine(t.Context(), config, &run.EngineOptions{
+	engine := newTestEngine(t, config, &run.EngineOptions{
 		ModuleLoader:    testModuleLoader(t),
 		ProjectName:     "test-project",
 		StackName:       "dev",
@@ -348,7 +356,7 @@ resource "aws_instance" "named" {
 			}, nil
 		},
 	}
-	engine := run.NewEngine(t.Context(), config, &run.EngineOptions{
+	engine := newTestEngine(t, config, &run.EngineOptions{
 		ModuleLoader:    testModuleLoader(t),
 		ProjectName:     "test-project",
 		StackName:       "dev",
@@ -410,7 +418,7 @@ resource "aws_s3_bucket" "mybucket" {
 	}
 
 	mock := &testutil.MockResourceMonitor{}
-	engine := run.NewEngine(t.Context(), config, &run.EngineOptions{
+	engine := newTestEngine(t, config, &run.EngineOptions{
 		ModuleLoader:    testModuleLoader(t),
 		ProjectName:     "test-project",
 		StackName:       "dev",
@@ -471,7 +479,7 @@ resource "aws_subnet" "main" {
 	}
 
 	mock := &testutil.MockResourceMonitor{}
-	engine := run.NewEngine(t.Context(), config, &run.EngineOptions{
+	engine := newTestEngine(t, config, &run.EngineOptions{
 		ModuleLoader:    testModuleLoader(t),
 		ProjectName:     "test-project",
 		StackName:       "dev",
@@ -599,7 +607,7 @@ resource "aws_instance" "web" {
 	}
 
 	mock := &testutil.MockResourceMonitor{}
-	engine := run.NewEngine(t.Context(), config, &run.EngineOptions{
+	engine := newTestEngine(t, config, &run.EngineOptions{
 		ModuleLoader:    testModuleLoader(t),
 		ProjectName:     "test-project",
 		StackName:       "dev",
@@ -675,7 +683,7 @@ resource "aws_instance" "web" {
 	}
 
 	mock := &testutil.MockResourceMonitor{}
-	engine := run.NewEngine(t.Context(), config, &run.EngineOptions{
+	engine := newTestEngine(t, config, &run.EngineOptions{
 		ModuleLoader:    testModuleLoader(t),
 		ProjectName:     "test-project",
 		StackName:       "dev",
@@ -740,7 +748,7 @@ resource "aws_instance" "web" {
 	}
 
 	mock := &testutil.MockResourceMonitor{}
-	engine := run.NewEngine(t.Context(), config, &run.EngineOptions{
+	engine := newTestEngine(t, config, &run.EngineOptions{
 		ModuleLoader:    testModuleLoader(t),
 		ProjectName:     "test-project",
 		StackName:       "dev",
@@ -807,7 +815,7 @@ resource "aws_instance" "web" {
 	}
 
 	mock := &testutil.MockResourceMonitor{}
-	engine := run.NewEngine(t.Context(), config, &run.EngineOptions{
+	engine := newTestEngine(t, config, &run.EngineOptions{
 		ModuleLoader:    testModuleLoader(t),
 		ProjectName:     "test-project",
 		StackName:       "dev",
@@ -873,7 +881,7 @@ output "region_value" {
 	}
 
 	mock := &testutil.MockResourceMonitor{}
-	engine := run.NewEngine(t.Context(), config, &run.EngineOptions{
+	engine := newTestEngine(t, config, &run.EngineOptions{
 		ModuleLoader:    testModuleLoader(t),
 		ProjectName:     "test-project",
 		StackName:       "dev",
@@ -940,7 +948,7 @@ output "region_value" {
 	require.False(t, diags.HasErrors(), "parse error: %s", diags.Error())
 
 	mock := &testutil.MockResourceMonitor{}
-	engine := run.NewEngine(t.Context(), config, &run.EngineOptions{
+	engine := newTestEngine(t, config, &run.EngineOptions{
 		ModuleLoader:    testModuleLoader(t),
 		ProjectName:     "test-project",
 		StackName:       "dev",
@@ -985,7 +993,7 @@ output "region_value" {
 	t.Setenv("TF_VAR_region", "eu-west-1")
 
 	mock := &testutil.MockResourceMonitor{}
-	engine := run.NewEngine(t.Context(), config, &run.EngineOptions{
+	engine := newTestEngine(t, config, &run.EngineOptions{
 		ModuleLoader:    testModuleLoader(t),
 		ProjectName:     "test-project",
 		StackName:       "dev",
@@ -1054,7 +1062,7 @@ output "lst_value" {
 	}
 
 	mock := &testutil.MockResourceMonitor{}
-	engine := run.NewEngine(t.Context(), config, &run.EngineOptions{
+	engine := newTestEngine(t, config, &run.EngineOptions{
 		ModuleLoader:    testModuleLoader(t),
 		ProjectName:     "test-project",
 		StackName:       "dev",
@@ -1123,7 +1131,7 @@ variable "required_var" {
 			require.False(t, diags.HasErrors(), "parse error: %s", diags.Error())
 
 			mock := &testutil.MockResourceMonitor{}
-			engine := run.NewEngine(t.Context(), config, &run.EngineOptions{
+			engine := newTestEngine(t, config, &run.EngineOptions{
 				ModuleLoader:    testModuleLoader(t),
 				ProjectName:     "test-project",
 				StackName:       "dev",
@@ -1191,7 +1199,7 @@ output "item_count" {
 		require.False(t, diags.HasErrors(), "parse error: %s", diags.Error())
 
 		mock := &testutil.MockResourceMonitor{}
-		engine := run.NewEngine(t.Context(), config, &run.EngineOptions{
+		engine := newTestEngine(t, config, &run.EngineOptions{
 			ModuleLoader:    testLiveModuleLoader(t),
 			ProjectName:     "test-project",
 			StackName:       "dev",
@@ -1262,7 +1270,7 @@ output "name" {
 		require.False(t, diags.HasErrors(), "parse error: %s", diags.Error())
 
 		mock := &testutil.MockResourceMonitor{}
-		engine := run.NewEngine(t.Context(), config, &run.EngineOptions{
+		engine := newTestEngine(t, config, &run.EngineOptions{
 			ModuleLoader:    testLiveModuleLoader(t),
 			ProjectName:     "test-project",
 			StackName:       "dev",
@@ -1300,7 +1308,7 @@ func TestEngine_OutputPrecondition(t *testing.T) {
 
 	newEngine := func(t *testing.T, config *ast.Config, workDir string) (*testutil.MockResourceMonitor, *run.Engine) {
 		mock := &testutil.MockResourceMonitor{}
-		engine := run.NewEngine(t.Context(), config, &run.EngineOptions{
+		engine := newTestEngine(t, config, &run.EngineOptions{
 			ModuleLoader:    testLiveModuleLoader(t),
 			ProjectName:     "test-project",
 			StackName:       "dev",
@@ -1441,7 +1449,7 @@ output "is_sensitive" {
 	require.False(t, diags.HasErrors(), "parse error: %s", diags.Error())
 
 	mock := &testutil.MockResourceMonitor{}
-	engine := run.NewEngine(t.Context(), config, &run.EngineOptions{
+	engine := newTestEngine(t, config, &run.EngineOptions{
 		ModuleLoader:    testLiveModuleLoader(t),
 		ProjectName:     "test-project",
 		StackName:       "dev",
@@ -1483,7 +1491,7 @@ output "instance_type" {
 	}
 
 	mock := &testutil.MockResourceMonitor{}
-	engine := run.NewEngine(t.Context(), config, &run.EngineOptions{
+	engine := newTestEngine(t, config, &run.EngineOptions{
 		ModuleLoader:    testModuleLoader(t),
 		ProjectName:     "test-project",
 		StackName:       "dev",
@@ -1544,7 +1552,7 @@ variable "instance_type" {
 	}
 
 	mock := &testutil.MockResourceMonitor{}
-	engine := run.NewEngine(t.Context(), config, &run.EngineOptions{
+	engine := newTestEngine(t, config, &run.EngineOptions{
 		ModuleLoader:    testModuleLoader(t),
 		ProjectName:     "test-project",
 		StackName:       "dev",
@@ -1609,7 +1617,7 @@ output "name" {
 		config, diags := parser.NewParser().ParseSource("test.hcl", src)
 		require.False(t, diags.HasErrors(), "parse error: %s", diags.Error())
 
-		engine := run.NewEngine(t.Context(), config, &run.EngineOptions{
+		engine := newTestEngine(t, config, &run.EngineOptions{
 			ModuleLoader:    testModuleLoader(t),
 			ProjectName:     "test-project",
 			StackName:       "dev",
@@ -1655,7 +1663,7 @@ variable "password" {
 		t.Fatalf("parse error: %s", diags.Error())
 	}
 
-	engine := run.NewEngine(t.Context(), config, &run.EngineOptions{
+	engine := newTestEngine(t, config, &run.EngineOptions{
 		ModuleLoader:    testModuleLoader(t),
 		ProjectName:     "test-project",
 		StackName:       "dev",
@@ -1710,7 +1718,7 @@ resource "test_resource" "res" {
 		require.False(t, diags.HasErrors(), diags.Error())
 
 		mock := &testutil.MockResourceMonitor{}
-		engine := run.NewEngine(t.Context(), config, &run.EngineOptions{
+		engine := newTestEngine(t, config, &run.EngineOptions{
 			ModuleLoader:    testModuleLoader(t),
 			ProjectName:     "test-project",
 			StackName:       "dev",
@@ -1766,7 +1774,7 @@ resource "test_resource" "res" {
 	require.False(t, diags.HasErrors(), diags.Error())
 
 	mock := &testutil.MockResourceMonitor{}
-	engine := run.NewEngine(t.Context(), config, &run.EngineOptions{
+	engine := newTestEngine(t, config, &run.EngineOptions{
 		ModuleLoader:    testModuleLoader(t),
 		ProjectName:     "test-project",
 		StackName:       "dev",
@@ -1811,7 +1819,7 @@ resource "test_resource" "upstream" {
 	require.False(t, diags.HasErrors(), diags.Error())
 
 	mock := &testutil.MockResourceMonitor{}
-	engine := run.NewEngine(t.Context(), config, &run.EngineOptions{
+	engine := newTestEngine(t, config, &run.EngineOptions{
 		ModuleLoader:    testModuleLoader(t),
 		ProjectName:     "test-project",
 		StackName:       "dev",
@@ -1872,7 +1880,7 @@ resource "test_resource" "dependent" {
 			}, nil
 		},
 	}
-	engine := run.NewEngine(t.Context(), config, &run.EngineOptions{
+	engine := newTestEngine(t, config, &run.EngineOptions{
 		ModuleLoader:    testModuleLoader(t),
 		ProjectName:     "test-project",
 		StackName:       "dev",
@@ -1916,7 +1924,7 @@ resource "test_resource" "res" {
 		require.False(t, diags.HasErrors(), diags.Error())
 
 		mock := &testutil.MockResourceMonitor{}
-		engine := run.NewEngine(t.Context(), config, &run.EngineOptions{
+		engine := newTestEngine(t, config, &run.EngineOptions{
 			ModuleLoader:    testModuleLoader(t),
 			ProjectName:     "test-project",
 			StackName:       "dev",
@@ -1973,7 +1981,7 @@ resource "aws_instance" "web" {
 	require.False(t, diags.HasErrors(), diags.Error())
 
 	mock := &testutil.MockResourceMonitor{}
-	engine := run.NewEngine(t.Context(), config, &run.EngineOptions{
+	engine := newTestEngine(t, config, &run.EngineOptions{
 		ModuleLoader:    testModuleLoader(t),
 		ProjectName:     "test-project",
 		StackName:       "dev",
@@ -2029,7 +2037,7 @@ resource "aws_instance" "web" {
 	require.False(t, diags.HasErrors(), diags.Error())
 
 	mock := &testutil.MockResourceMonitor{}
-	engine := run.NewEngine(t.Context(), config, &run.EngineOptions{
+	engine := newTestEngine(t, config, &run.EngineOptions{
 		ModuleLoader:    testModuleLoader(t),
 		ProjectName:     "test-project",
 		StackName:       "dev",
@@ -2081,7 +2089,7 @@ resource "aws_instance" "web" {
 	require.False(t, diags.HasErrors(), diags.Error())
 
 	mock := &testutil.MockResourceMonitor{}
-	engine := run.NewEngine(t.Context(), config, &run.EngineOptions{
+	engine := newTestEngine(t, config, &run.EngineOptions{
 		ModuleLoader:    testModuleLoader(t),
 		ProjectName:     "test-project",
 		StackName:       "dev",
@@ -2176,7 +2184,7 @@ output "vpc_id" {
 	}
 
 	mock := &testutil.MockResourceMonitor{}
-	engine := run.NewEngine(t.Context(), config, &run.EngineOptions{
+	engine := newTestEngine(t, config, &run.EngineOptions{
 		ModuleLoader:    testLiveModuleLoader(t),
 		ProjectName:     "test-project",
 		StackName:       "dev",
@@ -2259,6 +2267,87 @@ output "vpc_id" {
 	}
 }
 
+// TestEngine_AbsolutePaths verifies that with EngineOptions.AbsolutePaths set —
+// the Construct entry points, where the module tree lives outside the Pulumi
+// program — path.module and path.root evaluate to absolute directories in the
+// root module and in child modules.
+func TestEngine_AbsolutePaths(t *testing.T) {
+	t.Parallel()
+
+	tmpDir := t.TempDir()
+
+	moduleDir := filepath.Join(tmpDir, "modules", "child")
+	require.NoError(t, os.MkdirAll(moduleDir, 0o755))
+
+	moduleMain := `
+resource "aws_vpc" "inner" {
+  module_path = path.module
+  root_path   = path.root
+}
+`
+	require.NoError(t, os.WriteFile(filepath.Join(moduleDir, "main.tf"), []byte(moduleMain), 0o644))
+
+	rootMain := `
+resource "aws_vpc" "main" {
+  module_path = path.module
+  root_path   = path.root
+}
+
+module "child" {
+  source = "./modules/child"
+}
+`
+	require.NoError(t, os.WriteFile(filepath.Join(tmpDir, "main.tf"), []byte(rootMain), 0o644))
+
+	p := parser.NewParser()
+	config, diags := p.ParseDirectory(tmpDir)
+	require.False(t, diags.HasErrors(), "parse error: %s", diags.Error())
+
+	pathProperties := map[string]schema.PropertySpec{
+		"modulePath": {TypeSpec: schema.TypeSpec{Type: "string"}},
+		"rootPath":   {TypeSpec: schema.TypeSpec{Type: "string"}},
+	}
+	mock := &testutil.MockResourceMonitor{}
+	engine := newTestEngine(t, config, &run.EngineOptions{
+		ModuleLoader:    testLiveModuleLoader(t),
+		ProjectName:     "test-project",
+		StackName:       "dev",
+		ResourceMonitor: mock,
+		WorkDir:         tmpDir,
+		RootDir:         tmpDir,
+		AbsolutePaths:   true,
+		SchemaLoader: schemaloader.New(t, schema.PackageSpec{
+			Name: "aws",
+			Resources: map[string]schema.ResourceSpec{
+				"aws:index:Vpc": {
+					InputProperties: pathProperties,
+					ObjectTypeSpec:  schema.ObjectTypeSpec{Properties: pathProperties},
+				},
+			},
+		}),
+	})
+
+	require.NoError(t, engine.Run(t.Context()))
+
+	inputsByName := make(map[string]property.Map)
+	for _, req := range mock.RegisteredResources {
+		if req.Type == "aws:index:Vpc" {
+			inputsByName[req.Name] = req.Inputs
+		}
+	}
+
+	assert.Equal(t, map[string]property.Map{
+		"main": property.NewMap(map[string]property.Value{
+			"modulePath": property.New(tmpDir),
+			"rootPath":   property.New(tmpDir),
+		}),
+		"child-inner": property.NewMap(map[string]property.Value{
+			"modulePath": property.New(moduleDir),
+			"rootPath":   property.New(tmpDir),
+		}),
+	}, inputsByName)
+}
+
 // TestEngine_ModuleNameWithDot verifies that module names containing a "."
 // are preserved verbatim when computing the component's logical resource name,
 // rather than being split apart by dot-based key parsing.
@@ -2289,7 +2378,7 @@ module "vpc.primary" {
 	require.False(t, diags.HasErrors(), "parse error: %s", diags.Error())
 
 	mock := &testutil.MockResourceMonitor{}
-	engine := run.NewEngine(t.Context(), config, &run.EngineOptions{
+	engine := newTestEngine(t, config, &run.EngineOptions{
 		ModuleLoader:    testLiveModuleLoader(t),
 		ProjectName:     "test-project",
 		StackName:       "dev",
@@ -2358,7 +2447,7 @@ resource "kubernetes_networking.k8s.io_v1_ingress" "ingress" {
 	require.False(t, diags.HasErrors(), "parse error: %s", diags.Error())
 
 	mock := &testutil.MockResourceMonitor{}
-	engine := run.NewEngine(t.Context(), config, &run.EngineOptions{
+	engine := newTestEngine(t, config, &run.EngineOptions{
 		ModuleLoader:    testModuleLoader(t),
 		ProjectName:     "test-project",
 		StackName:       "dev",
@@ -2424,7 +2513,7 @@ output "name" { value = "leaf" }
 	require.False(t, diags.HasErrors(), "parse error: %s", diags.Error())
 
 	mock := &testutil.MockResourceMonitor{}
-	engine := run.NewEngine(t.Context(), config, &run.EngineOptions{
+	engine := newTestEngine(t, config, &run.EngineOptions{
 		ModuleLoader:    testLiveModuleLoader(t),
 		ProjectName:     "test-project",
 		StackName:       "dev",
@@ -2561,7 +2650,7 @@ module "m" {
 			}, nil
 		},
 	}
-	engine := run.NewEngine(t.Context(), config, &run.EngineOptions{
+	engine := newTestEngine(t, config, &run.EngineOptions{
 		ModuleLoader:    testLiveModuleLoader(t),
 		ProjectName:     "test-project",
 		StackName:       "dev",
@@ -2623,7 +2712,7 @@ module "multi" {
 	}
 
 	mock := &testutil.MockResourceMonitor{}
-	engine := run.NewEngine(t.Context(), config, &run.EngineOptions{
+	engine := newTestEngine(t, config, &run.EngineOptions{
 		ModuleLoader:    testLiveModuleLoader(t),
 		ProjectName:     "test-project",
 		StackName:       "dev",
@@ -2663,7 +2752,7 @@ resource "aws_instance" "web" {
 	}
 
 	mock := &testutil.MockResourceMonitor{}
-	engine := run.NewEngine(t.Context(), config, &run.EngineOptions{
+	engine := newTestEngine(t, config, &run.EngineOptions{
 		ModuleLoader:    testModuleLoader(t),
 		ProjectName:     "test-project",
 		StackName:       "dev",
@@ -2746,7 +2835,7 @@ resource "aws_instance" "web" {
 	}
 
 	mock := &testutil.MockResourceMonitor{}
-	engine := run.NewEngine(t.Context(), config, &run.EngineOptions{
+	engine := newTestEngine(t, config, &run.EngineOptions{
 		ModuleLoader:    testModuleLoader(t),
 		ProjectName:     "test-project",
 		StackName:       "dev",
@@ -2829,7 +2918,7 @@ resource "aws_instance" "imported" {
 	}
 
 	mock := &testutil.MockResourceMonitor{}
-	engine := run.NewEngine(t.Context(), config, &run.EngineOptions{
+	engine := newTestEngine(t, config, &run.EngineOptions{
 		ModuleLoader:    testModuleLoader(t),
 		ProjectName:     "test-project",
 		StackName:       "dev",
@@ -2953,7 +3042,7 @@ resource "test_component" "comp" {
 	require.False(t, diags.HasErrors(), diags.Error())
 
 	mock := &testutil.MockResourceMonitor{}
-	engine := run.NewEngine(t.Context(), config, &run.EngineOptions{
+	engine := newTestEngine(t, config, &run.EngineOptions{
 		ModuleLoader:    testModuleLoader(t),
 		ProjectName:     "test-project",
 		StackName:       "dev",
@@ -3052,7 +3141,7 @@ resource "test_resource" "consumer" {
 			return &run.InvokeResponse{Return: property.NewMap(nil)}, nil
 		},
 	}
-	engine := run.NewEngine(t.Context(), config, &run.EngineOptions{
+	engine := newTestEngine(t, config, &run.EngineOptions{
 		ModuleLoader:    testModuleLoader(t),
 		ProjectName:     "test-project",
 		StackName:       "dev",
@@ -3114,7 +3203,7 @@ resource "test_resource" "consumer" {
 			return &run.InvokeResponse{Return: property.NewMap(nil)}, nil
 		},
 	}
-	engine := run.NewEngine(t.Context(), config, &run.EngineOptions{
+	engine := newTestEngine(t, config, &run.EngineOptions{
 		ModuleLoader:    testModuleLoader(t),
 		ProjectName:     "test-project",
 		StackName:       "dev",
@@ -3180,7 +3269,7 @@ output "exported" {
 	require.False(t, diags.HasErrors(), diags.Error())
 
 	mock := &testutil.MockResourceMonitor{}
-	engine := run.NewEngine(t.Context(), config, &run.EngineOptions{
+	engine := newTestEngine(t, config, &run.EngineOptions{
 		ModuleLoader:    testModuleLoader(t),
 		ProjectName:     "test-project",
 		StackName:       "dev",
@@ -3237,7 +3326,7 @@ resource "test_resource" "res" {
 	}
 
 	mock := &testutil.MockResourceMonitor{}
-	engine := run.NewEngine(t.Context(), config, &run.EngineOptions{
+	engine := newTestEngine(t, config, &run.EngineOptions{
 		ModuleLoader:    testModuleLoader(t),
 		ProjectName:     "test-project",
 		StackName:       "dev",
@@ -3326,7 +3415,7 @@ func TestEngine_HetListOutputRoundTrip(t *testing.T) {
 			}, nil
 		},
 	}
-	engine := run.NewEngine(t.Context(), config, &run.EngineOptions{
+	engine := newTestEngine(t, config, &run.EngineOptions{
 		ModuleLoader:    testModuleLoader(t),
 		ProjectName:     "test-project",
 		StackName:       "dev",
@@ -3425,7 +3514,7 @@ func TestEngine_SchemaConstValues(t *testing.T) {
 		require.False(t, diags.HasErrors(), "parse error: %s", diags.Error())
 
 		mock := &testutil.MockResourceMonitor{}
-		engine := run.NewEngine(t.Context(), config, &run.EngineOptions{
+		engine := newTestEngine(t, config, &run.EngineOptions{
 			ModuleLoader:    testModuleLoader(t),
 			ProjectName:     "test-project",
 			StackName:       "dev",
@@ -3540,7 +3629,7 @@ resource "aws_ec2_vpd" "example" {}
 	require.Empty(t, diags)
 
 	mock := &testutil.MockResourceMonitor{}
-	engine := run.NewEngine(t.Context(), config, &run.EngineOptions{
+	engine := newTestEngine(t, config, &run.EngineOptions{
 		ModuleLoader:    testModuleLoader(t),
 		ProjectName:     "test-project",
 		StackName:       "dev",
@@ -3585,7 +3674,7 @@ data "aws_ec2_vpd" "example" {}
 	require.False(t, diags.HasErrors(), diags.Error())
 
 	mock := &testutil.MockResourceMonitor{}
-	engine := run.NewEngine(t.Context(), config, &run.EngineOptions{
+	engine := newTestEngine(t, config, &run.EngineOptions{
 		ModuleLoader:    testModuleLoader(t),
 		ProjectName:     "test-project",
 		StackName:       "dev",
@@ -3654,7 +3743,7 @@ module "child" {
 	require.False(t, diags.HasErrors(), diags.Error())
 
 	mock := &testutil.MockResourceMonitor{}
-	engine := run.NewEngine(t.Context(), config, &run.EngineOptions{
+	engine := newTestEngine(t, config, &run.EngineOptions{
 		ModuleLoader:    testLiveModuleLoader(t),
 		ProjectName:     "test-project",
 		StackName:       "dev",
@@ -3751,7 +3840,7 @@ module "child" {
 	require.False(t, diags.HasErrors(), "parse error: %s", diags.Error())
 
 	mock := &testutil.MockResourceMonitor{}
-	engine := run.NewEngine(t.Context(), config, &run.EngineOptions{
+	engine := newTestEngine(t, config, &run.EngineOptions{
 		ModuleLoader:    testLiveModuleLoader(t),
 		ProjectName:     "test-project",
 		StackName:       "dev",
@@ -3857,7 +3946,7 @@ module "child" {
 	require.False(t, diags.HasErrors(), "parse error: %s", diags.Error())
 
 	mock := &testutil.MockResourceMonitor{}
-	engine := run.NewEngine(t.Context(), config, &run.EngineOptions{
+	engine := newTestEngine(t, config, &run.EngineOptions{
 		ModuleLoader:    testLiveModuleLoader(t),
 		ProjectName:     "test-project",
 		StackName:       "dev",

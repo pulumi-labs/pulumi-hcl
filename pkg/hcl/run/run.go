@@ -374,6 +374,10 @@ type Engine struct {
 	// workDir is the working directory.
 	workDir string
 
+	// absolutePaths mirrors EngineOptions.AbsolutePaths for the child-module
+	// contexts created during the run.
+	absolutePaths bool
+
 	// pulumiConfig contains Pulumi stack configuration values.
 	pulumiConfig map[string]ConfigValue
 
@@ -458,6 +462,14 @@ type EngineOptions struct {
 	// RootDir is the project root directory (where Pulumi.yaml is).
 	RootDir string
 
+	// AbsolutePaths makes path.module and path.root evaluate to absolute
+	// directories. The Construct entry points set it: the module tree lives
+	// outside the Pulumi program (a module cache, a bundle unpack dir, or an
+	// arbitrary local path) while provider plugins resolve relative paths
+	// against the program directory, so the relative values a direct program
+	// run renders would point outside the module tree.
+	AbsolutePaths bool
+
 	SchemaLoader schema.ReferenceLoader
 
 	// ProviderInfoSource is the bridge mapping resolver. Optional; when nil
@@ -484,14 +496,17 @@ type EngineOptions struct {
 }
 
 // NewEngine creates a new execution engine.
-func NewEngine(ctx context.Context, config *ast.Config, opts *EngineOptions) *Engine {
+func NewEngine(ctx context.Context, config *ast.Config, opts *EngineOptions) (*Engine, error) {
 	contract.Requiref(opts.SchemaLoader != nil, "opts.SchemaLoader", "EngineOptions.SchemaLoader cannot be nil")
 	contract.Requiref(opts.WorkDir != "", "opts.WorkDir", "EngineOptions.WorkDir cannot be empty")
 	contract.Requiref(opts.RootDir != "", "opts.RootDir", "EngineOptions.RootDir cannot be empty")
 	contract.Requiref(opts.ModuleLoader != nil, "EngineOptions.ModuleLoader", "cannot be empty")
 
-	evalCtx := eval.NewContext(opts.WorkDir, opts.RootDir, opts.WorkDir,
+	evalCtx, err := newEvalContext(opts.AbsolutePaths, opts.WorkDir, opts.RootDir, opts.WorkDir,
 		opts.StackName, opts.ProjectName, opts.Organization)
+	if err != nil {
+		return nil, fmt.Errorf("creating the root evaluation context: %w", err)
+	}
 
 	return &Engine{
 		config:                  config,
@@ -508,6 +523,7 @@ func NewEngine(ctx context.Context, config *ast.Config, opts *EngineOptions) *En
 		organization:            opts.Organization,
 		dryRun:                  opts.DryRun,
 		workDir:                 opts.WorkDir,
+		absolutePaths:           opts.AbsolutePaths,
 		pulumiConfig:            opts.Config,
 		packages:                opts.Packages,
 		packageRefs:             make(map[string]PackageRef),
@@ -518,7 +534,14 @@ func NewEngine(ctx context.Context, config *ast.Config, opts *EngineOptions) *En
 		alwaysRegisterProviders: opts.AlwaysRegisterProviders,
 		resolver: packages.NewResolver(
 			opts.SchemaLoader, opts.ProviderInfoSource, opts.Packages, knownProviders(config.Terraform)),
+	}, nil
+}
+
+func newEvalContext(absolutePaths bool, moduleDir, rootDir, rootModuleDir, stack, project, organization string) (*eval.Context, error) {
+	if absolutePaths {
+		return eval.NewAbsolutePathContext(moduleDir, rootDir, rootModuleDir, stack, project, organization)
 	}
+	return eval.NewContext(moduleDir, rootDir, rootModuleDir, stack, project, organization)
 }
 
 // Run executes the HCL program.
@@ -3238,10 +3261,13 @@ func (e *Engine) processModuleInit(ctx context.Context, node *graph.Node) error 
 			return fmt.Errorf("registering module component: %w", err)
 		}
 
-		instCtx := eval.NewContext(
-			modInfo.SourcePath, e.workDir, e.workDir,
+		instCtx, err := newEvalContext(
+			e.absolutePaths, modInfo.SourcePath, e.workDir, e.workDir,
 			e.stackName, e.projectName, e.organization,
 		)
+		if err != nil {
+			return fmt.Errorf("creating the module evaluation context: %w", err)
+		}
 
 		e.moduleInstances.Set(modInfo.Path, []*moduleInstance{{
 			Path:    instPath,
@@ -3266,10 +3292,13 @@ func (e *Engine) processModuleInit(ctx context.Context, node *graph.Node) error 
 			if err != nil {
 				return fmt.Errorf("registering module component %s: %w", instPath.String(), err)
 			}
-			instCtx := eval.NewContext(
-				modInfo.SourcePath, e.workDir, e.workDir,
+			instCtx, err := newEvalContext(
+				e.absolutePaths, modInfo.SourcePath, e.workDir, e.workDir,
 				e.stackName, e.projectName, e.organization,
 			)
+			if err != nil {
+				return fmt.Errorf("creating the module evaluation context: %w", err)
+			}
 			instCtx.SetCount(idx)
 			instances = append(instances, &moduleInstance{
 				Path:    instPath,
@@ -3299,10 +3328,13 @@ func (e *Engine) processModuleInit(ctx context.Context, node *graph.Node) error 
 		if err != nil {
 			return fmt.Errorf("registering module component %s: %w", instPath.String(), err)
 		}
-		instCtx := eval.NewContext(
-			modInfo.SourcePath, e.workDir, e.workDir,
+		instCtx, err := newEvalContext(
+			e.absolutePaths, modInfo.SourcePath, e.workDir, e.workDir,
 			e.stackName, e.projectName, e.organization,
 		)
+		if err != nil {
+			return fmt.Errorf("creating the module evaluation context: %w", err)
+		}
 		instCtx.SetEach(k, v)
 		instances = append(instances, &moduleInstance{
 			Path:    instPath,

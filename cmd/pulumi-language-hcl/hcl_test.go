@@ -24,6 +24,7 @@ import (
 
 	"github.com/hashicorp/hcl/v2"
 	"github.com/pulumi-labs/pulumi-hcl/pkg/codegen"
+	"github.com/pulumi-labs/pulumi-hcl/pkg/hcl/ast"
 	"github.com/pulumi-labs/pulumi-hcl/pkg/hcl/modules"
 	"github.com/pulumi-labs/pulumi-hcl/pkg/hcl/parser"
 	hclrun "github.com/pulumi-labs/pulumi-hcl/pkg/hcl/run"
@@ -37,6 +38,13 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+func newTestEngine(t *testing.T, config *ast.Config, opts *hclrun.EngineOptions) *hclrun.Engine {
+	t.Helper()
+	engine, err := hclrun.NewEngine(t.Context(), config, opts)
+	require.NoError(t, err)
+	return engine
+}
 
 func TestConvertedPCL(t *testing.T) {
 	t.Parallel()
@@ -1827,7 +1835,7 @@ output "instance_ami" {
 	require.False(t, hclDiags.HasErrors(), hclDiags.Error())
 
 	mock := &testutil.MockResourceMonitor{}
-	engine := hclrun.NewEngine(t.Context(), config, &hclrun.EngineOptions{
+	engine := newTestEngine(t, config, &hclrun.EngineOptions{
 		ProjectName:     "test-project",
 		StackName:       "dev",
 		ResourceMonitor: mock,
@@ -2178,7 +2186,7 @@ output "result" {
 			}, nil
 		},
 	}
-	engine := hclrun.NewEngine(t.Context(), config, &hclrun.EngineOptions{
+	engine := newTestEngine(t, config, &hclrun.EngineOptions{
 		ProjectName:     "test-project",
 		StackName:       "dev",
 		ResourceMonitor: mock,
@@ -2285,7 +2293,7 @@ resource "test_bucket" "bucket" {
 		require.False(t, diags.HasErrors(), diags.Error())
 
 		mock := &testutil.MockResourceMonitor{}
-		engine := hclrun.NewEngine(t.Context(), config, &hclrun.EngineOptions{
+		engine := newTestEngine(t, config, &hclrun.EngineOptions{
 			ProjectName:     "test-project",
 			StackName:       "dev",
 			ResourceMonitor: mock,
@@ -2331,7 +2339,7 @@ data "test_getlen" "invoke_0" {
 		require.False(t, diags.HasErrors(), diags.Error())
 
 		mock := &testutil.MockResourceMonitor{}
-		engine := hclrun.NewEngine(t.Context(), config, &hclrun.EngineOptions{
+		engine := newTestEngine(t, config, &hclrun.EngineOptions{
 			ProjectName:     "test-project",
 			StackName:       "dev",
 			ResourceMonitor: mock,
@@ -2444,7 +2452,7 @@ func testConvertedPCLWithComponent(
 	if mock == nil {
 		mock = &testutil.MockResourceMonitor{}
 	}
-	engine := hclrun.NewEngine(t.Context(), config, &hclrun.EngineOptions{
+	engine := newTestEngine(t, config, &hclrun.EngineOptions{
 		ProjectName:     "test-project",
 		StackName:       "dev",
 		ResourceMonitor: mock,
@@ -2511,7 +2519,7 @@ output "instance_ami" {
 	require.False(t, hclDiags.HasErrors(), hclDiags.Error())
 
 	mock := &testutil.MockResourceMonitor{}
-	engine := hclrun.NewEngine(t.Context(), config, &hclrun.EngineOptions{
+	engine := newTestEngine(t, config, &hclrun.EngineOptions{
 		ProjectName:     "test-project",
 		StackName:       "dev",
 		ResourceMonitor: mock,
@@ -2604,7 +2612,7 @@ resource web "aws:index:Instance" {
 	require.False(t, hclDiags.HasErrors(), hclDiags.Error())
 
 	mock := &testutil.MockResourceMonitor{}
-	engine := hclrun.NewEngine(t.Context(), config, &hclrun.EngineOptions{
+	engine := newTestEngine(t, config, &hclrun.EngineOptions{
 		ProjectName:     "test-project",
 		StackName:       "dev",
 		ResourceMonitor: mock,
@@ -2660,7 +2668,7 @@ func TestReplaceOnChangesPathTranslated(t *testing.T) {
 	require.False(t, hclDiags.HasErrors(), hclDiags.Error())
 
 	mock := &testutil.MockResourceMonitor{}
-	engine := hclrun.NewEngine(t.Context(), config, &hclrun.EngineOptions{
+	engine := newTestEngine(t, config, &hclrun.EngineOptions{
 		ProjectName:     "test-project",
 		StackName:       "dev",
 		ResourceMonitor: mock,
@@ -2716,7 +2724,7 @@ func TestHideDiffsPathTranslated(t *testing.T) {
 	require.False(t, hclDiags.HasErrors(), hclDiags.Error())
 
 	mock := &testutil.MockResourceMonitor{}
-	engine := hclrun.NewEngine(t.Context(), config, &hclrun.EngineOptions{
+	engine := newTestEngine(t, config, &hclrun.EngineOptions{
 		ProjectName:     "test-project",
 		StackName:       "dev",
 		ResourceMonitor: mock,

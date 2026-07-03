@@ -336,13 +336,14 @@ func (p *HCLProvider) Construct(ctx context.Context, req *pulumirpc.ConstructReq
 	}
 
 	// Create and run the engine
-	engine := run.NewEngine(ctx, loaded.Config, &run.EngineOptions{
+	engine, err := run.NewEngine(ctx, loaded.Config, &run.EngineOptions{
 		ProjectName:        req.Project,
 		StackName:          req.Stack,
 		Organization:       req.Organization,
 		DryRun:             req.DryRun,
-		WorkDir:            p.modulePath,
-		RootDir:            p.modulePath,
+		WorkDir:            loaded.SourcePath,
+		RootDir:            loaded.SourcePath,
+		AbsolutePaths:      true,
 		Config:             config,
 		ResourceMonitor:    resmon,
 		SchemaLoader:       p.pkgLoader,
@@ -350,6 +351,9 @@ func (p *HCLProvider) Construct(ctx context.Context, req *pulumirpc.ConstructReq
 		ProviderInfoSource: p.providerInfoSource,
 		Packages:           p.packages,
 	})
+	if err != nil {
+		return nil, fmt.Errorf("creating engine: %w", err)
+	}
 
 	if err := engine.Run(ctx); err != nil {
 		return nil, fmt.Errorf("executing module: %w", err)

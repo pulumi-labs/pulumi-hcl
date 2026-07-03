@@ -555,7 +555,7 @@ func (host *LanguageHost) Run(
 	providerInfoSource := bridge.NewCache(bridge.NewMapperSource(mapperClient))
 
 	// Create and run the engine
-	engine := run.NewEngine(ctx, config, &run.EngineOptions{
+	engine, err := run.NewEngine(ctx, config, &run.EngineOptions{
 		ProjectName:             req.Project,
 		StackName:               req.Stack,
 		Organization:            req.Organization,
@@ -571,6 +571,11 @@ func (host *LanguageHost) Run(
 		Parallel:                int(req.Parallel),
 		AlwaysRegisterProviders: host.alwaysRegisterProviders,
 	})
+	if err != nil {
+		return &pulumirpc.RunResponse{
+			Error: err.Error(),
+		}, nil
+	}
 
 	if err := engine.Run(ctx); err != nil {
 		return &pulumirpc.RunResponse{

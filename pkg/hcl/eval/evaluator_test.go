@@ -64,7 +64,8 @@ func evalInt(t *testing.T, e *Evaluator, expr hcl.Expression) int {
 
 func TestEvaluateCount(t *testing.T) {
 	t.Parallel()
-	ctx := NewContext("/tmp", "/tmp", "/tmp", "", "", "")
+	ctx, err := NewContext("/tmp", "/tmp", "/tmp", "", "", "")
+	require.NoError(t, err)
 	ctx.SetVariable("instance_count", cty.NumberIntVal(3))
 
 	eval := NewEvaluator(ctx)
@@ -112,7 +113,8 @@ func TestEvaluateCount(t *testing.T) {
 // must be stripped first.
 func TestEvaluateCount_MarkedKnownValue(t *testing.T) {
 	t.Parallel()
-	ctx := NewContext("/tmp", "/tmp", "/tmp", "", "", "")
+	ctx, err := NewContext("/tmp", "/tmp", "/tmp", "", "", "")
+	require.NoError(t, err)
 	ctx.SetVariable("n", cty.NumberIntVal(3).WithMarks(
 		cty.NewValueMarks(DepMark("urn:pulumi:dev::p::aws:ec2/vpc:Vpc::test")),
 	))
@@ -128,7 +130,8 @@ func TestEvaluateCount_MarkedKnownValue(t *testing.T) {
 // be stripped first.
 func TestEvaluateForEach_MarkedContainer(t *testing.T) {
 	t.Parallel()
-	ctx := NewContext("/tmp", "/tmp", "/tmp", "", "", "")
+	ctx, err := NewContext("/tmp", "/tmp", "/tmp", "", "", "")
+	require.NoError(t, err)
 	ctx.SetVariable("m", cty.MapVal(map[string]cty.Value{
 		"primary": cty.StringVal("p"),
 	}).WithMarks(cty.NewValueMarks(DepMark("urn:pulumi:dev::p::aws:ec2/vpc:Vpc::test"))))
@@ -143,7 +146,8 @@ func TestEvaluateForEach_MarkedContainer(t *testing.T) {
 
 func TestEvaluateCountNil(t *testing.T) {
 	t.Parallel()
-	ctx := NewContext("/tmp", "/tmp", "/tmp", "", "", "")
+	ctx, err := NewContext("/tmp", "/tmp", "/tmp", "", "", "")
+	require.NoError(t, err)
 	eval := NewEvaluator(ctx)
 
 	result, isBool, diags := eval.EvaluateCount(nil)
@@ -160,7 +164,8 @@ func TestEvaluateCountNil(t *testing.T) {
 
 func TestEvaluateForEach(t *testing.T) {
 	t.Parallel()
-	ctx := NewContext("/tmp", "/tmp", "/tmp", "", "", "")
+	ctx, err := NewContext("/tmp", "/tmp", "/tmp", "", "", "")
+	require.NoError(t, err)
 	eval := NewEvaluator(ctx)
 
 	t.Run("map", func(t *testing.T) {
@@ -213,7 +218,8 @@ func TestEvaluateForEach(t *testing.T) {
 
 func TestContextVariables(t *testing.T) {
 	t.Parallel()
-	ctx := NewContext("/tmp", "/tmp", "/tmp", "", "", "")
+	ctx, err := NewContext("/tmp", "/tmp", "/tmp", "", "", "")
+	require.NoError(t, err)
 	ctx.SetVariable("name", cty.StringVal("test"))
 	ctx.SetVariable("count", cty.NumberIntVal(5))
 
@@ -226,7 +232,8 @@ func TestContextVariables(t *testing.T) {
 
 func TestContextLocals(t *testing.T) {
 	t.Parallel()
-	ctx := NewContext("/tmp", "/tmp", "/tmp", "", "", "")
+	ctx, err := NewContext("/tmp", "/tmp", "/tmp", "", "", "")
+	require.NoError(t, err)
 	ctx.SetLocal("common_tags", cty.ObjectVal(map[string]cty.Value{
 		"Environment": cty.StringVal("dev"),
 		"ManagedBy":   cty.StringVal("Pulumi"),
@@ -241,7 +248,8 @@ func TestContextLocals(t *testing.T) {
 
 func TestContextCountIndex(t *testing.T) {
 	t.Parallel()
-	ctx := NewContext("/tmp", "/tmp", "/tmp", "", "", "")
+	ctx, err := NewContext("/tmp", "/tmp", "/tmp", "", "", "")
+	require.NoError(t, err)
 	ctx.SetCount(2)
 
 	eval := NewEvaluator(ctx)
@@ -254,7 +262,8 @@ func TestContextCountIndex(t *testing.T) {
 
 func TestContextEach(t *testing.T) {
 	t.Parallel()
-	ctx := NewContext("/tmp", "/tmp", "/tmp", "", "", "")
+	ctx, err := NewContext("/tmp", "/tmp", "/tmp", "", "", "")
+	require.NoError(t, err)
 	ctx.SetEach(cty.StringVal("mykey"), cty.StringVal("myvalue"))
 
 	eval := NewEvaluator(ctx)
@@ -270,7 +279,8 @@ func TestContextPath(t *testing.T) {
 	t.Parallel()
 	t.Run("root module yields '.'", func(t *testing.T) {
 		t.Parallel()
-		ctx := NewContext("/project/module", "/project/module", "/project/module", "", "", "")
+		ctx, err := NewContext("/project/module", "/project/module", "/project/module", "", "", "")
+		require.NoError(t, err)
 		eval := NewEvaluator(ctx)
 		assert.Equal(t, ".", evalString(t, eval, parseExpr(t, `path.module`)))
 		assert.Equal(t, ".", evalString(t, eval, parseExpr(t, `path.root`)))
@@ -278,10 +288,29 @@ func TestContextPath(t *testing.T) {
 
 	t.Run("nested module yields relative path from root", func(t *testing.T) {
 		t.Parallel()
-		ctx := NewContext("/project/modules/sub", "/project", "/project", "", "", "")
+		ctx, err := NewContext("/project/modules/sub", "/project", "/project", "", "", "")
+		require.NoError(t, err)
 		eval := NewEvaluator(ctx)
 		assert.Equal(t, "modules/sub", evalString(t, eval, parseExpr(t, `path.module`)))
 		assert.Equal(t, ".", evalString(t, eval, parseExpr(t, `path.root`)))
+	})
+
+	t.Run("absolute-path root module", func(t *testing.T) {
+		t.Parallel()
+		ctx, err := NewAbsolutePathContext("/project/module", "/project/module", "/project/module", "", "", "")
+		require.NoError(t, err)
+		eval := NewEvaluator(ctx)
+		assert.Equal(t, "/project/module", evalString(t, eval, parseExpr(t, `path.module`)))
+		assert.Equal(t, "/project/module", evalString(t, eval, parseExpr(t, `path.root`)))
+	})
+
+	t.Run("absolute-path nested module", func(t *testing.T) {
+		t.Parallel()
+		ctx, err := NewAbsolutePathContext("/project/modules/sub", "/project", "/project", "", "", "")
+		require.NoError(t, err)
+		eval := NewEvaluator(ctx)
+		assert.Equal(t, "/project/modules/sub", evalString(t, eval, parseExpr(t, `path.module`)))
+		assert.Equal(t, "/project", evalString(t, eval, parseExpr(t, `path.root`)))
 	})
 }
 
@@ -293,7 +322,8 @@ func TestContextFileResolvesAgainstRootModuleDir(t *testing.T) {
 	require.NoError(t, os.MkdirAll(modDir, 0o755))
 	require.NoError(t, os.WriteFile(filepath.Join(modDir, "aux.txt"), []byte("hello\n"), 0o644))
 
-	ctx := NewContext(modDir, rootDir, rootDir, "", "", "")
+	ctx, err := NewContext(modDir, rootDir, rootDir, "", "", "")
+	require.NoError(t, err)
 	eval := NewEvaluator(ctx)
 
 	require.Equal(t, "mod", evalString(t, eval, parseExpr(t, `path.module`)))
@@ -303,7 +333,8 @@ func TestContextFileResolvesAgainstRootModuleDir(t *testing.T) {
 
 func TestContextTerraform(t *testing.T) {
 	t.Parallel()
-	ctx := NewContext("/tmp", "/tmp", "/tmp", "production", "", "")
+	ctx, err := NewContext("/tmp", "/tmp", "/tmp", "production", "", "")
+	require.NoError(t, err)
 
 	eval := NewEvaluator(ctx)
 
@@ -315,7 +346,8 @@ func TestContextRangedResources(t *testing.T) {
 	t.Parallel()
 	t.Run("count resources are accessible by index", func(t *testing.T) {
 		t.Parallel()
-		ctx := NewContext("/tmp", "/tmp", "/tmp", "", "", "")
+		ctx, err := NewContext("/tmp", "/tmp", "/tmp", "", "", "")
+		require.NoError(t, err)
 		ctx.SetCountResource("aws_instance.web", 0, "", cty.ObjectVal(map[string]cty.Value{
 			"id": cty.StringVal("i-000"),
 		}))
@@ -330,7 +362,8 @@ func TestContextRangedResources(t *testing.T) {
 
 	t.Run("for_each resources are accessible by key", func(t *testing.T) {
 		t.Parallel()
-		ctx := NewContext("/tmp", "/tmp", "/tmp", "", "", "")
+		ctx, err := NewContext("/tmp", "/tmp", "/tmp", "", "", "")
+		require.NoError(t, err)
 		ctx.SetEachResource("aws_instance.web", "east", "", cty.ObjectVal(map[string]cty.Value{
 			"id": cty.StringVal("i-east"),
 		}))
@@ -344,7 +377,8 @@ func TestContextRangedResources(t *testing.T) {
 
 	t.Run("resource named with brackets is not confused with ranged", func(t *testing.T) {
 		t.Parallel()
-		ctx := NewContext("/tmp", "/tmp", "/tmp", "", "", "")
+		ctx, err := NewContext("/tmp", "/tmp", "/tmp", "", "", "")
+		require.NoError(t, err)
 		ctx.SetResource("aws_instance.foo[0]", "", cty.ObjectVal(map[string]cty.Value{
 			"id": cty.StringVal("i-literal"),
 		}))
@@ -358,7 +392,8 @@ func TestContextRangedResources(t *testing.T) {
 
 	t.Run("single and ranged resources coexist under same type", func(t *testing.T) {
 		t.Parallel()
-		ctx := NewContext("/tmp", "/tmp", "/tmp", "", "", "")
+		ctx, err := NewContext("/tmp", "/tmp", "/tmp", "", "", "")
+		require.NoError(t, err)
 		ctx.SetResource("aws_instance.single", "", cty.ObjectVal(map[string]cty.Value{
 			"id": cty.StringVal("i-single"),
 		}))
@@ -374,7 +409,8 @@ func TestContextRangedResources(t *testing.T) {
 
 func TestContextClone(t *testing.T) {
 	t.Parallel()
-	ctx := NewContext("/tmp", "/tmp", "/tmp", "", "", "")
+	ctx, err := NewContext("/tmp", "/tmp", "/tmp", "", "", "")
+	require.NoError(t, err)
 	ctx.SetVariable("name", cty.StringVal("original"))
 
 	clone := ctx.Clone()

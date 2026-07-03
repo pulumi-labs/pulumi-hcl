@@ -15,6 +15,7 @@
 package eval
 
 import (
+	"fmt"
 	"maps"
 	"path/filepath"
 	"sort"
@@ -162,19 +163,52 @@ type rangedInstance struct {
 //
 // We match Terraform's convention so .tf written against Terraform sees the
 // same values when run via Pulumi.
-func NewContext(moduleDir, rootDir, rootModuleDir, stack, project, organization string) *Context {
+func NewContext(moduleDir, rootDir, rootModuleDir, stack, project, organization string) (*Context, error) {
 	modulePath := "."
 	if moduleDir != rootDir {
-		if rel, err := filepath.Rel(rootDir, moduleDir); err == nil {
-			modulePath = rel
-		} else {
-			modulePath = moduleDir
+		rel, err := filepath.Rel(rootDir, moduleDir)
+		if err != nil {
+			return nil, fmt.Errorf("computing %q relative to %q: %w", moduleDir, rootDir, err)
+		}
+		modulePath = rel
+	}
+	cwd, err := filepath.Abs(rootDir)
+	if err != nil {
+		return nil, fmt.Errorf("computing the absolute path of %q: %w", rootDir, err)
+	}
+	return newContext(PathContext{
+		Module: modulePath,
+		Root:   ".",
+		Cwd:    cwd,
+	}, rootModuleDir, stack, project, organization), nil
+}
+
+// NewAbsolutePathContext is NewContext for engine runs whose root module lives
+// outside the Pulumi program directory — a module consumed as a component or a
+// parameterized package. Provider plugins resolve relative paths against the
+// program directory, not the module tree, so a relative path.module handed to
+// a provider (say, a local_file data source's filename) would point outside
+// the module. Here the path.* triple is the directories themselves:
+//
+//   - path.module: moduleDir
+//   - path.root:   rootModuleDir
+//   - path.cwd:    rootDir
+//
+// All three must be absolute, as the module loader resolves them.
+func NewAbsolutePathContext(moduleDir, rootDir, rootModuleDir, stack, project, organization string) (*Context, error) {
+	for _, dir := range []string{moduleDir, rootDir, rootModuleDir} {
+		if !filepath.IsAbs(dir) {
+			return nil, fmt.Errorf("%q must be an absolute path", dir)
 		}
 	}
-	cwd := rootDir
-	if abs, err := filepath.Abs(rootDir); err == nil {
-		cwd = abs
-	}
+	return newContext(PathContext{
+		Module: moduleDir,
+		Root:   rootModuleDir,
+		Cwd:    rootDir,
+	}, rootModuleDir, stack, project, organization), nil
+}
+
+func newContext(path PathContext, rootModuleDir, stack, project, organization string) *Context {
 	return &Context{
 		rootModuleDir:   rootModuleDir,
 		variables:       make(map[string]cty.Value),
@@ -186,11 +220,7 @@ func NewContext(moduleDir, rootDir, rootModuleDir, stack, project, organization 
 		moduleOutputs:   make(map[string]map[string]cty.Value),
 		providers:       make(map[string]cty.Value),
 		calls:           make(map[string]cty.Value),
-		path: PathContext{
-			Module: modulePath,
-			Root:   ".",
-			Cwd:    cwd,
-		},
+		path:            path,
 		pulumi: PulumiContext{
 			Stack:        stack,
 			Project:      project,
