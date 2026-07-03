@@ -781,11 +781,11 @@ func (host *LanguageHost) GenerateProgram(
 	if err != nil {
 		return nil, fmt.Errorf("unable to aquire loader: %w", err)
 	}
-	binderOpts := []pcl.BindOption{pcl.Loader(schema.NewCachedLoader(loaderClient))}
+	var binderOpts []pcl.BindOption
 	if !req.Strict {
 		binderOpts = append(binderOpts, pcl.NonStrictBindOptions()...)
 	}
-	program, bindDiags, err := pcl.BindDirectory(tmpDir, nil, binderOpts...)
+	program, bindDiags, err := pcl.BindDirectory(tmpDir, schema.NewCachedLoader(loaderClient), binderOpts...)
 	if err != nil {
 		return nil, fmt.Errorf("binding program: %w", err)
 	}
@@ -853,7 +853,7 @@ func (host *LanguageHost) GenerateProject(
 	if err != nil {
 		return nil, fmt.Errorf("unable to aquire loader: %w", err)
 	}
-	binderOpts := []pcl.BindOption{pcl.Loader(schema.NewCachedLoader(loaderClient))}
+	var binderOpts []pcl.BindOption
 	if !req.Strict {
 		binderOpts = append(binderOpts, pcl.NonStrictBindOptions()...)
 	}
@@ -889,7 +889,7 @@ func (host *LanguageHost) GenerateProject(
 
 	}
 
-	program, bindDiags, err := pcl.BindDirectory(req.SourceDirectory, nil, binderOpts...)
+	program, bindDiags, err := pcl.BindDirectory(req.SourceDirectory, schema.NewCachedLoader(loaderClient), binderOpts...)
 	if err != nil {
 		return nil, fmt.Errorf("binding directory: %w", err)
 	}

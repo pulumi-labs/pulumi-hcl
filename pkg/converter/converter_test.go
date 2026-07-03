@@ -568,7 +568,7 @@ func parseAndBindMultiFile(
 	}
 	require.False(t, parser.Diagnostics.HasErrors(), parser.Diagnostics.Error())
 
-	program, diags, err := pcl.BindProgram(parser.Files, pcl.Loader(loader))
+	program, diags, err := pcl.BindProgram(parser.Files, loader)
 	require.NoError(t, err)
 	require.False(t, diags.HasErrors(), diags.Error())
 	require.NotNil(t, program)
