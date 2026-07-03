@@ -14,3 +14,4 @@ resources:
         prefix: smoke
 outputs:
   name: ${mod.outputs["name"]}
+  moduleVersion: ${mod.outputs["module_version"]}

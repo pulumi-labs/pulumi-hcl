@@ -283,6 +283,22 @@ func TestContextPath(t *testing.T) {
 		assert.Equal(t, "modules/sub", evalString(t, eval, parseExpr(t, `path.module`)))
 		assert.Equal(t, ".", evalString(t, eval, parseExpr(t, `path.root`)))
 	})
+
+	t.Run("absolute-path root module", func(t *testing.T) {
+		t.Parallel()
+		ctx := NewAbsolutePathContext("/project/module", "/project/module", "/project/module", "", "", "")
+		eval := NewEvaluator(ctx)
+		assert.Equal(t, "/project/module", evalString(t, eval, parseExpr(t, `path.module`)))
+		assert.Equal(t, "/project/module", evalString(t, eval, parseExpr(t, `path.root`)))
+	})
+
+	t.Run("absolute-path nested module", func(t *testing.T) {
+		t.Parallel()
+		ctx := NewAbsolutePathContext("/project/modules/sub", "/project", "/project", "", "", "")
+		eval := NewEvaluator(ctx)
+		assert.Equal(t, "/project/modules/sub", evalString(t, eval, parseExpr(t, `path.module`)))
+		assert.Equal(t, "/project", evalString(t, eval, parseExpr(t, `path.root`)))
+	})
 }
 
 func TestContextFileResolvesAgainstRootModuleDir(t *testing.T) {

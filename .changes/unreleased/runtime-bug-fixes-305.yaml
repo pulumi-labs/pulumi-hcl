@@ -1,0 +1,6 @@
+kind: bug-fixes
+body: Resolve `path.module` and `path.root` to absolute directories when running consumed modules
+time: 2026-07-03T11:47:56Z
+custom:
+    Component: runtime
+    PR: "305"

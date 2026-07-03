@@ -144,6 +144,12 @@ func TestSmokeInLanguageModule(t *testing.T) {
 
 			require.Equal(t, "hello", stack.Outputs["object_field"], "object field value should round-trip")
 			require.Equal(t, "world", stack.Outputs["map_field"], "map value (keyed by a preserved key) should round-trip")
+
+			// The module's local_file data source reads "${path.module}/VERSION",
+			// which only resolves if path.module is absolute: the provider runs in
+			// the program dir, not the module dir.
+			require.Equal(t, "1.2.3", stack.Outputs["module_version"],
+				"module_version should be read from the module's bundled VERSION file")
 		},
 	})
 }
@@ -178,6 +184,12 @@ func TestSmokeDynamicModule(t *testing.T) {
 				stack.Outputs["name"], stack.Outputs["name"])
 			require.Regexp(t, regexp.MustCompile(`^smoke-[a-z0-9]{8}$`), name,
 				"name should be '<prefix>-<8 lowercase alphanumerics>'")
+
+			// The module's local_file data source reads "${path.module}/VERSION",
+			// which only resolves if path.module is absolute: the provider runs in
+			// the program dir, not the module dir.
+			require.Equal(t, "4.5.6", stack.Outputs["moduleVersion"],
+				"moduleVersion should be read from the file next to the module")
 		},
 	})
 }
@@ -229,6 +241,12 @@ func TestSmokeParameterizedModule(t *testing.T) {
 				stack.Outputs["petName"], stack.Outputs["petName"])
 			require.Regexp(t, regexp.MustCompile(`^[a-z]+-[a-z]+-[a-z]+$`), petName,
 				"petLength = 3 should yield a three-word pet name")
+
+			// The module's local_file data source reads "${path.module}/VERSION",
+			// which only resolves if path.module is absolute: the provider runs in
+			// the program dir, not the bundle's unpack dir.
+			require.Equal(t, "1.2.3", stack.Outputs["moduleVersion"],
+				"moduleVersion should be read from the module's bundled VERSION file")
 		},
 	})
 }

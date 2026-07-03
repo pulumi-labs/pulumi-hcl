@@ -18,6 +18,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -2257,6 +2258,87 @@ output "vpc_id" {
 	} else {
 		t.Error("expected 'cidr_block' input to be set")
 	}
+}
+
+// TestEngine_AbsolutePaths verifies that with EngineOptions.AbsolutePaths set —
+// the Construct entry points, where the module tree lives outside the Pulumi
+// program — path.module and path.root evaluate to absolute directories in the
+// root module and in child modules.
+func TestEngine_AbsolutePaths(t *testing.T) {
+	t.Parallel()
+
+	tmpDir := t.TempDir()
+
+	moduleDir := filepath.Join(tmpDir, "modules", "child")
+	require.NoError(t, os.MkdirAll(moduleDir, 0o755))
+
+	moduleMain := `
+resource "aws_vpc" "inner" {
+  module_path = path.module
+  root_path   = path.root
+}
+`
+	require.NoError(t, os.WriteFile(filepath.Join(moduleDir, "main.tf"), []byte(moduleMain), 0o644))
+
+	rootMain := `
+resource "aws_vpc" "main" {
+  module_path = path.module
+  root_path   = path.root
+}
+
+module "child" {
+  source = "./modules/child"
+}
+`
+	require.NoError(t, os.WriteFile(filepath.Join(tmpDir, "main.tf"), []byte(rootMain), 0o644))
+
+	p := parser.NewParser()
+	config, diags := p.ParseDirectory(tmpDir)
+	require.False(t, diags.HasErrors(), "parse error: %s", diags.Error())
+
+	pathProperties := map[string]schema.PropertySpec{
+		"modulePath": {TypeSpec: schema.TypeSpec{Type: "string"}},
+		"rootPath":   {TypeSpec: schema.TypeSpec{Type: "string"}},
+	}
+	mock := &testutil.MockResourceMonitor{}
+	engine := run.NewEngine(t.Context(), config, &run.EngineOptions{
+		ModuleLoader:    testLiveModuleLoader(t),
+		ProjectName:     "test-project",
+		StackName:       "dev",
+		ResourceMonitor: mock,
+		WorkDir:         tmpDir,
+		RootDir:         tmpDir,
+		AbsolutePaths:   true,
+		SchemaLoader: schemaloader.New(t, schema.PackageSpec{
+			Name: "aws",
+			Resources: map[string]schema.ResourceSpec{
+				"aws:index:Vpc": {
+					InputProperties: pathProperties,
+					ObjectTypeSpec:  schema.ObjectTypeSpec{Properties: pathProperties},
+				},
+			},
+		}),
+	})
+
+	require.NoError(t, engine.Run(t.Context()))
+
+	inputsByName := make(map[string]property.Map)
+	for _, req := range mock.RegisteredResources {
+		if req.Type == "aws:index:Vpc" {
+			inputsByName[req.Name] = req.Inputs
+		}
+	}
+
+	assert.Equal(t, map[string]property.Map{
+		"main": property.NewMap(map[string]property.Value{
+			"modulePath": property.New(tmpDir),
+			"rootPath":   property.New(tmpDir),
+		}),
+		"child-inner": property.NewMap(map[string]property.Value{
+			"modulePath": property.New(moduleDir),
+			"rootPath":   property.New(tmpDir),
+		}),
+	}, inputsByName)
 }
 
 // TestEngine_ModuleNameWithDot verifies that module names containing a "."

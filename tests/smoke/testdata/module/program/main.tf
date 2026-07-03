@@ -19,3 +19,7 @@ output "object_field" {
 output "map_field" {
   value = randommodule_module.pet.echo_map.user_key
 }
+
+output "module_version" {
+  value = randommodule_module.pet.module_version
+}

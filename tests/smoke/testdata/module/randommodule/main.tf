@@ -4,7 +4,19 @@ terraform {
       source  = "hashicorp/random"
       version = "~> 3.9"
     }
+    local = {
+      source  = "hashicorp/local"
+      version = "~> 2.5"
+    }
   }
+}
+
+# A file bundled with the module, read through a bridged provider data source.
+# The provider process runs in the consuming program's directory, not the
+# module tree, so this only resolves when path.module is rendered absolute
+# (https://github.com/pulumi-labs/pulumi-hcl/issues/305).
+data "local_file" "version" {
+  filename = "${path.module}/VERSION"
 }
 
 # Multi-word and nested names exercise the snake_case<->camelCase translation at
@@ -38,4 +50,8 @@ output "echo_object" {
 
 output "echo_map" {
   value = var.map_value
+}
+
+output "module_version" {
+  value = trimspace(data.local_file.version.content)
 }

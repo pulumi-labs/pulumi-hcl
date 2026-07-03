@@ -171,10 +171,41 @@ func NewContext(moduleDir, rootDir, rootModuleDir, stack, project, organization 
 			modulePath = moduleDir
 		}
 	}
-	cwd := rootDir
-	if abs, err := filepath.Abs(rootDir); err == nil {
-		cwd = abs
+	return newContext(PathContext{
+		Module: modulePath,
+		Root:   ".",
+		Cwd:    absDir(rootDir),
+	}, rootModuleDir, stack, project, organization)
+}
+
+// NewAbsolutePathContext is NewContext for engine runs whose root module lives
+// outside the Pulumi program directory — a module consumed as a component or a
+// parameterized package. Provider plugins resolve relative paths against the
+// program directory, not the module tree, so a relative path.module handed to
+// a provider (say, a local_file data source's filename) would point outside
+// the module. Here the path.* triple is rendered absolute instead:
+//
+//   - path.module: moduleDir as an absolute path
+//   - path.root:   rootModuleDir as an absolute path
+//   - path.cwd:    rootDir as an absolute path (as in NewContext)
+func NewAbsolutePathContext(moduleDir, rootDir, rootModuleDir, stack, project, organization string) *Context {
+	return newContext(PathContext{
+		Module: absDir(moduleDir),
+		Root:   absDir(rootModuleDir),
+		Cwd:    absDir(rootDir),
+	}, rootModuleDir, stack, project, organization)
+}
+
+// absDir makes dir absolute, resolving against the process working directory;
+// dir is returned unchanged when resolution fails.
+func absDir(dir string) string {
+	if abs, err := filepath.Abs(dir); err == nil {
+		return abs
 	}
+	return dir
+}
+
+func newContext(path PathContext, rootModuleDir, stack, project, organization string) *Context {
 	return &Context{
 		rootModuleDir:   rootModuleDir,
 		variables:       make(map[string]cty.Value),
@@ -186,11 +217,7 @@ func NewContext(moduleDir, rootDir, rootModuleDir, stack, project, organization 
 		moduleOutputs:   make(map[string]map[string]cty.Value),
 		providers:       make(map[string]cty.Value),
 		calls:           make(map[string]cty.Value),
-		path: PathContext{
-			Module: modulePath,
-			Root:   ".",
-			Cwd:    cwd,
-		},
+		path:            path,
 		pulumi: PulumiContext{
 			Stack:        stack,
 			Project:      project,
