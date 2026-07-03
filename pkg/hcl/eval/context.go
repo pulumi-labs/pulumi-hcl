@@ -23,6 +23,7 @@ import (
 
 	"github.com/hashicorp/hcl/v2"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/resource/urn"
+	"github.com/pulumi/pulumi/sdk/v3/go/common/util/contract"
 	"github.com/zclconf/go-cty/cty"
 )
 
@@ -171,10 +172,14 @@ func NewContext(moduleDir, rootDir, rootModuleDir, stack, project, organization 
 			modulePath = moduleDir
 		}
 	}
+	cwd := rootDir
+	if abs, err := filepath.Abs(rootDir); err == nil {
+		cwd = abs
+	}
 	return newContext(PathContext{
 		Module: modulePath,
 		Root:   ".",
-		Cwd:    absDir(rootDir),
+		Cwd:    cwd,
 	}, rootModuleDir, stack, project, organization)
 }
 
@@ -183,26 +188,22 @@ func NewContext(moduleDir, rootDir, rootModuleDir, stack, project, organization 
 // parameterized package. Provider plugins resolve relative paths against the
 // program directory, not the module tree, so a relative path.module handed to
 // a provider (say, a local_file data source's filename) would point outside
-// the module. Here the path.* triple is rendered absolute instead:
+// the module. Here the path.* triple is the directories themselves:
 //
-//   - path.module: moduleDir as an absolute path
-//   - path.root:   rootModuleDir as an absolute path
-//   - path.cwd:    rootDir as an absolute path (as in NewContext)
+//   - path.module: moduleDir
+//   - path.root:   rootModuleDir
+//   - path.cwd:    rootDir
+//
+// All three must be absolute, as the module loader resolves them.
 func NewAbsolutePathContext(moduleDir, rootDir, rootModuleDir, stack, project, organization string) *Context {
+	contract.Requiref(filepath.IsAbs(moduleDir), "moduleDir", "must be absolute, got %q", moduleDir)
+	contract.Requiref(filepath.IsAbs(rootDir), "rootDir", "must be absolute, got %q", rootDir)
+	contract.Requiref(filepath.IsAbs(rootModuleDir), "rootModuleDir", "must be absolute, got %q", rootModuleDir)
 	return newContext(PathContext{
-		Module: absDir(moduleDir),
-		Root:   absDir(rootModuleDir),
-		Cwd:    absDir(rootDir),
+		Module: moduleDir,
+		Root:   rootModuleDir,
+		Cwd:    rootDir,
 	}, rootModuleDir, stack, project, organization)
-}
-
-// absDir makes dir absolute, resolving against the process working directory;
-// dir is returned unchanged when resolution fails.
-func absDir(dir string) string {
-	if abs, err := filepath.Abs(dir); err == nil {
-		return abs
-	}
-	return dir
 }
 
 func newContext(path PathContext, rootModuleDir, stack, project, organization string) *Context {

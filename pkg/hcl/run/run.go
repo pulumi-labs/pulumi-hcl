@@ -534,8 +534,6 @@ func NewEngine(ctx context.Context, config *ast.Config, opts *EngineOptions) *En
 	}
 }
 
-// newEvalContext creates an evaluation context, rendering the path.* values
-// absolute when absolutePaths is set (see EngineOptions.AbsolutePaths).
 func newEvalContext(absolutePaths bool, moduleDir, rootDir, rootModuleDir, stack, project, organization string) *eval.Context {
 	if absolutePaths {
 		return eval.NewAbsolutePathContext(moduleDir, rootDir, rootModuleDir, stack, project, organization)

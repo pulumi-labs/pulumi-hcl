@@ -145,7 +145,6 @@ func TestSmokeInLanguageModule(t *testing.T) {
 			require.Equal(t, "hello", stack.Outputs["object_field"], "object field value should round-trip")
 			require.Equal(t, "world", stack.Outputs["map_field"], "map value (keyed by a preserved key) should round-trip")
 
-			// https://github.com/pulumi-labs/pulumi-hcl/issues/305
 			require.Equal(t, "1.2.3", stack.Outputs["module_version"],
 				`module_version should be read from "${path.module}/VERSION"`)
 		},
@@ -183,7 +182,6 @@ func TestSmokeDynamicModule(t *testing.T) {
 			require.Regexp(t, regexp.MustCompile(`^smoke-[a-z0-9]{8}$`), name,
 				"name should be '<prefix>-<8 lowercase alphanumerics>'")
 
-			// https://github.com/pulumi-labs/pulumi-hcl/issues/305
 			require.Equal(t, "4.5.6", stack.Outputs["moduleVersion"],
 				`moduleVersion should be read from "${path.module}/VERSION"`)
 		},
@@ -238,7 +236,6 @@ func TestSmokeParameterizedModule(t *testing.T) {
 			require.Regexp(t, regexp.MustCompile(`^[a-z]+-[a-z]+-[a-z]+$`), petName,
 				"petLength = 3 should yield a three-word pet name")
 
-			// https://github.com/pulumi-labs/pulumi-hcl/issues/305
 			require.Equal(t, "1.2.3", stack.Outputs["moduleVersion"],
 				`moduleVersion should be read from "${path.module}/VERSION"`)
 		},
