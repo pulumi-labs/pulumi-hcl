@@ -242,7 +242,7 @@ func (m *moduleProvider) construct(ctx context.Context, req p.ConstructRequest) 
 	resmon := m.newConstructMonitor(ctx, req,
 		pulumirpc.NewResourceMonitorClient(monitorConn), componentInputs, wrapModuleOutputs)
 
-	engineRun := run.NewEngine(ctx, loaded.Config, &run.EngineOptions{
+	engineRun, err := run.NewEngine(ctx, loaded.Config, &run.EngineOptions{
 		ProjectName:        string(req.Urn.Project()),
 		StackName:          string(req.Urn.Stack()),
 		DryRun:             req.DryRun,
@@ -257,6 +257,9 @@ func (m *moduleProvider) construct(ctx context.Context, req p.ConstructRequest) 
 		ModuleLoader:       m.moduleLoader,
 		Parallel:           int(req.Parallel),
 	})
+	if err != nil {
+		return p.ConstructResponse{}, fmt.Errorf("creating engine: %w", err)
+	}
 
 	if err := engineRun.Run(ctx); err != nil {
 		return p.ConstructResponse{}, fmt.Errorf("executing module %q: %w", source, err)
@@ -306,7 +309,7 @@ func (m *moduleProvider) constructParameterized(ctx context.Context, req p.Const
 	loader := pulumiSchema.NewCachedLoader(packages.NewParameterizationAwareLoader(
 		m.schemaLoader, param.packages))
 
-	engineRun := run.NewEngine(ctx, loaded.Config, &run.EngineOptions{
+	engineRun, err := run.NewEngine(ctx, loaded.Config, &run.EngineOptions{
 		ProjectName:        string(req.Urn.Project()),
 		StackName:          string(req.Urn.Stack()),
 		DryRun:             req.DryRun,
@@ -321,6 +324,9 @@ func (m *moduleProvider) constructParameterized(ctx context.Context, req p.Const
 		ModuleLoader:       param.loader,
 		Parallel:           int(req.Parallel),
 	})
+	if err != nil {
+		return p.ConstructResponse{}, fmt.Errorf("creating engine: %w", err)
+	}
 
 	if err := engineRun.Run(ctx); err != nil {
 		return p.ConstructResponse{}, fmt.Errorf("executing module %q: %w", param.name, err)

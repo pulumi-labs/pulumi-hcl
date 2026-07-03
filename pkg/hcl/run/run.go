@@ -374,10 +374,7 @@ type Engine struct {
 	// workDir is the working directory.
 	workDir string
 
-	// rootDir is the project root directory.
-	rootDir string
-
-	// absolutePaths mirrors EngineOptions.AbsolutePaths for the evaluation
+	// absolutePaths mirrors EngineOptions.AbsolutePaths for the child-module
 	// contexts created during the run.
 	absolutePaths bool
 
@@ -499,14 +496,21 @@ type EngineOptions struct {
 }
 
 // NewEngine creates a new execution engine.
-func NewEngine(ctx context.Context, config *ast.Config, opts *EngineOptions) *Engine {
+func NewEngine(ctx context.Context, config *ast.Config, opts *EngineOptions) (*Engine, error) {
 	contract.Requiref(opts.SchemaLoader != nil, "opts.SchemaLoader", "EngineOptions.SchemaLoader cannot be nil")
 	contract.Requiref(opts.WorkDir != "", "opts.WorkDir", "EngineOptions.WorkDir cannot be empty")
 	contract.Requiref(opts.RootDir != "", "opts.RootDir", "EngineOptions.RootDir cannot be empty")
 	contract.Requiref(opts.ModuleLoader != nil, "EngineOptions.ModuleLoader", "cannot be empty")
 
+	evalCtx, err := newEvalContext(opts.AbsolutePaths, opts.WorkDir, opts.RootDir, opts.WorkDir,
+		opts.StackName, opts.ProjectName, opts.Organization)
+	if err != nil {
+		return nil, fmt.Errorf("creating the root evaluation context: %w", err)
+	}
+
 	return &Engine{
 		config:                  config,
+		evaluator:               eval.NewEvaluator(evalCtx),
 		pkgLoader:               opts.SchemaLoader,
 		providerInfoSource:      opts.ProviderInfoSource,
 		resmon:                  opts.ResourceMonitor,
@@ -519,7 +523,6 @@ func NewEngine(ctx context.Context, config *ast.Config, opts *EngineOptions) *En
 		organization:            opts.Organization,
 		dryRun:                  opts.DryRun,
 		workDir:                 opts.WorkDir,
-		rootDir:                 opts.RootDir,
 		absolutePaths:           opts.AbsolutePaths,
 		pulumiConfig:            opts.Config,
 		packages:                opts.Packages,
@@ -531,7 +534,7 @@ func NewEngine(ctx context.Context, config *ast.Config, opts *EngineOptions) *En
 		alwaysRegisterProviders: opts.AlwaysRegisterProviders,
 		resolver: packages.NewResolver(
 			opts.SchemaLoader, opts.ProviderInfoSource, opts.Packages, knownProviders(config.Terraform)),
-	}
+	}, nil
 }
 
 func newEvalContext(absolutePaths bool, moduleDir, rootDir, rootModuleDir, stack, project, organization string) (*eval.Context, error) {
@@ -545,14 +548,6 @@ func newEvalContext(absolutePaths bool, moduleDir, rootDir, rootModuleDir, stack
 func (e *Engine) Run(ctx context.Context) error {
 	ctx, span := potel.Start(ctx, "Engine.Run")
 	defer span.End()
-
-	evalCtx, err := newEvalContext(e.absolutePaths, e.workDir, e.rootDir, e.workDir,
-		e.stackName, e.projectName, e.organization)
-	if err != nil {
-		return fmt.Errorf("creating the root evaluation context: %w", err)
-	}
-	e.evaluator = eval.NewEvaluator(evalCtx)
-
 	for alias, pkg := range e.packages {
 		ref, err := e.resmon.RegisterPackage(ctx, pkg)
 		if err != nil {
