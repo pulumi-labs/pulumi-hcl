@@ -204,7 +204,10 @@ func GenerateModuleSchema(
 func buildTypeScope(
 	ctx context.Context, config *ast.Config, binder *Binder, path map[string]bool,
 ) (*eval.Context, error) {
-	scope := eval.NewContext(".", ".", ".", "", "", "")
+	scope, err := eval.NewContext(".", ".", ".", "", "", "")
+	if err != nil {
+		return nil, err
+	}
 	scope.UseTypeInferenceFunctions()
 
 	for name, v := range config.Variables {

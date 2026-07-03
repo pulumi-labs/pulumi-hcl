@@ -15,6 +15,7 @@
 package eval
 
 import (
+	"fmt"
 	"maps"
 	"path/filepath"
 	"sort"
@@ -23,7 +24,6 @@ import (
 
 	"github.com/hashicorp/hcl/v2"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/resource/urn"
-	"github.com/pulumi/pulumi/sdk/v3/go/common/util/contract"
 	"github.com/zclconf/go-cty/cty"
 )
 
@@ -163,24 +163,24 @@ type rangedInstance struct {
 //
 // We match Terraform's convention so .tf written against Terraform sees the
 // same values when run via Pulumi.
-func NewContext(moduleDir, rootDir, rootModuleDir, stack, project, organization string) *Context {
+func NewContext(moduleDir, rootDir, rootModuleDir, stack, project, organization string) (*Context, error) {
 	modulePath := "."
 	if moduleDir != rootDir {
-		if rel, err := filepath.Rel(rootDir, moduleDir); err == nil {
-			modulePath = rel
-		} else {
-			modulePath = moduleDir
+		rel, err := filepath.Rel(rootDir, moduleDir)
+		if err != nil {
+			return nil, fmt.Errorf("computing %q relative to %q: %w", moduleDir, rootDir, err)
 		}
+		modulePath = rel
 	}
-	cwd := rootDir
-	if abs, err := filepath.Abs(rootDir); err == nil {
-		cwd = abs
+	cwd, err := filepath.Abs(rootDir)
+	if err != nil {
+		return nil, fmt.Errorf("computing the absolute path of %q: %w", rootDir, err)
 	}
 	return newContext(PathContext{
 		Module: modulePath,
 		Root:   ".",
 		Cwd:    cwd,
-	}, rootModuleDir, stack, project, organization)
+	}, rootModuleDir, stack, project, organization), nil
 }
 
 // NewAbsolutePathContext is NewContext for engine runs whose root module lives
@@ -195,15 +195,17 @@ func NewContext(moduleDir, rootDir, rootModuleDir, stack, project, organization 
 //   - path.cwd:    rootDir
 //
 // All three must be absolute, as the module loader resolves them.
-func NewAbsolutePathContext(moduleDir, rootDir, rootModuleDir, stack, project, organization string) *Context {
-	contract.Requiref(filepath.IsAbs(moduleDir), "moduleDir", "must be absolute, got %q", moduleDir)
-	contract.Requiref(filepath.IsAbs(rootDir), "rootDir", "must be absolute, got %q", rootDir)
-	contract.Requiref(filepath.IsAbs(rootModuleDir), "rootModuleDir", "must be absolute, got %q", rootModuleDir)
+func NewAbsolutePathContext(moduleDir, rootDir, rootModuleDir, stack, project, organization string) (*Context, error) {
+	for _, dir := range []string{moduleDir, rootDir, rootModuleDir} {
+		if !filepath.IsAbs(dir) {
+			return nil, fmt.Errorf("%q must be an absolute path", dir)
+		}
+	}
 	return newContext(PathContext{
 		Module: moduleDir,
 		Root:   rootModuleDir,
 		Cwd:    rootDir,
-	}, rootModuleDir, stack, project, organization)
+	}, rootModuleDir, stack, project, organization), nil
 }
 
 func newContext(path PathContext, rootModuleDir, stack, project, organization string) *Context {

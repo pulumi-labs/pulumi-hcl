@@ -374,7 +374,10 @@ type Engine struct {
 	// workDir is the working directory.
 	workDir string
 
-	// absolutePaths mirrors EngineOptions.AbsolutePaths for the child-module
+	// rootDir is the project root directory.
+	rootDir string
+
+	// absolutePaths mirrors EngineOptions.AbsolutePaths for the evaluation
 	// contexts created during the run.
 	absolutePaths bool
 
@@ -502,12 +505,8 @@ func NewEngine(ctx context.Context, config *ast.Config, opts *EngineOptions) *En
 	contract.Requiref(opts.RootDir != "", "opts.RootDir", "EngineOptions.RootDir cannot be empty")
 	contract.Requiref(opts.ModuleLoader != nil, "EngineOptions.ModuleLoader", "cannot be empty")
 
-	evalCtx := newEvalContext(opts.AbsolutePaths, opts.WorkDir, opts.RootDir, opts.WorkDir,
-		opts.StackName, opts.ProjectName, opts.Organization)
-
 	return &Engine{
 		config:                  config,
-		evaluator:               eval.NewEvaluator(evalCtx),
 		pkgLoader:               opts.SchemaLoader,
 		providerInfoSource:      opts.ProviderInfoSource,
 		resmon:                  opts.ResourceMonitor,
@@ -520,6 +519,7 @@ func NewEngine(ctx context.Context, config *ast.Config, opts *EngineOptions) *En
 		organization:            opts.Organization,
 		dryRun:                  opts.DryRun,
 		workDir:                 opts.WorkDir,
+		rootDir:                 opts.RootDir,
 		absolutePaths:           opts.AbsolutePaths,
 		pulumiConfig:            opts.Config,
 		packages:                opts.Packages,
@@ -534,7 +534,7 @@ func NewEngine(ctx context.Context, config *ast.Config, opts *EngineOptions) *En
 	}
 }
 
-func newEvalContext(absolutePaths bool, moduleDir, rootDir, rootModuleDir, stack, project, organization string) *eval.Context {
+func newEvalContext(absolutePaths bool, moduleDir, rootDir, rootModuleDir, stack, project, organization string) (*eval.Context, error) {
 	if absolutePaths {
 		return eval.NewAbsolutePathContext(moduleDir, rootDir, rootModuleDir, stack, project, organization)
 	}
@@ -545,6 +545,14 @@ func newEvalContext(absolutePaths bool, moduleDir, rootDir, rootModuleDir, stack
 func (e *Engine) Run(ctx context.Context) error {
 	ctx, span := potel.Start(ctx, "Engine.Run")
 	defer span.End()
+
+	evalCtx, err := newEvalContext(e.absolutePaths, e.workDir, e.rootDir, e.workDir,
+		e.stackName, e.projectName, e.organization)
+	if err != nil {
+		return fmt.Errorf("creating the root evaluation context: %w", err)
+	}
+	e.evaluator = eval.NewEvaluator(evalCtx)
+
 	for alias, pkg := range e.packages {
 		ref, err := e.resmon.RegisterPackage(ctx, pkg)
 		if err != nil {
@@ -3258,10 +3266,13 @@ func (e *Engine) processModuleInit(ctx context.Context, node *graph.Node) error 
 			return fmt.Errorf("registering module component: %w", err)
 		}
 
-		instCtx := newEvalContext(
+		instCtx, err := newEvalContext(
 			e.absolutePaths, modInfo.SourcePath, e.workDir, e.workDir,
 			e.stackName, e.projectName, e.organization,
 		)
+		if err != nil {
+			return fmt.Errorf("creating the module evaluation context: %w", err)
+		}
 
 		e.moduleInstances.Set(modInfo.Path, []*moduleInstance{{
 			Path:    instPath,
@@ -3286,10 +3297,13 @@ func (e *Engine) processModuleInit(ctx context.Context, node *graph.Node) error 
 			if err != nil {
 				return fmt.Errorf("registering module component %s: %w", instPath.String(), err)
 			}
-			instCtx := newEvalContext(
+			instCtx, err := newEvalContext(
 				e.absolutePaths, modInfo.SourcePath, e.workDir, e.workDir,
 				e.stackName, e.projectName, e.organization,
 			)
+			if err != nil {
+				return fmt.Errorf("creating the module evaluation context: %w", err)
+			}
 			instCtx.SetCount(idx)
 			instances = append(instances, &moduleInstance{
 				Path:    instPath,
@@ -3319,10 +3333,13 @@ func (e *Engine) processModuleInit(ctx context.Context, node *graph.Node) error 
 		if err != nil {
 			return fmt.Errorf("registering module component %s: %w", instPath.String(), err)
 		}
-		instCtx := newEvalContext(
+		instCtx, err := newEvalContext(
 			e.absolutePaths, modInfo.SourcePath, e.workDir, e.workDir,
 			e.stackName, e.projectName, e.organization,
 		)
+		if err != nil {
+			return fmt.Errorf("creating the module evaluation context: %w", err)
+		}
 		instCtx.SetEach(k, v)
 		instances = append(instances, &moduleInstance{
 			Path:    instPath,
