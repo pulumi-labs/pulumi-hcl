@@ -661,6 +661,18 @@ func (g *generator) collectInvokes(node pcl.Node) {
 		for _, attr := range n.Inputs {
 			g.collectInvokesInExpr(attr.Value, n, srcFile)
 		}
+		// Options are evaluated outside the resource's range scope, so no
+		// enclosing resource is passed.
+		if n.Options != nil {
+			for _, expr := range []model.Expression{
+				n.Options.Range, n.Options.ImportID, n.Options.ReplacementTrigger,
+				n.Options.Version, n.Options.PluginDownloadURL,
+			} {
+				if expr != nil {
+					g.collectInvokesInExpr(expr, nil, srcFile)
+				}
+			}
+		}
 	case *pcl.OutputVariable:
 		g.collectInvokesInExpr(n.Value, nil, srcFile)
 	case *pcl.LocalVariable:

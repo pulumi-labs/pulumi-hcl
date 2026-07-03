@@ -1328,7 +1328,7 @@ func TestNotImplemented(t *testing.T) {
 		require.NoError(t, err)
 		require.False(t, p.Diagnostics.HasErrors(), p.Diagnostics.Error())
 
-		program, bindDiags, err := pcl.BindProgram(p.Files, pcl.Loader(loader))
+		program, bindDiags, err := pcl.BindProgram(p.Files, loader)
 		require.NoError(t, err)
 		require.False(t, bindDiags.HasErrors(), bindDiags.Error())
 
@@ -1398,7 +1398,7 @@ output someOutput {
 	require.False(t, p.Diagnostics.HasErrors(), p.Diagnostics.Error())
 
 	program, bindDiags, err := pcl.BindProgram(p.Files,
-		pcl.Loader(loader),
+		loader,
 		pcl.AllowMissingProperties,
 		pcl.AllowMissingVariables,
 		pcl.SkipResourceTypechecking,
@@ -1472,6 +1472,70 @@ resource "tagSink" "test:index:Sink" {
 	}
 
 	testConvertedPCLWithComponent(t, pclSource, nil, monitor, testSchema)
+}
+
+// TestInvokeInRangeOption locks in that an invoke inside a resource's range
+// option is hoisted to a data source instead of being emitted as a literal
+// `invoke()` call, which the HCL runtime cannot evaluate.
+func TestInvokeInRangeOption(t *testing.T) {
+	t.Parallel()
+
+	testSchema := schema.PackageSpec{
+		Name:    "test",
+		Version: "1.0.0",
+		Resources: map[string]schema.ResourceSpec{
+			"test:index:Sink": {
+				InputProperties: map[string]schema.PropertySpec{
+					"value": {TypeSpec: schema.TypeSpec{Type: "string"}},
+				},
+			},
+		},
+		Functions: map[string]schema.FunctionSpec{
+			"test:index:getInfo": {
+				Outputs: &schema.ObjectTypeSpec{
+					Properties: map[string]schema.PropertySpec{
+						"items": {
+							TypeSpec: schema.TypeSpec{
+								Type:  "array",
+								Items: &schema.TypeSpec{Type: "string"},
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	pclSource := `resource "targets" "test:index:Sink" {
+    options {
+        range = length(invoke("test:index:getInfo", {}).items)
+    }
+    value = "fixed"
+}
+`
+
+	monitor := &testutil.MockResourceMonitor{
+		InvokeHandler: func(_ context.Context, _ hclrun.InvokeRequest) (*hclrun.InvokeResponse, error) {
+			return &hclrun.InvokeResponse{
+				Return: property.NewMap(map[string]property.Value{
+					"items": property.New([]property.Value{
+						property.New("a"),
+						property.New("b"),
+					}),
+				}),
+			}, nil
+		},
+	}
+
+	mock := testConvertedPCLWithComponent(t, pclSource, nil, monitor, testSchema)
+
+	var sinkNames []string
+	for _, r := range mock.RegisteredResources {
+		if r.Type == "test:index:Sink" {
+			sinkNames = append(sinkNames, r.Name)
+		}
+	}
+	assert.Equal(t, []string{"targets-0", "targets-1"}, sinkNames)
 }
 
 // TestInvokeReturnType covers the case where a function declares its outputs via
@@ -2319,7 +2383,6 @@ func testConvertedPCLWithComponent(
 			return nil, p.Diagnostics, nil
 		}
 		opts := []pcl.BindOption{
-			pcl.Loader(args.BinderLoader),
 			pcl.DirPath(args.ComponentSource),
 			pcl.ComponentBinder(componentBinder),
 		}
@@ -2329,7 +2392,7 @@ func testConvertedPCLWithComponent(
 		if args.SkipInvokeTypecheck {
 			opts = append(opts, pcl.SkipInvokeTypechecking)
 		}
-		return pcl.BindProgram(p.Files, opts...)
+		return pcl.BindProgram(p.Files, args.BinderLoader, opts...)
 	}
 
 	// Parse & bind the parent PCL with component support.
@@ -2339,7 +2402,7 @@ func testConvertedPCLWithComponent(
 	require.False(t, p.Diagnostics.HasErrors(), p.Diagnostics.Error())
 
 	program, bindDiags, err := pcl.BindProgram(p.Files,
-		pcl.Loader(loader),
+		loader,
 		pcl.DirPath("."), // arbitrary; the in-memory binder ignores it
 		pcl.ComponentBinder(componentBinder),
 	)
@@ -2509,7 +2572,7 @@ resource web "aws:index:Instance" {
 	require.False(t, p.Diagnostics.HasErrors(), p.Diagnostics.Error())
 
 	program, bindDiags, err := pcl.BindProgram(p.Files,
-		pcl.Loader(loader),
+		loader,
 		pcl.AllowMissingProperties,
 		pcl.AllowMissingVariables,
 		pcl.SkipResourceTypechecking,

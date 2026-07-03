@@ -21,6 +21,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/blang/semver"
 	"github.com/pulumi-labs/pulumi-hcl/pkg/hcl/ast"
 	"github.com/pulumi-labs/pulumi-hcl/pkg/hcl/modules"
 	"github.com/pulumi-labs/pulumi-hcl/pkg/hcl/parser"
@@ -34,6 +35,21 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+// errLoader is a schema.Loader that fails if asked to load any package. The
+// specs under test reference no external packages, so binding never invokes
+// it; supplying it keeps BindSpec from constructing a real plugin loader.
+type errLoader struct{}
+
+func (errLoader) LoadPackage(pkg string, version *semver.Version) (*schema.Package, error) {
+	return nil, assert.AnError
+}
+
+func (errLoader) LoadPackageV2(
+	ctx context.Context, descriptor *schema.PackageDescriptor,
+) (*schema.Package, error) {
+	return nil, assert.AnError
+}
 
 // testModuleLoader builds a live module loader for the engine. These tests do
 // not exercise child modules, so it is never invoked; the engine just requires a
@@ -157,7 +173,7 @@ resource "pulumi_stack_reference" "ref" {
 				},
 			},
 		},
-	}, nil, schema.ValidationOptions{AllowPulumiPackage: true})
+	}, errLoader{}, schema.ValidationOptions{AllowPulumiPackage: true})
 	require.NoError(t, err)
 	require.Empty(t, diag)
 
