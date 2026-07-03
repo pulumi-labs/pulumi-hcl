@@ -11,9 +11,7 @@ terraform {
   }
 }
 
-# A file bundled with the module, read through a bridged provider data source.
-# The provider process runs in the consuming program's directory, not the
-# module tree, so this only resolves when path.module is rendered absolute
+# A file bundled with the module, read through a bridged provider data source
 # (https://github.com/pulumi-labs/pulumi-hcl/issues/305).
 data "local_file" "version" {
   filename = "${path.module}/VERSION"

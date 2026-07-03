@@ -97,7 +97,7 @@ func TestSmokeRandom(t *testing.T) {
 func TestSmokeInLanguageModule(t *testing.T) {
 	t.Parallel()
 
-	home := seedPluginCache(t, "terraform-provider")
+	home := seedPluginCache(t, "terraform-provider", "local")
 
 	// `pulumi package add` generates the SDK from a local module; the program
 	// references the component by the module's package name, "randommodule". The
@@ -145,11 +145,9 @@ func TestSmokeInLanguageModule(t *testing.T) {
 			require.Equal(t, "hello", stack.Outputs["object_field"], "object field value should round-trip")
 			require.Equal(t, "world", stack.Outputs["map_field"], "map value (keyed by a preserved key) should round-trip")
 
-			// The module's local_file data source reads "${path.module}/VERSION",
-			// which only resolves if path.module is absolute: the provider runs in
-			// the program dir, not the module dir.
+			// https://github.com/pulumi-labs/pulumi-hcl/issues/305
 			require.Equal(t, "1.2.3", stack.Outputs["module_version"],
-				"module_version should be read from the module's bundled VERSION file")
+				`module_version should be read from "${path.module}/VERSION"`)
 		},
 	})
 }
@@ -174,7 +172,7 @@ func TestSmokeDynamicModule(t *testing.T) {
 		NoParallel:    true,
 		Dir:           filepath.Join("testdata", "dynamic", "program"),
 		Config:        map[string]string{"moduleSource": moduleDir},
-		PulumiHomeDir: seedPluginCache(t, "random", "terraform-provider"),
+		PulumiHomeDir: seedPluginCache(t, "random", "terraform-provider", "local"),
 		ExtraRuntimeValidation: func(t *testing.T, stack integration.RuntimeValidationStackInfo) {
 			// The module's `name` output is "<prefix>-<random_string>"; its presence
 			// and shape prove both providers resolved and the outputs flowed back
@@ -185,11 +183,9 @@ func TestSmokeDynamicModule(t *testing.T) {
 			require.Regexp(t, regexp.MustCompile(`^smoke-[a-z0-9]{8}$`), name,
 				"name should be '<prefix>-<8 lowercase alphanumerics>'")
 
-			// The module's local_file data source reads "${path.module}/VERSION",
-			// which only resolves if path.module is absolute: the provider runs in
-			// the program dir, not the module dir.
+			// https://github.com/pulumi-labs/pulumi-hcl/issues/305
 			require.Equal(t, "4.5.6", stack.Outputs["moduleVersion"],
-				"moduleVersion should be read from the file next to the module")
+				`moduleVersion should be read from "${path.module}/VERSION"`)
 		},
 	})
 }
@@ -206,7 +202,7 @@ func TestSmokeDynamicModule(t *testing.T) {
 func TestSmokeParameterizedModule(t *testing.T) {
 	t.Parallel()
 
-	home := seedPluginCache(t, "terraform-provider")
+	home := seedPluginCache(t, "terraform-provider", "local")
 
 	// The same fixture TestSmokeInLanguageModule serves as a local-path MLC; here it is
 	// loaded by path and bundled into the parameterization, leaving the program
@@ -242,11 +238,9 @@ func TestSmokeParameterizedModule(t *testing.T) {
 			require.Regexp(t, regexp.MustCompile(`^[a-z]+-[a-z]+-[a-z]+$`), petName,
 				"petLength = 3 should yield a three-word pet name")
 
-			// The module's local_file data source reads "${path.module}/VERSION",
-			// which only resolves if path.module is absolute: the provider runs in
-			// the program dir, not the bundle's unpack dir.
+			// https://github.com/pulumi-labs/pulumi-hcl/issues/305
 			require.Equal(t, "1.2.3", stack.Outputs["moduleVersion"],
-				"moduleVersion should be read from the module's bundled VERSION file")
+				`moduleVersion should be read from "${path.module}/VERSION"`)
 		},
 	})
 }
