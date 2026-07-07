@@ -1,6 +1,6 @@
 ---
 title: Any HCL Module
-meta_desc: Instantiate any Terraform or OpenTofu module as a Pulumi Component Rgesource
+meta_desc: Instantiate any Terraform or OpenTofu module as a Pulumi component resource
 layout: package
 ---
 
