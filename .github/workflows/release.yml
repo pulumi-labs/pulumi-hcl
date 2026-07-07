@@ -57,6 +57,11 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+    outputs:
+      # The sdk-releases commit that carries this version's registry payload
+      # (registry/schema.json and registry/_index.md). Empty when the version was
+      # already published, which skips the downstream registry dispatch.
+      registry-sha: ${{ steps.commit.outputs.registry-sha }}
     env:
       VERSION: ${{ needs.release.outputs.version }}
       GH_TOKEN: ${{ secrets.RELEASE_TOKEN }}
@@ -104,7 +109,14 @@ jobs:
           git fetch --depth 1 origin "refs/tags/${VERSION}"
           git show "FETCH_HEAD:README.md" > sdk/go/README.md
           git show "FETCH_HEAD:LICENSE" > sdk/go/LICENSE
+      - name: Assemble the registry payload
+        if: steps.already-tagged.outputs.exists == 'false'
+        run: |
+          mkdir -p registry
+          pulumi package get-schema "${RUNNER_TEMP}/pulumi-resource-hcl" > registry/schema.json
+          git show "FETCH_HEAD:registry/_index.md" > registry/_index.md
       - name: Commit, tag, and push
+        id: commit
         if: steps.already-tagged.outputs.exists == 'false'
         run: |
           git config user.name "github-actions[bot]"
@@ -118,6 +130,7 @@ jobs:
           fi
           git tag "sdk/go/${VERSION}"
           git push origin "sdk/go/${VERSION}"
+          echo "registry-sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
       - name: Warm the Go module proxy
         if: steps.already-tagged.outputs.exists == 'false'
         continue-on-error: true
@@ -260,3 +273,49 @@ jobs:
             --source https://api.nuget.org/v3/index.json \
             --api-key "${{ steps.nuget-login.outputs.NUGET_API_KEY }}" \
             --skip-duplicate
+
+  # Ask the Pulumi registry to publish docs for this version.
+  #
+  # publish-go-sdk committed registry/schema.json (version baked in by the
+  # released provider binary) and registry/_index.md to the sdk-releases branch;
+  # we pin the dispatch to that exact commit so the URLs are immutable. The
+  # registry's `push-provider-update` handler reads the package version out of
+  # the schema itself, so we send neither a ref nor a schema path.
+  #
+  # The dispatch is a cross-repo GitHub API call, which GitHub OIDC can't
+  # authenticate on its own. Instead this job trades its GitHub OIDC token for a
+  # Pulumi ESC session (no secret stored in this repo) and pulls the
+  # dispatch-capable GitHub token out of the github-secrets/pulumi-hcl
+  # environment, mirroring how pulumi/registry authenticates.
+  publish-registry:
+    needs: publish-go-sdk
+    if: needs.publish-go-sdk.outputs.registry-sha != ''
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+    env:
+      SHA: ${{ needs.publish-go-sdk.outputs.registry-sha }}
+      ESC_ACTION_OIDC_AUTH: true
+      ESC_ACTION_OIDC_ORGANIZATION: pulumi
+      ESC_ACTION_OIDC_REQUESTED_TOKEN_TYPE: urn:pulumi:token-type:access_token:organization
+      ESC_ACTION_ENVIRONMENT: github-secrets/pulumi-hcl
+      ESC_ACTION_EXPORT_ENVIRONMENT_VARIABLES: GITHUB_TOKEN=hcl-registry-publish-dispatch
+    steps:
+      - name: Fetch the dispatch token from ESC
+        uses: pulumi/esc-action@8afe12bb7bb3df0a599e5309ee429ff1079ba85f # v3
+      - name: Dispatch a registry docs build
+        run: |
+          base="https://raw.githubusercontent.com/pulumi-labs/pulumi-hcl/${SHA}/registry"
+          jq -n \
+            --arg schema "${base}/schema.json" \
+            --arg index "${base}/_index.md" \
+            '{
+              event_type: "push-provider-update",
+              client_payload: {
+                "project-shortname": "hcl",
+                "schema-url": $schema,
+                "index-url": $index
+              }
+            }' \
+          | gh api --method POST repos/pulumi/registry/dispatches --input -
