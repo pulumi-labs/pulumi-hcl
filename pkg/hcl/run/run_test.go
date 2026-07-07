@@ -4001,13 +4001,24 @@ module "child" {
 // schema) is unknown / 2.
 func runExpansion(t *testing.T, src string, dryRun bool) *testutil.MockResourceMonitor {
 	t.Helper()
+	mock, err := tryExpansion(t, src, dryRun, dryRun)
+	require.NoError(t, err)
+	return mock
+}
+
+// tryExpansion is runExpansion with the error surfaced and provider-computed
+// attributes controlled independently of dryRun: unknownOutputs=true with
+// dryRun=false models an apply whose dependency outputs never resolved (e.g.
+// a --target update that skipped the dependency).
+func tryExpansion(t *testing.T, src string, dryRun, unknownOutputs bool) (*testutil.MockResourceMonitor, error) {
+	t.Helper()
 
 	p := parser.NewParser()
 	config, diags := p.ParseSource("test.hcl", []byte(src))
 	require.Empty(t, diags)
 
 	num := property.New(property.Computed)
-	if !dryRun {
+	if !unknownOutputs {
 		num = property.New(2.0)
 	}
 	mock := &testutil.MockResourceMonitor{
@@ -4015,8 +4026,8 @@ func runExpansion(t *testing.T, src string, dryRun bool) *testutil.MockResourceM
 		RegisterResourceHandler: func(
 			_ context.Context, req run.RegisterResourceRequest,
 		) (*run.RegisterResourceResponse, error) {
-			id := "" // unknown id during preview
-			if !dryRun {
+			id := "" // unknown id
+			if !unknownOutputs {
 				id = req.Name + "-id"
 			}
 			return &run.RegisterResourceResponse{
@@ -4024,6 +4035,11 @@ func runExpansion(t *testing.T, src string, dryRun bool) *testutil.MockResourceM
 				ID:      id,
 				Outputs: req.Inputs.Set("num", num),
 			}, nil
+		},
+		InvokeHandler: func(_ context.Context, req run.InvokeRequest) (*run.InvokeResponse, error) {
+			return &run.InvokeResponse{Return: property.NewMap(map[string]property.Value{
+				"result": property.New("result-" + req.Args.Get("filter").AsString()),
+			})}, nil
 		},
 	}
 	engine := newTestEngine(t, config, &run.EngineOptions{
@@ -4049,10 +4065,23 @@ func runExpansion(t *testing.T, src string, dryRun bool) *testutil.MockResourceM
 					},
 				},
 			},
+			Functions: map[string]schema.FunctionSpec{
+				"aws:index:getInstance": {
+					Inputs: &schema.ObjectTypeSpec{
+						Properties: map[string]schema.PropertySpec{
+							"filter": {TypeSpec: schema.TypeSpec{Type: "string"}},
+						},
+					},
+					Outputs: &schema.ObjectTypeSpec{
+						Properties: map[string]schema.PropertySpec{
+							"result": {TypeSpec: schema.TypeSpec{Type: "string"}},
+						},
+					},
+				},
+			},
 		}),
 	})
-	require.NoError(t, engine.Run(t.Context()))
-	return mock
+	return mock, engine.Run(t.Context())
 }
 
 // instanceInputs maps every registered aws:index:Instance name to its ami
@@ -4235,5 +4264,98 @@ output "amis" {
 			property.New("second-0-id"),
 			property.New("second-1-id"),
 		}), mock.StackOutputs.Get("amis"))
+	})
+}
+
+func TestEngine_DataSourceForEachFromResourceOutput(t *testing.T) {
+	t.Parallel()
+
+	// A data source whose for_each reads a generated id must not be invoked
+	// during preview; its aggregate value resolves to unknown instead.
+	src := `
+resource "aws_instance" "base" {
+  ami = "ami-base"
+}
+
+data "aws_instance" "dependent" {
+  for_each = toset([aws_instance.base.id])
+  filter   = each.value
+}
+
+output "results" {
+  value = [for k, d in data.aws_instance.dependent : d.result]
+}
+`
+
+	t.Run("preview", func(t *testing.T) {
+		t.Parallel()
+		mock := runExpansion(t, src, true)
+
+		assert.Empty(t, mock.InvokedFunctions)
+		requireComputedOutput(t, mock, "results")
+	})
+
+	t.Run("up", func(t *testing.T) {
+		t.Parallel()
+		mock := runExpansion(t, src, false)
+
+		require.Len(t, mock.InvokedFunctions, 1)
+		assert.Equal(t, "base-id", mock.InvokedFunctions[0].Args.Get("filter").AsString())
+
+		assert.Equal(t, property.New([]property.Value{
+			property.New("result-base-id"),
+		}), mock.StackOutputs.Get("results"))
+	})
+}
+
+func TestEngine_ExpansionUnknownDuringApply(t *testing.T) {
+	t.Parallel()
+
+	// During apply an unknown count/for_each can only mean a dependency's
+	// outputs never resolved (e.g. a --target update that skipped it); that
+	// must be an error, not a silent expansion to zero instances.
+	t.Run("count", func(t *testing.T) {
+		t.Parallel()
+		_, err := tryExpansion(t, `
+resource "aws_instance" "base" {
+  ami = "ami-base"
+}
+
+resource "aws_instance" "dependent" {
+  count = aws_instance.base.num
+  ami   = "ami-${count.index}"
+}
+`, false, true)
+		require.ErrorContains(t, err, "the count value depends on values that are not yet known")
+	})
+
+	t.Run("for_each", func(t *testing.T) {
+		t.Parallel()
+		_, err := tryExpansion(t, `
+resource "aws_instance" "base" {
+  ami = "ami-base"
+}
+
+resource "aws_instance" "dependent" {
+  for_each = toset([tostring(aws_instance.base.num)])
+  ami      = each.value
+}
+`, false, true)
+		require.ErrorContains(t, err, "the for_each value depends on values that are not yet known")
+	})
+
+	t.Run("data source", func(t *testing.T) {
+		t.Parallel()
+		_, err := tryExpansion(t, `
+resource "aws_instance" "base" {
+  ami = "ami-base"
+}
+
+data "aws_instance" "dependent" {
+  for_each = toset([tostring(aws_instance.base.num)])
+  filter   = each.value
+}
+`, false, true)
+		require.ErrorContains(t, err, "the for_each value depends on values that are not yet known")
 	})
 }
