@@ -1,6 +1,0 @@
-kind: bug-fixes
-body: Support `count` and `for_each` values that are unknown during preview
-time: 2026-07-07T14:20:01Z
-custom:
-    Component: runtime
-    PR: "319"

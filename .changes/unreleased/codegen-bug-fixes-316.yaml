@@ -1,6 +1,0 @@
-kind: bug-fixes
-body: Hoist `invoke` calls in resource options to data sources
-time: 2026-07-03T13:20:00+02:00
-custom:
-    Component: codegen
-    PR: "316"
