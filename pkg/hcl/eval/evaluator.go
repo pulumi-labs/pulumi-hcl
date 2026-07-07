@@ -121,37 +121,44 @@ func SensitiveArgumentDiagnostic(argName string, expr hcl.Expression) *hcl.Diagn
 	}
 }
 
-// EvaluateCount evaluates a count expression and returns (count, isBool, diags).
-// isBool is true when the expression evaluated to a boolean (true→1, false→0),
-// which suppresses the numeric index suffix on resource names.
-// Returns (1, false, nil) if expr is nil (no count specified).
-func (e *Evaluator) EvaluateCount(expr hcl.Expression) (int, bool, hcl.Diagnostics) {
+// EvaluateCount evaluates a count expression and returns
+// (count, isBool, unknown, diags). isBool is true when the expression
+// evaluated to a boolean (true→1, false→0), which suppresses the numeric
+// index suffix on resource names. unknown is true when the expression reads
+// values the current operation has not yet produced, so the number of
+// instances cannot be determined.
+// Returns (1, false, false, nil) if expr is nil (no count specified).
+func (e *Evaluator) EvaluateCount(expr hcl.Expression) (int, bool, bool, hcl.Diagnostics) {
 	if expr == nil {
-		return 1, false, nil
+		return 1, false, false, nil
 	}
 
 	val, diags := e.Evaluate(expr)
 	if diags.HasErrors() {
-		return 0, false, diags
+		return 0, false, false, diags
 	}
 
 	if val.HasMark(SensitiveMark) {
-		return 0, false, hcl.Diagnostics{SensitiveArgumentDiagnostic("count", expr)}
+		return 0, false, false, hcl.Diagnostics{SensitiveArgumentDiagnostic("count", expr)}
 	}
 
 	// Count never flows into deps, so drop marks; AsBigFloat / True panic on them.
 	val, _ = val.Unmark()
 
+	if !val.IsKnown() {
+		return 0, false, true, nil
+	}
+
 	if val.Type() == cty.Bool {
 		if val.True() {
-			return 1, true, nil
+			return 1, true, false, nil
 		}
-		return 0, true, nil
+		return 0, true, false, nil
 	}
 
 	converted, err := convert.Convert(val, cty.Number)
 	if err != nil {
-		return 0, false, hcl.Diagnostics{{
+		return 0, false, false, hcl.Diagnostics{{
 			Severity: hcl.DiagError,
 			Summary:  "Invalid count value",
 			Detail:   fmt.Sprintf("Count must be a number or boolean, got %s.", val.Type().FriendlyName()),
@@ -163,7 +170,7 @@ func (e *Evaluator) EvaluateCount(expr hcl.Expression) (int, bool, hcl.Diagnosti
 	count := int(i64)
 
 	if count < 0 {
-		return 0, false, hcl.Diagnostics{{
+		return 0, false, false, hcl.Diagnostics{{
 			Severity: hcl.DiagError,
 			Summary:  "Invalid count value",
 			Detail:   "Count must be a non-negative integer.",
@@ -171,28 +178,37 @@ func (e *Evaluator) EvaluateCount(expr hcl.Expression) (int, bool, hcl.Diagnosti
 		}}
 	}
 
-	return count, false, nil
+	return count, false, false, nil
 }
 
-// EvaluateForEach evaluates a for_each expression and returns the map/set of values.
-// Returns nil if expr is nil (no for_each specified).
-func (e *Evaluator) EvaluateForEach(expr hcl.Expression) (map[string]cty.Value, hcl.Diagnostics) {
+// EvaluateForEach evaluates a for_each expression and returns
+// (result, unknown, diags). unknown is true when the collection — or, for a
+// set, any of its elements, since those become instance keys — reads values
+// the current operation has not yet produced, so the instances cannot be
+// enumerated. Map and object values may be unknown as long as their keys are
+// known.
+// Returns a nil map if expr is nil (no for_each specified).
+func (e *Evaluator) EvaluateForEach(expr hcl.Expression) (map[string]cty.Value, bool, hcl.Diagnostics) {
 	if expr == nil {
-		return nil, nil
+		return nil, false, nil
 	}
 
 	val, diags := e.Evaluate(expr)
 	if diags.HasErrors() {
-		return nil, diags
+		return nil, false, diags
 	}
 
 	if val.HasMark(SensitiveMark) {
-		return nil, hcl.Diagnostics{SensitiveArgumentDiagnostic("for_each", expr)}
+		return nil, false, hcl.Diagnostics{SensitiveArgumentDiagnostic("for_each", expr)}
 	}
 
 	// Unmark only the container — per-element DepMarks must survive on the
 	// values stored in result so each.value carries deps into the body.
 	val, _ = val.Unmark()
+
+	if !val.IsKnown() {
+		return nil, true, nil
+	}
 
 	if val.IsNull() {
 		diags = append(diags, &hcl.Diagnostic{
@@ -201,7 +217,7 @@ func (e *Evaluator) EvaluateForEach(expr hcl.Expression) (map[string]cty.Value, 
 			Detail:   "for_each cannot be null.",
 			Subject:  expr.Range().Ptr(),
 		})
-		return nil, diags
+		return nil, false, diags
 	}
 
 	ty := val.Type()
@@ -224,7 +240,10 @@ func (e *Evaluator) EvaluateForEach(expr hcl.Expression) (map[string]cty.Value, 
 				Detail:   "for_each set must contain strings.",
 				Subject:  expr.Range().Ptr(),
 			})
-			return nil, diags
+			return nil, false, diags
+		}
+		if !val.IsWhollyKnown() {
+			return nil, true, nil
 		}
 		for it := val.ElementIterator(); it.Next(); {
 			_, v := it.Element()
@@ -238,10 +257,10 @@ func (e *Evaluator) EvaluateForEach(expr hcl.Expression) (map[string]cty.Value, 
 			Detail:   fmt.Sprintf("for_each must be a map or set, not %s.", ty.FriendlyName()),
 			Subject:  expr.Range().Ptr(),
 		})
-		return nil, diags
+		return nil, false, diags
 	}
 
-	return result, diags
+	return result, false, diags
 }
 
 // GetReferencedVariables returns all variables referenced by an expression.
