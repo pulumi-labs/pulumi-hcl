@@ -6,8 +6,9 @@ using System.Collections.Generic;
 using System.Collections.Immutable;
 using System.Threading.Tasks;
 using Pulumi.Serialization;
+using Pulumi;
 
-namespace Pulumi.Hcl
+namespace Pulumi.Labs.Hcl
 {
     [HclResourceType("pulumi:providers:hcl")]
     public partial class Provider : global::Pulumi.ProviderResource
@@ -29,6 +30,7 @@ namespace Pulumi.Hcl
             var defaultOptions = new CustomResourceOptions
             {
                 Version = Utilities.Version,
+                PluginDownloadURL = "github://api.github.com/pulumi-labs/pulumi-hcl",
             };
             var merged = CustomResourceOptions.Merge(defaultOptions, options);
             // Override the ID if one was specified for consistency with other language SDKs.

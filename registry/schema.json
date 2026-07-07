@@ -1,0 +1,87 @@
+{
+  "name": "hcl",
+  "displayName": "Any HCL Module",
+  "version": "0.9.1",
+  "description": "Instantiate a Terraform/OpenTofu module as a Pulumi component.",
+  "license": "Apache-2.0",
+  "repository": "https://github.com/pulumi-labs/pulumi-hcl",
+  "pluginDownloadURL": "github://api.github.com/pulumi-labs/pulumi-hcl",
+  "publisher": "Pulumi",
+  "meta": {
+    "supportPack": true
+  },
+  "language": {
+    "csharp": {
+      "rootNamespace": "Pulumi.Labs"
+    },
+    "go": {
+      "importBasePath": "github.com/pulumi-labs/pulumi-hcl/sdk/go/hcl",
+      "respectSchemaVersion": true
+    },
+    "nodejs": {
+      "packageName": "@pulumi-labs/hcl"
+    },
+    "python": {
+      "packageName": "pulumi_labs_hcl"
+    }
+  },
+  "config": {},
+  "resources": {
+    "hcl:index:Module": {
+      "description": "A Terraform/OpenTofu module instantiated as a component resource.",
+      "properties": {
+        "inputs": {
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "pulumi.json#/Any"
+          },
+          "description": "The module's input variables, keyed by variable name."
+        },
+        "outputs": {
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "pulumi.json#/Any"
+          },
+          "description": "The module's output values, keyed by output name."
+        },
+        "source": {
+          "type": "string",
+          "plain": true,
+          "description": "The module source address (a registry reference, URL, or local path)."
+        },
+        "version": {
+          "type": "string",
+          "plain": true,
+          "description": "An optional version constraint, used when source is a registry module reference."
+        }
+      },
+      "type": "object",
+      "required": [
+        "outputs"
+      ],
+      "inputProperties": {
+        "inputs": {
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "pulumi.json#/Any"
+          },
+          "description": "The module's input variables, keyed by variable name."
+        },
+        "source": {
+          "type": "string",
+          "plain": true,
+          "description": "The module source address (a registry reference, URL, or local path)."
+        },
+        "version": {
+          "type": "string",
+          "plain": true,
+          "description": "An optional version constraint, used when source is a registry module reference."
+        }
+      },
+      "requiredInputs": [
+        "source"
+      ],
+      "isComponent": true
+    }
+  }
+}

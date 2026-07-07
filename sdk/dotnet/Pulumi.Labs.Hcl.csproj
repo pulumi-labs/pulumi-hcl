@@ -5,11 +5,11 @@
     <Authors>Pulumi</Authors>
     <Company>Pulumi</Company>
     <Description>Instantiate a Terraform/OpenTofu module as a Pulumi component.</Description>
-    <PackageLicenseExpression></PackageLicenseExpression>
+    <PackageLicenseExpression>Apache-2.0</PackageLicenseExpression>
     <PackageProjectUrl></PackageProjectUrl>
     <RepositoryUrl>https://github.com/pulumi-labs/pulumi-hcl</RepositoryUrl>
     <PackageIcon>logo.png</PackageIcon>
-    <Version>0.9.0</Version>
+    <Version>0.9.1</Version>
 
     <TargetFramework>net6.0</TargetFramework>
     <Nullable>enable</Nullable>

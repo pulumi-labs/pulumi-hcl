@@ -12,7 +12,7 @@ group = "com.pulumi"
 
 def resolvedVersion = System.getenv("PACKAGE_VERSION") ?:
     (project.version == "unspecified"
-         ? "0.9.0"
+         ? "0.9.1"
          : project.version)
 
 def signingKey = System.getenv("SIGNING_KEY")
@@ -70,6 +70,7 @@ def genPulumiResources = tasks.register('genPulumiResources') {
         builder {
             resource true
             name "hcl"
+            server "github://api.github.com/pulumi-labs/pulumi-hcl"
             version resolvedVersion
         }
         def infoJson = builder.toPrettyString()
@@ -107,8 +108,8 @@ publishing {
 
                 licenses {
                     license {
-                        name = ""
-                        url = ""
+                        name = "The Apache License, Version 2.0"
+                        url = "http://www.apache.org/licenses/LICENSE-2.0.txt"
                     }
                 }
 
