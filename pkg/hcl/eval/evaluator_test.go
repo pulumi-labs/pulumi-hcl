@@ -67,6 +67,7 @@ func TestEvaluateCount(t *testing.T) {
 	ctx, err := NewContext("/tmp", "/tmp", "/tmp", "", "", "")
 	require.NoError(t, err)
 	ctx.SetVariable("instance_count", cty.NumberIntVal(3))
+	ctx.SetVariable("unknown_count", cty.UnknownVal(cty.Number))
 
 	eval := NewEvaluator(ctx)
 
@@ -75,21 +76,23 @@ func TestEvaluateCount(t *testing.T) {
 		expr      string
 		expected  int
 		isBool    bool
+		unknown   bool
 		expectErr bool
 	}{
-		{"literal", `3`, 3, false, false},
-		{"variable", `var.instance_count`, 3, false, false},
-		{"zero", `0`, 0, false, false},
-		{"negative", `-1`, 0, false, true},
-		{"bool_true", `true`, 1, true, false},
-		{"bool_false", `false`, 0, true, false},
+		{"literal", `3`, 3, false, false, false},
+		{"variable", `var.instance_count`, 3, false, false, false},
+		{"zero", `0`, 0, false, false, false},
+		{"negative", `-1`, 0, false, false, true},
+		{"bool_true", `true`, 1, true, false, false},
+		{"bool_false", `false`, 0, true, false, false},
+		{"unknown", `var.unknown_count`, 0, false, true, false},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			expr := parseExpr(t, tt.expr)
-			result, isBool, diags := eval.EvaluateCount(expr)
+			result, isBool, unknown, diags := eval.EvaluateCount(expr)
 			if tt.expectErr {
 				if !diags.HasErrors() {
 					t.Error("Expected error, got none")
@@ -103,6 +106,9 @@ func TestEvaluateCount(t *testing.T) {
 				}
 				if isBool != tt.isBool {
 					t.Errorf("Expected isBool=%v, got %v", tt.isBool, isBool)
+				}
+				if unknown != tt.unknown {
+					t.Errorf("Expected unknown=%v, got %v", tt.unknown, unknown)
 				}
 			}
 		})
@@ -120,10 +126,11 @@ func TestEvaluateCount_MarkedKnownValue(t *testing.T) {
 	))
 	eval := NewEvaluator(ctx)
 
-	result, isBool, diags := eval.EvaluateCount(parseExpr(t, `var.n`))
+	result, isBool, unknown, diags := eval.EvaluateCount(parseExpr(t, `var.n`))
 	require.False(t, diags.HasErrors(), "unexpected diags: %v", diags)
 	assert.Equal(t, 3, result)
 	assert.False(t, isBool)
+	assert.False(t, unknown)
 }
 
 // ElementIterator panics on marked containers; a non-sensitive mark must
@@ -137,8 +144,9 @@ func TestEvaluateForEach_MarkedContainer(t *testing.T) {
 	}).WithMarks(cty.NewValueMarks(DepMark("urn:pulumi:dev::p::aws:ec2/vpc:Vpc::test"))))
 	eval := NewEvaluator(ctx)
 
-	result, diags := eval.EvaluateForEach(parseExpr(t, `var.m`))
+	result, unknown, diags := eval.EvaluateForEach(parseExpr(t, `var.m`))
 	require.False(t, diags.HasErrors(), "unexpected diags: %v", diags)
+	assert.False(t, unknown)
 	assert.Equal(t, map[string]cty.Value{
 		"primary": cty.StringVal("p"),
 	}, result)
@@ -150,7 +158,7 @@ func TestEvaluateCountNil(t *testing.T) {
 	require.NoError(t, err)
 	eval := NewEvaluator(ctx)
 
-	result, isBool, diags := eval.EvaluateCount(nil)
+	result, isBool, unknown, diags := eval.EvaluateCount(nil)
 	if diags.HasErrors() {
 		t.Errorf("Unexpected error: %s", diags.Error())
 	}
@@ -159,6 +167,9 @@ func TestEvaluateCountNil(t *testing.T) {
 	}
 	if isBool {
 		t.Error("Expected isBool=false for nil count")
+	}
+	if unknown {
+		t.Error("Expected unknown=false for nil count")
 	}
 }
 
@@ -171,10 +182,11 @@ func TestEvaluateForEach(t *testing.T) {
 	t.Run("map", func(t *testing.T) {
 		t.Parallel()
 		expr := parseExpr(t, `{a = "x", b = "y"}`)
-		result, diags := eval.EvaluateForEach(expr)
+		result, unknown, diags := eval.EvaluateForEach(expr)
 		if diags.HasErrors() {
 			t.Errorf("Unexpected error: %s", diags.Error())
 		}
+		assert.False(t, unknown)
 		if len(result) != 2 {
 			t.Errorf("Expected 2 elements, got %d", len(result))
 		}
@@ -186,10 +198,11 @@ func TestEvaluateForEach(t *testing.T) {
 	t.Run("set of strings", func(t *testing.T) {
 		t.Parallel()
 		expr := parseExpr(t, `toset(["a", "b", "c"])`)
-		result, diags := eval.EvaluateForEach(expr)
+		result, unknown, diags := eval.EvaluateForEach(expr)
 		if diags.HasErrors() {
 			t.Errorf("Unexpected error: %s", diags.Error())
 		}
+		assert.False(t, unknown)
 		if len(result) != 3 {
 			t.Errorf("Expected 3 elements, got %d", len(result))
 		}
@@ -197,10 +210,11 @@ func TestEvaluateForEach(t *testing.T) {
 
 	t.Run("nil returns nil", func(t *testing.T) {
 		t.Parallel()
-		result, diags := eval.EvaluateForEach(nil)
+		result, unknown, diags := eval.EvaluateForEach(nil)
 		if diags.HasErrors() {
 			t.Errorf("Unexpected error: %s", diags.Error())
 		}
+		assert.False(t, unknown)
 		if result != nil {
 			t.Errorf("Expected nil, got %v", result)
 		}
@@ -209,10 +223,34 @@ func TestEvaluateForEach(t *testing.T) {
 	t.Run("list rejected", func(t *testing.T) {
 		t.Parallel()
 		expr := parseExpr(t, `["a", "b"]`)
-		_, diags := eval.EvaluateForEach(expr)
+		_, _, diags := eval.EvaluateForEach(expr)
 		if !diags.HasErrors() {
 			t.Error("Expected error for list for_each, got none")
 		}
+	})
+
+	t.Run("unknown container", func(t *testing.T) {
+		t.Parallel()
+		unknownCtx, err := NewContext("/tmp", "/tmp", "/tmp", "", "", "")
+		require.NoError(t, err)
+		unknownCtx.SetVariable("m", cty.UnknownVal(cty.Map(cty.String)))
+
+		result, unknown, diags := NewEvaluator(unknownCtx).EvaluateForEach(parseExpr(t, `var.m`))
+		require.False(t, diags.HasErrors(), "unexpected diags: %v", diags)
+		assert.True(t, unknown)
+		assert.Nil(t, result)
+	})
+
+	t.Run("set with unknown element", func(t *testing.T) {
+		t.Parallel()
+		unknownCtx, err := NewContext("/tmp", "/tmp", "/tmp", "", "", "")
+		require.NoError(t, err)
+		unknownCtx.SetVariable("s", cty.UnknownVal(cty.String))
+
+		result, unknown, diags := NewEvaluator(unknownCtx).EvaluateForEach(parseExpr(t, `toset([var.s, "known"])`))
+		require.False(t, diags.HasErrors(), "unexpected diags: %v", diags)
+		assert.True(t, unknown)
+		assert.Nil(t, result)
 	})
 }
 

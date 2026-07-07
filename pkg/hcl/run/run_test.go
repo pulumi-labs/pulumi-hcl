@@ -3994,3 +3994,246 @@ module "child" {
 	assert.Equal(t, rootRef, childResource.Provider,
 		"a child resource with no provider block must inherit the root default provider")
 }
+
+// runExpansion executes src against a monitor whose provider-computed
+// attributes are unknown during preview and concrete during up: a resource's
+// id is unknown / "<name>-id", and its `num` attribute (output-only in the
+// schema) is unknown / 2.
+func runExpansion(t *testing.T, src string, dryRun bool) *testutil.MockResourceMonitor {
+	t.Helper()
+
+	p := parser.NewParser()
+	config, diags := p.ParseSource("test.hcl", []byte(src))
+	require.Empty(t, diags)
+
+	num := property.New(property.Computed)
+	if !dryRun {
+		num = property.New(2.0)
+	}
+	mock := &testutil.MockResourceMonitor{
+		DryRun: dryRun,
+		RegisterResourceHandler: func(
+			_ context.Context, req run.RegisterResourceRequest,
+		) (*run.RegisterResourceResponse, error) {
+			id := "" // unknown id during preview
+			if !dryRun {
+				id = req.Name + "-id"
+			}
+			return &run.RegisterResourceResponse{
+				URN:     urn.URN("urn:pulumi:test::project::" + req.Type + "::" + req.Name),
+				ID:      id,
+				Outputs: req.Inputs.Set("num", num),
+			}, nil
+		},
+	}
+	engine := newTestEngine(t, config, &run.EngineOptions{
+		ModuleLoader:    testModuleLoader(t),
+		ProjectName:     "test-project",
+		StackName:       "dev",
+		ResourceMonitor: mock,
+		WorkDir:         t.TempDir(),
+		RootDir:         t.TempDir(),
+		DryRun:          dryRun,
+		SchemaLoader: schemaloader.New(t, schema.PackageSpec{
+			Name: "aws",
+			Resources: map[string]schema.ResourceSpec{
+				"aws:index:Instance": {
+					InputProperties: map[string]schema.PropertySpec{
+						"ami": {TypeSpec: schema.TypeSpec{Type: "string"}},
+					},
+					ObjectTypeSpec: schema.ObjectTypeSpec{
+						Properties: map[string]schema.PropertySpec{
+							"ami": {TypeSpec: schema.TypeSpec{Type: "string"}},
+							"num": {TypeSpec: schema.TypeSpec{Type: "number"}},
+						},
+					},
+				},
+			},
+		}),
+	})
+	require.NoError(t, engine.Run(t.Context()))
+	return mock
+}
+
+// instanceInputs maps every registered aws:index:Instance name to its ami
+// input, giving one comparable view of which instances an operation produced.
+func instanceInputs(mock *testutil.MockResourceMonitor) map[string]string {
+	got := map[string]string{}
+	for _, r := range mock.RegisteredResources {
+		if r.Type == "aws:index:Instance" {
+			got[r.Name] = r.Inputs.Get("ami").AsString()
+		}
+	}
+	return got
+}
+
+// requireComputedOutput asserts that a stack output resolved to unknown
+// during preview — present and computed, rather than an error, an empty
+// collection, or missing.
+func requireComputedOutput(t *testing.T, mock *testutil.MockResourceMonitor, name string) {
+	t.Helper()
+	out, ok := mock.StackOutputs.GetOk(name)
+	require.Truef(t, ok, "expected %q stack output to be registered", name)
+	assert.Truef(t, out.IsComputed(), "expected %q stack output to be unknown, got %v", name, out)
+}
+
+func TestEngine_ForEachFromResourceOutput(t *testing.T) {
+	t.Parallel()
+
+	// The dependent resource's instance keys derive from ids the provider
+	// generates at create time, so the for_each collection is unknown during
+	// preview. Terraform rejects this program at plan time; we instead defer:
+	// preview omits the instances it cannot enumerate yet and up creates them.
+	src := `
+resource "aws_instance" "base" {
+  count = 2
+  ami   = "ami-${count.index}"
+}
+
+resource "aws_instance" "dependent" {
+  for_each = toset(aws_instance.base[*].id)
+  ami      = each.value
+}
+
+output "amis" {
+  value = [for k, r in aws_instance.dependent : r.ami]
+}
+`
+
+	t.Run("preview", func(t *testing.T) {
+		t.Parallel()
+		mock := runExpansion(t, src, true)
+
+		assert.Equal(t, map[string]string{
+			"base-0": "ami-0",
+			"base-1": "ami-1",
+		}, instanceInputs(mock))
+
+		requireComputedOutput(t, mock, "amis")
+	})
+
+	t.Run("up", func(t *testing.T) {
+		t.Parallel()
+		mock := runExpansion(t, src, false)
+
+		assert.Equal(t, map[string]string{
+			"base-0":              "ami-0",
+			"base-1":              "ami-1",
+			"dependent-base-0-id": "base-0-id",
+			"dependent-base-1-id": "base-1-id",
+		}, instanceInputs(mock))
+
+		assert.Equal(t, property.New([]property.Value{
+			property.New("base-0-id"),
+			property.New("base-1-id"),
+		}), mock.StackOutputs.Get("amis"))
+	})
+}
+
+func TestEngine_CountFromResourceOutput(t *testing.T) {
+	t.Parallel()
+
+	// The dependent resource's count reads a provider-computed number, so it
+	// is unknown during preview.
+	src := `
+resource "aws_instance" "base" {
+  ami = "ami-base"
+}
+
+resource "aws_instance" "dependent" {
+  count = aws_instance.base.num
+  ami   = "ami-${count.index}"
+}
+
+output "amis" {
+  value = aws_instance.dependent[*].ami
+}
+`
+
+	t.Run("preview", func(t *testing.T) {
+		t.Parallel()
+		mock := runExpansion(t, src, true)
+
+		assert.Equal(t, map[string]string{
+			"base": "ami-base",
+		}, instanceInputs(mock))
+
+		requireComputedOutput(t, mock, "amis")
+	})
+
+	t.Run("up", func(t *testing.T) {
+		t.Parallel()
+		mock := runExpansion(t, src, false)
+
+		assert.Equal(t, map[string]string{
+			"base":        "ami-base",
+			"dependent-0": "ami-0",
+			"dependent-1": "ami-1",
+		}, instanceInputs(mock))
+
+		assert.Equal(t, property.New([]property.Value{
+			property.New("ami-0"),
+			property.New("ami-1"),
+		}), mock.StackOutputs.Get("amis"))
+	})
+}
+
+func TestEngine_ChainedExpansionFromResourceOutput(t *testing.T) {
+	t.Parallel()
+
+	// Unknowns chain through successive expansions: second's count reads a
+	// computed attribute of a for_each instance of first, and third's for_each
+	// reads the generated ids of the count instances of second. During preview
+	// nothing past first can be enumerated; up must expand the whole chain.
+	src := `
+resource "aws_instance" "first" {
+  for_each = toset(["a", "b"])
+  ami      = "ami-${each.key}"
+}
+
+resource "aws_instance" "second" {
+  count = aws_instance.first["a"].num
+  ami   = aws_instance.first["a"].id
+}
+
+resource "aws_instance" "third" {
+  for_each = toset(aws_instance.second[*].id)
+  ami      = each.value
+}
+
+output "amis" {
+  value = [for k, r in aws_instance.third : r.ami]
+}
+`
+
+	t.Run("preview", func(t *testing.T) {
+		t.Parallel()
+		mock := runExpansion(t, src, true)
+
+		assert.Equal(t, map[string]string{
+			"first-a": "ami-a",
+			"first-b": "ami-b",
+		}, instanceInputs(mock))
+
+		requireComputedOutput(t, mock, "amis")
+	})
+
+	t.Run("up", func(t *testing.T) {
+		t.Parallel()
+		mock := runExpansion(t, src, false)
+
+		assert.Equal(t, map[string]string{
+			"first-a":           "ami-a",
+			"first-b":           "ami-b",
+			"second-0":          "first-a-id",
+			"second-1":          "first-a-id",
+			"third-second-0-id": "second-0-id",
+			"third-second-1-id": "second-1-id",
+		}, instanceInputs(mock))
+
+		assert.Equal(t, property.New([]property.Value{
+			property.New("second-0-id"),
+			property.New("second-1-id"),
+		}), mock.StackOutputs.Get("amis"))
+	})
+}

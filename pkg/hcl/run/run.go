@@ -1200,24 +1200,48 @@ func (e *Engine) processResourceInContext(
 
 	expander := graph.NewResourceExpander()
 
+	unknownArg := ""
 	if res.Count != nil {
-		count, isBool, diags := tempEvaluator.EvaluateCount(res.Count)
+		count, isBool, unknown, diags := tempEvaluator.EvaluateCount(res.Count)
 		if diags.HasErrors() {
 			return fmt.Errorf("evaluating count: %s", diags.Error())
 		}
-		if isBool {
+		switch {
+		case unknown:
+			unknownArg = "count"
+		case isBool:
 			expander.SetBoolCount(node.Key, count)
-		} else {
+		default:
 			expander.SetCount(node.Key, count)
 		}
 	}
 
 	if res.ForEach != nil {
-		forEach, diags := tempEvaluator.EvaluateForEach(res.ForEach)
+		forEach, unknown, diags := tempEvaluator.EvaluateForEach(res.ForEach)
 		if diags.HasErrors() {
 			return fmt.Errorf("evaluating for_each: %s", diags.Error())
 		}
-		expander.SetForEach(node.Key, forEach)
+		if unknown {
+			unknownArg = "for_each"
+		} else {
+			expander.SetForEach(node.Key, forEach)
+		}
+	}
+
+	// A count/for_each that reads values this operation has not yet produced
+	// cannot be expanded. During preview, register no instances and bind the
+	// resource address to unknown so downstream references resolve to unknown
+	// rather than an empty collection.
+	if unknownArg != "" {
+		if !e.dryRun {
+			return fmt.Errorf("%s: the %s value depends on values that are not yet known", node.Key, unknownArg)
+		}
+		baseKey := node.Key
+		if node.ModuleInfo != nil {
+			baseKey = strings.TrimPrefix(baseKey, node.ModuleInfo.Prefix())
+		}
+		evalCtx.SetResource(baseKey, "", cty.UnknownVal(cty.DynamicPseudoType))
+		return nil
 	}
 
 	result := expander.Expand(node)
@@ -2602,24 +2626,42 @@ func (e *Engine) processRangedDataSource(
 	tempEvaluator := eval.NewEvaluator(evalCtx)
 	expander := graph.NewResourceExpander()
 
+	unknownArg := ""
 	if ds.Count != nil {
-		count, isBool, diags := tempEvaluator.EvaluateCount(ds.Count)
+		count, isBool, unknown, diags := tempEvaluator.EvaluateCount(ds.Count)
 		if diags.HasErrors() {
 			return fmt.Errorf("evaluating count: %s", diags.Error())
 		}
-		if isBool {
+		switch {
+		case unknown:
+			unknownArg = "count"
+		case isBool:
 			expander.SetBoolCount(node.Key, count)
-		} else {
+		default:
 			expander.SetCount(node.Key, count)
 		}
 	}
 
 	if ds.ForEach != nil {
-		forEach, diags := tempEvaluator.EvaluateForEach(ds.ForEach)
+		forEach, unknown, diags := tempEvaluator.EvaluateForEach(ds.ForEach)
 		if diags.HasErrors() {
 			return fmt.Errorf("evaluating for_each: %s", diags.Error())
 		}
-		expander.SetForEach(node.Key, forEach)
+		if unknown {
+			unknownArg = "for_each"
+		} else {
+			expander.SetForEach(node.Key, forEach)
+		}
+	}
+
+	// See the matching case in processResourceInContext: unexpandable during
+	// preview means no invokes and an unknown aggregate value.
+	if unknownArg != "" {
+		if !e.dryRun {
+			return fmt.Errorf("%s: the %s value depends on values that are not yet known", node.Key, unknownArg)
+		}
+		evalCtx.SetDataSource(dsKey, cty.UnknownVal(cty.DynamicPseudoType))
+		return nil
 	}
 
 	result := expander.Expand(node)
@@ -3279,9 +3321,14 @@ func (e *Engine) processModuleInit(ctx context.Context, node *graph.Node) error 
 	}
 
 	if mod.Count != nil {
-		count, _, diags := eval.NewEvaluator(parentEvalCtx).EvaluateCount(mod.Count)
+		count, _, unknown, diags := eval.NewEvaluator(parentEvalCtx).EvaluateCount(mod.Count)
 		if diags.HasErrors() {
 			return fmt.Errorf("evaluating module count: %s", diags.Error())
+		}
+		if unknown {
+			// TODO: support unknown module expansion during preview the way
+			// resources do (register no instances, bind outputs to unknown).
+			return fmt.Errorf("%s: the count value depends on values that are not yet known", node.Key)
 		}
 		var instances []*moduleInstance
 		for idx := range count {
@@ -3312,9 +3359,14 @@ func (e *Engine) processModuleInit(ctx context.Context, node *graph.Node) error 
 		return nil
 	}
 
-	forEach, diags := eval.NewEvaluator(parentEvalCtx).EvaluateForEach(mod.ForEach)
+	forEach, unknown, diags := eval.NewEvaluator(parentEvalCtx).EvaluateForEach(mod.ForEach)
 	if diags.HasErrors() {
 		return fmt.Errorf("evaluating module for_each: %s", diags.Error())
+	}
+	if unknown {
+		// TODO: support unknown module expansion during preview the way
+		// resources do (register no instances, bind outputs to unknown).
+		return fmt.Errorf("%s: the for_each value depends on values that are not yet known", node.Key)
 	}
 
 	var instances []*moduleInstance
