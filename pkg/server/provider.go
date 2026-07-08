@@ -636,9 +636,13 @@ func (m *constructResourceMonitor) Invoke(
 	}
 
 	resp, err := m.client.Invoke(ctx, &pulumirpc.ResourceInvokeRequest{
-		Tok:             req.Token,
-		Args:            argsStruct,
-		AcceptResources: true,
+		Tok:               req.Token,
+		Args:              argsStruct,
+		Provider:          req.Provider,
+		Version:           req.Version,
+		PluginDownloadURL: req.PluginDownloadURL,
+		PackageRef:        string(req.PackageRef),
+		AcceptResources:   true,
 	})
 	if err != nil {
 		return nil, err
@@ -671,8 +675,9 @@ func (m *constructResourceMonitor) Call(
 	}
 
 	resp, err := m.client.Call(ctx, &pulumirpc.ResourceCallRequest{
-		Tok:  req.Token,
-		Args: argsStruct,
+		Tok:        req.Token,
+		Args:       argsStruct,
+		PackageRef: string(req.PackageRef),
 	})
 	if err != nil {
 		return nil, fmt.Errorf("calling method: %w", err)
