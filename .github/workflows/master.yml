@@ -1,0 +1,23 @@
+name: Master
+
+# Runs full CI on every merge to master. Besides validating master itself,
+# this is what keeps the Go caches warm: cache saves in ci.yml only happen on
+# master runs, and pull requests can only restore caches saved on their base
+# branch. Changelog-only pushes are skipped because release.yml already runs
+# ci.yml for those.
+
+on:
+  push:
+    branches: [master]
+    paths-ignore:
+      - CHANGELOG.md
+      - '.changes/**'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  ci:
+    uses: ./.github/workflows/ci.yml
+    secrets: inherit
