@@ -19,7 +19,7 @@ set -euo pipefail
 
 shard="${1:?usage: test-shard.sh <shard>}"
 
-GOTEST=(go test -race -coverpkg=./... -coverprofile=coverage.out)
+GOTEST=(go test -v -race -coverpkg=./... -coverprofile=coverage.out)
 
 case "$shard" in
   unit)
@@ -39,7 +39,7 @@ case "$shard" in
     # takes minutes under the race detector. Every code path it exercises
     # also runs race-instrumented on small values in the other conformance
     # shards, so this one value-size stress test runs without -race.
-    go test -coverpkg=./... -coverprofile=coverage.out \
+    go test -v -coverpkg=./... -coverprofile=coverage.out \
       -run '^TestLanguage$/^l2-large-string$' ./cmd/pulumi-language-hcl
     ;;
   tfcompat-[0-9])
