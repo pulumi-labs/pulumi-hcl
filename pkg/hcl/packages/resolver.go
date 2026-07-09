@@ -20,6 +20,7 @@ import (
 
 	"github.com/pulumi-labs/pulumi-hcl/pkg/hcl/bridge"
 	"github.com/pulumi/pulumi-terraform-bridge/v3/pkg/tfbridge"
+	shim "github.com/pulumi/pulumi-terraform-bridge/v3/pkg/tfshim"
 	"github.com/pulumi/pulumi/pkg/v3/codegen/schema"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/util/logging"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/workspace"
@@ -136,10 +137,10 @@ func (r *Resolver) providerInfoForType(ctx context.Context, tfType string) *tfbr
 	return r.providerInfoFor(ctx, tfType)
 }
 
-// providerInfoFor fetches the bridge ProviderInfo for a TF provider local name,
-// threading the SDK-on-disk descriptor (when present) through to the mapper so
-// dynamically bridged providers route via the correct parameterization. Returns
-// nil on miss.
+// providerInfoFor fetches the bridge ProviderInfo for a TF provider local
+// name, threading the SDK-on-disk descriptor (when present) through to the
+// mapper so dynamically bridged providers route via the correct
+// parameterization. Returns nil on miss.
 func (r *Resolver) providerInfoFor(ctx context.Context, tfProvider string) *tfbridge.ProviderInfo {
 	if r.providerInfoSource == nil {
 		return nil
@@ -154,6 +155,100 @@ func (r *Resolver) providerInfoFor(ctx context.Context, tfProvider string) *tfbr
 		return nil
 	}
 	return info
+}
+
+// ProviderFunction pairs a resolved Pulumi function with the TF-side facts
+// its schema cannot carry.
+type ProviderFunction struct {
+	*schema.Function
+
+	// Variadic is true when the function's final parameter is variadic. It
+	// comes from the TF signature in the bridge mapping's provider schema;
+	// a function resolved by convention alone is never variadic.
+	Variadic bool
+}
+
+// ProviderFunctions returns the provider-defined functions exposed by the
+// provider registered under the given TF local name, keyed by TF function
+// name (e.g. "arn_parse"). A Pulumi function projects as a provider-defined
+// function when its schema declares multi-argument inputs; single-bag invokes
+// are data sources. TF names come from the bridge mapping when available and
+// otherwise derive from the token name via the bridge naming convention. When
+// two tokens derive the same TF name, the index-module token wins and the
+// rest are dropped.
+func (r *Resolver) ProviderFunctions(ctx context.Context, providerName string) (map[string]ProviderFunction, error) {
+	out := map[string]ProviderFunction{}
+
+	pkgName := providerName
+	if info := r.providerInfoFor(ctx, providerName); info != nil {
+		if info.Name != "" {
+			pkgName = info.Name
+		}
+		var signatures map[string]shim.Function
+		if info.P != nil {
+			signatures = info.P.Functions()
+		}
+		for tfName, f := range info.Functions {
+			if f == nil || string(f.Tok) == "" {
+				continue
+			}
+			fn, err := r.loadFunctionByToken(ctx, pkgName, string(f.Tok))
+			if err != nil {
+				logging.V(5).Infof("bridge function token %q (for %q) not loadable: %v", f.Tok, tfName, err)
+				continue
+			}
+			if fn.MultiArgumentInputs {
+				out[tfName] = ProviderFunction{
+					Function: fn,
+					Variadic: signatures[tfName].VariadicParameter != nil,
+				}
+			}
+		}
+	}
+
+	pkg, err := resolvePackage(ctx, r.loader, &schema.PackageDescriptor{Name: pkgName})
+	if err != nil {
+		if len(out) > 0 {
+			return out, nil
+		}
+		return nil, err
+	}
+	chosenToken := map[string]string{}
+	for iter := pkg.Functions().Range(); iter.Next(); {
+		tok := iter.Token()
+		name := tok[strings.LastIndexByte(tok, ':')+1:]
+		tfName := tfbridge.PulumiToTerraformName(name, nil, nil)
+		if _, mapped := out[tfName]; mapped && chosenToken[tfName] == "" {
+			continue
+		}
+		if prev, ok := chosenToken[tfName]; ok && !preferFunctionToken(pkg, tok, prev) {
+			continue
+		}
+		fn, err := iter.Function()
+		if err != nil {
+			logging.V(5).Infof("function token %q not loadable: %v", tok, err)
+			continue
+		}
+		if !fn.MultiArgumentInputs {
+			continue
+		}
+		chosenToken[tfName] = tok
+		out[tfName] = ProviderFunction{Function: fn}
+	}
+	return out, nil
+}
+
+// preferFunctionToken reports whether tok should replace prev as the source
+// for a TF function name: the index module wins, then the lexicographically
+// smaller token, for determinism. TokenToModule normalizes the index module
+// to the empty string.
+func preferFunctionToken(pkg schema.PackageReference, tok, prev string) bool {
+	tokIndex := pkg.TokenToModule(tok) == ""
+	prevIndex := pkg.TokenToModule(prev) == ""
+	if tokIndex != prevIndex {
+		return tokIndex
+	}
+	return tok < prev
 }
 
 // loadResourceByToken loads the Pulumi schema for an exact Pulumi token.

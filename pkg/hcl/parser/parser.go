@@ -16,6 +16,8 @@ package parser
 
 import (
 	"fmt"
+	"maps"
+	"slices"
 	"strings"
 
 	"github.com/blang/semver"
@@ -74,7 +76,16 @@ func (p *Parser) parseFiles(files map[string]*hcl.File) (*ast.Config, hcl.Diagno
 	config.Files = files
 	var diags hcl.Diagnostics
 
+	calls := map[string]struct{}{}
 	for _, file := range files {
+		fileCalls, scanned := ast.ProviderFunctionCallsInBody(file.Body)
+		if !scanned {
+			config.ProviderFunctionCallsIncomplete = true
+		}
+		for _, name := range fileCalls {
+			calls[name] = struct{}{}
+		}
+
 		content, contentDiags := file.Body.Content(rootSchema)
 		diags = append(diags, contentDiags...)
 		if contentDiags.HasErrors() {
@@ -86,6 +97,7 @@ func (p *Parser) parseFiles(files map[string]*hcl.File) (*ast.Config, hcl.Diagno
 			diags = append(diags, blockDiags...)
 		}
 	}
+	config.ProviderFunctionCalls = slices.Sorted(maps.Keys(calls))
 
 	config.Diagnostics = diags
 	return config, diags

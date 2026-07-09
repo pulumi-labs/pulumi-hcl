@@ -25,6 +25,7 @@ import (
 	"github.com/hashicorp/hcl/v2"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/resource/urn"
 	"github.com/zclconf/go-cty/cty"
+	"github.com/zclconf/go-cty/cty/function"
 )
 
 // splitResourceKey splits a resource key like "aws_instance.web" into ["aws_instance", "web"].
@@ -94,6 +95,11 @@ type Context struct {
 	// (see TypeInferenceFunctions). It is set only when the context is used to
 	// infer output/local types from unknown values during schema generation.
 	typeInference bool
+
+	// providerFunctions holds provider-defined functions callable as
+	// provider::<localname>::<name>(...), merged into the function table
+	// HCLContext serves. Keys are full table keys (see ast.ProviderFunctionName).
+	providerFunctions map[string]function.Function
 }
 
 // PathContext contains path-related values.
@@ -571,10 +577,19 @@ func (c *Context) HCLContext() *hcl.EvalContext {
 	if c.typeInference {
 		functions = TypeInferenceFunctions(c.rootModuleDir)
 	}
+	maps.Copy(functions, c.providerFunctions)
 	return &hcl.EvalContext{
 		Variables: vars,
 		Functions: functions,
 	}
+}
+
+// SetProviderFunctions installs the provider-defined function table served by
+// HCLContext. Keys must be full table keys (see ast.ProviderFunctionName).
+func (c *Context) SetProviderFunctions(functions map[string]function.Function) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.providerFunctions = functions
 }
 
 // UseTypeInferenceFunctions switches the context to type-preserving function
@@ -627,19 +642,20 @@ func (c *Context) Clone() *Context {
 	}
 
 	clone := &Context{
-		rootModuleDir:   c.rootModuleDir,
-		variables:       maps.Clone(c.variables),
-		locals:          maps.Clone(c.locals),
-		resources:       maps.Clone(c.resources),
-		rangedResources: clonedRanged,
-		dataSources:     maps.Clone(c.dataSources),
-		modules:         maps.Clone(c.modules),
-		moduleOutputs:   clonedModuleOutputs,
-		providers:       maps.Clone(c.providers),
-		calls:           maps.Clone(c.calls),
-		path:            c.path,
-		pulumi:          c.pulumi,
-		self:            c.self,
+		rootModuleDir:     c.rootModuleDir,
+		providerFunctions: c.providerFunctions,
+		variables:         maps.Clone(c.variables),
+		locals:            maps.Clone(c.locals),
+		resources:         maps.Clone(c.resources),
+		rangedResources:   clonedRanged,
+		dataSources:       maps.Clone(c.dataSources),
+		modules:           maps.Clone(c.modules),
+		moduleOutputs:     clonedModuleOutputs,
+		providers:         maps.Clone(c.providers),
+		calls:             maps.Clone(c.calls),
+		path:              c.path,
+		pulumi:            c.pulumi,
+		self:              c.self,
 	}
 
 	if c.count != nil {

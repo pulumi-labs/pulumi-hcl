@@ -25,6 +25,7 @@ import (
 	"github.com/blang/semver"
 	"github.com/pulumi-labs/pulumi-hcl/pkg/hcl/ast"
 	"github.com/pulumi-labs/pulumi-hcl/pkg/hcl/bridge"
+	"github.com/pulumi-labs/pulumi-hcl/pkg/hcl/packages"
 	"github.com/pulumi-labs/pulumi-hcl/pkg/hcl/parser"
 	pulumiSchema "github.com/pulumi/pulumi/pkg/v3/codegen/schema"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/resource"
@@ -105,10 +106,12 @@ func TestGenerateModuleSchemaGolden(t *testing.T) {
 	}
 }
 
-// stubResolver resolves a fixed set of resources by TF type and nothing else,
-// so resource-reference output typing can be tested without a provider schema.
+// stubResolver resolves a fixed set of resources by TF type, plus optionally a
+// fixed set of provider-defined functions, so reference typing can be tested
+// without a provider schema.
 type stubResolver struct {
-	resources map[string]*pulumiSchema.Resource
+	resources         map[string]*pulumiSchema.Resource
+	providerFunctions map[string]map[string]packages.ProviderFunction
 }
 
 func (s stubResolver) ResolveResource(_ context.Context, tfType string) (*pulumiSchema.Resource, error) {
@@ -121,6 +124,16 @@ func (stubResolver) ResolveFunction(_ context.Context, _ string) (*pulumiSchema.
 func (stubResolver) ResourceBodyMapping(_ context.Context, _ string) *bridge.BodyMapping { return nil }
 func (stubResolver) DataSourceBodyMapping(_ context.Context, _ string) *bridge.BodyMapping {
 	return nil
+}
+
+func (s stubResolver) ProviderFunctions(
+	_ context.Context, providerName string,
+) (map[string]packages.ProviderFunction, error) {
+	fns, ok := s.providerFunctions[providerName]
+	if !ok {
+		return nil, fmt.Errorf("unknown provider %q", providerName)
+	}
+	return fns, nil
 }
 
 // TestResourceReferenceOutputsAreTyped shows that an output referencing a
@@ -240,6 +253,12 @@ func (s mappingResolver) ResourceBodyMapping(_ context.Context, tfType string) *
 
 func (mappingResolver) DataSourceBodyMapping(_ context.Context, _ string) *bridge.BodyMapping {
 	return nil
+}
+
+func (mappingResolver) ProviderFunctions(
+	_ context.Context, providerName string,
+) (map[string]packages.ProviderFunction, error) {
+	return nil, fmt.Errorf("unknown provider %q", providerName)
 }
 
 // a MaxItems:1 block is flattened to a single object on the Pulumi side, but TF/OpenTofu
@@ -601,6 +620,134 @@ func TestBoundaryNameConversion(t *testing.T) {
 		"object_out": map[string]any{"field_two": "c"},
 		"map_out":    map[string]any{"user_key": "d"},
 	})))
+}
+
+// TestProviderFunctionOutputIsTyped shows that an output calling a
+// provider-defined function (`provider::<name>::<fn>(...)`) is typed from the
+// function's declared return type, using the multi-argument-inputs
+// projection the resolver supplies for the referenced provider.
+func TestProviderFunctionOutputIsTyped(t *testing.T) {
+	t.Parallel()
+
+	const src = `
+variable "x" {
+  type = string
+}
+
+output "arn" {
+  value = provider::simple::parse_arn(var.x)
+}
+`
+	config, diags := parser.NewParser().ParseSource("main.tf", []byte(src))
+	require.False(t, diags.HasErrors(), diags.Error())
+
+	resolver := stubResolver{providerFunctions: map[string]map[string]packages.ProviderFunction{
+		"simple": {
+			"parse_arn": {Function: &pulumiSchema.Function{
+				Token:               "simple:index:parseArn",
+				MultiArgumentInputs: true,
+				Inputs: &pulumiSchema.ObjectType{Properties: []*pulumiSchema.Property{
+					{Name: "arn", Type: pulumiSchema.StringType},
+				}},
+				ReturnType: pulumiSchema.StringType,
+			}},
+		},
+	}}
+
+	moduleSchema, err := GenerateModuleSchema(
+		t.Context(), config, &Binder{Resources: resolver}, componentToken("pkg", "index", "pkg"), semver.MustParse("0.0.0-dev"))
+	require.NoError(t, err)
+
+	assert.Equal(t, map[string]*PropertySpec{
+		"arn": {Type: "string"},
+	}, moduleSchema.OutputProperties)
+}
+
+// TestProviderFunctionObjectReturnThroughLocal shows that a provider-defined
+// function's structured return type survives the trip through a local: a
+// field projected from the result types as that field, and the whole result
+// types as an object whose property names are the TF-side snake_case names
+// and whose required list reflects the return schema's optionality.
+func TestProviderFunctionObjectReturnThroughLocal(t *testing.T) {
+	t.Parallel()
+
+	const src = `
+variable "x" {
+  type = string
+}
+
+locals {
+  parsed = provider::simple::parse_arn(var.x)
+}
+
+output "service" {
+  value = local.parsed.service
+}
+
+output "parsed" {
+  value = local.parsed
+}
+`
+	config, diags := parser.NewParser().ParseSource("main.tf", []byte(src))
+	require.False(t, diags.HasErrors(), diags.Error())
+
+	resolver := stubResolver{providerFunctions: map[string]map[string]packages.ProviderFunction{
+		"simple": {
+			"parse_arn": {Function: &pulumiSchema.Function{
+				Token:               "simple:index:parseArn",
+				MultiArgumentInputs: true,
+				Inputs: &pulumiSchema.ObjectType{Properties: []*pulumiSchema.Property{
+					{Name: "arn", Type: pulumiSchema.StringType},
+				}},
+				ReturnType: &pulumiSchema.ObjectType{Properties: []*pulumiSchema.Property{
+					{Name: "service", Type: pulumiSchema.StringType},
+					{Name: "accountId", Type: &pulumiSchema.OptionalType{ElementType: pulumiSchema.StringType}},
+				}},
+			}},
+		},
+	}}
+
+	moduleSchema, err := GenerateModuleSchema(
+		t.Context(), config, &Binder{Resources: resolver}, componentToken("pkg", "index", "pkg"), semver.MustParse("0.0.0-dev"))
+	require.NoError(t, err)
+
+	assert.Equal(t, map[string]*PropertySpec{
+		"service": {Type: "string"},
+		"parsed": {
+			Type: "object",
+			Properties: map[string]*PropertySpec{
+				"service":    {Type: "string"},
+				"account_id": {Type: "string"},
+			},
+			Required: []string{"service"},
+		},
+	}, moduleSchema.OutputProperties)
+	assert.Equal(t, []string{"parsed", "service"}, moduleSchema.RequiredOutputs)
+}
+
+// TestProviderFunctionUnknownProviderIsError shows that a call to a provider
+// the resolver doesn't recognize raises an error naming that provider, rather
+// than degrading to an untyped output.
+func TestProviderFunctionUnknownProviderIsError(t *testing.T) {
+	t.Parallel()
+
+	const src = `
+variable "x" {
+  type = string
+}
+
+output "arn" {
+  value = provider::unknown::parse_arn(var.x)
+}
+`
+	config, diags := parser.NewParser().ParseSource("main.tf", []byte(src))
+	require.False(t, diags.HasErrors(), diags.Error())
+
+	resolver := stubResolver{providerFunctions: map[string]map[string]packages.ProviderFunction{}}
+
+	_, err := GenerateModuleSchema(
+		t.Context(), config, &Binder{Resources: resolver}, componentToken("pkg", "index", "pkg"), semver.MustParse("0.0.0-dev"))
+	require.EqualError(t, err, `resolving provider functions for "unknown": unknown provider "unknown"`)
 }
 
 // errLoader is a schema.Loader that fails if asked to load any package. The

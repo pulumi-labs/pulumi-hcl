@@ -63,6 +63,17 @@ type Config struct {
 	// Files contains the parsed HCL files.
 	Files map[string]*hcl.File
 
+	// ProviderFunctionCalls lists the TF provider local names referenced by
+	// provider-defined function calls (provider::<name>::<fn>) anywhere in
+	// the configuration's files, deduplicated and sorted.
+	ProviderFunctionCalls []string
+
+	// ProviderFunctionCallsIncomplete is true when a file could not be
+	// scanned for provider-defined function calls (JSON syntax), so
+	// ProviderFunctionCalls may be missing providers. Consumers fall back
+	// to the declared required providers.
+	ProviderFunctionCallsIncomplete bool
+
 	// Diagnostics accumulated during parsing.
 	Diagnostics hcl.Diagnostics
 }

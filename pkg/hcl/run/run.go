@@ -53,6 +53,7 @@ import (
 	"github.com/pulumi/pulumi/sdk/v3/go/property"
 	"github.com/zclconf/go-cty/cty"
 	ctyconvert "github.com/zclconf/go-cty/cty/convert"
+	"github.com/zclconf/go-cty/cty/function"
 )
 
 // PackageRef is an opaque reference returned by RegisterPackage that routes
@@ -559,6 +560,10 @@ func (e *Engine) Run(ctx context.Context) error {
 	// Register the root stack resource to get its URN for outputs
 	if err := e.registerStack(ctx); err != nil {
 		return fmt.Errorf("registering stack: %w", err)
+	}
+
+	if err := e.installProviderFunctions(ctx, e.evaluator.Context(), e.config, nil); err != nil {
+		return err
 	}
 
 	// Build the dependency graph with module inlining
@@ -3092,6 +3097,115 @@ func (e *Engine) callMethod(ctx context.Context, req CallRequest) (property.Map,
 	return resp.Return, nil
 }
 
+// installProviderFunctions builds the provider-defined function table for the
+// module described by config and installs it on evalCtx, keyed as
+// provider::<localname>::<name>. Only providers the parser saw function calls
+// on are resolved, so provider schemas keep loading lazily. When the parser
+// could not scan every file (JSON syntax), it falls back to (leniently)
+// resolving every declared provider. modInfo is nil for the root module.
+func (e *Engine) installProviderFunctions(
+	ctx context.Context, evalCtx *eval.Context, config *ast.Config, modInfo *graph.ModuleInfo,
+) error {
+	table, err := e.providerFunctionTable(ctx, config, modInfo)
+	if err != nil {
+		return err
+	}
+	if len(table) > 0 {
+		evalCtx.SetProviderFunctions(table)
+	}
+	return nil
+}
+
+// providerFunctionTable resolves and projects the provider-defined functions
+// the module described by config can call. See installProviderFunctions.
+func (e *Engine) providerFunctionTable(
+	ctx context.Context, config *ast.Config, modInfo *graph.ModuleInfo,
+) (map[string]function.Function, error) {
+	referenced := map[string]struct{}{}
+	for _, name := range config.ProviderFunctionCalls {
+		referenced[name] = struct{}{}
+	}
+	lenient := false
+	if config.ProviderFunctionCallsIncomplete && config.Terraform != nil {
+		lenient = true
+		for name := range config.Terraform.RequiredProviders {
+			referenced[name] = struct{}{}
+		}
+	}
+	if len(referenced) == 0 {
+		return nil, nil
+	}
+
+	table := map[string]function.Function{}
+	for providerName := range referenced {
+		fns, err := e.resolver.ProviderFunctions(ctx, providerName)
+		if err != nil {
+			if lenient {
+				logging.V(5).Infof("provider functions for %q unavailable: %v", providerName, err)
+				continue
+			}
+			return nil, fmt.Errorf("resolving provider functions for %q: %w", providerName, err)
+		}
+		for tfName, fnSchema := range fns {
+			f, err := transform.ProviderFunction(fnSchema.Function, fnSchema.Variadic, e.dryRun,
+				e.providerFunctionImpl(ctx, providerName, fnSchema.Function, modInfo))
+			if err != nil {
+				return nil, fmt.Errorf("projecting function provider::%s::%s: %w", providerName, tfName, err)
+			}
+			table[ast.ProviderFunctionName(providerName, tfName)] = f
+		}
+	}
+	return table, nil
+}
+
+// providerFunctionImpl returns the invoke callback behind a provider-defined
+// function. Provider routing mirrors a data source with no explicit
+// `provider` argument: the instantiating module call's pass-through
+// providers, then the module's own un-aliased provider block, then an
+// ancestor's, and otherwise the package's default provider. During preview a
+// call whose converted arguments carry unknowns is skipped, which the
+// projection turns into an unknown result.
+func (e *Engine) providerFunctionImpl(
+	ctx context.Context, providerName string, fnSchema *schema.Function, modInfo *graph.ModuleInfo,
+) transform.ProviderFunctionImpl {
+	return func(args property.Map) (property.Map, error) {
+		if e.dryRun && property.New(args).HasComputed() {
+			return property.Map{}, nil
+		}
+		req := InvokeRequest{
+			Token:      fnSchema.Token,
+			Args:       args,
+			PackageRef: e.packageRefs[providerName],
+		}
+		if modInfo != nil {
+			if ref := e.resolvePassThroughProvider(modInfo, providerName); ref != "" {
+				req.Provider = ref
+			} else if outputs, ok := e.resourceOutputs.Get(modInfo.Prefix() + providerName); ok {
+				if ref, err := providerRefFromCty(outputs); err == nil {
+					req.Provider = ref
+				}
+			} else if ref := e.inheritedDefaultProvider(modInfo, providerName); ref != "" {
+				req.Provider = ref
+			}
+		} else if ref, ok := e.defaultProviders.Get(providerName); ok {
+			req.Provider = ref
+		}
+
+		if e.resmon == nil { // TODO: Remove this check
+			// No resource monitor - return empty outputs for testing
+			return property.Map{}, nil
+		}
+		resp, err := e.resmon.Invoke(ctx, req)
+		if err != nil {
+			return property.Map{}, err
+		}
+		if len(resp.Failures) > 0 {
+			return property.Map{}, fmt.Errorf("%s", strings.Join(resp.Failures, "; "))
+		}
+		return resp.Return, nil
+	}
+}
+
 // invokeFunction invokes a Pulumi function (data source).
 func (e *Engine) invokeFunction(ctx context.Context, tfType string, req InvokeRequest) (property.Map, error) {
 	req, defaults, err := lowerRemoteStateInvoke(tfType, req)
@@ -3362,6 +3476,13 @@ func (e *Engine) processModuleInit(ctx context.Context, node *graph.Node) error 
 		return fmt.Errorf("loading module %s for input types: %w", mod.Source, err)
 	}
 
+	// One table serves every instance: the functions a module can call depend
+	// on its config and call site, not on the count/for_each iteration.
+	moduleFunctions, err := e.providerFunctionTable(ctx, childMod.Config, modInfo)
+	if err != nil {
+		return fmt.Errorf("module %s: %w", mod.Source, err)
+	}
+
 	// Evaluate module inputs for the component resource registration
 	inputs := make(map[string]property.Value)
 	attrs, _ := mod.Config.JustAttributes()
@@ -3399,6 +3520,7 @@ func (e *Engine) processModuleInit(ctx context.Context, node *graph.Node) error 
 		if err != nil {
 			return fmt.Errorf("creating the module evaluation context: %w", err)
 		}
+		instCtx.SetProviderFunctions(moduleFunctions)
 
 		e.moduleInstances.Set(modInfo.Path, []*moduleInstance{{
 			Path:    instPath,
@@ -3435,6 +3557,7 @@ func (e *Engine) processModuleInit(ctx context.Context, node *graph.Node) error 
 			if err != nil {
 				return fmt.Errorf("creating the module evaluation context: %w", err)
 			}
+			instCtx.SetProviderFunctions(moduleFunctions)
 			instCtx.SetCount(idx)
 			instances = append(instances, &moduleInstance{
 				Path:    instPath,
@@ -3476,6 +3599,7 @@ func (e *Engine) processModuleInit(ctx context.Context, node *graph.Node) error 
 		if err != nil {
 			return fmt.Errorf("creating the module evaluation context: %w", err)
 		}
+		instCtx.SetProviderFunctions(moduleFunctions)
 		instCtx.SetEach(k, v)
 		instances = append(instances, &moduleInstance{
 			Path:    instPath,

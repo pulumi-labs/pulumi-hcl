@@ -1379,6 +1379,28 @@ func ctyObjectTypeRec(
 	return cty.ObjectWithOptionalAttrs(attrs, optional)
 }
 
+// RefinedUnknown returns an unknown value of type t that refines required
+// (non-optional) object attributes not-null and leaves optional ones nullable.
+// It recurses into nested objects so attribute access preserves the refinement;
+// collections are leaves, since indexing drops refinements and their element
+// types already carry optional-attribute metadata.
+func RefinedUnknown(t cty.Type, nullable bool) cty.Value {
+	if t.IsObjectType() && !nullable {
+		optional := t.OptionalAttributes()
+		attrs := make(map[string]cty.Value, len(t.AttributeTypes()))
+		for name, attrType := range t.AttributeTypes() {
+			_, isOptional := optional[name]
+			attrs[name] = RefinedUnknown(attrType, isOptional)
+		}
+		return cty.ObjectVal(attrs)
+	}
+	u := cty.UnknownVal(t)
+	if nullable {
+		return u
+	}
+	return u.RefineNotNull()
+}
+
 // ctyTypeContainsDynamic reports whether the given cty type embeds
 // [cty.DynamicPseudoType].
 func ctyTypeContainsDynamic(t cty.Type) bool {

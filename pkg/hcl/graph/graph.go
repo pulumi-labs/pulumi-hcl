@@ -198,6 +198,11 @@ type Graph struct {
 	// in, so resolving a rename needs the blocks scoped to the resource's own
 	// module.
 	moved map[modulepath.Path][]*ast.Moved
+
+	// scopes maps a module's node-key prefix to its scope, so expression-level
+	// dependency extraction (which receives only the prefix) can resolve
+	// provider-defined function calls to the provider block they use.
+	scopes map[string]*moduleScope
 }
 
 type dagNode struct {
@@ -219,6 +224,7 @@ func NewGraph() *Graph {
 		keyByDagNode: make(map[pdag.Node]string),
 		dependents:   make(map[string]int),
 		moved:        make(map[modulepath.Path][]*ast.Moved),
+		scopes:       make(map[string]*moduleScope),
 	}
 }
 
@@ -310,6 +316,8 @@ func (g *Graph) HasDependents(key string) bool {
 func BuildFromConfig(config *ast.Config, moduleLoader ModuleLoader, workDir string) (*Graph, error) {
 	g := NewGraph()
 	g.moved[modulepath.Root()] = config.Moved
+	rootScope := &moduleScope{config: config}
+	g.scopes[""] = rootScope
 
 	contract.AssertNoErrorf(errors.Join(
 		g.AddNode(&Node{
@@ -354,7 +362,7 @@ func BuildFromConfig(config *ast.Config, moduleLoader ModuleLoader, workDir stri
 
 	// Add provider nodes (must come before resources since resources can reference them)
 	for key, provider := range config.Providers {
-		deps := g.providerDeps(provider, "")
+		deps := g.providerDeps(provider, key, "")
 		err := g.AddNode(&Node{
 			Key:      key,
 			Type:     NodeTypeProvider,
@@ -394,7 +402,6 @@ func BuildFromConfig(config *ast.Config, moduleLoader ModuleLoader, workDir stri
 	}
 
 	// Inline module contents into the graph for fine-grained dependency tracking.
-	rootScope := &moduleScope{config: config}
 	for name, module := range config.Modules {
 		if err := g.inlineModule(name, module, modulepath.Root(), moduleLoader, workDir, rootScope); err != nil {
 			return nil, fmt.Errorf("inlining module %s: %w", name, err)
@@ -443,10 +450,15 @@ func (g *Graph) defaultProviderDeps(resource *ast.Resource, config *ast.Config, 
 
 // moduleScope is an ancestor module's node-key prefix and config, linked toward
 // the root via parent. Scopes are immutable once built and shared by reference.
+// mod and parentPrefix describe the module call that instantiated this scope
+// (nil/"" for the root), so pass-through provider references can resolve into
+// the parent scope.
 type moduleScope struct {
-	prefix string
-	config *ast.Config
-	parent *moduleScope
+	prefix       string
+	config       *ast.Config
+	parent       *moduleScope
+	mod          *ast.Module
+	parentPrefix string
 }
 
 // inheritedProviderDeps returns an edge to the nearest ancestor module's
@@ -618,8 +630,10 @@ func (g *Graph) resourceDeps(resource *ast.Resource, prefix string) []pdag.Node 
 	return slices.Collect(maps.Keys(seen))
 }
 
-// providerDeps extracts all dependencies from a provider block, applying prefix to resolved keys.
-func (g *Graph) providerDeps(provider *ast.Provider, prefix string) []pdag.Node {
+// providerDeps extracts all dependencies from a provider block, applying prefix
+// to resolved keys. key is the block's own node key: a provider config that
+// calls one of its own provider's functions would otherwise depend on itself.
+func (g *Graph) providerDeps(provider *ast.Provider, key, prefix string) []pdag.Node {
 	seen := make(map[pdag.Node]bool)
 	for _, dep := range g.exprDeps(provider.ForEach, prefix) {
 		seen[dep] = true
@@ -629,6 +643,8 @@ func (g *Graph) providerDeps(provider *ast.Provider, prefix string) []pdag.Node 
 			seen[dep] = true
 		}
 	}
+	_, self := g.newNode(key)
+	delete(seen, self)
 	return slices.Collect(maps.Keys(seen))
 }
 
@@ -772,12 +788,44 @@ func (g *Graph) exprDepsExcluding(expr hcl.Expression, prefix string, exclude ma
 		}
 	}
 
+	// A provider-defined function call routes through the provider block its
+	// namespace resolves to, so order the caller after that block the same way
+	// an implicit default-provider reference would.
+	for _, providerName := range ast.ProviderFunctionCallsInExpr(expr) {
+		if dep, ok := g.providerFunctionDep(prefix, providerName); ok {
+			addToSortedListAsSet(&deps, dep)
+		}
+	}
+
 	result := make([]pdag.Node, len(deps))
 	for i, dep := range deps {
 		_, n := g.newNode(dep)
 		result[i] = n
 	}
 	return result
+}
+
+// providerFunctionDep resolves the provider block a provider-defined function
+// call in the scope identified by prefix routes through, mirroring the
+// runtime's resolution order: the instantiating module call's pass-through
+// providers, then the un-aliased provider block of the call's own module, then
+// those of its ancestors. ok is false when no block is declared anywhere — the
+// engine then falls back to the package's default provider, which needs no
+// ordering edge.
+func (g *Graph) providerFunctionDep(prefix, providerName string) (string, bool) {
+	for s := g.scopes[prefix]; s != nil; s = s.parent {
+		if s.mod != nil {
+			if passExpr, ok := s.mod.Providers[providerName]; ok {
+				if parentKey := providerExprKey(passExpr); parentKey != "" {
+					return s.parentPrefix + parentKey, true
+				}
+			}
+		}
+		if _, ok := s.config.Providers[providerName]; ok {
+			return s.prefix + providerName, true
+		}
+	}
+	return "", false
 }
 
 // FormatTraversal converts a traversal to a dependency string.
@@ -911,6 +959,14 @@ func (g *Graph) inlineModule(
 	prefix := path.PrefixString()
 	parentPrefix := parentPath.PrefixString()
 	g.moved[path] = loaded.Config.Moved
+	scope := &moduleScope{
+		prefix:       prefix,
+		config:       loaded.Config,
+		parent:       parent,
+		mod:          mod,
+		parentPrefix: parentPrefix,
+	}
+	g.scopes[prefix] = scope
 	modInfo := &ModuleInfo{
 		Path:             path,
 		Module:           mod,
@@ -981,7 +1037,7 @@ func (g *Graph) inlineModule(
 
 	// Providers
 	for key, provider := range loaded.Config.Providers {
-		deps := g.providerDeps(provider, prefix)
+		deps := g.providerDeps(provider, prefix+key, prefix)
 		deps = append(deps, initIdx)
 		if err := g.AddNode(&Node{
 			Key:        prefix + key,
@@ -1092,7 +1148,6 @@ func (g *Graph) inlineModule(
 	}
 
 	// Nested modules
-	scope := &moduleScope{prefix: prefix, config: loaded.Config, parent: parent}
 	for nestedName, nestedMod := range loaded.Config.Modules {
 		if err := g.inlineModule(nestedName, nestedMod, path, moduleLoader, loaded.SourcePath, scope); err != nil {
 			return fmt.Errorf("inlining nested module %s: %w", nestedName, err)
