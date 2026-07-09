@@ -28,9 +28,10 @@ import (
 // the user's home directory, matching OpenTofu's openFile. The fixture reads a
 // file via `~/<name>`; OpenTofu reads it and reports it exists, so pulumi-hcl
 // must too. The test writes the referenced file into the shared $HOME both
-// runtimes see and removes it afterwards. The outputs are the file's literal
-// contents and existence booleans, neither of which embeds a machine-specific
-// path, so the comparison is stable across hosts.
+// runtimes see and removes it afterwards; its process-unique name reaches the
+// program as a variable. The outputs are the file's literal contents and
+// existence booleans, neither of which embeds a machine-specific path, so the
+// comparison is stable across hosts.
 func TestL1FileTilde(t *testing.T) {
 	t.Parallel()
 	home, err := os.UserHomeDir()
@@ -41,15 +42,7 @@ func TestL1FileTilde(t *testing.T) {
 	require.NoError(t, os.WriteFile(abs, []byte("from-home"), 0o600))
 	t.Cleanup(func() { _ = os.Remove(abs) })
 
-	program := fmt.Sprintf(`
-output "content" { value = file("~/%[1]s") }
-output "b64"     { value = filebase64("~/%[1]s") }
-output "exists"  { value = fileexists("~/%[1]s") }
-`, name)
-
 	tfcompat.RunCase(t, "l1_file_tilde", tfcompat.Case{
-		Stages: []tfcompat.Stage{
-			{Files: map[string]string{"main.tf": program}},
-		},
+		Config: map[string]string{"name": name},
 	})
 }

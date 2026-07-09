@@ -29,21 +29,6 @@ func TestL2Postcondition_Pass(t *testing.T) {
 		Providers: []tfcompat.Provider{
 			{Name: "simple", Factory: providers.SimpleProvider},
 		},
-		Stages: []tfcompat.Stage{{
-			Files: map[string]string{"main.tf": `
-resource "simple_resource" "guarded" {
-  input_one = "a"
-  input_two = false
-
-  lifecycle {
-    postcondition {
-      condition     = self.result == "a-false"
-      error_message = "result must be a-false"
-    }
-  }
-}
-`},
-		}},
 	})
 }
 
@@ -56,21 +41,6 @@ func TestL2Postcondition_StringBoolCondition(t *testing.T) {
 		Providers: []tfcompat.Provider{
 			{Name: "simple", Factory: providers.SimpleProvider},
 		},
-		Stages: []tfcompat.Stage{{
-			Files: map[string]string{"main.tf": `
-resource "simple_resource" "guarded" {
-  input_one = "a"
-  input_two = false
-
-  lifecycle {
-    postcondition {
-      condition     = self.result == "a-false" ? "true" : "false"
-      error_message = "result must be a-false"
-    }
-  }
-}
-`},
-		}},
 	})
 }
 
@@ -85,19 +55,6 @@ func TestL2Postcondition_Fail(t *testing.T) {
 			{Name: "simple", Factory: providers.SimpleProvider},
 		},
 		Stages: []tfcompat.Stage{{
-			Files: map[string]string{"main.tf": `
-resource "simple_resource" "guarded" {
-  input_one = "a"
-  input_two = false
-
-  lifecycle {
-    postcondition {
-      condition     = self.result == "expected-different-value"
-      error_message = "POSTCONDITION_VIOLATED"
-    }
-  }
-}
-`},
 			ExpectErr: "POSTCONDITION_VIOLATED",
 		}},
 	})

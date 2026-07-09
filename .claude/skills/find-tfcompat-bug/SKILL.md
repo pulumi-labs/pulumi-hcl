@@ -130,17 +130,18 @@ including multi-file cases** (e.g. a `templatefile` case ships its `main.tf` *an
 template it reads; `RunCase` loads every file in the directory). The `Case` struct gives
 you more knobs when outputs alone can't show the divergence:
 
-- `Providers` / `Config` — register TF providers / set input variables.
+- `Providers` / `Config` — register TF providers / set input variables. `Config` is the
+  only channel for values not known until runtime (ports, temp paths): declare a variable
+  in the fixture and set it here — never generate program text in Go.
 - `AssertState` — assert on resource fields not reachable via outputs (e.g. `Protect`).
-- `Stages` + `Mode` (`StageApply` / `StagePreview` / `StageDestroy`) — drive preview or
-  destroy, or sequence multiple operations.
-- `Stage.ExpectErr` — require BOTH runtimes to fail with a matching error substring; the
-  way to prove an error-behavior divergence.
-
-Reach for inline `Stages` with a `Files` map **only** when you need something the plain
-disk fixture can't express — an `ExpectErr` assertion, or a multi-stage
-preview/destroy/re-apply sequence. A normal output-comparison case (even one with several
-files) belongs on disk, not inline.
+- `Stages` — per-stage behavior matched positionally against the disk fixture: `Mode`
+  (`StageApply` / `StagePreview` / `StageDestroy`), `ExpectErr` (require BOTH runtimes to
+  fail with a matching error substring — the way to prove an error-behavior divergence),
+  and `AssertOutput`. A `Stage` carries behavior only; program files always come from the
+  case directory. A flat case dir with N `Stages` entries runs the same program N times
+  (e.g. preview then apply); a program that must *change* between stages uses numbered
+  subdirs `testdata/cases/<name>/0/`, `1/`, ... with one `Stages` entry per subdir (or
+  none).
 
 Confirm the bug is real **on master**:
 

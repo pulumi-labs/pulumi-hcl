@@ -29,25 +29,6 @@ func TestL2Precondition_Pass(t *testing.T) {
 		Providers: []tfcompat.Provider{
 			{Name: "simple", Factory: providers.SimpleProvider},
 		},
-		Stages: []tfcompat.Stage{{
-			Files: map[string]string{"main.tf": `
-variable "expected" {
-  type    = string
-  default = "ok"
-}
-
-resource "simple_resource" "guarded" {
-  input_one = "ok"
-
-  lifecycle {
-    precondition {
-      condition     = var.expected == "ok"
-      error_message = "should never fire"
-    }
-  }
-}
-`},
-		}},
 	})
 }
 
@@ -60,23 +41,6 @@ func TestL2Precondition_Fail(t *testing.T) {
 			{Name: "simple", Factory: providers.SimpleProvider},
 		},
 		Stages: []tfcompat.Stage{{
-			Files: map[string]string{"main.tf": `
-variable "trigger_failure" {
-  type    = bool
-  default = true
-}
-
-resource "simple_resource" "guarded" {
-  input_one = "value"
-
-  lifecycle {
-    precondition {
-      condition     = !var.trigger_failure
-      error_message = "PRECONDITION_VIOLATED"
-    }
-  }
-}
-`},
 			ExpectErr: "PRECONDITION_VIOLATED",
 		}},
 	})
@@ -91,25 +55,6 @@ func TestL2Precondition_StringBoolCondition(t *testing.T) {
 		Providers: []tfcompat.Provider{
 			{Name: "simple", Factory: providers.SimpleProvider},
 		},
-		Stages: []tfcompat.Stage{{
-			Files: map[string]string{"main.tf": `
-variable "expected" {
-  type    = string
-  default = "ok"
-}
-
-resource "simple_resource" "guarded" {
-  input_one = "ok"
-
-  lifecycle {
-    precondition {
-      condition     = var.expected != "" ? "true" : "false"
-      error_message = "expected must not be empty"
-    }
-  }
-}
-`},
-		}},
 	})
 }
 
@@ -119,29 +64,13 @@ resource "simple_resource" "guarded" {
 // and known at apply (so both runtimes must enforce the condition successfully).
 func TestL2Precondition_UnknownDeferred(t *testing.T) {
 	t.Parallel()
-	program := map[string]string{"main.tf": `
-resource "simple_resource" "upstream" {
-  input_one = "a"
-}
-
-resource "simple_resource" "dependent" {
-  input_one = "b"
-
-  lifecycle {
-    precondition {
-      condition     = simple_resource.upstream.result == "a-false"
-      error_message = "upstream result must match"
-    }
-  }
-}
-`}
 	tfcompat.RunCase(t, "l2_precondition_unknown_deferred", tfcompat.Case{
 		Providers: []tfcompat.Provider{
 			{Name: "simple", Factory: providers.SimpleProvider},
 		},
 		Stages: []tfcompat.Stage{
-			{Files: program, Mode: tfcompat.StagePreview},
-			{Files: program},
+			{Mode: tfcompat.StagePreview},
+			{},
 		},
 	})
 }

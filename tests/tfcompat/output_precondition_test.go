@@ -27,21 +27,6 @@ func TestL1OutputPrecondition(t *testing.T) {
 	t.Parallel()
 	tfcompat.RunCase(t, "l1_output_precondition", tfcompat.Case{
 		Stages: []tfcompat.Stage{{
-			Files: map[string]string{"main.tf": `
-variable "enabled" {
-  type    = bool
-  default = false
-}
-
-output "result" {
-  value = "ok"
-
-  precondition {
-    condition     = var.enabled
-    error_message = "OUTPUT_PRECONDITION_FAILED"
-  }
-}
-`},
 			ExpectErr: "OUTPUT_PRECONDITION_FAILED",
 		}},
 	})
@@ -54,32 +39,6 @@ func TestL2ModuleOutputPrecondition(t *testing.T) {
 	t.Parallel()
 	tfcompat.RunCase(t, "l2_module_output_precondition", tfcompat.Case{
 		Stages: []tfcompat.Stage{{
-			Files: map[string]string{
-				"main.tf": `
-module "child" {
-  source = "./child"
-}
-
-output "child_result" {
-  value = module.child.result
-}
-`,
-				"child/main.tf": `
-variable "ok" {
-  type    = bool
-  default = false
-}
-
-output "result" {
-  value = "ok"
-
-  precondition {
-    condition     = var.ok
-    error_message = "MODULE_OUTPUT_PRECONDITION_FAILED"
-  }
-}
-`,
-			},
 			ExpectErr: "MODULE_OUTPUT_PRECONDITION_FAILED",
 		}},
 	})

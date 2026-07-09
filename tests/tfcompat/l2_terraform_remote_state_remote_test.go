@@ -71,81 +71,39 @@ func TestL2TerraformRemoteStateRemote(t *testing.T) {
 
 	// Every permutation OpenTofu's remote backend accepts (verified live): a
 	// name-bound workspace with no top-level workspace or with the implicit
-	// "default", and a prefix-bound workspace selected by a top-level workspace.
+	// "default", and a prefix-bound workspace selected by a top-level
+	// workspace. Each permutation is its own case directory; the workspace
+	// coordinates reach the program as variables.
 	cases := []struct {
-		name      string
-		dataBody  string // the body of the data block after `backend = "remote"`
-		extraVars []string
-		config    map[string]string
+		name     string
+		caseName string
+		config   map[string]string
 	}{
 		{
-			name: "workspaces.name",
-			dataBody: `  config = {
-    organization = var.org
-    hostname     = var.hostname
-    token        = var.token
-    workspaces   = { name = var.name }
-  }`,
-			extraVars: []string{"name"},
-			config:    withVars(map[string]string{"name": nameWS}),
+			name:     "workspaces.name",
+			caseName: "l2_terraform_remote_state_remote_name",
+			config:   withVars(map[string]string{"name": nameWS}),
 		},
 		{
-			name: "workspaces.name with workspace=default",
-			dataBody: `  workspace = "default"
-  config = {
-    organization = var.org
-    hostname     = var.hostname
-    token        = var.token
-    workspaces   = { name = var.name }
-  }`,
-			extraVars: []string{"name"},
-			config:    withVars(map[string]string{"name": nameWS}),
+			name:     "workspaces.name with workspace=default",
+			caseName: "l2_terraform_remote_state_remote_name_default",
+			config:   withVars(map[string]string{"name": nameWS}),
 		},
 		{
-			name: "workspaces.prefix with workspace selector",
-			dataBody: `  workspace = var.workspace
-  config = {
-    organization = var.org
-    hostname     = var.hostname
-    token        = var.token
-    workspaces   = { prefix = var.prefix }
-  }`,
-			extraVars: []string{"prefix", "workspace"},
-			config:    withVars(map[string]string{"prefix": prefix, "workspace": "prod"}),
+			name:     "workspaces.prefix with workspace selector",
+			caseName: "l2_terraform_remote_state_remote_prefix",
+			config:   withVars(map[string]string{"prefix": prefix, "workspace": "prod"}),
 		},
 	}
 
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			t.Parallel()
-			tfcompat.RunCase(t, "l2_terraform_remote_state_remote", tfcompat.Case{
-				Stages: []tfcompat.Stage{{Files: map[string]string{
-					"main.tf": remoteStateProgram(append([]string{"org", "hostname", "token"}, c.extraVars...), c.dataBody),
-				}}},
+			tfcompat.RunCase(t, c.caseName, tfcompat.Case{
 				Config: c.config,
 			})
 		})
 	}
-}
-
-// remoteStateProgram builds a terraform_remote_state program that declares the
-// given string variables and uses dataBody as the data block's body (after
-// `backend = "remote"`), exposing the read greeting and number outputs.
-func remoteStateProgram(vars []string, dataBody string) string {
-	var b strings.Builder
-	for _, v := range vars {
-		fmt.Fprintf(&b, "variable %q { type = string }\n", v)
-	}
-	fmt.Fprintf(&b, `
-data "terraform_remote_state" "rs" {
-  backend = "remote"
-%s
-}
-
-output "greeting" { value = data.terraform_remote_state.rs.outputs.greeting }
-output "number"   { value = data.terraform_remote_state.rs.outputs.number }
-`, dataBody)
-	return b.String()
 }
 
 func getEnv(t *testing.T, env string) string {
