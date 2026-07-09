@@ -32,6 +32,11 @@ func TestL2DataConditionTransitiveDefer(t *testing.T) {
 		Providers: []tfcompat.Provider{
 			{Name: "pending", Factory: providers.PendingProvider},
 		},
+		// pending_lookup consults the provider's per-factory-instance record
+		// of created things, which the fresh import-check driver starts
+		// empty, so its post-import read fails by design.
+		SkipImport: "the pending provider's backend is factory-local",
+
 		Stages: []tfcompat.Stage{
 			{Mode: tfcompat.StagePreview},
 			{},
