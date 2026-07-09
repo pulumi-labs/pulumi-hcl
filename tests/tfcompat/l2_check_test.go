@@ -32,22 +32,6 @@ func TestL2Check_Pass(t *testing.T) {
 			{Name: "simple", Factory: providers.SimpleProvider},
 		},
 		Stages: []tfcompat.Stage{{
-			Files: map[string]string{"main.tf": `
-resource "simple_resource" "example" {
-  input_one = "hello"
-}
-
-check "result_check" {
-  assert {
-    condition     = simple_resource.example.result == "hello-false"
-    error_message = "result did not match expected value"
-  }
-}
-
-output "result" {
-  value = simple_resource.example.result
-}
-`},
 			AssertOutput: func(t *testing.T, output string) {
 				require.NotContains(t, output, "result did not match expected value")
 			},
@@ -66,22 +50,6 @@ func TestL2Check_FailIsNonBlocking(t *testing.T) {
 			{Name: "simple", Factory: providers.SimpleProvider},
 		},
 		Stages: []tfcompat.Stage{{
-			Files: map[string]string{"main.tf": `
-resource "simple_resource" "example" {
-  input_one = "hello"
-}
-
-check "result_check" {
-  assert {
-    condition     = simple_resource.example.result == "this-will-never-match"
-    error_message = "result did not match expected value"
-  }
-}
-
-output "result" {
-  value = simple_resource.example.result
-}
-`},
 			AssertOutput: func(t *testing.T, output string) {
 				require.Contains(t, output, "result did not match expected value")
 			},
@@ -95,25 +63,13 @@ output "result" {
 // value is known and the assertion holds.
 func TestL2Check_UnknownDeferred(t *testing.T) {
 	t.Parallel()
-	program := map[string]string{"main.tf": `
-resource "simple_resource" "example" {
-  input_one = "hello"
-}
-
-check "result_check" {
-  assert {
-    condition     = simple_resource.example.result == "hello-false"
-    error_message = "result did not match expected value"
-  }
-}
-`}
 	tfcompat.RunCase(t, "l2_check_unknown_deferred", tfcompat.Case{
 		Providers: []tfcompat.Provider{
 			{Name: "simple", Factory: providers.SimpleProvider},
 		},
 		Stages: []tfcompat.Stage{
-			{Files: program, Mode: tfcompat.StagePreview},
-			{Files: program},
+			{Mode: tfcompat.StagePreview},
+			{},
 		},
 	})
 }
@@ -131,24 +87,6 @@ func TestL2Check_ScopedDataSource(t *testing.T) {
 			{Name: "mark", Factory: providers.MarkProvider},
 		},
 		Stages: []tfcompat.Stage{{
-			Files: map[string]string{"main.tf": `
-resource "mark_resource" "example" {}
-
-check "ordering_check" {
-  data "mark_probe" "probe" {
-    token = mark_resource.example.token
-  }
-
-  assert {
-    condition     = data.mark_probe.probe.constructed
-    error_message = "scoped data source ran before mark_resource was constructed"
-  }
-}
-
-output "token" {
-  value = mark_resource.example.token
-}
-`},
 			AssertOutput: func(t *testing.T, output string) {
 				require.NotContains(t, output, "scoped data source ran before")
 				require.NotContains(t, output, "could not evaluate condition")
@@ -166,22 +104,6 @@ func TestL2Check_MultipleDataSourcesRejected(t *testing.T) {
 			{Name: "simple", Factory: providers.SimpleProvider},
 		},
 		Stages: []tfcompat.Stage{{
-			Files: map[string]string{"main.tf": `
-check "two_data" {
-  data "simple_lookup" "a" {
-    query = "a"
-  }
-
-  data "simple_lookup" "b" {
-    query = "b"
-  }
-
-  assert {
-    condition     = data.simple_lookup.a.prefix_result == "-a"
-    error_message = "mismatch"
-  }
-}
-`},
 			ExpectErr: "Multiple data resource blocks",
 		}},
 	})

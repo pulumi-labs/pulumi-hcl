@@ -29,22 +29,6 @@ func TestL1Validation_SensitiveErrorMessage(t *testing.T) {
 	t.Parallel()
 	tfcompat.RunCase(t, "l1_validation_sensitive_error", tfcompat.Case{
 		Stages: []tfcompat.Stage{{
-			Files: map[string]string{"main.tf": `
-variable "password" {
-  type      = string
-  sensitive = true
-  default   = "abc"
-
-  validation {
-    condition     = length(var.password) >= 8
-    error_message = "Password is too short: '${var.password}'"
-  }
-}
-
-output "ok" {
-  value = "ok"
-}
-`},
 			ExpectErr: "Error message refers to sensitive values",
 		}},
 	})

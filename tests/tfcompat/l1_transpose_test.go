@@ -28,22 +28,8 @@ func TestL1Transpose_NullElement(t *testing.T) {
 	t.Parallel()
 	tfcompat.RunCase(t, "l1_transpose", tfcompat.Case{
 		Stages: []tfcompat.Stage{
-			{
-				Files: map[string]string{"main.tf": `
-output "t" {
-  value = transpose({ a = ["x", null] })
-}
-`},
-				ExpectErr: `cannot use null string for ["a"][1]`,
-			},
-			{
-				Files: map[string]string{"main.tf": `
-output "t" {
-  value = transpose({ a = null })
-}
-`},
-				ExpectErr: `cannot use null list for ["a"]`,
-			},
+			{ExpectErr: `cannot use null string for ["a"][1]`},
+			{ExpectErr: `cannot use null list for ["a"]`},
 		},
 	})
 }

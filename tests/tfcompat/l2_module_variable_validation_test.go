@@ -28,32 +28,6 @@ func TestL2ModuleVariableValidation(t *testing.T) {
 	t.Parallel()
 	tfcompat.RunCase(t, "l2_module_variable_validation", tfcompat.Case{
 		Stages: []tfcompat.Stage{{
-			Files: map[string]string{
-				"main.tf": `
-module "child" {
-  source = "./child"
-  name   = "x"
-}
-
-output "name" {
-  value = module.child.name
-}
-`,
-				"child/main.tf": `
-variable "name" {
-  type = string
-
-  validation {
-    condition     = length(var.name) > 3
-    error_message = "VALIDATION_FAILED_MODULE_VAR_TOO_SHORT"
-  }
-}
-
-output "name" {
-  value = var.name
-}
-`,
-			},
 			ExpectErr: "VALIDATION_FAILED_MODULE_VAR_TOO_SHORT",
 		}},
 	})

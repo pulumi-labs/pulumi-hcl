@@ -35,21 +35,6 @@ func TestL1Validation_Fail(t *testing.T) {
 	t.Parallel()
 	tfcompat.RunCase(t, "l1_validation_fail", tfcompat.Case{
 		Stages: []tfcompat.Stage{{
-			Files: map[string]string{"main.tf": `
-variable "name" {
-  type    = string
-  default = "x"
-
-  validation {
-    condition     = length(var.name) > 3
-    error_message = "VALIDATION_FAILED_NAME_TOO_SHORT"
-  }
-}
-
-output "name" {
-  value = var.name
-}
-`},
 			ExpectErr: "VALIDATION_FAILED_NAME_TOO_SHORT",
 		}},
 	})

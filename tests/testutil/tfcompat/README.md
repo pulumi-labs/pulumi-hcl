@@ -67,6 +67,12 @@ Requires `tofu` (default) or `terraform` on `PATH`. Override with
 
 ## Writing a new case
 
+Program files always live on disk under the case directory; `Case.Stages`
+carries optional per-stage behavior (mode, expected error, output assertion)
+matched positionally against the disk stages. See
+[`tests/tfcompat/README.md`](../../tfcompat/README.md) for the full case
+layout, staging rules, and how runtime values flow through `Case.Config`.
+
 1. Create `tests/tfcompat/testdata/cases/<case-name>/main.tf` (plus any
    additional `.tf` or auxiliary files).
 2. Add `tests/tfcompat/<case-name>_test.go`:

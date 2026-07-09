@@ -23,19 +23,12 @@ import (
 
 func TestL2NestedComputedBlock(t *testing.T) {
 	t.Parallel()
-	main := `resource "nested_cluster" "this" {
-}
-
-output "issuer" {
-  value = nested_cluster.this.identity[0].oidc[0].issuer
-}
-`
 	tfcompat.RunCase(t, "l2_nested_computed_block", tfcompat.Case{
 		Providers: []tfcompat.Provider{
 			{Name: "nested", Factory: providers.NestedProvider},
 		},
-		Stages: []tfcompat.Stage{
-			{Files: map[string]string{"main.tf": main}, Mode: tfcompat.StagePreview},
-		},
+		Stages: []tfcompat.Stage{{
+			Mode: tfcompat.StagePreview,
+		}},
 	})
 }

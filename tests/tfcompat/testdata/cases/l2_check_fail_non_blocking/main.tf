@@ -1,0 +1,14 @@
+resource "simple_resource" "example" {
+  input_one = "hello"
+}
+
+check "result_check" {
+  assert {
+    condition     = simple_resource.example.result == "this-will-never-match"
+    error_message = "result did not match expected value"
+  }
+}
+
+output "result" {
+  value = simple_resource.example.result
+}

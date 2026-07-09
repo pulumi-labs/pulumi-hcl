@@ -24,10 +24,18 @@
 // Recordings are captured by wrapping each *schema.Provider with tfexec.Wrap
 // before either path sees it, so the comparisons are apples-to-apples.
 //
-// A case directory may either be flat (single apply) or contain numbered stage
-// subdirs (0/, 1/, ...) for tests that need to drive multiple applies against
-// the same stack — required when verifying behavior on subsequent changes
-// (e.g. lifecycle.replace_triggered_by).
+// Program files always live on disk under the case directory. A flat
+// directory holds one file set; a directory containing only numbered stage
+// subdirs (0/, 1/, ...) holds one file set per stage, for tests whose program
+// changes between operations. Case.Stages carries optional per-stage behavior
+// (mode, expected error, output assertion) and is matched positionally
+// against the disk stages; a flat directory paired with multiple Stages
+// entries runs the same program once per entry (e.g. preview then apply, or
+// apply then destroy).
+//
+// Values that are only known at runtime (ports, temp paths, credentials) are
+// never spliced into program text; declare a variable in the program and feed
+// it through Case.Config, which reaches both paths identically.
 package tfcompat
 
 import (
@@ -93,14 +101,22 @@ func buildProviders(
 // Case is the test description passed to RunCase.
 type Case struct {
 	Providers []Provider
-	Config    map[string]string
+	// Config is set as stack config on the Pulumi path and passed as -var
+	// flags on the tofu path. It is the only channel for values not known
+	// until runtime: the program declares a variable and the test feeds it
+	// here.
+	Config map[string]string
 
 	// AssertState, if set, runs after `pulumi up`. Use for assertions on
 	// resource fields that aren't reachable via stack outputs (e.g. Protect).
 	AssertState func(t *testing.T, resources []apitype.ResourceV3)
 
-	// Stages, if non-nil, overrides disk-based stage loading. Use this when
-	// you need per-stage expected errors or have inline program content.
+	// Stages attaches per-stage behavior to the stages loaded from disk,
+	// matched positionally. For a case directory with numbered stage subdirs
+	// its length must equal the subdir count. For a flat directory each entry
+	// runs the whole directory's file set, so N entries drive N operations
+	// over the same program. Omitted entries (or a nil Stages) default to a
+	// plain apply.
 	Stages []Stage
 }
 
@@ -112,10 +128,10 @@ const (
 	StageDestroy                  // `tofu destroy` / `pulumi destroy`
 )
 
-// Stage is one operation within a Case.
+// Stage describes how to run one operation of a Case. It carries behavior
+// only; the program files come from the case directory on disk.
 type Stage struct {
-	Files map[string]string
-	Mode  StageMode
+	Mode StageMode
 	// ExpectErr, if non-empty, requires both runtimes to fail with an error
 	// containing this substring.
 	ExpectErr string
@@ -126,26 +142,65 @@ type Stage struct {
 	AssertOutput func(t *testing.T, output string)
 }
 
+// stageRun pairs one stage's program files with its behavior.
+type stageRun struct {
+	files map[string]string
+	Stage
+}
+
 // RunCase resolves testdata/cases/<caseName>/ relative to the calling test
-// file, loads every regular file in that directory, and runs the comparison.
-// If c.Stages is set the disk path is bypassed in favor of inline stages.
+// file, loads its stages, and runs the comparison.
 func RunCase(t *testing.T, caseName string, c Case) {
 	t.Helper()
-
-	if len(c.Stages) > 0 {
-		runCaseStages(t, c)
-		return
-	}
 
 	_, callerFile, _, _ := runtime.Caller(1)
 	caseDir := filepath.Join(filepath.Dir(callerFile), "testdata", "cases", caseName)
 	runCaseFromDir(t, caseDir, c)
 }
 
-// runCaseStages runs inline Case.Stages. Ops/outputs/AssertState are compared
-// against the last successful apply stage; preview stages produce no state.
-func runCaseStages(t *testing.T, c Case) {
+// resolveStages matches Case.Stages positionally against the file sets loaded
+// from disk. A flat case directory (one file set) fans out to max(1, len(meta))
+// stages over the same files; numbered stage dirs require len(meta) to be
+// zero or exactly the dir count.
+func resolveStages(fileSets []map[string]string, numbered bool, meta []Stage) ([]stageRun, error) {
+	if numbered {
+		if len(meta) != 0 && len(meta) != len(fileSets) {
+			return nil, fmt.Errorf(
+				"case has %d numbered stage dirs but Case.Stages has %d entries",
+				len(fileSets), len(meta))
+		}
+		runs := make([]stageRun, len(fileSets))
+		for i, files := range fileSets {
+			runs[i] = stageRun{files: files}
+			if len(meta) != 0 {
+				runs[i].Stage = meta[i]
+			}
+		}
+		return runs, nil
+	}
+
+	runs := make([]stageRun, max(1, len(meta)))
+	for i := range runs {
+		runs[i] = stageRun{files: fileSets[0]}
+		if i < len(meta) {
+			runs[i].Stage = meta[i]
+		}
+	}
+	return runs, nil
+}
+
+// runCaseFromDir runs a case whose program files live in caseDir. Kept
+// separate from RunCase so self-tests can drive the harness with a
+// t.TempDir() rather than an on-disk testdata directory.
+//
+// Ops/outputs/AssertState are compared against the last successful apply
+// stage; preview stages produce no state.
+func runCaseFromDir(t *testing.T, caseDir string, c Case) {
 	t.Helper()
+
+	fileSets, numbered := loadStages(t, caseDir)
+	stages, err := resolveStages(fileSets, numbered, c.Stages)
+	require.NoError(t, err)
 
 	recA, recB := &tfexec.Recorder{}, &tfexec.Recorder{}
 	tfProvs, pulProvs := buildProviders(t, c.Providers, recA, recB)
@@ -155,7 +210,7 @@ func runCaseStages(t *testing.T, c Case) {
 
 	var lastOK pulexec.Result
 	var lastOKTfOutputs map[string]string
-	for i, stage := range c.Stages {
+	for i, stage := range stages {
 		var wg sync.WaitGroup
 		wg.Add(2)
 
@@ -168,22 +223,22 @@ func runCaseStages(t *testing.T, c Case) {
 			defer wg.Done()
 			switch stage.Mode {
 			case StagePreview:
-				tfErr = tfDriver.Plan(t, stage.Files, c.Config)
+				tfErr = tfDriver.Plan(t, stage.files, c.Config)
 			case StageDestroy:
-				tfErr = tfDriver.Destroy(t, stage.Files, c.Config)
+				tfErr = tfDriver.Destroy(t, stage.files, c.Config)
 			default:
-				tfOut, tfText, tfErr = tfDriver.TryApply(t, stage.Files, c.Config)
+				tfOut, tfText, tfErr = tfDriver.TryApply(t, stage.files, c.Config)
 			}
 		}()
 		go func() {
 			defer wg.Done()
 			switch stage.Mode {
 			case StagePreview:
-				pulErr = pulDriver.Preview(t, stage.Files)
+				pulErr = pulDriver.Preview(t, stage.files)
 			case StageDestroy:
-				pulErr = pulDriver.Destroy(t, stage.Files)
+				pulErr = pulDriver.Destroy(t, stage.files)
 			default:
-				pulRes, pulErr = pulDriver.TryApply(t, stage.Files)
+				pulRes, pulErr = pulDriver.TryApply(t, stage.files)
 			}
 		}()
 		wg.Wait()
@@ -234,51 +289,6 @@ func runCaseStages(t *testing.T, c Case) {
 	}
 }
 
-// runCaseFromDir runs a case whose program files live in caseDir. Exposed for
-// self-tests that drive the harness with a t.TempDir() rather than an
-// on-disk testdata directory.
-func runCaseFromDir(t *testing.T, caseDir string, c Case) {
-	t.Helper()
-
-	stages := loadStages(t, caseDir)
-
-	recA, recB := &tfexec.Recorder{}, &tfexec.Recorder{}
-	tfProvs, pulProvs := buildProviders(t, c.Providers, recA, recB)
-
-	tfDriver := tfexec.NewDriver(t, tfProvs)
-	pulDriver := pulexec.NewDriver(t, pulProvs, c.Config)
-
-	var outA map[string]string
-	var pulResult pulexec.Result
-	for i, files := range stages {
-		var wg sync.WaitGroup
-		wg.Add(2)
-		go func() {
-			defer wg.Done()
-			outA = tfDriver.Apply(t, files, c.Config)
-		}()
-		go func() {
-			defer wg.Done()
-			pulResult = pulDriver.Apply(t, files)
-		}()
-		wg.Wait()
-		if t.Failed() {
-			t.Logf("stage %d failed", i)
-			return
-		}
-	}
-
-	require.Equal(t,
-		scrubTmpDir(outA, tfDriver.Dir()),
-		scrubTmpDir(pulResult.Outputs, pulDriver.Dir()),
-		"stack outputs differ between tofu apply and pulumi up")
-	require.Equal(t, recA.Ops(), recB.Ops(), "provider operations differ between tofu apply and pulumi up")
-
-	if c.AssertState != nil {
-		c.AssertState(t, pulResult.Resources)
-	}
-}
-
 // scrubTmpDir replaces driver-specific temp paths in output values with the
 // sentinel "<TMPDIR>" so cross-driver comparison ignores the fact that tofu
 // and pulumi run from different temp directories. Symlink-resolved forms (on
@@ -302,28 +312,29 @@ func scrubTmpDir(outputs map[string]string, dir string) map[string]string {
 	return out
 }
 
-// loadStages returns one entry per apply: a case directory containing only
-// numbered subdirs (0/, 1/, ...) becomes that many stages, in order; any other
-// shape is a single stage built from the whole directory.
-func loadStages(t *testing.T, caseDir string) []map[string]string {
+// loadStages returns one file set per disk stage and whether the case
+// directory used numbered stage subdirs: a directory containing only numbered
+// subdirs (0/, 1/, ...) yields that many file sets, in order; any other shape
+// yields a single file set built from the whole directory.
+func loadStages(t *testing.T, caseDir string) ([]map[string]string, bool) {
 	t.Helper()
-	stages, err := loadStagesFS(caseDir)
+	fileSets, numbered, err := loadStagesFS(caseDir)
 	require.NoError(t, err)
-	return stages
+	return fileSets, numbered
 }
 
-func loadStagesFS(caseDir string) ([]map[string]string, error) {
+func loadStagesFS(caseDir string) ([]map[string]string, bool, error) {
 	info, err := os.Stat(caseDir)
 	if err != nil {
-		return nil, fmt.Errorf("case directory: %w", err)
+		return nil, false, fmt.Errorf("case directory: %w", err)
 	}
 	if !info.IsDir() {
-		return nil, fmt.Errorf("case path %q is not a directory", caseDir)
+		return nil, false, fmt.Errorf("case path %q is not a directory", caseDir)
 	}
 
 	entries, err := os.ReadDir(caseDir)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 
 	stageDirs := make(map[int]string)
@@ -343,9 +354,9 @@ func loadStagesFS(caseDir string) ([]map[string]string, error) {
 	if len(stageDirs) == 0 {
 		files, err := loadCaseFS(caseDir)
 		if err != nil {
-			return nil, err
+			return nil, false, err
 		}
-		return []map[string]string{files}, nil
+		return []map[string]string{files}, false, nil
 	}
 
 	keys := make([]int, 0, len(stageDirs))
@@ -353,15 +364,15 @@ func loadStagesFS(caseDir string) ([]map[string]string, error) {
 		keys = append(keys, k)
 	}
 	sort.Ints(keys)
-	stages := make([]map[string]string, 0, len(keys))
+	fileSets := make([]map[string]string, 0, len(keys))
 	for _, k := range keys {
 		files, err := loadCaseFS(stageDirs[k])
 		if err != nil {
-			return nil, fmt.Errorf("stage %d: %w", k, err)
+			return nil, false, fmt.Errorf("stage %d: %w", k, err)
 		}
-		stages = append(stages, files)
+		fileSets = append(fileSets, files)
 	}
-	return stages, nil
+	return fileSets, true, nil
 }
 
 // loadCaseFS reads every regular file under caseDir and returns a map of

@@ -28,26 +28,6 @@ func TestL1VariableValidationCrossReference(t *testing.T) {
 	t.Parallel()
 	tfcompat.RunCase(t, "l1_variable_validation_xref", tfcompat.Case{
 		Stages: []tfcompat.Stage{{
-			Files: map[string]string{"main.tf": `
-variable "min" {
-  type    = number
-  default = 3
-}
-
-variable "name" {
-  type    = string
-  default = "xy"
-
-  validation {
-    condition     = length(var.name) >= var.min
-    error_message = "XREF_VALIDATION_FAILED"
-  }
-}
-
-output "name" {
-  value = var.name
-}
-`},
 			ExpectErr: "XREF_VALIDATION_FAILED",
 		}},
 	})
@@ -60,37 +40,6 @@ func TestL2ModuleVariableValidationCrossReference(t *testing.T) {
 	t.Parallel()
 	tfcompat.RunCase(t, "l2_module_variable_validation_xref", tfcompat.Case{
 		Stages: []tfcompat.Stage{{
-			Files: map[string]string{
-				"main.tf": `
-module "child" {
-  source = "./child"
-}
-
-output "name" {
-  value = module.child.name
-}
-`,
-				"child/main.tf": `
-variable "min" {
-  type    = number
-  default = 3
-}
-
-variable "name" {
-  type    = string
-  default = "xy"
-
-  validation {
-    condition     = length(var.name) >= var.min
-    error_message = "MODULE_XREF_VALIDATION_FAILED"
-  }
-}
-
-output "name" {
-  value = var.name
-}
-`,
-			},
 			ExpectErr: "MODULE_XREF_VALIDATION_FAILED",
 		}},
 	})
