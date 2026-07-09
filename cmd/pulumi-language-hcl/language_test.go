@@ -56,7 +56,7 @@ import (
 	"github.com/pulumi-labs/pulumi-hcl/pkg/converter"
 	"github.com/pulumi-labs/pulumi-hcl/pkg/server"
 
-	"github.com/pulumi/pulumi/sdk/v3/go/common/resource/plugin"
+	"github.com/pulumi/pulumi/pkg/v3/resource/plugin"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/util/contract"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/util/rpcutil"
 	pulumirpc "github.com/pulumi/pulumi/sdk/v3/proto/go"
@@ -145,6 +145,12 @@ var expectedFailures = map[string]string{
 		" default is sourced from an invoke result",
 	"l2-resource-schema-secret": "HCL runtime does not propagate a schema-declared `secret`" +
 		" property to stack outputs",
+	"l2-extension-and-base-resource": "extension parameterization is not yet supported by the" +
+		" HCL language host (the test expects the extension package among required packages)",
+	"l2-extension-parameterized-resource": "extension parameterization is not yet supported by" +
+		" the HCL language host (the test expects the extension package among required packages)",
+	"l2-invoke-multi-argument": "HCL codegen does not support functions declared with" +
+		" multi-argument (positional) inputs; invoke() only takes a single object argument",
 }
 
 // expectedEjectFailures lists tests whose eject (HCL→PCL conversion) step is

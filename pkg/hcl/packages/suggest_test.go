@@ -112,6 +112,12 @@ func TestPulumiTokenToHCLFormRoundtrip(t *testing.T) {
 
 	rapid.Check(t, func(t *rapid.T) {
 		pkg := rapidschema.Package().Draw(t, "pkg")
+		if pkg.ExtensionParameterization != nil {
+			// Extension-parameterized packages declare resources under the
+			// extension's token namespace rather than the package's own name,
+			// which the HCL resolver does not support yet.
+			t.Skip("extension parameterization not supported")
+		}
 		spec, err := pkg.MarshalSpec()
 		require.NoError(t, err)
 		for _, r := range pkg.Resources {
