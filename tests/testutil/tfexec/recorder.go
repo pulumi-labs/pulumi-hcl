@@ -16,6 +16,8 @@ package tfexec
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"slices"
 	"sort"
@@ -23,6 +25,7 @@ import (
 
 	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/pulumi/pulumi/sdk/v3/go/common/util/contract"
 )
 
 // OpKind classifies a recorded provider operation.
@@ -110,6 +113,20 @@ func Wrap(p *schema.Provider, r *Recorder) *schema.Provider {
 	return &wrapped
 }
 
+// WithStore returns a *schema.Provider with cloned ResourcesMap where every
+// resource gains import support: a passthrough importer, Create/Update
+// snapshot attributes into store, and Read hydrates from that snapshot (see
+// ImportStore). Compose with Wrap as WithStore(Wrap(p, r), store) so
+// hydration happens before the recorder snapshots a Read's inputs.
+func WithStore(p *schema.Provider, store *ImportStore) *schema.Provider {
+	wrapped := *p
+	wrapped.ResourcesMap = make(map[string]*schema.Resource, len(p.ResourcesMap))
+	for typeName, res := range p.ResourcesMap {
+		wrapped.ResourcesMap[typeName] = withStoreResource(typeName, res, store)
+	}
+	return &wrapped
+}
+
 func wrapResource(typeName string, res *schema.Resource, r *Recorder) *schema.Resource {
 	clone := *res
 	origCreate := res.CreateContext
@@ -155,6 +172,68 @@ func wrapResource(typeName string, res *schema.Resource, r *Recorder) *schema.Re
 	return &clone
 }
 
+func withStoreResource(typeName string, res *schema.Resource, store *ImportStore) *schema.Resource {
+	clone := *res
+	origCreate := res.CreateContext
+	origRead := res.ReadContext
+	origUpdate := res.UpdateContext
+	origDelete := res.DeleteContext
+
+	if clone.Importer == nil {
+		clone.Importer = &schema.ResourceImporter{StateContext: schema.ImportStatePassthroughContext}
+	}
+
+	if origCreate != nil {
+		clone.CreateContext = func(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+			inputs := snapshot(d, res.Schema)
+			diags := origCreate(ctx, d, meta)
+			if !diags.HasError() && d.Id() != "" {
+				// Test providers use fixed ids ("simple-id"), which would
+				// collide in the store across instances of one type. Both
+				// driver paths derive the same suffix, so cross-path
+				// comparisons stay equal.
+				d.SetId(d.Id() + "-" + fingerprint(inputs))
+				store.put(typeName, d.Id(), snapshot(d, res.Schema))
+			}
+			return diags
+		}
+	}
+	if origRead != nil {
+		clone.ReadContext = func(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+			// A Read reached via import passthrough sees only the resource
+			// id; on refresh Reads the snapshot matches current state and
+			// hydration is a no-op.
+			if snap := store.get(typeName, d.Id()); snap != nil {
+				for k, v := range snap {
+					if _, ok := res.Schema[k]; ok && v != nil {
+						contract.IgnoreError(d.Set(k, v))
+					}
+				}
+			}
+			return origRead(ctx, d, meta)
+		}
+	}
+	if origUpdate != nil {
+		clone.UpdateContext = func(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+			diags := origUpdate(ctx, d, meta)
+			if !diags.HasError() {
+				store.put(typeName, d.Id(), snapshot(d, res.Schema))
+			}
+			return diags
+		}
+	}
+	if origDelete != nil {
+		clone.DeleteContext = func(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+			diags := origDelete(ctx, d, meta)
+			if !diags.HasError() {
+				store.delete(typeName, d.Id())
+			}
+			return diags
+		}
+	}
+	return &clone
+}
+
 func wrapDataSource(typeName string, ds *schema.Resource, r *Recorder) *schema.Resource {
 	clone := *ds
 	origRead := ds.ReadContext
@@ -168,6 +247,18 @@ func wrapDataSource(typeName string, ds *schema.Resource, r *Recorder) *schema.R
 		}
 	}
 	return &clone
+}
+
+// fingerprint hashes a snapshot deterministically (json.Marshal sorts map
+// keys, so both driver paths agree). Instances with identical inputs share an
+// id and store entry — harmless, as their snapshots are identical too.
+func fingerprint(snapshot map[string]any) string {
+	b, err := json.Marshal(snapshot)
+	// Snapshots already survived a JSON roundtrip; failing here means the
+	// wrapper is broken, so don't degrade into silent id collisions.
+	contract.AssertNoErrorf(err, "marshaling snapshot for id fingerprint")
+	sum := sha256.Sum256(b)
+	return hex.EncodeToString(sum[:4])
 }
 
 // snapshot copies every value the resource schema knows about into a plain

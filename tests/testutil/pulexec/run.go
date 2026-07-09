@@ -19,7 +19,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/pulumi-labs/pulumi-hcl/pkg/server"
@@ -30,6 +32,7 @@ import (
 	"github.com/pulumi/providertest/pulumitest/opttest"
 	"github.com/pulumi/pulumi/sdk/v3/go/auto"
 	"github.com/pulumi/pulumi/sdk/v3/go/auto/optdestroy"
+	"github.com/pulumi/pulumi/sdk/v3/go/auto/optimport"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/apitype"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/util/contract"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/util/rpcutil"
@@ -98,11 +101,26 @@ type Result struct {
 type Driver struct {
 	pt        *pulumitest.PulumiTest
 	dir       string
-	providers []string
+	providers []Provider
 	// lastProgramFiles are the program-file paths written by the previous
 	// writeFiles call, removed before the next stage so a stage that drops a
 	// file doesn't inherit a stale copy.
 	lastProgramFiles []string
+}
+
+// rawDebugProvidersEnv starts an in-process server per provider and returns
+// the PULUMI_DEBUG_PROVIDERS value describing them: pulumitest only attaches
+// providers for the duration of its own engine operations, so raw commands
+// must bring their own.
+func (d *Driver) rawDebugProvidersEnv(t *testing.T) string {
+	t.Helper()
+	parts := make([]string, 0, len(d.providers))
+	for _, p := range d.providers {
+		handle, err := startProvider(t.Context(), p.Start)
+		require.NoError(t, err)
+		parts = append(parts, fmt.Sprintf("%s:%d", p.Name, handle.Port))
+	}
+	return strings.Join(parts, ",")
 }
 
 // NewDriver builds the project dir, attaches the bridged providers, and sets
@@ -112,11 +130,6 @@ func NewDriver(t *testing.T, provs []Provider, config map[string]string) *Driver
 
 	hostPort := serveLanguageHost(t)
 	dir := t.TempDir()
-
-	provNames := make([]string, len(provs))
-	for i, p := range provs {
-		provNames[i] = p.Name
-	}
 
 	// The project name is used as the default namespace for user config. It
 	// must not collide with any attached provider name, or user config like
@@ -159,7 +172,7 @@ backend:
 	for k, v := range config {
 		pt.SetConfig(t, k, v)
 	}
-	return &Driver{pt: pt, dir: dir, providers: provNames}
+	return &Driver{pt: pt, dir: dir, providers: provs}
 }
 
 // Dir returns the program directory where pulumi runs and program files are
@@ -273,7 +286,8 @@ func (d *Driver) writeFiles(t *testing.T, programFiles map[string]string) {
 // short-circuits plugin lookup to the in-process gRPC server.
 func (d *Driver) writeStubSDKs(t *testing.T) {
 	t.Helper()
-	for _, name := range d.providers {
+	for _, p := range d.providers {
+		name := p.Name
 		sdkDir := filepath.Join(d.dir, "sdks", name)
 		require.NoError(t, os.MkdirAll(sdkDir, 0o755))
 		desc := fmt.Sprintf(`{"name":%q,"kind":"resource"}`+"\n", name)
@@ -304,4 +318,64 @@ func startProvider(
 	}
 
 	return &handle, nil
+}
+
+// PreviewStep is the subset of a `pulumi preview --json` plan step callers
+// assert on.
+type PreviewStep struct {
+	Op   string `json:"op"`
+	URN  string `json:"urn"`
+	Type string `json:"type"`
+}
+
+// ImportFromFile writes programFiles and imports the resources listed in the
+// given `pulumi import --file` JSON. Imports are unprotected: HCL programs
+// cannot express the protect option, so protected imports would always diff.
+// The Automation API import runs with the workspace's environment, outside
+// pulumitest's per-operation provider lifecycle, so the attached providers
+// are supplied for the duration of the call.
+func (d *Driver) ImportFromFile(t *testing.T, programFiles map[string]string, importFilePath string) (string, error) {
+	t.Helper()
+	d.writeFiles(t, programFiles)
+	stack := d.pt.CurrentStack()
+	require.NotNil(t, stack, "driver has no stack")
+	ws := stack.Workspace()
+	ws.SetEnvVar("PULUMI_DEBUG_PROVIDERS", d.rawDebugProvidersEnv(t))
+	defer ws.UnsetEnvVar("PULUMI_DEBUG_PROVIDERS")
+	res, err := stack.ImportResources(t.Context(),
+		optimport.ImportFile(importFilePath),
+		optimport.Protect(false),
+	)
+	return res.StdOut + res.StdErr, err
+}
+
+// PreviewSteps runs `pulumi preview --json` and returns the planned steps.
+// This is a raw CLI invocation because the Automation API's Preview does not
+// expose the step-level plan output; it runs outside pulumitest's
+// per-operation provider lifecycle, so the attached providers are supplied
+// explicitly.
+func (d *Driver) PreviewSteps(t *testing.T) ([]PreviewStep, error) {
+	t.Helper()
+	stack := d.pt.CurrentStack()
+	require.NotNil(t, stack, "driver has no stack")
+	cmd := exec.Command("pulumi", "preview", "--json", "--stack", stack.Name(), "--non-interactive")
+	cmd.Dir = d.dir
+	env := os.Environ()
+	for k, v := range stack.Workspace().GetEnvVars() {
+		env = append(env, k+"="+v)
+	}
+	cmd.Env = append(env, "PULUMI_DEBUG_PROVIDERS="+d.rawDebugProvidersEnv(t))
+	var stderr strings.Builder
+	cmd.Stderr = &stderr
+	out, err := cmd.Output()
+	if err != nil {
+		return nil, fmt.Errorf("pulumi preview --json: %w\nstderr: %s", err, stderr.String())
+	}
+	var plan struct {
+		Steps []PreviewStep `json:"steps"`
+	}
+	if err := json.Unmarshal(out, &plan); err != nil {
+		return nil, fmt.Errorf("parsing preview plan: %w", err)
+	}
+	return plan.Steps, nil
 }
