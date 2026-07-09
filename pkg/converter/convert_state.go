@@ -27,6 +27,7 @@ import (
 	"github.com/pulumi-labs/pulumi-hcl/pkg/hcl/modulepath"
 	"github.com/pulumi/pulumi/pkg/v3/codegen/convert"
 	"github.com/pulumi/pulumi/pkg/v3/resource/plugin"
+	"github.com/pulumi/pulumi/sdk/v3/go/common/workspace"
 )
 
 // tfState is a minimal view over a Terraform/OpenTofu v4 JSON state file;
@@ -56,10 +57,11 @@ type tfStateInstance struct {
 	Attributes map[string]json.RawMessage `json:"attributes"`
 }
 
-// ConvertState reads a Terraform/OpenTofu state file and emits a
-// ResourceImport per managed root-module resource instance, resolving TF types
-// to Pulumi tokens through the engine-provided mapper, so
-// `pulumi import --from hcl` can pull TF state into a Pulumi HCL project.
+// ConvertState reads a Terraform/OpenTofu state file and emits parameterized
+// (dynamic-bridge) ResourceImports so `pulumi import --from hcl` lands TF state
+// under the same `terraform-provider` packages the HCL runtime executes. This
+// is what distinguishes it from pulumi-converter-terraform, which emits
+// static-bridge imports that would provoke a replace on the next preview.
 func (*hclConverter) ConvertState(
 	ctx context.Context, req *plugin.ConvertStateRequest,
 ) (*plugin.ConvertStateResponse, error) {
@@ -78,6 +80,13 @@ func (*hclConverter) ConvertState(
 	}
 	providerInfoSource := bridge.NewCache(bridge.NewMapperSource(mapperClient))
 
+	// Parameterization descriptors are written by `pulumi install` into sdks/.
+	// `pulumi import` runs with cwd = project root, so they live at ./sdks/*.
+	descriptors, err := readParameterizationInfos(".")
+	if err != nil {
+		return nil, fmt.Errorf("reading parameterization infos: %w", err)
+	}
+
 	data, err := os.ReadFile(statePath)
 	if err != nil {
 		return nil, fmt.Errorf("reading state file %q: %w", statePath, err)
@@ -87,16 +96,17 @@ func (*hclConverter) ConvertState(
 		return nil, fmt.Errorf("parsing state file %q: %w", statePath, err)
 	}
 
-	return convertTFState(ctx, providerInfoSource, state), nil
+	return convertTFState(ctx, providerInfoSource, descriptors, state), nil
 }
 
 // convertTFState is the pure core of ConvertState: it turns a parsed state file
-// into ResourceImports given a resolved provider-info source. Anything that
-// can't be imported is reported as a warning diagnostic rather than failing the
-// whole conversion.
+// into ResourceImports given a resolved provider-info source and the on-disk
+// parameterization descriptors. Anything that can't be imported is reported as
+// a warning diagnostic rather than failing the whole conversion.
 func convertTFState(
 	ctx context.Context,
 	providerInfoSource bridge.ProviderInfoSource,
+	descriptors map[string]workspace.PackageDescriptor,
 	state tfState,
 ) *plugin.ConvertStateResponse {
 	var (
@@ -127,7 +137,15 @@ func convertTFState(
 		}
 
 		provider := providerLocalName(res.Type)
-		info, err := providerInfoSource.GetProviderInfo(ctx, provider, nil)
+		// A missing descriptor is not an error: only dynamically bridged
+		// providers have one, and providers without it import as plain
+		// (unparameterized) resources.
+		var desc *workspace.PackageDescriptor
+		if d, ok := descriptors[provider]; ok {
+			desc = &d
+		}
+
+		info, err := providerInfoSource.GetProviderInfo(ctx, provider, desc)
 		if err != nil || info == nil {
 			warn("Failed to resolve provider", fmt.Sprintf(
 				"could not resolve bridge mapping for provider %q: %v", provider, err))
@@ -140,6 +158,15 @@ func convertTFState(
 			continue
 		}
 		token := resInfo.Tok.String()
+		var (
+			parameterization  *plugin.ResourceParameterization
+			version           string
+			pluginDownloadURL string
+		)
+		if desc != nil {
+			parameterization, version = parameterizationFor(desc)
+			pluginDownloadURL = desc.PluginDownloadURL
+		}
 
 		for _, inst := range res.Instances {
 			id, ok := importID(inst)
@@ -149,9 +176,12 @@ func convertTFState(
 				continue
 			}
 			resources = append(resources, plugin.ResourceImport{
-				Type: token,
-				Name: resourceName(res.Name, inst.IndexKey),
-				ID:   id,
+				Type:              token,
+				Name:              resourceName(res.Name, inst.IndexKey),
+				ID:                id,
+				Version:           version,
+				PluginDownloadURL: pluginDownloadURL,
+				Parameterization:  parameterization,
 			})
 		}
 	}
@@ -201,4 +231,23 @@ func importID(inst tfStateInstance) (string, bool) {
 		return "", false
 	}
 	return id, true
+}
+
+// parameterizationFor builds the replacement parameterization for a
+// descriptor: the resource's Type/Version describe the parameterized package
+// (e.g. "aws"), while the Parameterization block describes the base plugin it
+// is produced from (e.g. "terraform-provider").
+func parameterizationFor(desc *workspace.PackageDescriptor) (*plugin.ResourceParameterization, string) {
+	if desc.Parameterization == nil {
+		return nil, ""
+	}
+	var baseVersion string
+	if desc.Version != nil {
+		baseVersion = desc.Version.String()
+	}
+	return &plugin.ResourceParameterization{
+		PluginName:    desc.Name,
+		PluginVersion: baseVersion,
+		Value:         desc.Parameterization.Value,
+	}, desc.Parameterization.Version.String()
 }

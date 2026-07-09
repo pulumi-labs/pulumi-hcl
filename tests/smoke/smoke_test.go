@@ -23,7 +23,7 @@ func TestMain(m *testing.M) {
 		fmt.Fprintf(os.Stderr, "finding plugin dir: %v\n", err)
 		os.Exit(1)
 	}
-	cmd := exec.Command("make", "bin/pulumi-language-hcl", "bin/pulumi-resource-hcl")
+	cmd := exec.Command("make", "bin/pulumi-language-hcl", "bin/pulumi-resource-hcl", "bin/pulumi-converter-hcl")
 	cmd.Dir = filepath.Dir(langBinDir)
 	cmd.Stdout = os.Stderr
 	cmd.Stderr = os.Stderr

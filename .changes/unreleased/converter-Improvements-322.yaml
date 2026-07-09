@@ -1,0 +1,6 @@
+kind: Improvements
+body: 'Import TF state under parameterized (dynamically bridged) providers: `pulumi import --from hcl` now emits the `terraform-provider` parameterization from the project''s local SDKs, so imported resources bind to the same providers the HCL runtime executes'
+time: 2026-07-09T16:17:20.274311+02:00
+custom:
+    Component: converter
+    PR: "322"
