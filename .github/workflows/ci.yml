@@ -3,6 +3,13 @@ name: CI
 on:
   workflow_call:
 
+# Caching strategy: jobs restore the Go module and build caches but only
+# master runs (see master.yml) save them. Pull requests restore master's
+# cache and skip the save entirely, which keeps the multi-minute cache
+# upload off the PR critical path. setup-go's built-in cache is disabled
+# everywhere because its cache key is shared across jobs, so only one job's
+# build cache would ever be saved.
+
 jobs:
   lint:
     runs-on: ubuntu-latest
@@ -12,12 +19,54 @@ jobs:
       - uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
+          cache: false
+      - uses: actions/cache/restore@v4
+        with:
+          path: |
+            ~/go/pkg/mod
+            ~/.cache/go-build
+          key: go-lint-${{ hashFiles('go.sum') }}
+          restore-keys: go-lint-
       - uses: golangci/golangci-lint-action@v9
         with:
           version: v2.9.0
+      - uses: actions/cache/save@v4
+        if: always() && github.ref == 'refs/heads/master'
+        with:
+          path: |
+            ~/go/pkg/mod
+            ~/.cache/go-build
+          key: go-lint-${{ hashFiles('go.sum') }}
 
   test:
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # Shard definitions live in .github/scripts/test-shard.sh. Each
+        # shard is its own runner, so wall time is bounded by the slowest
+        # shard rather than the whole suite. cache-key groups shards with
+        # similar build graphs; only the shard with cache-save set uploads
+        # its cache (on master), the rest just restore it.
+        include:
+          - shard: unit
+            cache-key: go-test-unit
+            cache-save: true
+          - shard: conformance-0
+            cache-key: go-test-conformance
+            cache-save: true
+          - shard: conformance-1
+            cache-key: go-test-conformance
+          - shard: conformance-large
+            cache-key: go-test-conformance
+          - shard: tfcompat-0
+            cache-key: go-test-unit
+          - shard: tfcompat-1
+            cache-key: go-test-unit
+          - shard: tfcompat-2
+            cache-key: go-test-unit
+          - shard: smoke
+            cache-key: go-test-unit
     steps:
       - uses: actions/checkout@v6
         with:
@@ -25,6 +74,16 @@ jobs:
       - uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
+          cache: false
+      - uses: actions/cache/restore@v4
+        with:
+          path: |
+            ~/go/pkg/mod
+            ~/.cache/go-build
+          key: ${{ matrix.cache-key }}-${{ hashFiles('go.sum') }}
+          restore-keys: |
+            ${{ matrix.cache-key }}-
+            go-test-
       - uses: pulumi/actions@v7
         with:
           pulumi-version: "latest"
@@ -37,8 +96,8 @@ jobs:
       - run: pulumi plugin install resource terraform-provider 1.1.3
       - run: pulumi plugin install resource local 0.1.6
       - run: make bin/pulumi-language-hcl bin/pulumi-converter-hcl bin/pulumi-resource-hcl
-      - run: echo "$PWD/bin" >> $GITHUB_PATH
-      - run: make test_cover
+      - run: echo "$PWD/bin" >> "$GITHUB_PATH"
+      - run: .github/scripts/test-shard.sh ${{ matrix.shard }}
         env:
           # Enable the live terraform_remote_state `remote` backend test.
           TFE_ORGANIZATION: ${{ secrets.TFE_ORGANIZATION }}
@@ -47,6 +106,13 @@ jobs:
         with:
           files: coverage.out
           token: ${{ secrets.CODECOV_TOKEN }}
+      - uses: actions/cache/save@v4
+        if: always() && github.ref == 'refs/heads/master' && matrix.cache-save
+        with:
+          path: |
+            ~/go/pkg/mod
+            ~/.cache/go-build
+          key: ${{ matrix.cache-key }}-${{ hashFiles('go.sum') }}
 
   build-sdk:
     # Generate every SDK and confirm each one builds with its native toolchain.
@@ -56,6 +122,14 @@ jobs:
       - uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
+          cache: false
+      - uses: actions/cache/restore@v4
+        with:
+          path: |
+            ~/go/pkg/mod
+            ~/.cache/go-build
+          key: go-sdk-${{ hashFiles('go.sum') }}
+          restore-keys: go-sdk-
       - uses: actions/setup-node@v4
         with:
           node-version: '20'
@@ -87,6 +161,13 @@ jobs:
         run: cd sdk/dotnet && dotnet build
       - name: Build Java SDK
         run: cd sdk/java && gradle build
+      - uses: actions/cache/save@v4
+        if: always() && github.ref == 'refs/heads/master'
+        with:
+          path: |
+            ~/go/pkg/mod
+            ~/.cache/go-build
+          key: go-sdk-${{ hashFiles('go.sum') }}
 
   vendored-drift:
     # Ensures the vendored/ tree matches what `go generate ./vendored`
@@ -98,6 +179,7 @@ jobs:
       - uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
+          cache: false
       - run: go generate ./vendored
       - name: Fail on drift
         run: |

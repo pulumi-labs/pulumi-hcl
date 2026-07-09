@@ -3,6 +3,12 @@ name: PR
 on:
   pull_request:
 
+# A new push to the PR obsoletes any in-flight run; cancel it so the fresh
+# run isn't queued behind jobs whose result no longer matters.
+concurrency:
+  group: pr-${{ github.ref }}
+  cancel-in-progress: true
+
 permissions:
   contents: read
   pull-requests: read
