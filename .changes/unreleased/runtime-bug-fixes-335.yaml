@@ -1,0 +1,6 @@
+kind: bug-fixes
+body: Fix `anytrue` returning unknown during preview when a known `true` element is present
+time: 2026-07-10T13:05:00Z
+custom:
+    Component: runtime
+    PR: "335"

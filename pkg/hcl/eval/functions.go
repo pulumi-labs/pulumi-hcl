@@ -447,14 +447,19 @@ var anyTrueFunc = function.New(&function.Spec{
 	},
 	Type: function.StaticReturnType(cty.Bool),
 	Impl: func(args []cty.Value, retType cty.Type) (cty.Value, error) {
+		var hasUnknown bool
 		for it := args[0].ElementIterator(); it.Next(); {
 			_, v := it.Element()
 			if !v.IsKnown() {
-				return cty.UnknownVal(cty.Bool), nil
+				hasUnknown = true
+				continue
 			}
 			if v.True() {
 				return cty.True, nil
 			}
+		}
+		if hasUnknown {
+			return cty.UnknownVal(cty.Bool), nil
 		}
 		return cty.False, nil
 	},

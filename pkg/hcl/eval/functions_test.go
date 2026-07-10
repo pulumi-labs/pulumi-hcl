@@ -1483,6 +1483,148 @@ func TestUnknownPropagation(t *testing.T) {
 	}
 }
 
+func TestAnyTrueAllTrue(t *testing.T) {
+	t.Parallel()
+	funcs := Functions("/tmp")
+
+	unknownBool := cty.UnknownVal(cty.Bool)
+	nullBool := cty.NullVal(cty.Bool)
+
+	tests := []struct {
+		name string
+		fn   string
+		args []cty.Value
+		want cty.Value
+	}{
+		{
+			name: "anytrue known true after unknown",
+			fn:   "anytrue",
+			args: []cty.Value{cty.ListVal([]cty.Value{unknownBool, cty.True})},
+			want: cty.True,
+		},
+		{
+			name: "anytrue known true before unknown",
+			fn:   "anytrue",
+			args: []cty.Value{cty.ListVal([]cty.Value{cty.True, unknownBool})},
+			want: cty.True,
+		},
+		{
+			name: "anytrue unknown and false",
+			fn:   "anytrue",
+			args: []cty.Value{cty.ListVal([]cty.Value{unknownBool, cty.False})},
+			want: unknownBool,
+		},
+		{
+			name: "anytrue only unknown",
+			fn:   "anytrue",
+			args: []cty.Value{cty.ListVal([]cty.Value{unknownBool})},
+			want: unknownBool,
+		},
+		{
+			name: "anytrue unknown list",
+			fn:   "anytrue",
+			args: []cty.Value{cty.UnknownVal(cty.List(cty.Bool))},
+			want: unknownBool,
+		},
+		{
+			name: "anytrue all false",
+			fn:   "anytrue",
+			args: []cty.Value{cty.ListVal([]cty.Value{cty.False, cty.False})},
+			want: cty.False,
+		},
+		{
+			name: "anytrue empty list",
+			fn:   "anytrue",
+			args: []cty.Value{cty.ListValEmpty(cty.Bool)},
+			want: cty.False,
+		},
+		{
+			name: "anytrue only null",
+			fn:   "anytrue",
+			args: []cty.Value{cty.ListVal([]cty.Value{nullBool})},
+			want: cty.False,
+		},
+		{
+			name: "anytrue null then true",
+			fn:   "anytrue",
+			args: []cty.Value{cty.ListVal([]cty.Value{nullBool, cty.True})},
+			want: cty.True,
+		},
+		{
+			name: "anytrue null and unknown",
+			fn:   "anytrue",
+			args: []cty.Value{cty.ListVal([]cty.Value{nullBool, unknownBool})},
+			want: unknownBool,
+		},
+		{
+			name: "alltrue unknown before false",
+			fn:   "alltrue",
+			args: []cty.Value{cty.ListVal([]cty.Value{unknownBool, cty.False})},
+			want: unknownBool,
+		},
+		{
+			name: "alltrue known false before unknown",
+			fn:   "alltrue",
+			args: []cty.Value{cty.ListVal([]cty.Value{cty.False, unknownBool})},
+			want: cty.False,
+		},
+		{
+			name: "alltrue unknown and true",
+			fn:   "alltrue",
+			args: []cty.Value{cty.ListVal([]cty.Value{unknownBool, cty.True})},
+			want: unknownBool,
+		},
+		{
+			name: "alltrue only unknown",
+			fn:   "alltrue",
+			args: []cty.Value{cty.ListVal([]cty.Value{unknownBool})},
+			want: unknownBool,
+		},
+		{
+			name: "alltrue unknown list",
+			fn:   "alltrue",
+			args: []cty.Value{cty.UnknownVal(cty.List(cty.Bool))},
+			want: unknownBool,
+		},
+		{
+			name: "alltrue all true",
+			fn:   "alltrue",
+			args: []cty.Value{cty.ListVal([]cty.Value{cty.True, cty.True})},
+			want: cty.True,
+		},
+		{
+			name: "alltrue empty list",
+			fn:   "alltrue",
+			args: []cty.Value{cty.ListValEmpty(cty.Bool)},
+			want: cty.True,
+		},
+		{
+			name: "alltrue only null",
+			fn:   "alltrue",
+			args: []cty.Value{cty.ListVal([]cty.Value{nullBool})},
+			want: cty.False,
+		},
+		{
+			name: "alltrue true then null",
+			fn:   "alltrue",
+			args: []cty.Value{cty.ListVal([]cty.Value{cty.True, nullBool})},
+			want: cty.False,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			fn, ok := funcs[tt.fn]
+			require.True(t, ok, "function %q not registered", tt.fn)
+
+			got, err := fn.Call(tt.args)
+			require.NoError(t, err)
+			assert.Equal(t, tt.want, got)
+		})
+	}
+}
+
 // TestLengthMarkPropagation mirrors OpenTofu's LengthFunc, which carries the
 // argument's marks onto the returned count for every supported type. The tuple
 // and object branches build the count themselves, so they must reapply the
