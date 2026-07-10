@@ -1598,7 +1598,11 @@ func (e *Engine) buildResourceOptionsInContext(
 				return 0, false
 			}
 			val, diags := e.evaluator.EvaluateExpression(expr)
-			if diags.HasErrors() || val.Type() != cty.String {
+			if diags.HasErrors() {
+				return 0, false
+			}
+			val, _ = val.Unmark()
+			if val.Type() != cty.String || val.IsNull() || !val.IsKnown() {
 				return 0, false
 			}
 			d, err := time.ParseDuration(val.AsString())
@@ -1655,7 +1659,8 @@ func (e *Engine) buildResourceOptionsInContext(
 
 	if res.RetainOnDelete != nil {
 		val, diags := res.RetainOnDelete.Value(hclCtx)
-		if !diags.HasErrors() && val.Type() == cty.Bool {
+		val, _ = val.Unmark()
+		if !diags.HasErrors() && val.Type() == cty.Bool && !val.IsNull() && val.IsKnown() {
 			b := val.True()
 			opts.RetainOnDelete = &b
 		}
@@ -1739,10 +1744,12 @@ func (e *Engine) buildResourceOptionsInContext(
 
 	if res.EnvVarMappings != nil {
 		val, diags := res.EnvVarMappings.Value(hclCtx)
-		if !diags.HasErrors() && (val.Type().IsObjectType() || val.Type().IsMapType()) {
+		val, _ = val.UnmarkDeep()
+		if !diags.HasErrors() && (val.Type().IsObjectType() || val.Type().IsMapType()) &&
+			!val.IsNull() && val.IsKnown() {
 			mappings := make(map[string]string)
 			for k, v := range val.AsValueMap() {
-				if v.Type() == cty.String {
+				if v.Type() == cty.String && !v.IsNull() && v.IsKnown() {
 					mappings[k] = v.AsString()
 				}
 			}
@@ -1754,14 +1761,16 @@ func (e *Engine) buildResourceOptionsInContext(
 
 	if res.Version != nil {
 		val, diags := res.Version.Value(hclCtx)
-		if !diags.HasErrors() && val.Type() == cty.String {
+		val, _ = val.Unmark()
+		if !diags.HasErrors() && val.Type() == cty.String && !val.IsNull() && val.IsKnown() {
 			opts.Version = val.AsString()
 		}
 	}
 
 	if res.PluginDownloadURL != nil && !strings.HasPrefix(res.Type, "pulumi_providers_") {
 		val, diags := res.PluginDownloadURL.Value(hclCtx)
-		if !diags.HasErrors() && val.Type() == cty.String {
+		val, _ = val.Unmark()
+		if !diags.HasErrors() && val.Type() == cty.String && !val.IsNull() && val.IsKnown() {
 			opts.PluginDownloadURL = val.AsString()
 		}
 	}

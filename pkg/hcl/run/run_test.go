@@ -2907,6 +2907,95 @@ resource "aws_instance" "web" {
 	}
 }
 
+func TestEngine_SensitiveResourceOptions(t *testing.T) {
+	t.Parallel()
+
+	src := []byte(`
+variable "secret_timeout" {
+  type      = string
+  sensitive = true
+  default   = "10m"
+}
+
+variable "secret_version" {
+  type      = string
+  sensitive = true
+  default   = "1.2.3"
+}
+
+variable "secret_url" {
+  type      = string
+  sensitive = true
+  default   = "https://example.com/plugins"
+}
+
+resource "aws_instance" "web" {
+  ami           = "ami-12345"
+  instance_type = "t3.micro"
+
+  timeouts {
+    create = var.secret_timeout
+  }
+
+  pulumi {
+    retain_on_delete    = length(var.secret_timeout) > 0
+    version             = var.secret_version
+    plugin_download_url = var.secret_url
+    env_var_mappings    = { AWS_REGION = var.secret_timeout }
+  }
+}
+`)
+
+	p := parser.NewParser()
+	config, diags := p.ParseSource("test.hcl", src)
+	require.False(t, diags.HasErrors(), "parse error: %s", diags.Error())
+
+	mock := &testutil.MockResourceMonitor{}
+	engine := newTestEngine(t, config, &run.EngineOptions{
+		ModuleLoader:    testModuleLoader(t),
+		ProjectName:     "test-project",
+		StackName:       "dev",
+		ResourceMonitor: mock,
+		WorkDir:         t.TempDir(),
+		RootDir:         t.TempDir(),
+		SchemaLoader: schemaloader.New(t, schema.PackageSpec{
+			Name: "aws",
+			Resources: map[string]schema.ResourceSpec{
+				"aws:index:Instance": {
+					InputProperties: map[string]schema.PropertySpec{
+						"ami":          {TypeSpec: schema.TypeSpec{Type: "string"}},
+						"instanceType": {TypeSpec: schema.TypeSpec{Type: "string"}},
+					},
+					ObjectTypeSpec: schema.ObjectTypeSpec{
+						Properties: map[string]schema.PropertySpec{
+							"ami":          {TypeSpec: schema.TypeSpec{Type: "string"}},
+							"instanceType": {TypeSpec: schema.TypeSpec{Type: "string"}},
+						},
+					},
+				},
+			},
+		}),
+	})
+
+	require.NoError(t, engine.Run(t.Context()))
+
+	var instanceReq *run.RegisterResourceRequest
+	for i := range mock.RegisteredResources {
+		if mock.RegisteredResources[i].Type == "aws:index:Instance" {
+			instanceReq = &mock.RegisteredResources[i]
+			break
+		}
+	}
+	require.NotNil(t, instanceReq, "expected aws:index:Instance resource to be registered")
+
+	retain := true
+	assert.Equal(t, &run.CustomTimeouts{Create: 600}, instanceReq.CustomTimeouts)
+	assert.Equal(t, &retain, instanceReq.RetainOnDelete)
+	assert.Equal(t, "1.2.3", instanceReq.Version)
+	assert.Equal(t, "https://example.com/plugins", instanceReq.PluginDownloadURL)
+	assert.Equal(t, map[string]string{"AWS_REGION": "10m"}, instanceReq.EnvVarMappings)
+}
+
 func TestEngine_MovedBlock(t *testing.T) {
 	t.Parallel()
 
