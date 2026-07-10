@@ -433,6 +433,17 @@ func (p *Parser) parseProviderBlock(config *ast.Config, block *hcl.Block) hcl.Di
 			provider.Alias = val.AsString()
 		}
 	}
+	if attr, ok := content.Attributes["for_each"]; ok {
+		provider.ForEach = attr.Expr
+	}
+	if provider.ForEach != nil && provider.Alias == "" {
+		diags = append(diags, &hcl.Diagnostic{
+			Severity: hcl.DiagError,
+			Summary:  `Alias required when using "for_each"`,
+			Detail:   "The for_each argument is allowed only for provider configurations with an alias.",
+			Subject:  provider.ForEach.Range().Ptr(),
+		})
+	}
 	for _, subBlock := range content.Blocks {
 		if subBlock.Type == "pulumi" {
 			diags = append(diags, p.parsePulumiProviderOptions(subBlock, provider)...)

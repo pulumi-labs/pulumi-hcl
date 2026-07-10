@@ -19,6 +19,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"testing"
 
@@ -3991,6 +3992,108 @@ module "child" {
 // When both the root and a child module declare a default `provider "simple"`
 // config, a resource in the child binds to the child's own block, not the
 // inherited root default.
+// A provider block with for_each registers one provider per key, each
+// configured with its own each.value, and a resource's
+// `provider = simple.by_key["a"]` binds to the matching instance.
+func TestEngine_ProviderForEach(t *testing.T) {
+	t.Parallel()
+
+	src := []byte(`
+variable "prefixes" {
+  type = map(string)
+  default = {
+    a = "alpha"
+    b = "beta"
+  }
+}
+
+provider "simple" {
+  alias    = "by_key"
+  for_each = var.prefixes
+  prefix   = each.value
+}
+
+resource "simple_resource" "r" {
+  provider = simple.by_key["a"]
+  input    = "world"
+}
+`)
+
+	p := parser.NewParser()
+	config, diags := p.ParseSource("test.hcl", src)
+	require.False(t, diags.HasErrors(), "parse error: %s", diags.Error())
+
+	mock := &testutil.MockResourceMonitor{}
+	engine := newTestEngine(t, config, &run.EngineOptions{
+		ModuleLoader:    testModuleLoader(t),
+		ProjectName:     "test-project",
+		StackName:       "dev",
+		ResourceMonitor: mock,
+		WorkDir:         t.TempDir(),
+		RootDir:         t.TempDir(),
+		SchemaLoader: schemaloader.New(t, schema.PackageSpec{
+			Name: "simple",
+			Provider: &schema.ResourceSpec{
+				InputProperties: map[string]schema.PropertySpec{
+					"prefix": {TypeSpec: schema.TypeSpec{Type: "string"}},
+				},
+			},
+			Resources: map[string]schema.ResourceSpec{
+				"simple:index:Resource": {
+					InputProperties: map[string]schema.PropertySpec{
+						"input": {TypeSpec: schema.TypeSpec{Type: "string"}},
+					},
+					ObjectTypeSpec: schema.ObjectTypeSpec{
+						Properties: map[string]schema.PropertySpec{
+							"input": {TypeSpec: schema.TypeSpec{Type: "string"}},
+						},
+					},
+				},
+			},
+		}),
+	})
+
+	require.NoError(t, engine.Run(t.Context()))
+
+	var stackURN urn.URN
+	var providerRegs []run.RegisterResourceRequest
+	var resourceReg *run.RegisterResourceRequest
+	for i, r := range mock.RegisteredResources {
+		switch r.Type {
+		case "pulumi:pulumi:Stack":
+			stackURN = urn.URN("urn:pulumi:test::project::" + r.Type + "::" + r.Name)
+		case "pulumi:providers:simple":
+			providerRegs = append(providerRegs, r)
+		case "simple:index:Resource":
+			resourceReg = &mock.RegisteredResources[i]
+		}
+	}
+	sort.Slice(providerRegs, func(i, j int) bool { return providerRegs[i].Name < providerRegs[j].Name })
+
+	assert.Equal(t, []run.RegisterResourceRequest{
+		{
+			Type:   "pulumi:providers:simple",
+			Name:   "by_key-a",
+			Inputs: property.NewMap(map[string]property.Value{"prefix": property.New("alpha")}),
+			Custom: true,
+			Parent: stackURN,
+		},
+		{
+			Type:   "pulumi:providers:simple",
+			Name:   "by_key-b",
+			Inputs: property.NewMap(map[string]property.Value{"prefix": property.New("beta")}),
+			Custom: true,
+			Parent: stackURN,
+		},
+	}, providerRegs)
+
+	require.NotNil(t, resourceReg, "resource should register")
+	assert.Equal(t,
+		"urn:pulumi:test::project::pulumi:providers:simple::by_key-a::by_key-a-id",
+		resourceReg.Provider,
+		"the resource must bind to the provider instance selected by its key")
+}
+
 func TestEngine_ProviderResolution_ChildModuleBlockWins(t *testing.T) {
 	t.Parallel()
 

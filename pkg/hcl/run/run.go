@@ -906,11 +906,60 @@ func (e *Engine) processProvider(ctx context.Context, node *graph.Node) error {
 
 	if node.ModuleInfo != nil {
 		return e.forEachModuleInstance(node, func(inst *moduleInstance) error {
-			return e.registerProviderInContext(ctx, node, provider, inst.EvalCtx, inst.URN, inst)
+			return e.registerProvider(ctx, node, provider, inst.EvalCtx, inst.URN, inst)
 		})
 	}
 
-	return e.registerProviderInContext(ctx, node, provider, e.evaluator.Context(), e.stackURN, nil)
+	return e.registerProvider(ctx, node, provider, e.evaluator.Context(), e.stackURN, nil)
+}
+
+// providerInstance carries one `for_each` instance of a provider block: the
+// instance key and the element value bound to each.key/each.value while the
+// block's config is evaluated.
+type providerInstance struct {
+	key   string
+	value cty.Value
+}
+
+// registerProvider registers a provider block in evalCtx: one instance per
+// for_each key when the block has `for_each`, otherwise a single
+// configuration.
+func (e *Engine) registerProvider(
+	ctx context.Context, node *graph.Node, provider *ast.Provider,
+	evalCtx *eval.Context, parentURN urn.URN, modInst *moduleInstance,
+) error {
+	if provider.ForEach == nil {
+		return e.registerProviderInContext(ctx, node, provider, evalCtx, parentURN, modInst, nil)
+	}
+
+	forEach, unknown, diags := eval.NewEvaluator(evalCtx).EvaluateForEach(provider.ForEach)
+	if diags.HasErrors() {
+		return fmt.Errorf("evaluating for_each for provider %s: %s", node.Key, diags.Error())
+	}
+	// Provider instances must be configurable up front, so unlike a
+	// resource's for_each an unknown value is an error even during preview.
+	if unknown {
+		return fmt.Errorf("%s: the for_each value depends on values that are not yet known", node.Key)
+	}
+
+	for _, key := range slices.Sorted(maps.Keys(forEach)) {
+		inst := &providerInstance{key: key, value: forEach[key]}
+		if err := e.registerProviderInContext(ctx, node, provider, evalCtx, parentURN, modInst, inst); err != nil {
+			return err
+		}
+	}
+
+	// An empty for_each still binds the provider address so a reference
+	// evaluates to an empty collection rather than "no such attribute".
+	if len(forEach) == 0 {
+		baseKey := node.Key
+		if node.ModuleInfo != nil {
+			baseKey = strings.TrimPrefix(baseKey, node.ModuleInfo.Prefix())
+		}
+		evalCtx.SetResource(baseKey, "", cty.EmptyObjectVal)
+	}
+
+	return nil
 }
 
 // resolvePassThroughProvider looks up a provider passed into a module via
@@ -1001,8 +1050,14 @@ func providerExprKey(expr hcl.Expression) string {
 func (e *Engine) registerProviderInContext(
 	ctx context.Context, node *graph.Node, provider *ast.Provider,
 	evalCtx *eval.Context, parentURN urn.URN, modInst *moduleInstance,
+	inst *providerInstance,
 ) error {
 	typeToken := "pulumi:providers:" + provider.Name
+
+	if inst != nil {
+		evalCtx.SetEach(cty.StringVal(inst.key), inst.value)
+		defer evalCtx.ClearEach()
+	}
 
 	hclCtx := evalCtx.HCLContext()
 
@@ -1039,6 +1094,9 @@ func (e *Engine) registerProviderInContext(
 	logicalName := provider.Alias
 	if logicalName == "" {
 		logicalName = provider.Name
+	}
+	if inst != nil {
+		logicalName = logicalName + "-" + inst.key
 	}
 	if modInst != nil {
 		modInstanceName := modInst.Path.LogicalName()
@@ -1148,7 +1206,11 @@ func (e *Engine) registerProviderInContext(
 	// into.
 	outputObj["urn"] = cty.StringVal(string(resp.URN))
 
-	e.resourceOutputs.Set(node.Key, cty.ObjectVal(outputObj).Mark(eval.DepMark(resp.URN)))
+	outputsKey := node.Key
+	if inst != nil {
+		outputsKey = fmt.Sprintf("%s[%q]", node.Key, inst.key)
+	}
+	e.resourceOutputs.Set(outputsKey, cty.ObjectVal(outputObj).Mark(eval.DepMark(resp.URN)))
 
 	// Top-level un-aliased provider blocks become the default provider for
 	// resources of the same package that don't set `provider` explicitly.
@@ -1157,12 +1219,17 @@ func (e *Engine) registerProviderInContext(
 	}
 
 	markedProviderOutputs := cty.ObjectVal(outputObj).Mark(eval.DepMark(resp.URN))
+	bareKey := node.Key
 	if node.ModuleInfo != nil {
 		// Strip prefix for module-internal references
-		bareKey := strings.TrimPrefix(node.Key, node.ModuleInfo.Prefix())
-		evalCtx.SetResource(bareKey, resp.URN, markedProviderOutputs)
+		bareKey = strings.TrimPrefix(node.Key, node.ModuleInfo.Prefix())
+	}
+	if inst != nil {
+		// Instances assemble into an object keyed by each.key, so
+		// `<name>.<alias>["key"]` selects one through ordinary indexing.
+		evalCtx.SetEachResource(bareKey, inst.key, resp.URN, markedProviderOutputs)
 	} else {
-		evalCtx.SetResource(node.Key, resp.URN, markedProviderOutputs)
+		evalCtx.SetResource(bareKey, resp.URN, markedProviderOutputs)
 	}
 
 	return nil
