@@ -1,0 +1,6 @@
+kind: bug-fixes
+body: Fix `sum` panicking on a `null` element
+time: 2026-07-10T12:29:53Z
+custom:
+    Component: runtime
+    PR: "336"
