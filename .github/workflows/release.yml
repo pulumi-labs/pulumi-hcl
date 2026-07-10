@@ -303,7 +303,7 @@ jobs:
       ESC_ACTION_EXPORT_ENVIRONMENT_VARIABLES: GITHUB_TOKEN=hcl-registry-publish-dispatch
     steps:
       - name: Fetch the dispatch token from ESC
-        uses: pulumi/esc-action@8afe12bb7bb3df0a599e5309ee429ff1079ba85f # v3
+        uses: pulumi/esc-action@v3
       - name: Dispatch a registry docs build
         run: |
           base="https://raw.githubusercontent.com/pulumi-labs/pulumi-hcl/${SHA}/registry"
