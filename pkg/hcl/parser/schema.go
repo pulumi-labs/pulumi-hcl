@@ -80,13 +80,14 @@ var terraformPackageSchema = &hcl.BodySchema{
 	},
 }
 
-// providerSchema defines the structure of a provider block. Only `alias` (a
-// Terraform-standard meta-argument) lives at the top level; Pulumi-specific
-// options go in the nested `pulumi` block so they cannot collide with a
-// provider's own configuration attributes.
+// providerSchema defines the structure of a provider block. Only `alias` and
+// `for_each` (Terraform-standard meta-arguments) live at the top level;
+// Pulumi-specific options go in the nested `pulumi` block so they cannot
+// collide with a provider's own configuration attributes.
 var providerSchema = &hcl.BodySchema{
 	Attributes: []hcl.AttributeSchema{
 		{Name: "alias"},
+		{Name: "for_each"},
 	},
 	Blocks: []hcl.BlockHeaderSchema{
 		{Type: "pulumi"},

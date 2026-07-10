@@ -34,6 +34,12 @@ type Provider struct {
 	// This allows multiple configurations of the same provider.
 	Alias string
 
+	// ForEach is the raw expression from the `for_each` attribute, if
+	// specified. It expands the block into one provider instance per key,
+	// selected on resources as `<name>.<alias>[<key>]`. Only valid together
+	// with Alias.
+	ForEach hcl.Expression
+
 	// Config is the body containing provider configuration attributes
 	// (with the Pulumi-specific resource-option attributes already extracted).
 	Config hcl.Body

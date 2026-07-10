@@ -620,10 +620,16 @@ func (g *Graph) resourceDeps(resource *ast.Resource, prefix string) []pdag.Node 
 
 // providerDeps extracts all dependencies from a provider block, applying prefix to resolved keys.
 func (g *Graph) providerDeps(provider *ast.Provider, prefix string) []pdag.Node {
-	if provider.Config == nil {
-		return nil
+	seen := make(map[pdag.Node]bool)
+	for _, dep := range g.exprDeps(provider.ForEach, prefix) {
+		seen[dep] = true
 	}
-	return g.bodyDeps(provider.Config, prefix, nil)
+	if provider.Config != nil {
+		for _, dep := range g.bodyDeps(provider.Config, prefix, nil) {
+			seen[dep] = true
+		}
+	}
+	return slices.Collect(maps.Keys(seen))
 }
 
 // bodyDeps extracts dependencies from an HCL body, applying prefix to resolved keys.

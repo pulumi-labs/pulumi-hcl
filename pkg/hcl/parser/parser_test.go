@@ -772,6 +772,41 @@ variable "subnets" {
 	}
 }
 
+func TestParseProviderForEach(t *testing.T) {
+	t.Parallel()
+	src := []byte(`
+provider "simple" {
+  alias    = "by_key"
+  for_each = { a = "alpha" }
+  prefix   = each.value
+}
+`)
+	config, diags := NewParser().ParseSource("test.tf", src)
+	require.False(t, diags.HasErrors(), "unexpected errors: %v", diags.Errs())
+
+	provider, ok := config.Providers["simple.by_key"]
+	require.True(t, ok)
+	assert.Equal(t, "simple", provider.Name)
+	assert.Equal(t, "by_key", provider.Alias)
+	assert.NotNil(t, provider.ForEach)
+}
+
+func TestParseProviderForEachRequiresAlias(t *testing.T) {
+	t.Parallel()
+	src := []byte(`
+provider "simple" {
+  for_each = { a = "alpha" }
+  prefix   = each.value
+}
+`)
+	_, diags := NewParser().ParseSource("test.tf", src)
+	require.True(t, diags.HasErrors())
+	assert.Equal(t,
+		`test.tf:3,14-29: Alias required when using "for_each"; `+
+			"The for_each argument is allowed only for provider configurations with an alias.",
+		diags.Error())
+}
+
 func contains(s, sub string) bool {
 	for i := 0; i+len(sub) <= len(s); i++ {
 		if s[i:i+len(sub)] == sub {
