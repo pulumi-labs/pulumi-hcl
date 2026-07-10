@@ -994,6 +994,40 @@ func (e *Engine) resolvePassThroughProvider(modInfo *graph.ModuleInfo, localKey 
 	return ref
 }
 
+// resolveExplicitProvider resolves a resource/data source `provider = ...`
+// expression to a "<urn>::<id>" reference. A pass-through entry of the
+// instantiating module call wins over any local definition; otherwise the
+// expression is evaluated in the resource's own scope. A bare `provider =
+// name` reference whose default configuration is registered nowhere in scope
+// resolves to "": the reference names the implicit empty default
+// configuration, i.e. the engine default.
+func (e *Engine) resolveExplicitProvider(
+	expr hcl.Expression, evalCtx *eval.Context, modInfo *graph.ModuleInfo,
+) (string, error) {
+	if ref := e.resolvePassThroughProvider(modInfo, providerExprKey(expr)); ref != "" {
+		return ref, nil
+	}
+	val, valDiags := eval.NewEvaluator(evalCtx).EvaluateExpression(expr)
+	if !valDiags.HasErrors() {
+		return providerRefFromCty(val)
+	}
+	vars := expr.Variables()
+	if len(vars) != 1 || len(vars[0]) != 1 {
+		return "", errors.New(valDiags.Error())
+	}
+	name := vars[0].RootName()
+	if modInfo != nil {
+		if ref := e.inheritedDefaultProvider(modInfo, name); ref != "" {
+			return ref, nil
+		}
+		return "", nil
+	}
+	if ref, ok := e.defaultProviders.Get(name); ok {
+		return ref, nil
+	}
+	return "", nil
+}
+
 // inheritedDefaultProvider walks up the module tree from modInfo, returning the
 // nearest ancestor's registered un-aliased default provider config for pkg
 // (URN::ID), or "" if none. The graph adds a matching edge so that block is
@@ -1601,24 +1635,11 @@ func (e *Engine) buildResourceOptionsInContext(
 	}
 
 	if res.Provider != nil {
-		// `provider = X.alias` (or `provider = X`). For an in-module
-		// resource, the parent module call may have mapped this local
-		// reference to a parent-scope provider via
-		// `providers = { X.alias = ... }` — that wins over any local
-		// definition. Fall back to evaluating the expression in the
-		// resource's own scope, which is what TF does when there is no
-		// pass-through.
-		if ref := e.resolvePassThroughProvider(modInfo, providerExprKey(res.Provider)); ref != "" {
-			opts.Provider = ref
-		} else {
-			val, valDiags := eval.NewEvaluator(evalCtx).EvaluateExpression(res.Provider)
-			if valDiags.HasErrors() {
-				return nil, fmt.Errorf("evaluating provider for %s.%s: %s", res.Type, res.Name, valDiags.Error())
-			}
-			ref, err := providerRefFromCty(val)
-			if err != nil {
-				return nil, fmt.Errorf("resolving provider for %s.%s: %w", res.Type, res.Name, err)
-			}
+		ref, err := e.resolveExplicitProvider(res.Provider, evalCtx, modInfo)
+		if err != nil {
+			return nil, fmt.Errorf("resolving provider for %s.%s: %w", res.Type, res.Name, err)
+		}
+		if ref != "" {
 			opts.Provider = ref
 		}
 	} else if modInfo != nil {
@@ -2856,17 +2877,11 @@ func (e *Engine) invokeDataSourceOnce(
 	}
 
 	if ds.Provider != nil {
-		if ref := e.resolvePassThroughProvider(node.ModuleInfo, providerExprKey(ds.Provider)); ref != "" {
-			invokeReq.Provider = ref
-		} else {
-			val, valDiags := eval.NewEvaluator(evalCtx).EvaluateExpression(ds.Provider)
-			if valDiags.HasErrors() {
-				return cty.NilVal, fmt.Errorf("evaluating provider for data %s.%s: %s", ds.Type, ds.Name, valDiags.Error())
-			}
-			ref, err := providerRefFromCty(val)
-			if err != nil {
-				return cty.NilVal, fmt.Errorf("resolving provider for data %s.%s: %w", ds.Type, ds.Name, err)
-			}
+		ref, err := e.resolveExplicitProvider(ds.Provider, evalCtx, node.ModuleInfo)
+		if err != nil {
+			return cty.NilVal, fmt.Errorf("resolving provider for data %s.%s: %w", ds.Type, ds.Name, err)
+		}
+		if ref != "" {
 			invokeReq.Provider = ref
 		}
 	} else if node.ModuleInfo != nil {
