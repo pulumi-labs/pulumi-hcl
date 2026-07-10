@@ -1642,3 +1642,186 @@ func TestResourceOutputToCtyRecursiveArrayMixedDepth(t *testing.T) {
 	assert.Equal(t, cty.String, deep.Type())
 	assert.Equal(t, "d2c", deep.AsString())
 }
+
+// parseDynamicBlockResource parses src and returns the body of its single
+// `resource` block together with a schema whose `settings` property is a
+// list-shaped block with a string `name` field.
+func parseDynamicBlockResource(t *testing.T, src string) (hcl.Body, *schema.Resource) {
+	t.Helper()
+
+	file, diags := hclsyntax.ParseConfig([]byte(src), "test.hcl", hcl.Pos{Line: 1, Column: 1})
+	require.False(t, diags.HasErrors(), diags.Error())
+
+	body := file.Body.(*hclsyntax.Body)
+	var resourceBody hcl.Body
+	for _, b := range body.Blocks {
+		if b.Type == "resource" {
+			resourceBody = b.Body
+			break
+		}
+	}
+	require.NotNil(t, resourceBody)
+
+	return resourceBody, &schema.Resource{
+		Token: "fake:index:F",
+		InputProperties: []*schema.Property{{
+			Name: "settings",
+			Type: &schema.ArrayType{ElementType: &schema.ObjectType{
+				Properties: []*schema.Property{{Name: "name", Type: schema.StringType}},
+			}},
+		}},
+	}
+}
+
+func TestEvalDynamicBlocks_UnknownForEach(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		forEach  cty.Value
+		expected property.Value
+	}{
+		{
+			name:     "unknown collection",
+			forEach:  cty.UnknownVal(cty.List(cty.Object(map[string]cty.Type{"name": cty.String}))),
+			expected: property.New(property.Computed),
+		},
+		{
+			name:     "unknown of dynamic type",
+			forEach:  cty.DynamicVal,
+			expected: property.New(property.Computed),
+		},
+		{
+			name: "sensitive unknown collection",
+			forEach: cty.UnknownVal(cty.List(cty.String)).
+				WithMarks(cty.NewValueMarks(eval.SensitiveMark)),
+			expected: property.New(property.Computed).WithSecret(true),
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			resourceBody, r := parseDynamicBlockResource(t, `
+resource "fake" "f" {
+  dynamic "settings" {
+    for_each = local.vpcs
+    content {
+      name = settings.value.name
+    }
+  }
+}`)
+
+			evalFn := func(_ resource.PropertyKey, expr hcl.Expression, extraVars map[string]cty.Value) (cty.Value, hcl.Diagnostics) {
+				if extraVars == nil {
+					return tt.forEach, nil
+				}
+				return expr.Value(&hcl.EvalContext{Variables: extraVars})
+			}
+
+			out, diags := EvalResourceWithSchema(resourceBody, r, nil, evalFn)
+			require.False(t, diags.HasErrors(), "unexpected diags: %v", diags)
+			assert.Equal(t, property.NewMap(map[string]property.Value{
+				"settings": tt.expected,
+			}), out)
+		})
+	}
+}
+
+// A known dynamic block cannot restore an enumerable value once a sibling
+// dynamic block with an unknown for_each made the whole property unknown.
+func TestEvalDynamicBlocks_UnknownForEachThenKnown(t *testing.T) {
+	t.Parallel()
+
+	resourceBody, r := parseDynamicBlockResource(t, `
+resource "fake" "f" {
+  dynamic "settings" {
+    for_each = local.unknown
+    content {
+      name = settings.value
+    }
+  }
+  dynamic "settings" {
+    for_each = local.known
+    content {
+      name = settings.value
+    }
+  }
+}`)
+
+	evalFn := func(_ resource.PropertyKey, expr hcl.Expression, extraVars map[string]cty.Value) (cty.Value, hcl.Diagnostics) {
+		if extraVars == nil {
+			traversal := expr.Variables()[0]
+			if traversal[len(traversal)-1].(hcl.TraverseAttr).Name == "unknown" {
+				return cty.UnknownVal(cty.List(cty.String)), nil
+			}
+			return cty.ListVal([]cty.Value{cty.StringVal("p")}), nil
+		}
+		return expr.Value(&hcl.EvalContext{Variables: extraVars})
+	}
+
+	out, diags := EvalResourceWithSchema(resourceBody, r, nil, evalFn)
+	require.False(t, diags.HasErrors(), "unexpected diags: %v", diags)
+	assert.Equal(t, property.NewMap(map[string]property.Value{
+		"settings": property.New(property.Computed),
+	}), out)
+}
+
+func TestEvalDynamicBlocks_InvalidForEach(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		forEach cty.Value
+		detail  string
+	}{
+		{
+			name:    "null",
+			forEach: cty.NullVal(cty.List(cty.String)),
+			detail:  "Cannot use a null value in for_each.",
+		},
+		{
+			name:    "not iterable",
+			forEach: cty.StringVal("nope"),
+			detail:  "Cannot use a string value in for_each. An iterable collection is required.",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			resourceBody, r := parseDynamicBlockResource(t, `
+resource "fake" "f" {
+  dynamic "settings" {
+    for_each = local.vpcs
+    content {
+      name = settings.value
+    }
+  }
+}`)
+
+			evalFn := func(_ resource.PropertyKey, expr hcl.Expression, extraVars map[string]cty.Value) (cty.Value, hcl.Diagnostics) {
+				if extraVars == nil {
+					return tt.forEach, nil
+				}
+				return expr.Value(&hcl.EvalContext{Variables: extraVars})
+			}
+
+			_, diags := EvalResourceWithSchema(resourceBody, r, nil, evalFn)
+			require.True(t, diags.HasErrors())
+			assert.Equal(t, "Invalid dynamic for_each value", diags[0].Summary)
+			assert.Equal(t, tt.detail, diags[0].Detail)
+		})
+	}
+}
+
+func TestConformCtyToType_UnknownAndNull(t *testing.T) {
+	t.Parallel()
+
+	objType := cty.Object(map[string]cty.Type{"a": cty.String})
+	for _, val := range []cty.Value{cty.UnknownVal(objType), cty.NullVal(objType)} {
+		assert.Equal(t, val, conformCtyToType(val, cty.Map(cty.String)))
+	}
+}

@@ -334,6 +334,26 @@ func evalDynamicBlocks(
 		var forEachMarks cty.ValueMarks
 		forEachVal, forEachMarks = forEachVal.Unmark()
 
+		if !forEachVal.CanIterateElements() && forEachVal.Type() != cty.DynamicPseudoType {
+			diags = append(diags, &hcl.Diagnostic{
+				Severity: hcl.DiagError,
+				Summary:  "Invalid dynamic for_each value",
+				Detail: fmt.Sprintf("Cannot use a %s value in for_each. An iterable collection is required.",
+					forEachVal.Type().FriendlyName()),
+				Subject: content.Attributes["for_each"].Expr.Range().Ptr(),
+			})
+			return diags
+		}
+		if forEachVal.IsNull() {
+			diags = append(diags, &hcl.Diagnostic{
+				Severity: hcl.DiagError,
+				Summary:  "Invalid dynamic for_each value",
+				Detail:   "Cannot use a null value in for_each.",
+				Subject:  content.Attributes["for_each"].Expr.Range().Ptr(),
+			})
+			return diags
+		}
+
 		// Determine the iterator variable name (defaults to block label).
 		// `iterator = <ident>` takes a bare identifier as the new iterator
 		// name, not an expression to evaluate — extract it directly from
@@ -372,6 +392,32 @@ func evalDynamicBlocks(
 			return diags
 		}
 
+		var nestedMapping *bridge.BodyMapping
+		if mapping != nil {
+			if fm := mapping.Lookup(propName); fm != nil {
+				nestedMapping = fm.Nested
+			}
+		}
+
+		key := snakeCaseFromCamelCase(prop.Name)
+
+		// An unknown for_each means the set of expanded blocks cannot be
+		// enumerated yet, so the whole property becomes unknown. Content
+		// expressions are not evaluated; the content body is still checked
+		// against the schema, with every attribute standing in as unknown.
+		if !forEachVal.IsKnown() {
+			unknownEval := func(resource.PropertyKey, hcl.Expression, map[string]cty.Value) (cty.Value, hcl.Diagnostics) {
+				return cty.DynamicVal.WithMarks(forEachMarks), nil
+			}
+			_, _, d := evalBlockWithSchema(contentBody, blockProps, nestedMapping, unknownEval)
+			diags = diags.Extend(d)
+			if d.HasErrors() {
+				return diags
+			}
+			resourceInputs[key] = cty.DynamicVal.WithMarks(forEachMarks)
+			continue
+		}
+
 		// Evaluate the content block for each element.
 		var values []cty.Value
 		it := forEachVal.ElementIterator()
@@ -396,12 +442,6 @@ func evalDynamicBlocks(
 				return eval(propKey, expr, merged)
 			}
 
-			var nestedMapping *bridge.BodyMapping
-			if mapping != nil {
-				if fm := mapping.Lookup(propName); fm != nil {
-					nestedMapping = fm.Nested
-				}
-			}
 			evaluated, _, d := evalBlockWithSchema(contentBody, blockProps, nestedMapping, dynamicEval)
 			diags = diags.Extend(d)
 			if d.HasErrors() {
@@ -410,11 +450,16 @@ func evalDynamicBlocks(
 			values = append(values, evaluated)
 		}
 
-		key := snakeCaseFromCamelCase(prop.Name)
 		if len(values) > 0 {
 			switch {
 			case isList:
 				if existing, ok := resourceInputs[key]; ok {
+					// A previous dynamic block with an unknown for_each already
+					// made the whole property unknown; the expanded set of
+					// blocks cannot be enumerated, so keep it unknown.
+					if unmarked, _ := existing.Unmark(); !unmarked.IsKnown() {
+						continue
+					}
 					// Merge with existing static blocks.
 					for it := existing.ElementIterator(); it.Next(); {
 						_, v := it.Element()
@@ -463,7 +508,7 @@ func conformCtyToType(val cty.Value, typ cty.Type) cty.Value {
 }
 
 func conformUnmarkedCtyToType(val cty.Value, typ cty.Type) cty.Value {
-	if val.Type().Equals(typ) {
+	if val.Type().Equals(typ) || !val.IsKnown() || val.IsNull() {
 		return val
 	}
 
