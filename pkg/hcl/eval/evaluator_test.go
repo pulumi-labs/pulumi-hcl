@@ -376,8 +376,13 @@ func TestContextTerraform(t *testing.T) {
 
 	eval := NewEvaluator(ctx)
 
-	expr := parseExpr(t, `pulumi.stack`)
-	assert.Equal(t, "production", evalString(t, eval, expr))
+	assert.Equal(t, "production", evalString(t, eval, parseExpr(t, `pulumi.stack`)))
+	assert.Equal(t, "production", evalString(t, eval, parseExpr(t, `terraform.workspace`)))
+
+	_, diags := eval.Evaluate(parseExpr(t, `terraform.applying`))
+	assert.Equal(t,
+		`test.hcl:1,10-19: Unsupported attribute; This object does not have an attribute named "applying".`,
+		diags.Error())
 }
 
 func TestContextRangedResources(t *testing.T) {
