@@ -24,7 +24,7 @@ require (
 	github.com/opentofu/svchost v0.0.0-20250610175836-86c9e5e3d8c8
 	github.com/pulumi/providertest v0.7.0
 	github.com/pulumi/pulumi-go-provider v1.3.3-0.20260622142528-c5c3719552bc
-	github.com/pulumi/pulumi-terraform-bridge/v3 v3.133.1-0.20260708160004-c0f28303f37f
+	github.com/pulumi/pulumi-terraform-bridge/v3 v3.134.0
 	github.com/pulumi/pulumi/pkg/v3 v3.251.0
 	github.com/pulumi/pulumi/sdk/v3 v3.251.0
 	github.com/stretchr/testify v1.11.1
@@ -254,9 +254,9 @@ require (
 	github.com/power-devops/perfstat v0.0.0-20240221224432-82ca36839d55 // indirect
 	github.com/pulumi/appdash v0.0.0-20231130102222-75f619a67231 // indirect
 	github.com/pulumi/inflector v0.2.1 // indirect
-	github.com/pulumi/pulumi-dotnet/pulumi-language-dotnet/v3 v3.107.4-0.20260702161323-9b264bdaa376 // indirect
+	github.com/pulumi/pulumi-dotnet/pulumi-language-dotnet/v3 v3.107.4-0.20260707145817-560bdceddcf2 // indirect
 	github.com/pulumi/pulumi-java v1.32.0 // indirect
-	github.com/pulumi/pulumi-yaml v1.37.1-0.20260702150055-d5d9dc89b88c // indirect
+	github.com/pulumi/pulumi-yaml v1.37.1-0.20260709082604-efc7b02d80e5 // indirect
 	github.com/pulumi/terraform-diff-reader v0.0.2 // indirect
 	github.com/rivo/uniseg v0.4.7 // indirect
 	github.com/rogpeppe/go-internal v1.14.1 // indirect

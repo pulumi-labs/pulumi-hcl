@@ -16,9 +16,11 @@ package providers
 
 import (
 	"context"
+	"strings"
 
 	"github.com/hashicorp/terraform-plugin-framework/datasource"
 	dschema "github.com/hashicorp/terraform-plugin-framework/datasource/schema"
+	"github.com/hashicorp/terraform-plugin-framework/function"
 	"github.com/hashicorp/terraform-plugin-framework/provider"
 	pschema "github.com/hashicorp/terraform-plugin-framework/provider/schema"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
@@ -38,7 +40,10 @@ func PFXProvider() provider.Provider { return &pfxProvider{} }
 
 type pfxProvider struct{}
 
-var _ provider.Provider = (*pfxProvider)(nil)
+var (
+	_ provider.Provider              = (*pfxProvider)(nil)
+	_ provider.ProviderWithFunctions = (*pfxProvider)(nil)
+)
 
 func (p *pfxProvider) Metadata(_ context.Context, _ provider.MetadataRequest, resp *provider.MetadataResponse) {
 	resp.TypeName = "pfx"
@@ -62,6 +67,53 @@ func (p *pfxProvider) DataSources(context.Context) []func() datasource.DataSourc
 	return []func() datasource.DataSource{
 		func() datasource.DataSource { return &pfxLookup{} },
 	}
+}
+
+func (p *pfxProvider) Functions(context.Context) []func() function.Function {
+	return []func() function.Function{
+		func() function.Function { return &pfxConcatStr{} },
+		func() function.Function { return &pfxJoinStr{} },
+	}
+}
+
+// pfxConcatStr is a provider-defined function: concat_str(first, second)
+// concatenates two strings. second allows null (projected as an optional
+// argument); first == "boom" returns a function error, so error propagation
+// can be compared across runtimes.
+type pfxConcatStr struct{}
+
+var _ function.Function = (*pfxConcatStr)(nil)
+
+func (f *pfxConcatStr) Metadata(_ context.Context, _ function.MetadataRequest, resp *function.MetadataResponse) {
+	resp.Name = "concat_str"
+}
+
+func (f *pfxConcatStr) Definition(_ context.Context, _ function.DefinitionRequest, resp *function.DefinitionResponse) {
+	resp.Definition = function.Definition{
+		Parameters: []function.Parameter{
+			function.StringParameter{Name: "first"},
+			function.StringParameter{Name: "second", AllowNullValue: true},
+		},
+		Return: function.StringReturn{},
+	}
+}
+
+func (f *pfxConcatStr) Run(ctx context.Context, req function.RunRequest, resp *function.RunResponse) {
+	var first string
+	var second *string
+	resp.Error = function.ConcatFuncErrors(resp.Error, req.Arguments.Get(ctx, &first, &second))
+	if resp.Error != nil {
+		return
+	}
+	if first == "boom" {
+		resp.Error = function.NewFuncError("concat_str: intentional failure")
+		return
+	}
+	out := first
+	if second != nil {
+		out += *second
+	}
+	resp.Error = function.ConcatFuncErrors(resp.Error, resp.Result.Set(ctx, out))
 }
 
 type pfxThing struct{}
@@ -175,6 +227,37 @@ func (r *pfxWidget) MoveState(context.Context) []resource.StateMover {
 			resp.Diagnostics.Append(resp.TargetState.Set(ctx, &src)...)
 		},
 	}}
+}
+
+// pfxJoinStr is a variadic provider-defined function: join_str(separator,
+// parts...) joins the trailing arguments with the separator. It exists to
+// compare Terraform's spread call syntax across runtimes.
+type pfxJoinStr struct{}
+
+var _ function.Function = (*pfxJoinStr)(nil)
+
+func (f *pfxJoinStr) Metadata(_ context.Context, _ function.MetadataRequest, resp *function.MetadataResponse) {
+	resp.Name = "join_str"
+}
+
+func (f *pfxJoinStr) Definition(_ context.Context, _ function.DefinitionRequest, resp *function.DefinitionResponse) {
+	resp.Definition = function.Definition{
+		Parameters: []function.Parameter{
+			function.StringParameter{Name: "separator"},
+		},
+		VariadicParameter: function.StringParameter{Name: "parts"},
+		Return:            function.StringReturn{},
+	}
+}
+
+func (f *pfxJoinStr) Run(ctx context.Context, req function.RunRequest, resp *function.RunResponse) {
+	var separator string
+	var parts []string
+	resp.Error = function.ConcatFuncErrors(resp.Error, req.Arguments.Get(ctx, &separator, &parts))
+	if resp.Error != nil {
+		return
+	}
+	resp.Error = function.ConcatFuncErrors(resp.Error, resp.Result.Set(ctx, strings.Join(parts, separator)))
 }
 
 type pfxLookup struct{}

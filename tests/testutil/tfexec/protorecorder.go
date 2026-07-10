@@ -51,6 +51,7 @@ type recordingServer struct {
 	schemaErr   error
 	resources   map[string]tftypes.Type
 	dataSources map[string]tftypes.Type
+	functions   map[string]*tfprotov6.Function
 }
 
 // objectTypes returns the object type of every resource and data source,
@@ -70,8 +71,16 @@ func (s *recordingServer) objectTypes(ctx context.Context) (resources, dataSourc
 		for name, sch := range resp.DataSourceSchemas {
 			s.dataSources[name] = sch.ValueType()
 		}
+		s.functions = resp.Functions
 	})
 	return s.resources, s.dataSources, s.schemaErr
+}
+
+// functionSignatures returns the provider's function definitions, fetched once
+// alongside the resource and data source schemas.
+func (s *recordingServer) functionSignatures(ctx context.Context) (map[string]*tfprotov6.Function, error) {
+	_, _, err := s.objectTypes(ctx)
+	return s.functions, err
 }
 
 func (s *recordingServer) ApplyResourceChange(
@@ -205,10 +214,66 @@ func (s *recordingServer) ImportResourceState(
 	return nil, errNoOpKind("ImportResourceState")
 }
 
+// CallFunction records a provider-defined function call: the decoded argument
+// list as Inputs ("args") and either the decoded result ("result") or the
+// function error text ("error") as Outputs.
 func (s *recordingServer) CallFunction(
-	context.Context, *tfprotov6.CallFunctionRequest,
+	ctx context.Context, req *tfprotov6.CallFunctionRequest,
 ) (*tfprotov6.CallFunctionResponse, error) {
-	return nil, errNoOpKind("CallFunction")
+	functions, err := s.functionSignatures(ctx)
+	if err != nil {
+		return nil, err
+	}
+	fn, ok := functions[req.Name]
+	if !ok {
+		return nil, fmt.Errorf("recording: no signature for function %q", req.Name)
+	}
+
+	args := make([]any, len(req.Arguments))
+	for i, dv := range req.Arguments {
+		param := fn.VariadicParameter
+		if i < len(fn.Parameters) {
+			param = fn.Parameters[i]
+		}
+		if param == nil {
+			return nil, fmt.Errorf("recording: function %q: no parameter for argument %d", req.Name, i)
+		}
+		// OpenTofu sends a null argument as an empty DynamicValue.
+		if dv == nil || (len(dv.MsgPack) == 0 && len(dv.JSON) == 0) {
+			args[i] = nil
+			continue
+		}
+		val, err := dv.Unmarshal(param.Type)
+		if err != nil {
+			return nil, fmt.Errorf("recording: decode %s argument %d: %w", req.Name, i, err)
+		}
+		args[i], err = valueToAny(val)
+		if err != nil {
+			return nil, fmt.Errorf("recording: convert %s argument %d: %w", req.Name, i, err)
+		}
+	}
+
+	resp, err := s.ProviderServer.CallFunction(ctx, req)
+	if err != nil {
+		return resp, err
+	}
+
+	outputs := map[string]any{}
+	switch {
+	case resp.Error != nil:
+		outputs["error"] = resp.Error.Text
+	case resp.Result != nil:
+		val, err := resp.Result.Unmarshal(fn.Return.Type)
+		if err != nil {
+			return nil, fmt.Errorf("recording: decode %s result: %w", req.Name, err)
+		}
+		outputs["result"], err = valueToAny(val)
+		if err != nil {
+			return nil, fmt.Errorf("recording: convert %s result: %w", req.Name, err)
+		}
+	}
+	s.rec.add(Op{Kind: OpCallFunction, Type: req.Name, Inputs: map[string]any{"args": args}, Outputs: outputs})
+	return resp, nil
 }
 
 func (s *recordingServer) OpenEphemeralResource(

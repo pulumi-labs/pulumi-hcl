@@ -188,8 +188,10 @@ func TestWrapServer_UnrecordableOpsError(t *testing.T) {
 	_, err := srv.ImportResourceState(t.Context(), &tfprotov6.ImportResourceStateRequest{})
 	require.EqualError(t, err, "recording: no OpKind for ImportResourceState; extend the recorder to support it")
 
-	_, err = srv.CallFunction(t.Context(), &tfprotov6.CallFunctionRequest{})
-	require.EqualError(t, err, "recording: no OpKind for CallFunction; extend the recorder to support it")
+	// CallFunction records, but a function the provider's schema does not
+	// declare still fails loudly rather than passing through unrecorded.
+	_, err = srv.CallFunction(t.Context(), &tfprotov6.CallFunctionRequest{Name: "nope"})
+	require.EqualError(t, err, `recording: no signature for function "nope"`)
 
 	_, err = srv.OpenEphemeralResource(t.Context(), &tfprotov6.OpenEphemeralResourceRequest{})
 	require.EqualError(t, err, "recording: no OpKind for OpenEphemeralResource; extend the recorder to support it")

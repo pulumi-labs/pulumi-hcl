@@ -28,12 +28,14 @@ import (
 	"github.com/pulumi-labs/pulumi-hcl/pkg/hcl/ast"
 	"github.com/pulumi-labs/pulumi-hcl/pkg/hcl/bridge"
 	"github.com/pulumi-labs/pulumi-hcl/pkg/hcl/eval"
+	"github.com/pulumi-labs/pulumi-hcl/pkg/hcl/packages"
 	"github.com/pulumi-labs/pulumi-hcl/pkg/hcl/transform"
 	pulumischema "github.com/pulumi/pulumi/pkg/v3/codegen/schema"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/resource/urn"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/tokens"
 	"github.com/pulumi/pulumi/sdk/v3/go/property"
 	"github.com/zclconf/go-cty/cty"
+	"github.com/zclconf/go-cty/cty/function"
 )
 
 // ResourceTypeResolver resolves a TF resource or data source type to its Pulumi
@@ -44,6 +46,7 @@ type ResourceTypeResolver interface {
 	ResolveFunction(ctx context.Context, tfType string) (*pulumischema.Function, error)
 	ResourceBodyMapping(ctx context.Context, tfType string) *bridge.BodyMapping
 	DataSourceBodyMapping(ctx context.Context, tfType string) *bridge.BodyMapping
+	ProviderFunctions(ctx context.Context, providerName string) (map[string]packages.ProviderFunction, error)
 }
 
 // ModuleLoader loads a child module's parsed configuration and resolved
@@ -215,7 +218,7 @@ func buildTypeScope(
 		if t == cty.NilType {
 			t = cty.DynamicPseudoType
 		}
-		scope.SetVariable(name, refinedUnknown(t, v.Nullable))
+		scope.SetVariable(name, transform.RefinedUnknown(t, v.Nullable))
 	}
 
 	if binder != nil {
@@ -223,6 +226,9 @@ func buildTypeScope(
 			return nil, err
 		}
 		if err := seedModuleTypes(ctx, scope, config, binder, path); err != nil {
+			return nil, err
+		}
+		if err := seedProviderFunctions(ctx, scope, config, binder.Resources); err != nil {
 			return nil, err
 		}
 	}
@@ -234,12 +240,60 @@ func buildTypeScope(
 	return scope, nil
 }
 
+// seedProviderFunctions installs type-only projections of the provider-defined
+// functions the module's expressions call, so those calls type-check and
+// evaluate to unknown values of their declared return types. Modules whose
+// files the parser could not scan for calls (JSON syntax) seed every declared
+// provider's functions instead, tolerating providers that fail to resolve.
+func seedProviderFunctions(
+	ctx context.Context, scope *eval.Context, config *ast.Config, resolver ResourceTypeResolver,
+) error {
+	referenced := map[string]struct{}{}
+	for _, name := range config.ProviderFunctionCalls {
+		referenced[name] = struct{}{}
+	}
+	lenient := false
+	if config.ProviderFunctionCallsIncomplete && config.Terraform != nil {
+		lenient = true
+		for name := range config.Terraform.RequiredProviders {
+			referenced[name] = struct{}{}
+		}
+	}
+	if len(referenced) == 0 {
+		return nil
+	}
+	if resolver == nil {
+		return fmt.Errorf("cannot type provider-defined function calls: no resource resolver provided")
+	}
+
+	table := map[string]function.Function{}
+	for providerName := range referenced {
+		fns, err := resolver.ProviderFunctions(ctx, providerName)
+		if err != nil {
+			if lenient {
+				continue
+			}
+			return fmt.Errorf("resolving provider functions for %q: %w", providerName, err)
+		}
+		for tfName, fnSchema := range fns {
+			f, err := transform.ProviderFunction(fnSchema.Function, fnSchema.Variadic, false, nil)
+			if err != nil {
+				return fmt.Errorf("projecting function provider::%s::%s: %w", providerName, tfName, err)
+			}
+			table[ast.ProviderFunctionName(providerName, tfName)] = f
+		}
+	}
+	scope.SetProviderFunctions(table)
+	return nil
+}
+
 // seedLocalTypes types each local against the (already seeded) scope and binds
 // it. Locals may reference variables, resources, modules, and one another, so it
 // evaluates to a fixpoint: each pass types any local whose references already
 // resolve. If a pass makes no progress while locals remain, those locals cannot
 // be typed (an unresolvable reference or a local cycle) and the first such
-// failure is returned.
+// failure is returned. Each local binds the value it evaluated to, preserving
+// the nullability refinements references through the local read later.
 func seedLocalTypes(scope *eval.Context, config *ast.Config) error {
 	evaluator := eval.NewEvaluator(scope)
 	remaining := maps.Clone(config.Locals)
@@ -250,7 +304,7 @@ func seedLocalTypes(scope *eval.Context, config *ast.Config) error {
 			if diags.HasErrors() {
 				continue
 			}
-			scope.SetLocal(name, cty.UnknownVal(val.Type()))
+			scope.SetLocal(name, val)
 			delete(remaining, name)
 			progress = true
 		}
@@ -301,7 +355,7 @@ func seedResourceTypes(
 		}
 		mapping := resolver.ResourceBodyMapping(ctx, res.Type)
 		ty := rangedType(transform.ResourceReferenceType(schemaRes, mapping), res.Count != nil, res.ForEach != nil)
-		scope.SetResource(key, urn.URN(""), refinedUnknown(ty, false))
+		scope.SetResource(key, urn.URN(""), transform.RefinedUnknown(ty, false))
 	}
 
 	for _, key := range slices.Sorted(maps.Keys(config.DataSources)) {
@@ -315,7 +369,7 @@ func seedResourceTypes(
 		}
 		mapping := resolver.DataSourceBodyMapping(ctx, ds.Type)
 		ty := rangedType(transform.DataSourceReferenceType(fn, mapping), ds.Count != nil, ds.ForEach != nil)
-		scope.SetDataSource(key, refinedUnknown(ty, false))
+		scope.SetDataSource(key, transform.RefinedUnknown(ty, false))
 	}
 	return nil
 }
@@ -392,28 +446,6 @@ func inferOutputType(evaluator *eval.Evaluator, o *ast.Output) (cty.Value, error
 	}
 	unmarked, _ := val.UnmarkDeep()
 	return unmarked, nil
-}
-
-// refinedUnknown returns an unknown value of type t that refines required
-// (non-optional) object attributes not-null and leaves optional ones nullable.
-// It recurses into nested objects so attribute access preserves the refinement;
-// collections are leaves, since indexing drops refinements and their element
-// types already carry optional-attribute metadata.
-func refinedUnknown(t cty.Type, nullable bool) cty.Value {
-	if t.IsObjectType() && !nullable {
-		optional := t.OptionalAttributes()
-		attrs := make(map[string]cty.Value, len(t.AttributeTypes()))
-		for name, attrType := range t.AttributeTypes() {
-			_, isOptional := optional[name]
-			attrs[name] = refinedUnknown(attrType, isOptional)
-		}
-		return cty.ObjectVal(attrs)
-	}
-	u := cty.UnknownVal(t)
-	if nullable {
-		return u
-	}
-	return u.RefineNotNull()
 }
 
 // variableToPropertySpec converts an HCL variable to a PropertySpec.
