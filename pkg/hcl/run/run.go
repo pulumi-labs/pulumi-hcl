@@ -3191,10 +3191,6 @@ func (e *Engine) providerFunctionImpl(
 			req.Provider = ref
 		}
 
-		if e.resmon == nil { // TODO: Remove this check
-			// No resource monitor - return empty outputs for testing
-			return property.Map{}, nil
-		}
 		resp, err := e.resmon.Invoke(ctx, req)
 		if err != nil {
 			return property.Map{}, err
@@ -3213,12 +3209,6 @@ func (e *Engine) invokeFunction(ctx context.Context, tfType string, req InvokeRe
 		return property.Map{}, err
 	}
 
-	if e.resmon == nil { // TODO: Remove this check
-		// No resource monitor - return empty outputs for testing
-		return property.Map{}, nil
-	}
-
-	// Invoke the function
 	resp, err := e.resmon.Invoke(ctx, req)
 	if err != nil {
 		return property.Map{}, err
