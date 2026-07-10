@@ -4542,3 +4542,100 @@ data "aws_instance" "dependent" {
 		require.ErrorContains(t, err, "the for_each value depends on values that are not yet known")
 	})
 }
+
+func TestEngine_DataSourceConditions(t *testing.T) {
+	t.Parallel()
+
+	t.Run("precondition fail blocks the read", func(t *testing.T) {
+		t.Parallel()
+		mock, err := tryExpansion(t, `
+variable "enabled" {
+  type    = bool
+  default = false
+}
+
+data "aws_instance" "d" {
+  filter = "x"
+
+  lifecycle {
+    precondition {
+      condition     = var.enabled
+      error_message = "DATA_PRECONDITION_MSG"
+    }
+  }
+}
+`, false, false)
+		require.ErrorContains(t, err, "precondition for data.aws_instance.d: DATA_PRECONDITION_MSG")
+		assert.Empty(t, mock.InvokedFunctions, "a failed precondition must prevent the read")
+	})
+
+	t.Run("postcondition fail after the read", func(t *testing.T) {
+		t.Parallel()
+		mock, err := tryExpansion(t, `
+data "aws_instance" "d" {
+  filter = "x"
+
+  lifecycle {
+    postcondition {
+      condition     = self.result == "nope"
+      error_message = "DATA_POSTCONDITION_MSG"
+    }
+  }
+}
+`, false, false)
+		require.ErrorContains(t, err, "postcondition for data.aws_instance.d: DATA_POSTCONDITION_MSG")
+		require.Len(t, mock.InvokedFunctions, 1, "the postcondition must be evaluated against a completed read")
+	})
+
+	t.Run("passing conditions", func(t *testing.T) {
+		t.Parallel()
+		mock, err := tryExpansion(t, `
+variable "enabled" {
+  type    = bool
+  default = true
+}
+
+data "aws_instance" "d" {
+  filter = "x"
+
+  lifecycle {
+    precondition {
+      condition     = var.enabled
+      error_message = "unreachable"
+    }
+    postcondition {
+      condition     = self.result == "result-x"
+      error_message = "unreachable"
+    }
+  }
+}
+
+output "result" {
+  value = data.aws_instance.d.result
+}
+`, false, false)
+		require.NoError(t, err)
+		assert.Equal(t, property.New("result-x"), mock.StackOutputs.Get("result"))
+	})
+
+	t.Run("unknown postcondition defers during preview", func(t *testing.T) {
+		t.Parallel()
+		_, err := tryExpansion(t, `
+data "aws_instance" "d" {
+  filter = tostring(aws_instance.base.num)
+
+  lifecycle {
+    postcondition {
+      condition     = self.result == "nope"
+      error_message = "unreachable during preview"
+    }
+  }
+}
+
+resource "aws_instance" "base" {
+  ami = "ami-base"
+}
+`, true, true)
+		require.NoError(t, err)
+	})
+}

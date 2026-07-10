@@ -2736,6 +2736,13 @@ func (e *Engine) invokeDataSourceOnce(
 ) (cty.Value, error) {
 	hclCtx := evalCtx.HCLContext()
 
+	// Failed preconditions prevent the read; unknown conditions defer.
+	for i, rule := range ds.Preconditions {
+		if err := evaluatePrecondition(rule, hclCtx, i+1, node.Key); err != nil {
+			return cty.NilVal, err
+		}
+	}
+
 	depMarks := cty.ValueMarks{}
 	addURN := func(urn string) {
 		if urn == "" {
@@ -2844,6 +2851,12 @@ func (e *Engine) invokeDataSourceOnce(
 	ctyOutputs, err := transform.FunctionOutputToCty(outputs, funcSchema, dataSourceMapping, e.dryRun)
 	if err != nil {
 		return cty.NilVal, fmt.Errorf("converting function outputs to HCL types: %w", err)
+	}
+
+	for i, rule := range ds.Postconditions {
+		if err := evaluatePostconditionValue(rule, hclCtx, ctyOutputs, i+1, node.Key); err != nil {
+			return cty.NilVal, err
+		}
 	}
 
 	return ctyOutputs.WithMarks(depMarks), nil
@@ -3825,8 +3838,16 @@ func evaluatePostcondition(
 	if err != nil {
 		return fmt.Errorf("converting outputs for postcondition %d on %s: %w", index, resourceName, err)
 	}
+	return evaluatePostconditionValue(rule, hclCtx, cty.ObjectVal(outputObj), index, resourceName)
+}
+
+// evaluatePostconditionValue evaluates a postcondition with `self` bound to
+// the given value. Unknown conditions defer (return nil).
+func evaluatePostconditionValue(
+	rule *ast.CheckRule, hclCtx *hcl.EvalContext, self cty.Value, index int, resourceName string,
+) error {
 	selfCtx := hclCtx.NewChild()
-	selfCtx.Variables = map[string]cty.Value{"self": cty.ObjectVal(outputObj)}
+	selfCtx.Variables = map[string]cty.Value{"self": self}
 	condVal, diags := rule.Condition.Value(selfCtx)
 	if diags.HasErrors() {
 		return fmt.Errorf("evaluating postcondition %d for %s: %s", index, resourceName, diags.Error())
