@@ -68,11 +68,19 @@ func (*hclConverter) ConvertState(
 	if req.MapperTarget == "" {
 		return nil, errors.New("ConvertState: missing mapper target")
 	}
-	if len(req.Args) != 1 {
+	if len(req.Args) < 1 || len(req.Args) > 2 {
 		return nil, fmt.Errorf(
-			"ConvertState: expected exactly one argument (the state file path), got %d", len(req.Args))
+			"ConvertState: expected the state file path and optionally the project directory, got %d arguments",
+			len(req.Args))
 	}
 	statePath := req.Args[0]
+	// The project directory holds the sdks/ descriptors. It defaults to the
+	// working directory, which is the project root when the CLI runs the
+	// converter; in-process callers pass it explicitly.
+	projectDir := "."
+	if len(req.Args) == 2 {
+		projectDir = req.Args[1]
+	}
 
 	mapperClient, err := convert.NewMapperClient(req.MapperTarget)
 	if err != nil {
@@ -82,7 +90,7 @@ func (*hclConverter) ConvertState(
 
 	// Parameterization descriptors are written by `pulumi install` into sdks/.
 	// `pulumi import` runs with cwd = project root, so they live at ./sdks/*.
-	descriptors, err := readParameterizationInfos(".")
+	descriptors, err := readParameterizationInfos(projectDir)
 	if err != nil {
 		return nil, fmt.Errorf("reading parameterization infos: %w", err)
 	}

@@ -111,9 +111,17 @@ func runImportCheck(
 		require.NoError(t, err)
 		t.Cleanup(func() { close(cancel); <-handle.Done })
 
+		// The driver's project directory supplies the sdks/ descriptors the
+		// converter derives parameterization from, so it must exist first. Its
+		// providers share the case's store, so import-time Reads reconstruct
+		// the attributes the tofu side created.
+		pulProvs := buildPulumiProviders(t, c.Providers, &tfexec.Recorder{}, store)
+		d := pulexec.NewDriver(t, pulProvs, c.Config)
+		d.WriteProgram(t, files)
+
 		resp, err := converter.New().ConvertState(t.Context(), &plugin.ConvertStateRequest{
 			MapperTarget: fmt.Sprintf("127.0.0.1:%d", handle.Port),
-			Args:         []string{statePath},
+			Args:         []string{statePath, d.Dir()},
 		})
 		require.NoError(t, err)
 		for _, d := range resp.Diagnostics {
@@ -147,10 +155,6 @@ func runImportCheck(
 		impPath := filepath.Join(t.TempDir(), "import.json")
 		require.NoError(t, os.WriteFile(impPath, impJSON, 0o600))
 
-		// Import into a fresh stack whose providers share the case's store, so
-		// import-time Reads reconstruct the attributes the tofu side created.
-		pulProvs := buildPulumiProviders(t, c.Providers, &tfexec.Recorder{}, store)
-		d := pulexec.NewDriver(t, pulProvs, c.Config)
 		out, err := d.ImportFromFile(t, files, impPath)
 		require.NoErrorf(t, err, "pulumi import failed:\n%s", out)
 

@@ -268,13 +268,13 @@ func TestConvertStateArgValidation(t *testing.T) {
 	_, err = New().ConvertState(t.Context(), &plugin.ConvertStateRequest{
 		MapperTarget: "127.0.0.1:1",
 	})
-	assert.ErrorContains(t, err, "expected exactly one argument")
+	assert.ErrorContains(t, err, "expected the state file path")
 
 	_, err = New().ConvertState(t.Context(), &plugin.ConvertStateRequest{
 		MapperTarget: "127.0.0.1:1",
-		Args:         []string{"a", "b"},
+		Args:         []string{"a", "b", "c"},
 	})
-	assert.ErrorContains(t, err, "expected exactly one argument")
+	assert.ErrorContains(t, err, "expected the state file path")
 }
 
 // ecosystemAssertingMapper serves a fixed mapping for "random" and locks in
@@ -302,9 +302,8 @@ func (m ecosystemAssertingMapper) GetMapping(
 // TestConvertStateViaMapper drives the full converter entry point — gRPC
 // mapper dialing, descriptor discovery from ./sdks, state-file parsing —
 // against a real in-process mapper server.
-//
-//nolint:paralleltest // t.Chdir does not allow parallel tests
 func TestConvertStateViaMapper(t *testing.T) {
+	t.Parallel()
 	cancel := make(chan bool)
 	handle, err := rpcutil.ServeWithOptions(rpcutil.ServeOptions{
 		Cancel: cancel,
@@ -335,11 +334,9 @@ func TestConvertStateViaMapper(t *testing.T) {
 		]
 	}`), 0o600))
 
-	t.Chdir(dir)
-
 	resp, err := New().ConvertState(t.Context(), &plugin.ConvertStateRequest{
 		MapperTarget: target,
-		Args:         []string{statePath},
+		Args:         []string{statePath, dir},
 	})
 	require.NoError(t, err)
 	require.Empty(t, resp.Diagnostics)

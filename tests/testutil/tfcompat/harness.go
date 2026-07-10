@@ -71,6 +71,10 @@ type Provider struct {
 	// other ProviderInfo tweak) to exercise the bridge mapping behaviour.
 	// The TF path is unaffected.
 	Customize func(*testing.T, *tfbridge.ProviderInfo)
+	// Parameterized serves the Pulumi-side provider as a parameterized
+	// package (see pulexec.Provider.Parameterized). The TF path is
+	// unaffected: parameterization is a Pulumi deployment concept.
+	Parameterized bool
 }
 
 // buildTerraformProviders wires the tofu-side path: each provider records at
@@ -113,8 +117,10 @@ func buildPulumiProviders(
 			pulProvs[i] = pulexec.SDKv2Provider(t, p.Name, func() *schema.Provider {
 				return tfexec.WithStore(tfexec.Wrap(factory(), rec), store)
 			}, p.Customize)
+			pulProvs[i].Parameterized = p.Parameterized
 		case p.PFFactory != nil && p.Factory == nil:
 			pulProvs[i] = pulexec.PFProvider(t, p.Name, p.PFFactory, rec, p.Customize)
+			pulProvs[i].Parameterized = p.Parameterized
 		default:
 			t.Fatalf("provider %q: exactly one of Factory or PFFactory must be set", p.Name)
 		}
