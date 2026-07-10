@@ -36,30 +36,46 @@ import (
 	"github.com/hashicorp/terraform-plugin-mux/tf5to6server"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
 	"github.com/stretchr/testify/require"
+	"google.golang.org/grpc"
 )
 
 // Provider pairs a terraform provider name with a tfprotov6 server factory.
-// Use SDKv2Provider or PFProvider to build one.
+// The factory is invoked once per provider instance (per gRPC connection, see
+// ConnRoutedServer), so it must return a fresh, independently configurable
+// server on every call. Use SDKv2Provider or PFProvider to build one.
 type Provider struct {
 	Name   string
 	Server func() tfprotov6.ProviderServer
 }
 
-// SDKv2Provider adapts an SDKv2 (helper/schema) provider into a Provider by
-// upgrading it to protocol version 6.
-func SDKv2Provider(t *testing.T, name string, p *schema.Provider) Provider {
+// SDKv2Provider adapts an SDKv2 (helper/schema) provider factory into a
+// Provider by upgrading it to protocol version 6, building a fresh provider
+// per instance.
+func SDKv2Provider(t *testing.T, name string, factory func() *schema.Provider) Provider {
 	t.Helper()
-	v6server, err := tf5to6server.UpgradeServer(t.Context(),
-		func() tfprotov5.ProviderServer { return p.GRPCProvider() })
+	build := func() (tfprotov6.ProviderServer, error) {
+		return tf5to6server.UpgradeServer(t.Context(),
+			func() tfprotov5.ProviderServer { return factory().GRPCProvider() })
+	}
+	// Surface upgrade problems at construction time, where require works.
+	_, err := build()
 	require.NoError(t, err)
-	return Provider{Name: name, Server: func() tfprotov6.ProviderServer { return v6server }}
+	return Provider{Name: name, Server: func() tfprotov6.ProviderServer {
+		server, err := build()
+		if err != nil {
+			panic(fmt.Sprintf("upgrading provider %q to protocol v6: %v", name, err))
+		}
+		return server
+	}}
 }
 
-// PFProvider adapts a terraform-plugin-framework provider into a Provider,
-// recording its operations to rec at the protocol boundary (see WrapServer).
-func PFProvider(name string, p provider.Provider, rec *Recorder) Provider {
-	server := WrapServer(providerserver.NewProtocol6(p)(), rec)
-	return Provider{Name: name, Server: func() tfprotov6.ProviderServer { return server }}
+// PFProvider adapts a terraform-plugin-framework provider factory into a
+// Provider, recording its operations to rec at the protocol boundary (see
+// WrapServer). A fresh provider is built per instance.
+func PFProvider(name string, factory func() provider.Provider, rec *Recorder) Provider {
+	return Provider{Name: name, Server: func() tfprotov6.ProviderServer {
+		return WrapServer(providerserver.NewProtocol6(factory())(), rec)
+	}}
 }
 
 // Driver hosts TF providers in-process and runs the terraform CLI against them.
@@ -91,21 +107,44 @@ func NewDriver(t *testing.T, providers []Provider) *Driver {
 	reattachConfigs := make(map[string]*plugin.ReattachConfig, len(providers))
 	for _, p := range providers {
 		reattachConfigCh := make(chan *plugin.ReattachConfig)
-		closeCh := make(chan struct{})
 
-		serverOpts := []tf6server.ServeOpt{
-			tf6server.WithGoPluginLogger(hclog.FromStandardLogger(log.New(io.Discard, "", 0), hclog.DefaultOptions)),
-			tf6server.WithDebug(t.Context(), reattachConfigCh, closeCh),
-			tf6server.WithoutLogStderrOverride(),
+		// One router per provider name; it builds a fresh provider per client
+		// connection (identified by tagger) so provider instances don't share
+		// state. go-plugin is invoked directly rather than via tf6server.Serve
+		// because the latter offers no way to attach the stats handler the
+		// router's connection identity comes from.
+		name, router, tagger := p.Name, ConnRoutedServer(p.Server), &ConnTagger{}
+		serveConfig := &plugin.ServeConfig{
+			// The handshake tf6server.Serve performs: protocol major version
+			// and the terraform plugin protocol's magic cookie.
+			HandshakeConfig: plugin.HandshakeConfig{
+				ProtocolVersion:  6,
+				MagicCookieKey:   "TF_PLUGIN_MAGIC_COOKIE",
+				MagicCookieValue: "d602bf8f470bc67ca7faa0386276bbdd4330efaf76d1a219cb4d6991ca9872b2",
+			},
+			Logger: hclog.FromStandardLogger(log.New(io.Discard, "", 0), hclog.DefaultOptions),
+			Plugins: plugin.PluginSet{
+				"provider": &tf6server.GRPCProviderPlugin{
+					Name:         name,
+					GRPCProvider: func() tfprotov6.ProviderServer { return router },
+				},
+			},
+			GRPCServer: func(opts []grpc.ServerOption) *grpc.Server {
+				// Message sizes tf6server.Serve would configure.
+				opts = append(opts,
+					grpc.MaxRecvMsgSize(256<<20),
+					grpc.MaxSendMsgSize(256<<20),
+					grpc.StatsHandler(tagger),
+				)
+				return grpc.NewServer(opts...)
+			},
+			Test: &plugin.ServeTestConfig{
+				Context:          t.Context(),
+				ReattachConfigCh: reattachConfigCh,
+				CloseCh:          make(chan struct{}),
+			},
 		}
-
-		name, server := p.Name, p.Server
-		go func() {
-			err := tf6server.Serve(name, server, serverOpts...)
-			if err != nil {
-				t.Logf("tf6server.Serve error: %v", err)
-			}
-		}()
+		go plugin.Serve(serveConfig)
 
 		reattachConfigs[p.Name] = <-reattachConfigCh
 	}

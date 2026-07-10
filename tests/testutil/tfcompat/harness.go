@@ -76,7 +76,9 @@ type Provider struct {
 // buildProviders wires each Case provider into both paths, wrapping it with
 // the per-path recorder. SDKv2 providers record at the helper/schema CRUD
 // boundary (tfexec.Wrap); plugin-framework providers record at the tfprotov6
-// boundary (tfexec.WrapServer). Each path gets its own provider instance.
+// boundary (tfexec.WrapServer). Both paths build a fresh provider per
+// configured instance (a provider block with for_each yields several), all
+// recording into the path's shared recorder.
 func buildProviders(
 	t *testing.T, provs []Provider, recA, recB *tfexec.Recorder,
 ) ([]tfexec.Provider, []pulexec.Provider) {
@@ -86,11 +88,12 @@ func buildProviders(
 	for i, p := range provs {
 		switch {
 		case p.Factory != nil && p.PFFactory == nil:
-			tfProvs[i] = tfexec.SDKv2Provider(t, p.Name, tfexec.Wrap(p.Factory(), recA))
-			pulProvs[i] = pulexec.SDKv2Provider(t, p.Name, tfexec.Wrap(p.Factory(), recB), p.Customize)
+			factory := p.Factory
+			tfProvs[i] = tfexec.SDKv2Provider(t, p.Name, func() *schema.Provider { return tfexec.Wrap(factory(), recA) })
+			pulProvs[i] = pulexec.SDKv2Provider(t, p.Name, func() *schema.Provider { return tfexec.Wrap(factory(), recB) }, p.Customize)
 		case p.PFFactory != nil && p.Factory == nil:
-			tfProvs[i] = tfexec.PFProvider(p.Name, p.PFFactory(), recA)
-			pulProvs[i] = pulexec.PFProvider(t, p.Name, p.PFFactory(), recB, p.Customize)
+			tfProvs[i] = tfexec.PFProvider(p.Name, p.PFFactory, recA)
+			pulProvs[i] = pulexec.PFProvider(t, p.Name, p.PFFactory, recB, p.Customize)
 		default:
 			t.Fatalf("provider %q: exactly one of Factory or PFFactory must be set", p.Name)
 		}

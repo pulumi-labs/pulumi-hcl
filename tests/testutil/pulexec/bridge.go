@@ -19,6 +19,7 @@ package pulexec
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"testing"
@@ -41,47 +42,61 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// SDKv2Provider builds a Provider from an SDKv2 (helper/schema) provider via
-// the classic bridge.
+// SDKv2Provider builds a Provider from an SDKv2 (helper/schema) provider
+// factory via the classic bridge. Start builds a fresh provider per call so
+// each engine-side provider instance configures its own copy (see
+// connRoutedProvider).
 func SDKv2Provider(
-	t *testing.T, providerName string, tfp *schema.Provider,
+	t *testing.T, providerName string, factory func() *schema.Provider,
 	customize func(*testing.T, *tfbridge.ProviderInfo),
 ) Provider {
 	t.Helper()
-	info := BridgedProvider(t, providerName, tfp, customize)
+	// Surface validation problems at construction time.
+	BridgedProvider(t, providerName, factory(), customize)
 	return Provider{Name: providerName, Start: func(ctx context.Context) (pulumirpc.ResourceProviderServer, error) {
-		return providerServerFromInfo(ctx, info)
+		return providerServerFromInfo(ctx, BridgedProvider(t, providerName, factory(), customize))
 	}}
 }
 
-// PFProvider builds a Provider from a terraform-plugin-framework provider via
-// the plugin-framework bridge, recording provider operations to rec at the
-// tfprotov6 boundary — the same boundary tfexec.PFProvider records at on the
-// OpenTofu path. customize plays the same role as in BridgedProvider.
+// PFProvider builds a Provider from a terraform-plugin-framework provider
+// factory via the plugin-framework bridge, recording provider operations to
+// rec at the tfprotov6 boundary — the same boundary tfexec.PFProvider records
+// at on the OpenTofu path. customize plays the same role as in
+// BridgedProvider. Start builds a fresh provider per call so each engine-side
+// provider instance configures its own copy (see connRoutedProvider).
 func PFProvider(
-	t *testing.T, providerName string, p pfprovider.Provider, rec *tfexec.Recorder,
+	t *testing.T, providerName string, factory func() pfprovider.Provider, rec *tfexec.Recorder,
 	customize func(*testing.T, *tfbridge.ProviderInfo),
 ) Provider {
 	t.Helper()
 
-	requireValidPFSchema(t, p)
+	requireValidPFSchema(t, factory())
 
-	shimProvider, ok := pftfbridge.ShimProvider(p).(pf.ShimProvider)
-	require.True(t, ok, "pftfbridge.ShimProvider did not return a pf.ShimProvider")
-
-	info := tfbridge.ProviderInfo{
-		P:            recordingShim{ShimProvider: shimProvider, rec: rec},
-		Name:         providerName,
-		Version:      "0.0.1",
-		MetadataInfo: tfbridge.NewProviderMetadata(nil),
+	buildInfo := func(p pfprovider.Provider) (tfbridge.ProviderInfo, error) {
+		shimProvider, ok := pftfbridge.ShimProvider(p).(pf.ShimProvider)
+		if !ok {
+			return tfbridge.ProviderInfo{}, errors.New("pftfbridge.ShimProvider did not return a pf.ShimProvider")
+		}
+		info := tfbridge.ProviderInfo{
+			P:            recordingShim{ShimProvider: shimProvider, rec: rec},
+			Name:         providerName,
+			Version:      "0.0.1",
+			MetadataInfo: tfbridge.NewProviderMetadata(nil),
+		}
+		info.MustComputeTokens(tokens.SingleModule(providerName, "index", tokens.MakeStandard(providerName)))
+		if customize != nil {
+			customize(t, &info)
+		}
+		return info, nil
 	}
-	info.MustComputeTokens(tokens.SingleModule(providerName, "index", tokens.MakeStandard(providerName)))
-
-	if customize != nil {
-		customize(t, &info)
-	}
+	_, err := buildInfo(factory())
+	require.NoError(t, err)
 
 	return Provider{Name: providerName, Start: func(ctx context.Context) (pulumirpc.ResourceProviderServer, error) {
+		info, err := buildInfo(factory())
+		if err != nil {
+			return nil, err
+		}
 		res, err := pftfgen.GenerateSchema(ctx, pftfgen.GenerateSchemaOptions{
 			ProviderInfo:    info,
 			DiagnosticsSink: discardSink(),
