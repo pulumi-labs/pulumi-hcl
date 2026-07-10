@@ -23,6 +23,7 @@ import (
 	"testing"
 
 	"github.com/pulumi-labs/pulumi-hcl/pkg/server"
+	"github.com/pulumi-labs/pulumi-hcl/tests/testutil/tfexec"
 	"github.com/pulumi/providertest/providers"
 	"github.com/pulumi/providertest/pulumitest"
 	"github.com/pulumi/providertest/pulumitest/optnewstack"
@@ -317,16 +318,18 @@ func (d *Driver) writeStubSDKs(t *testing.T) {
 func startProvider(
 	ctx context.Context, start func(context.Context) (pulumirpc.ResourceProviderServer, error),
 ) (*rpcutil.ServeHandle, error) {
-	prov, err := start(ctx)
-	if err != nil {
+	// Fail fast on providers that cannot start at all; the router then builds
+	// one instance server per engine connection.
+	if _, err := start(ctx); err != nil {
 		return nil, fmt.Errorf("starting provider server: %w", err)
 	}
 
 	handle, err := rpcutil.ServeWithOptions(rpcutil.ServeOptions{
 		Init: func(srv *grpc.Server) error {
-			pulumirpc.RegisterResourceProviderServer(srv, prov)
+			pulumirpc.RegisterResourceProviderServer(srv, newConnRoutedProvider(start))
 			return nil
 		},
+		Options: []grpc.ServerOption{grpc.StatsHandler(&tfexec.ConnTagger{})},
 	})
 	if err != nil {
 		return nil, fmt.Errorf("rpcutil.ServeWithOptions failed: %w", err)
