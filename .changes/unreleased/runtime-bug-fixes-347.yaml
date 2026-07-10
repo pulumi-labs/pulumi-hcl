@@ -3,4 +3,4 @@ body: Support merging a sequence of mappings and multiple `<<` keys in `yamldeco
 time: 2026-07-10T15:05:00Z
 custom:
     Component: runtime
-    PR: "345"
+    PR: "347"
