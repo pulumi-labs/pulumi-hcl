@@ -127,8 +127,9 @@ backend:
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "Pulumi.yaml"), []byte(pulumiYAML), 0o600))
 
 	opts := append(
-		make([]opttest.Option, 0, 5+len(provs)),
+		make([]opttest.Option, 0, 6+len(provs)),
 		opttest.Env("PULUMI_DISABLE_AUTOMATIC_PLUGIN_ACQUISITION", "true"),
+		opttest.Env("PULUMI_HOME", isolatedPulumiHome(t)),
 		opttest.Env("PULUMI_DEBUG_LANGUAGES", fmt.Sprintf("hcl:%d", hostPort)),
 		// The runtime under test is served in-process via PULUMI_DEBUG_LANGUAGES, so
 		// the engine must never spawn (or download) the pulumi-language-hcl binary.
