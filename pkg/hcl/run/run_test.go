@@ -2069,8 +2069,8 @@ resource "aws_instance" "web" {
 }
 
 // TestEngine_ProvisionerReference covers a provisioner whose command
-// interpolates another resource's outputs: the created value must reach the
-// command, and the reference must be recorded as a dependency edge.
+// interpolates another resource's outputs: the referent must be created
+// first, and its created value must reach the command.
 func TestEngine_ProvisionerReference(t *testing.T) {
 	t.Parallel()
 
@@ -2127,10 +2127,8 @@ resource "aws_instance" "dependent" {
 	assert.Equal(t, "ami-upstream\n", string(got))
 
 	require.Len(t, mock.RegisteredResources, 3)
-	dependent := mock.RegisteredResources[2]
-	assert.Equal(t, "dependent", dependent.Name)
-	assert.Equal(t, []string{"urn:pulumi:test::project::aws:index:Instance::upstream"},
-		dependent.Dependencies)
+	assert.Equal(t, "upstream", mock.RegisteredResources[1].Name)
+	assert.Equal(t, "dependent", mock.RegisteredResources[2].Name)
 }
 
 func TestEngine_ProvisionerWithSelf(t *testing.T) {

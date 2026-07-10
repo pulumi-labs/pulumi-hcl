@@ -47,12 +47,6 @@ func indexOf(order []string, key string) int {
 	return -1
 }
 
-// TestProvisionerReferenceOrdersResourceAfterReferent pins that a reference
-// inside a provisioner body is an implicit dependency, exactly as if it
-// appeared in a regular attribute. The parser splits provisioner blocks out
-// of resource.Config via PartialContent, and bodyDeps only reaches them by
-// iterating the raw hclsyntax.Body.Blocks field — this test guards that
-// subtlety.
 func TestProvisionerReferenceOrdersResourceAfterReferent(t *testing.T) {
 	t.Parallel()
 	src := []byte(`
@@ -81,9 +75,6 @@ resource "simple_resource" "dependent" {
 		indexOf(order, "simple_resource.dependent"))
 }
 
-// TestConnectionReferenceOrdersResourceAfterReferent mirrors the provisioner
-// case for a resource-level connection block: its host expression referencing
-// another resource is an implicit dependency too.
 func TestConnectionReferenceOrdersResourceAfterReferent(t *testing.T) {
 	t.Parallel()
 	src := []byte(`

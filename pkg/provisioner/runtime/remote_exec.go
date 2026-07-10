@@ -42,17 +42,15 @@ func runRemoteExec(ctx context.Context, spec *Spec, hclCtx *hcl.EvalContext) err
 		return fmt.Errorf("remote-exec: %s", diags.Error())
 	}
 
-	ev := &evaluator{hclCtx: hclCtx}
-
-	inline, err := ev.evalStringSlice(content, "inline")
+	inline, err := evalStringSlice(content, "inline", hclCtx)
 	if err != nil {
 		return err
 	}
-	script, err := ev.evalString(content, "script")
+	script, err := evalString(content, "script", hclCtx)
 	if err != nil {
 		return err
 	}
-	scripts, err := ev.evalStringSlice(content, "scripts")
+	scripts, err := evalStringSlice(content, "scripts", hclCtx)
 	if err != nil {
 		return err
 	}
@@ -71,7 +69,7 @@ func runRemoteExec(ctx context.Context, spec *Spec, hclCtx *hcl.EvalContext) err
 
 	var uiOutput provisioners.UIOutput = stderrUIOutput{}
 	stdout, stderr := io.Writer(os.Stdout), io.Writer(os.Stderr)
-	if ev.sensitive {
+	if configSensitive(content, hclCtx) {
 		fmt.Fprintln(os.Stderr, suppressedOutputMsg)
 		uiOutput = discardUIOutput{}
 		stdout, stderr = io.Discard, io.Discard

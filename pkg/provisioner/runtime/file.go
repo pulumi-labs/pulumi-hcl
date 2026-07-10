@@ -40,17 +40,15 @@ func runFile(ctx context.Context, spec *Spec, hclCtx *hcl.EvalContext) error {
 		return fmt.Errorf("file: %s", diags.Error())
 	}
 
-	ev := &evaluator{hclCtx: hclCtx}
-
-	source, err := ev.evalString(content, "source")
+	source, err := evalString(content, "source", hclCtx)
 	if err != nil {
 		return err
 	}
-	bodyContent, err := ev.evalString(content, "content")
+	bodyContent, err := evalString(content, "content", hclCtx)
 	if err != nil {
 		return err
 	}
-	destination, err := ev.evalString(content, "destination")
+	destination, err := evalString(content, "destination", hclCtx)
 	if err != nil {
 		return err
 	}
@@ -71,7 +69,7 @@ func runFile(ctx context.Context, spec *Spec, hclCtx *hcl.EvalContext) error {
 	}
 
 	var uiOutput provisioners.UIOutput = stderrUIOutput{}
-	if ev.sensitive {
+	if configSensitive(content, hclCtx) {
 		fmt.Fprintln(os.Stderr, suppressedOutputMsg)
 		uiOutput = discardUIOutput{}
 	}

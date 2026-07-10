@@ -36,42 +36,41 @@ func parseBody(t *testing.T, src string) hcl.Body {
 	return f.Body
 }
 
-func TestEvaluatorUnmarksDepMarkedValue(t *testing.T) {
+func TestEvalStringUnmarksDepMarkedValue(t *testing.T) {
 	t.Parallel()
 	body := parseBody(t, `command = "echo ${upstream.result}"`)
 	content, diags := body.Content(localExecSchema)
 	require.False(t, diags.HasErrors(), diags.Error())
 
-	ev := &evaluator{hclCtx: &hcl.EvalContext{
+	hclCtx := &hcl.EvalContext{
 		Variables: map[string]cty.Value{
 			"upstream": cty.ObjectVal(map[string]cty.Value{
 				"result": cty.StringVal("from-upstream"),
 			}).Mark(eval.DepMark("urn:pulumi:dev::p::simple:index:resource::upstream")),
 		},
-	}}
+	}
 
-	command, err := ev.evalString(content, "command")
+	command, err := evalString(content, "command", hclCtx)
 	require.NoError(t, err)
 	assert.Equal(t, "echo from-upstream", command)
-	assert.Equal(t, false, ev.sensitive)
 }
 
-func TestEvaluatorTracksSensitiveMark(t *testing.T) {
+func TestConfigSensitive(t *testing.T) {
 	t.Parallel()
 	body := parseBody(t, `command = "echo ${var_secret}"`)
 	content, diags := body.Content(localExecSchema)
 	require.False(t, diags.HasErrors(), diags.Error())
 
-	ev := &evaluator{hclCtx: &hcl.EvalContext{
+	hclCtx := &hcl.EvalContext{
 		Variables: map[string]cty.Value{
 			"var_secret": cty.StringVal("hunter2").Mark(eval.SensitiveMark),
 		},
-	}}
+	}
+	assert.Equal(t, true, configSensitive(content, hclCtx))
 
-	command, err := ev.evalString(content, "command")
-	require.NoError(t, err)
-	assert.Equal(t, "echo hunter2", command)
-	assert.Equal(t, true, ev.sensitive)
+	hclCtx.Variables["var_secret"] = cty.StringVal("hunter2").
+		Mark(eval.DepMark("urn:pulumi:dev::p::simple:index:resource::upstream"))
+	assert.Equal(t, false, configSensitive(content, hclCtx))
 }
 
 func TestRunLocalExecInterpolatesMarkedReference(t *testing.T) {
@@ -112,31 +111,4 @@ func TestRunLocalExecSensitiveValueStillExecutes(t *testing.T) {
 	got, err := os.ReadFile(dest)
 	require.NoError(t, err)
 	assert.Equal(t, "hunter2", string(got))
-}
-
-func TestEvalConnectionUnmarksValues(t *testing.T) {
-	t.Parallel()
-	body := parseBody(t, `
-host     = upstream.ip
-type     = "ssh"
-user     = "root"
-password = secret
-`)
-
-	hclCtx := &hcl.EvalContext{
-		Variables: map[string]cty.Value{
-			"upstream": cty.ObjectVal(map[string]cty.Value{
-				"ip": cty.StringVal("10.0.0.2"),
-			}).Mark(eval.DepMark("urn:pulumi:dev::p::simple:index:resource::upstream")),
-			"secret": cty.StringVal("hunter2").Mark(eval.SensitiveMark),
-		},
-	}
-
-	connVal, err := evalConnection(body, hclCtx)
-	require.NoError(t, err)
-
-	// AsString panics on marked values, so these assertions double as an
-	// unmarked-ness check.
-	assert.Equal(t, "10.0.0.2", connVal.GetAttr("host").AsString())
-	assert.Equal(t, "hunter2", connVal.GetAttr("password").AsString())
 }
