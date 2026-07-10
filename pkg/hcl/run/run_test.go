@@ -971,6 +971,37 @@ output "region_value" {
 		"the secret value should reach the program intact")
 }
 
+func TestEngine_TerraformWorkspace(t *testing.T) {
+	t.Parallel()
+
+	src := []byte(`
+output "ws" {
+  value = terraform.workspace
+}
+`)
+
+	p := parser.NewParser()
+	config, diags := p.ParseSource("test.hcl", src)
+	require.False(t, diags.HasErrors(), "parse error: %s", diags.Error())
+
+	mock := &testutil.MockResourceMonitor{}
+	engine := newTestEngine(t, config, &run.EngineOptions{
+		ModuleLoader:    testModuleLoader(t),
+		ProjectName:     "test-project",
+		StackName:       "dev",
+		ResourceMonitor: mock,
+		WorkDir:         t.TempDir(),
+		RootDir:         t.TempDir(),
+		SchemaLoader:    schemaloader.New(t, schema.PackageSpec{Name: "aws"}),
+	})
+
+	require.NoError(t, engine.Run(t.Context()))
+
+	ws, ok := mock.StackOutputs.GetOk("ws")
+	require.True(t, ok, "expected ws output")
+	assert.Equal(t, "dev", ws.AsString())
+}
+
 func TestEngine_VariableFromEnv(t *testing.T) {
 	src := []byte(`
 variable "region" {

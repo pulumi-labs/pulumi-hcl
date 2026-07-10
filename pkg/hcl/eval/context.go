@@ -541,6 +541,12 @@ func (c *Context) HCLContext() *hcl.EvalContext {
 		"organization": cty.StringVal(c.pulumi.Organization),
 	})
 
+	// terraform.workspace is the stack name: a Pulumi stack, like a Terraform
+	// workspace, selects a named state instance of the same program.
+	vars["terraform"] = cty.ObjectVal(map[string]cty.Value{
+		"workspace": cty.StringVal(c.pulumi.Stack),
+	})
+
 	// Add count.* if in count context
 	if c.count != nil {
 		vars["count"] = cty.ObjectVal(map[string]cty.Value{
