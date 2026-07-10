@@ -28,7 +28,7 @@ jobs:
   maintain-release-pr:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           # Use the PAT so the `git push` below and the PR-event side-effects
           # come from a user identity, not GITHUB_TOKEN. PRs/pushes authored by
