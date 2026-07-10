@@ -24,3 +24,12 @@ type stderrUIOutput struct{}
 func (stderrUIOutput) Output(msg string) {
 	fmt.Fprintln(os.Stderr, msg)
 }
+
+// suppressedOutputMsg is emitted once in place of a provisioner's streamed
+// output when its configuration references a sensitive value, so the value
+// cannot leak through command or connection logging.
+const suppressedOutputMsg = "(output suppressed due to sensitive value in config)"
+
+type discardUIOutput struct{}
+
+func (discardUIOutput) Output(string) {}

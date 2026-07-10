@@ -35,6 +35,9 @@ func evalConnection(conn hcl.Body, hclCtx *hcl.EvalContext) (cty.Value, error) {
 	if diags.HasErrors() {
 		return cty.NilVal, fmt.Errorf("evaluating connection block: %s", diags.Error())
 	}
+	// The communicator reads attributes with AsString and friends, which
+	// panic on marked values; connection marks never suppress output.
+	val, _ = val.UnmarkDeep()
 	coerced, err := shared.ConnectionBlockSupersetSchema.CoerceValue(val)
 	if err != nil {
 		return cty.NilVal, fmt.Errorf("coercing connection block: %w", err)

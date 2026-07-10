@@ -2068,6 +2068,69 @@ resource "aws_instance" "web" {
 	assert.Equal(t, "First\nSecond\n", string(got))
 }
 
+// TestEngine_ProvisionerReference covers a provisioner whose command
+// interpolates another resource's outputs: the referent must be created
+// first, and its created value must reach the command.
+func TestEngine_ProvisionerReference(t *testing.T) {
+	t.Parallel()
+
+	tmpDir := t.TempDir()
+	marker := tmpDir + "/marker"
+
+	src := fmt.Appendf(nil, `
+resource "aws_instance" "upstream" {
+  ami = "ami-upstream"
+}
+
+resource "aws_instance" "dependent" {
+  ami = "ami-12345"
+
+  provisioner "local-exec" {
+    command = "echo ${aws_instance.upstream.ami} > %s"
+  }
+}
+`, marker)
+
+	p := parser.NewParser()
+	config, diags := p.ParseSource("test.hcl", src)
+	require.False(t, diags.HasErrors(), diags.Error())
+
+	mock := &testutil.MockResourceMonitor{}
+	engine := newTestEngine(t, config, &run.EngineOptions{
+		ModuleLoader:    testModuleLoader(t),
+		ProjectName:     "test-project",
+		StackName:       "dev",
+		ResourceMonitor: mock,
+		WorkDir:         t.TempDir(),
+		RootDir:         t.TempDir(),
+		SchemaLoader: schemaloader.New(t, schema.PackageSpec{
+			Name: "aws",
+			Resources: map[string]schema.ResourceSpec{
+				"aws:index:Instance": {
+					InputProperties: map[string]schema.PropertySpec{
+						"ami": {TypeSpec: schema.TypeSpec{Type: "string"}},
+					},
+					ObjectTypeSpec: schema.ObjectTypeSpec{
+						Properties: map[string]schema.PropertySpec{
+							"ami": {TypeSpec: schema.TypeSpec{Type: "string"}},
+						},
+					},
+				},
+			},
+		}),
+	})
+
+	require.NoError(t, engine.Run(t.Context()))
+
+	got, err := os.ReadFile(marker)
+	require.NoError(t, err, "local-exec did not create marker file")
+	assert.Equal(t, "ami-upstream\n", string(got))
+
+	require.Len(t, mock.RegisteredResources, 3)
+	assert.Equal(t, "upstream", mock.RegisteredResources[1].Name)
+	assert.Equal(t, "dependent", mock.RegisteredResources[2].Name)
+}
+
 func TestEngine_ProvisionerWithSelf(t *testing.T) {
 	t.Parallel()
 

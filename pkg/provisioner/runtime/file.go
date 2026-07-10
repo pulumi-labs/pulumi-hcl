@@ -22,6 +22,7 @@ import (
 
 	"github.com/hashicorp/hcl/v2"
 
+	"github.com/pulumi-labs/pulumi-hcl/pkg/provisioner/provisioners"
 	"github.com/pulumi-labs/pulumi-hcl/vendored/communicator"
 )
 
@@ -67,7 +68,11 @@ func runFile(ctx context.Context, spec *Spec, hclCtx *hcl.EvalContext) error {
 		return fmt.Errorf("file: building communicator: %w", err)
 	}
 
-	uiOutput := stderrUIOutput{}
+	var uiOutput provisioners.UIOutput = stderrUIOutput{}
+	if configSensitive(content, hclCtx) {
+		fmt.Fprintln(os.Stderr, suppressedOutputMsg)
+		uiOutput = discardUIOutput{}
+	}
 	if err := communicator.Retry(ctx, func() error { return comm.Connect(uiOutput) }); err != nil {
 		return fmt.Errorf("file: connecting: %w", err)
 	}

@@ -24,6 +24,8 @@ import (
 
 	"github.com/hashicorp/hcl/v2"
 	"github.com/zclconf/go-cty/cty"
+
+	"github.com/pulumi-labs/pulumi-hcl/pkg/hcl/eval"
 )
 
 // when and on_failure are stripped by the parser before this body reaches us.
@@ -74,6 +76,8 @@ func runLocalExec(ctx context.Context, spec *Spec, hclCtx *hcl.EvalContext) erro
 		return err
 	}
 
+	sensitive := configSensitive(content, hclCtx)
+
 	// TF appends command as the final positional arg of interpreter,
 	// e.g. ["/bin/sh", "-c", "echo hi"].
 	args := append([]string{}, interpreter[1:]...)
@@ -86,7 +90,10 @@ func runLocalExec(ctx context.Context, spec *Spec, hclCtx *hcl.EvalContext) erro
 			cmd.Env = append(cmd.Env, k+"="+v)
 		}
 	}
-	if quiet {
+	if sensitive {
+		fmt.Fprintln(os.Stderr, suppressedOutputMsg)
+	}
+	if quiet || sensitive {
 		cmd.Stdout = io.Discard
 		cmd.Stderr = io.Discard
 	} else {
@@ -107,6 +114,28 @@ func defaultInterpreter() []string {
 	return []string{"/bin/sh", "-c"}
 }
 
+// configSensitive reports whether any attribute of the provisioner's
+// configuration evaluates to a value carrying the sensitive mark, in which
+// case the provisioner's output must be suppressed so the value cannot leak
+// through logging.
+func configSensitive(content *hcl.BodyContent, hclCtx *hcl.EvalContext) bool {
+	for _, attr := range content.Attributes {
+		val, diags := attr.Expr.Value(hclCtx)
+		if diags.HasErrors() {
+			continue
+		}
+		_, marks := val.UnmarkDeep()
+		if _, ok := marks[eval.SensitiveMark]; ok {
+			return true
+		}
+	}
+	return false
+}
+
+// The eval helpers deep-unmark every result: the engine tracks cross-resource
+// dependencies and sensitivity as cty marks, and marked values panic in
+// AsString and friends.
+
 func evalString(content *hcl.BodyContent, name string, hclCtx *hcl.EvalContext) (string, error) {
 	attr, ok := content.Attributes[name]
 	if !ok {
@@ -116,6 +145,7 @@ func evalString(content *hcl.BodyContent, name string, hclCtx *hcl.EvalContext) 
 	if diags.HasErrors() {
 		return "", fmt.Errorf("evaluating %s: %s", name, diags.Error())
 	}
+	val, _ = val.UnmarkDeep()
 	if !val.IsKnown() || val.IsNull() {
 		return "", nil
 	}
@@ -138,6 +168,7 @@ func evalOptionalBool(content *hcl.BodyContent, name string, hclCtx *hcl.EvalCon
 	if diags.HasErrors() {
 		return false, fmt.Errorf("evaluating %s: %s", name, diags.Error())
 	}
+	val, _ = val.UnmarkDeep()
 	if !val.IsKnown() || val.IsNull() {
 		return false, nil
 	}
@@ -156,6 +187,7 @@ func evalStringSlice(content *hcl.BodyContent, name string, hclCtx *hcl.EvalCont
 	if diags.HasErrors() {
 		return nil, fmt.Errorf("evaluating %s: %s", name, diags.Error())
 	}
+	val, _ = val.UnmarkDeep()
 	if !val.IsKnown() || val.IsNull() {
 		return nil, nil
 	}
@@ -183,6 +215,7 @@ func evalStringMap(content *hcl.BodyContent, name string, hclCtx *hcl.EvalContex
 	if diags.HasErrors() {
 		return nil, fmt.Errorf("evaluating %s: %s", name, diags.Error())
 	}
+	val, _ = val.UnmarkDeep()
 	if !val.IsKnown() || val.IsNull() {
 		return nil, nil
 	}
