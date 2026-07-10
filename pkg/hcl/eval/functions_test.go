@@ -445,6 +445,35 @@ func TestEncodingFunctions(t *testing.T) {
 	}
 }
 
+func TestBase64DecodeUTF8Validation(t *testing.T) {
+	t.Parallel()
+	fn := Functions("/tmp")["base64decode"]
+
+	t.Run("valid utf-8", func(t *testing.T) {
+		t.Parallel()
+		result, err := fn.Call([]cty.Value{cty.StringVal("SGVsbG8=")})
+		require.NoError(t, err)
+		assert.Equal(t, cty.StringVal("Hello"), result)
+	})
+
+	tests := []struct {
+		name  string
+		input string
+	}{
+		{"single 0xff byte", "/w=="},
+		{"single 0x80 byte", "gA=="},
+		{"multiple invalid bytes", "//79"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			_, err := fn.Call([]cty.Value{cty.StringVal(tt.input)})
+			require.Error(t, err)
+			assert.Equal(t, "the result of decoding the provided string is not valid UTF-8", err.Error())
+		})
+	}
+}
+
 func TestHashFunctions(t *testing.T) {
 	t.Parallel()
 	tests := []struct {

@@ -43,6 +43,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/apparentlymart/go-cidr/cidr"
 	"github.com/bmatcuk/doublestar/v4"
@@ -1028,6 +1029,9 @@ var base64DecodeFunc = function.New(&function.Spec{
 		decoded, err := base64.StdEncoding.DecodeString(args[0].AsString())
 		if err != nil {
 			return cty.NilVal, err
+		}
+		if !utf8.Valid(decoded) {
+			return cty.NilVal, fmt.Errorf("the result of decoding the provided string is not valid UTF-8")
 		}
 		return cty.StringVal(string(decoded)), nil
 	},
