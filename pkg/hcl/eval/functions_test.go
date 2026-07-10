@@ -815,6 +815,17 @@ func TestSumEmptyList(t *testing.T) {
 	assert.EqualError(t, err, "cannot sum an empty list")
 }
 
+// TestSumNullElement pins that `sum` of a list containing a null element
+// returns a graceful argument error rather than panicking inside the function
+// implementation.
+func TestSumNullElement(t *testing.T) {
+	t.Parallel()
+	_, err := sumFunc.Call([]cty.Value{cty.TupleVal([]cty.Value{
+		cty.NumberIntVal(1), cty.NullVal(cty.Number), cty.NumberIntVal(3),
+	})})
+	assert.EqualError(t, err, "argument must be list, set, or tuple of number values")
+}
+
 // TestTransposeNull pins that `transpose` returns a graceful argument error,
 // rather than panicking inside the function implementation, when a list value
 // is null or a list contains a null string.
