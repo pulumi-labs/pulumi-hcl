@@ -17,8 +17,10 @@ package run
 import (
 	"context"
 	"fmt"
+	"slices"
 
 	"github.com/hashicorp/hcl/v2"
+	"github.com/hashicorp/hcl/v2/hclsyntax"
 	"github.com/pulumi/pulumi/pkg/v3/codegen/schema"
 	"github.com/pulumi/pulumi/sdk/v3/go/property"
 	"github.com/zclconf/go-cty/cty"
@@ -100,6 +102,55 @@ func (e *Engine) bindProvisionerHooks(
 		}
 	}
 	return nil
+}
+
+// provisionerDependencyKeys collects the resource/data/module references
+// made inside a resource's connection block and its create-time provisioner
+// bodies, so they participate in dependency ordering like regular attribute
+// references. Destroy-time provisioners may only reference self, count and
+// each, so they contribute nothing.
+func provisionerDependencyKeys(res *ast.Resource) []string {
+	var bodies []hcl.Body
+	if res.Connection != nil {
+		bodies = append(bodies, res.Connection.Config)
+	}
+	for _, prov := range res.Provisioners {
+		if prov.When == "destroy" {
+			continue
+		}
+		if prov.Connection != nil {
+			bodies = append(bodies, prov.Connection.Config)
+		}
+		bodies = append(bodies, prov.Config)
+	}
+
+	var keys []string
+	seen := make(map[string]bool)
+	var walk func(body hcl.Body)
+	walk = func(body hcl.Body) {
+		syntaxBody, ok := body.(*hclsyntax.Body)
+		if !ok {
+			return
+		}
+		for _, attr := range syntaxBody.Attributes {
+			for _, dep := range eval.ExtractDependencies(attr.Expr) {
+				if !seen[dep] {
+					seen[dep] = true
+					keys = append(keys, dep)
+				}
+			}
+		}
+		for _, block := range syntaxBody.Blocks {
+			walk(block.Body)
+		}
+	}
+	for _, body := range bodies {
+		if body != nil {
+			walk(body)
+		}
+	}
+	slices.Sort(keys)
+	return keys
 }
 
 // effectiveConnectionBody: provisioner-level overrides resource-level.

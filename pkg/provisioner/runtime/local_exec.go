@@ -23,7 +23,6 @@ import (
 	"runtime"
 
 	"github.com/hashicorp/hcl/v2"
-	"github.com/zclconf/go-cty/cty"
 )
 
 // when and on_failure are stripped by the parser before this body reaches us.
@@ -43,7 +42,9 @@ func runLocalExec(ctx context.Context, spec *Spec, hclCtx *hcl.EvalContext) erro
 		return fmt.Errorf("local-exec: %s", diags.Error())
 	}
 
-	command, err := evalString(content, "command", hclCtx)
+	ev := &evaluator{hclCtx: hclCtx}
+
+	command, err := ev.evalString(content, "command")
 	if err != nil {
 		return err
 	}
@@ -51,12 +52,12 @@ func runLocalExec(ctx context.Context, spec *Spec, hclCtx *hcl.EvalContext) erro
 		return fmt.Errorf("local-exec: command must be non-empty")
 	}
 
-	workingDir, err := evalOptionalString(content, "working_dir", hclCtx)
+	workingDir, err := ev.evalString(content, "working_dir")
 	if err != nil {
 		return err
 	}
 
-	interpreter, err := evalStringSlice(content, "interpreter", hclCtx)
+	interpreter, err := ev.evalStringSlice(content, "interpreter")
 	if err != nil {
 		return err
 	}
@@ -64,12 +65,12 @@ func runLocalExec(ctx context.Context, spec *Spec, hclCtx *hcl.EvalContext) erro
 		interpreter = defaultInterpreter()
 	}
 
-	environment, err := evalStringMap(content, "environment", hclCtx)
+	environment, err := ev.evalStringMap(content, "environment")
 	if err != nil {
 		return err
 	}
 
-	quiet, err := evalOptionalBool(content, "quiet", hclCtx)
+	quiet, err := ev.evalBool(content, "quiet")
 	if err != nil {
 		return err
 	}
@@ -86,7 +87,10 @@ func runLocalExec(ctx context.Context, spec *Spec, hclCtx *hcl.EvalContext) erro
 			cmd.Env = append(cmd.Env, k+"="+v)
 		}
 	}
-	if quiet {
+	if ev.sensitive {
+		fmt.Fprintln(os.Stderr, suppressedOutputMsg)
+	}
+	if quiet || ev.sensitive {
 		cmd.Stdout = io.Discard
 		cmd.Stderr = io.Discard
 	} else {
@@ -105,98 +109,4 @@ func defaultInterpreter() []string {
 		return []string{"cmd", "/C"}
 	}
 	return []string{"/bin/sh", "-c"}
-}
-
-func evalString(content *hcl.BodyContent, name string, hclCtx *hcl.EvalContext) (string, error) {
-	attr, ok := content.Attributes[name]
-	if !ok {
-		return "", nil
-	}
-	val, diags := attr.Expr.Value(hclCtx)
-	if diags.HasErrors() {
-		return "", fmt.Errorf("evaluating %s: %s", name, diags.Error())
-	}
-	if !val.IsKnown() || val.IsNull() {
-		return "", nil
-	}
-	if val.Type() != cty.String {
-		return "", fmt.Errorf("%s must be a string, got %s", name, val.Type().FriendlyName())
-	}
-	return val.AsString(), nil
-}
-
-func evalOptionalString(content *hcl.BodyContent, name string, hclCtx *hcl.EvalContext) (string, error) {
-	return evalString(content, name, hclCtx)
-}
-
-func evalOptionalBool(content *hcl.BodyContent, name string, hclCtx *hcl.EvalContext) (bool, error) {
-	attr, ok := content.Attributes[name]
-	if !ok {
-		return false, nil
-	}
-	val, diags := attr.Expr.Value(hclCtx)
-	if diags.HasErrors() {
-		return false, fmt.Errorf("evaluating %s: %s", name, diags.Error())
-	}
-	if !val.IsKnown() || val.IsNull() {
-		return false, nil
-	}
-	if val.Type() != cty.Bool {
-		return false, fmt.Errorf("%s must be a bool, got %s", name, val.Type().FriendlyName())
-	}
-	return val.True(), nil
-}
-
-func evalStringSlice(content *hcl.BodyContent, name string, hclCtx *hcl.EvalContext) ([]string, error) {
-	attr, ok := content.Attributes[name]
-	if !ok {
-		return nil, nil
-	}
-	val, diags := attr.Expr.Value(hclCtx)
-	if diags.HasErrors() {
-		return nil, fmt.Errorf("evaluating %s: %s", name, diags.Error())
-	}
-	if !val.IsKnown() || val.IsNull() {
-		return nil, nil
-	}
-	if !val.CanIterateElements() {
-		return nil, fmt.Errorf("%s must be a list of strings", name)
-	}
-	out := make([]string, 0, val.LengthInt())
-	it := val.ElementIterator()
-	for it.Next() {
-		_, v := it.Element()
-		if v.Type() != cty.String {
-			return nil, fmt.Errorf("%s elements must be strings", name)
-		}
-		out = append(out, v.AsString())
-	}
-	return out, nil
-}
-
-func evalStringMap(content *hcl.BodyContent, name string, hclCtx *hcl.EvalContext) (map[string]string, error) {
-	attr, ok := content.Attributes[name]
-	if !ok {
-		return nil, nil
-	}
-	val, diags := attr.Expr.Value(hclCtx)
-	if diags.HasErrors() {
-		return nil, fmt.Errorf("evaluating %s: %s", name, diags.Error())
-	}
-	if !val.IsKnown() || val.IsNull() {
-		return nil, nil
-	}
-	if !val.CanIterateElements() {
-		return nil, fmt.Errorf("%s must be a map of strings", name)
-	}
-	out := make(map[string]string, val.LengthInt())
-	it := val.ElementIterator()
-	for it.Next() {
-		k, v := it.Element()
-		if k.Type() != cty.String || v.Type() != cty.String {
-			return nil, fmt.Errorf("%s keys and values must be strings", name)
-		}
-		out[k.AsString()] = v.AsString()
-	}
-	return out, nil
 }

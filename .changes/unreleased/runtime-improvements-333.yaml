@@ -1,0 +1,6 @@
+kind: Improvements
+body: Record `provisioner` and `connection` references as resource dependencies
+time: 2026-07-10T10:03:38Z
+custom:
+    Component: runtime
+    PR: "333"

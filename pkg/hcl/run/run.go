@@ -1486,6 +1486,17 @@ func (e *Engine) buildResourceOptionsInContext(
 		}
 	}
 
+	// References inside provisioner and connection bodies are implicit
+	// dependencies, but they never flow through the resource's inputs, so
+	// they must be recorded here for the engine to see the edge.
+	for _, depKey := range provisionerDependencyKeys(res) {
+		if outputs, ok := e.resourceOutputs.Get(resPrefix + depKey); ok {
+			if urn := ctyAsString(outputs.GetAttr("urn")); urn != "" && !slices.Contains(opts.DependsOn, urn) {
+				opts.DependsOn = append(opts.DependsOn, urn)
+			}
+		}
+	}
+
 	// Handle lifecycle options
 	if res.Lifecycle != nil {
 		if res.Lifecycle.PreventDestroy != nil && *res.Lifecycle.PreventDestroy {

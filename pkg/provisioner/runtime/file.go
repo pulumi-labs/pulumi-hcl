@@ -22,6 +22,7 @@ import (
 
 	"github.com/hashicorp/hcl/v2"
 
+	"github.com/pulumi-labs/pulumi-hcl/pkg/provisioner/provisioners"
 	"github.com/pulumi-labs/pulumi-hcl/vendored/communicator"
 )
 
@@ -39,15 +40,17 @@ func runFile(ctx context.Context, spec *Spec, hclCtx *hcl.EvalContext) error {
 		return fmt.Errorf("file: %s", diags.Error())
 	}
 
-	source, err := evalString(content, "source", hclCtx)
+	ev := &evaluator{hclCtx: hclCtx}
+
+	source, err := ev.evalString(content, "source")
 	if err != nil {
 		return err
 	}
-	bodyContent, err := evalString(content, "content", hclCtx)
+	bodyContent, err := ev.evalString(content, "content")
 	if err != nil {
 		return err
 	}
-	destination, err := evalString(content, "destination", hclCtx)
+	destination, err := ev.evalString(content, "destination")
 	if err != nil {
 		return err
 	}
@@ -67,7 +70,11 @@ func runFile(ctx context.Context, spec *Spec, hclCtx *hcl.EvalContext) error {
 		return fmt.Errorf("file: building communicator: %w", err)
 	}
 
-	uiOutput := stderrUIOutput{}
+	var uiOutput provisioners.UIOutput = stderrUIOutput{}
+	if ev.sensitive {
+		fmt.Fprintln(os.Stderr, suppressedOutputMsg)
+		uiOutput = discardUIOutput{}
+	}
 	if err := communicator.Retry(ctx, func() error { return comm.Connect(uiOutput) }); err != nil {
 		return fmt.Errorf("file: connecting: %w", err)
 	}
