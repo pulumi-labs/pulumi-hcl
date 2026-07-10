@@ -21,7 +21,7 @@ jobs:
     outputs:
       version: ${{ steps.version.outputs.version }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: jdx/mise-action@v4
       - uses: actions/setup-go@v6
         with:
@@ -66,7 +66,7 @@ jobs:
       VERSION: ${{ needs.release.outputs.version }}
       GH_TOKEN: ${{ secrets.RELEASE_TOKEN }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           ref: sdk-releases
           token: ${{ secrets.RELEASE_TOKEN }}
@@ -157,10 +157,10 @@ jobs:
       id-token: write
       contents: read
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           ref: sdk-releases
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v6
         with:
           # Trusted publishing requires Node >= 22.14 and npm >= 11.5.1.
           node-version: '22'
@@ -211,10 +211,10 @@ jobs:
       id-token: write
       contents: read
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           ref: sdk-releases
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: '3.11'
       - name: Build distributions
@@ -250,10 +250,10 @@ jobs:
       id-token: write
       contents: read
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           ref: sdk-releases
-      - uses: actions/setup-dotnet@v4
+      - uses: actions/setup-dotnet@v5
         with:
           dotnet-version: '8.0.x'
       - name: Build
@@ -303,7 +303,7 @@ jobs:
       ESC_ACTION_EXPORT_ENVIRONMENT_VARIABLES: GITHUB_TOKEN=hcl-registry-publish-dispatch
     steps:
       - name: Fetch the dispatch token from ESC
-        uses: pulumi/esc-action@8afe12bb7bb3df0a599e5309ee429ff1079ba85f # v3
+        uses: pulumi/esc-action@v3
       - name: Dispatch a registry docs build
         run: |
           base="https://raw.githubusercontent.com/pulumi-labs/pulumi-hcl/${SHA}/registry"
