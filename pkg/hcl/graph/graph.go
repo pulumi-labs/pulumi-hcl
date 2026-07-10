@@ -203,6 +203,11 @@ type Graph struct {
 	// dependency extraction (which receives only the prefix) can resolve
 	// provider-defined function calls to the provider block they use.
 	scopes map[string]*moduleScope
+
+	// missingProviders collects, keyed by provider address, the diagnostics
+	// for module-call `providers` entries that name a provider configuration
+	// the parent scope does not have. Reported by Validate.
+	missingProviders map[string]*hcl.Diagnostic
 }
 
 type dagNode struct {
@@ -225,6 +230,8 @@ func NewGraph() *Graph {
 		dependents:   make(map[string]int),
 		moved:        make(map[modulepath.Path][]*ast.Moved),
 		scopes:       make(map[string]*moduleScope),
+
+		missingProviders: make(map[string]*hcl.Diagnostic),
 	}
 }
 
@@ -484,11 +491,19 @@ func (g *Graph) inheritedProviderDeps(resource *ast.Resource, parent *moduleScop
 }
 
 // passThroughProviderDeps returns an edge from an in-module resource to the
-// parent-scope provider that the module call's `providers = { ... }` argument
-// passes in for the resource's package. mod is the module call in the parent
-// scope, parentPrefix is the parent scope's prefix. Returns nil when no
-// pass-through entry applies.
-func (g *Graph) passThroughProviderDeps(resource *ast.Resource, mod *ast.Module, parentPrefix string) []pdag.Node {
+// parent-scope provider that its module call's `providers = { ... }` argument
+// passes in for the resource's package. scope is the resource's own module
+// scope. Returns nil when no pass-through entry applies.
+//
+// The reference resolves strictly against the parent scope — provider
+// configurations are never inherited into a `providers` argument: the parent
+// must have a matching `provider` block, have received the configuration
+// through its own module call, or (for an un-aliased reference on the root)
+// declare the provider in `required_providers`, which stands for the implicit
+// empty default configuration. Anything else is a missing provider, reported
+// by Validate.
+func (g *Graph) passThroughProviderDeps(resource *ast.Resource, scope *moduleScope) []pdag.Node {
+	mod := scope.mod
 	if mod == nil || len(mod.Providers) == 0 {
 		return nil
 	}
@@ -508,12 +523,104 @@ func (g *Graph) passThroughProviderDeps(resource *ast.Resource, mod *ast.Module,
 	if !ok {
 		return nil
 	}
+	return g.resolvePassedProvider(scope.config, key, passExpr, scope.parent)
+}
+
+// resolvePassedProvider returns an edge to the parent-scope provider
+// configuration that a module call's `providers = { <childKey> = <passExpr> }`
+// entry names, resolving strictly against parent: its `provider` block, the
+// pass-through entry of its own module call (whose shadow node stands in), or
+// — for an un-aliased reference on the root — its `required_providers`
+// declaration, which stands for the implicit empty default configuration
+// (nothing registers it, so there is no node to order after). Anything else
+// records a missing-provider diagnostic for Validate. childConfig is the
+// called module's config; its `required_providers` names the provider in the
+// diagnostic.
+func (g *Graph) resolvePassedProvider(
+	childConfig *ast.Config, childKey string, passExpr hcl.Expression, parent *moduleScope,
+) []pdag.Node {
 	parentKey := providerExprKey(passExpr)
 	if parentKey == "" {
 		return nil
 	}
-	_, idx := g.newNode(parentPrefix + parentKey)
-	return []pdag.Node{idx}
+	if _, ok := parent.config.Providers[parentKey]; ok {
+		_, idx := g.newNode(parent.prefix + parentKey)
+		return []pdag.Node{idx}
+	}
+	if parent.mod != nil {
+		if _, ok := parent.mod.Providers[parentKey]; ok {
+			_, idx := g.newNode(parent.prefix + parentKey)
+			return []pdag.Node{idx}
+		}
+	}
+	name, alias, aliased := strings.Cut(parentKey, ".")
+	if !aliased && parent.parent == nil && parent.config.Terraform != nil {
+		if _, ok := parent.config.Terraform.RequiredProviders[name]; ok {
+			return nil
+		}
+	}
+	addr := fmt.Sprintf("%sprovider[%q]", parent.prefix, providerFQN(childConfig, strings.SplitN(childKey, ".", 2)[0]))
+	if aliased {
+		addr += "." + alias
+	}
+	g.recordMissingProvider(addr, passExpr.Range())
+	return nil
+}
+
+// recordMissingProvider records a missing-provider diagnostic for Validate,
+// deduplicated by provider address.
+func (g *Graph) recordMissingProvider(addr string, rng hcl.Range) {
+	if _, ok := g.missingProviders[addr]; ok {
+		return
+	}
+	g.missingProviders[addr] = &hcl.Diagnostic{
+		Severity: hcl.DiagError,
+		Summary:  fmt.Sprintf("missing provider %s", addr),
+		Subject:  rng.Ptr(),
+	}
+}
+
+// providerFQN returns the fully-qualified address of the provider behind
+// localName in config: the `required_providers` source when declared, else the
+// default namespace, both anchored at the default registry host.
+func providerFQN(config *ast.Config, localName string) string {
+	source := localName
+	if config.Terraform != nil {
+		if req, ok := config.Terraform.RequiredProviders[localName]; ok && req.Source != "" {
+			source = req.Source
+		}
+	}
+	switch parts := strings.Split(source, "/"); len(parts) {
+	case 1:
+		return "registry.opentofu.org/hashicorp/" + parts[0]
+	case 2:
+		return "registry.opentofu.org/" + source
+	default:
+		return source
+	}
+}
+
+// defaultProviderNode returns an edge to the node that registers the default
+// (un-aliased) provider configuration `name` as seen from scope s: the
+// nearest enclosing scope with a `provider "<name>"` block, or with a
+// `providers = { <name> = ... }` entry on its own module call (whose shadow
+// node stands in). Returns nil when no configuration exists anywhere — the
+// reference then names the implicit empty default configuration, which needs
+// no ordering edge.
+func (g *Graph) defaultProviderNode(name string, s *moduleScope) []pdag.Node {
+	for ; s != nil; s = s.parent {
+		if _, ok := s.config.Providers[name]; ok {
+			_, idx := g.newNode(s.prefix + name)
+			return []pdag.Node{idx}
+		}
+		if s.mod != nil {
+			if _, ok := s.mod.Providers[name]; ok {
+				_, idx := g.newNode(s.prefix + name)
+				return []pdag.Node{idx}
+			}
+		}
+	}
+	return nil
 }
 
 // providerExprKey returns "name" or "name.alias" from a provider-reference
@@ -578,16 +685,16 @@ func (g *Graph) resourceDeps(resource *ast.Resource, prefix string) []pdag.Node 
 	}
 	// A bare `provider = name` reference (no alias) is a single-segment
 	// traversal, which exprDeps drops because it carries no attribute after the
-	// root. Depend on the named provider node directly so this resource is
-	// ordered after it. Aliased (`name.alias`) and call-based (`call.x.y`)
-	// provider expressions have further segments and are already resolved by
-	// exprDeps above.
+	// root. It names the default configuration, which resolves through
+	// inheritance and may be implicit, so order the resource after whichever
+	// node registers it (if any). Aliased (`name.alias`) and call-based
+	// (`call.x.y`) provider expressions have further segments and are already
+	// resolved by exprDeps above.
 	if resource.Provider != nil {
 		if vars := resource.Provider.Variables(); len(vars) == 1 && len(vars[0]) == 1 {
-			name := vars[0].RootName()
-			g.recordRef(prefix+name, vars[0].SourceRange())
-			_, idx := g.newNode(prefix + name)
-			seen[idx] = true
+			for _, dep := range g.defaultProviderNode(vars[0].RootName(), g.scopes[prefix]) {
+				seen[dep] = true
+			}
 		}
 	}
 	for _, traversal := range resource.Providers {
@@ -930,6 +1037,10 @@ func (g *Graph) Validate() []error {
 		errs = append(errs, diag)
 	}
 
+	for _, addr := range slices.Sorted(maps.Keys(g.missingProviders)) {
+		errs = append(errs, g.missingProviders[addr])
+	}
+
 	return errs
 }
 
@@ -1054,8 +1165,13 @@ func (g *Graph) inlineModule(
 	// `provider` block of its own. In-module resources referencing it would
 	// otherwise leave behind an unresolved node and trip Validate. Register
 	// it as a no-op shadow so the local edge resolves; the real resolution
-	// (to the parent's provider) happens at runtime via mod.Providers.
-	for localKey := range mod.Providers {
+	// (to the parent's provider) happens at runtime via mod.Providers. The
+	// shadow depends on the parent-scope configuration it stands for, so that
+	// a chain of pass-throughs stays ordered after the originating block —
+	// and so every entry is checked against the parent scope, whether or not
+	// anything in the child consumes it.
+	for localKey, passExpr := range mod.Providers {
+		deps := g.resolvePassedProvider(loaded.Config, localKey, passExpr, parent)
 		shadowKey := prefix + localKey
 		if existing, ok := g.seen[shadowKey]; ok && existing.n.Type != NodeTypeUnknown {
 			continue
@@ -1064,7 +1180,7 @@ func (g *Graph) inlineModule(
 			Key:        shadowKey,
 			Type:       NodeTypeBuiltin,
 			ModuleInfo: modInfo,
-		}, nil); err != nil {
+		}, deps); err != nil {
 			return err
 		}
 	}
@@ -1074,7 +1190,7 @@ func (g *Graph) inlineModule(
 		deps := g.resourceDeps(resource, prefix)
 		deps = append(deps, initIdx)
 		ownDeps := g.defaultProviderDeps(resource, loaded.Config, prefix)
-		passDeps := g.passThroughProviderDeps(resource, mod, parentPrefix)
+		passDeps := g.passThroughProviderDeps(resource, scope)
 		deps = append(deps, ownDeps...)
 		deps = append(deps, passDeps...)
 		if len(ownDeps) == 0 && len(passDeps) == 0 {
@@ -1095,7 +1211,7 @@ func (g *Graph) inlineModule(
 		deps := g.resourceDeps(ds, prefix)
 		deps = append(deps, initIdx)
 		ownDeps := g.defaultProviderDeps(ds, loaded.Config, prefix)
-		passDeps := g.passThroughProviderDeps(ds, mod, parentPrefix)
+		passDeps := g.passThroughProviderDeps(ds, scope)
 		deps = append(deps, ownDeps...)
 		deps = append(deps, passDeps...)
 		if len(ownDeps) == 0 && len(passDeps) == 0 {
