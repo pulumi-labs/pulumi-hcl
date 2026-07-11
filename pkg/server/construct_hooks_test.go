@@ -266,3 +266,17 @@ func TestModuleConstructDestroyProvisioner(t *testing.T) {
 	require.FileExists(t, filepath.Join(markerDir, "destroyed"),
 		"destroy-time provisioner should run when the child is deleted post-Construct")
 }
+
+// TestModuleProviderReleasesHooks asserts the provider-owned callback server is
+// created lazily by a construct that registers hooks and released on cancel.
+func TestModuleProviderReleasesHooks(t *testing.T) {
+	t.Parallel()
+
+	_, m, endpoint := serveMonitor(t)
+	require.NoError(t, construct(t, m, endpoint, "module-precondition",
+		map[string]property.Value{"expected": property.New("ok")}))
+	require.NotNil(t, m.hooks.cbs, "registering a hook should start the callback server")
+
+	require.NoError(t, m.cancel(t.Context()))
+	require.Nil(t, m.hooks.cbs, "cancel should release the callback server")
+}
