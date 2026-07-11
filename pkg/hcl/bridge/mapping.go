@@ -34,7 +34,8 @@ type FieldMapping struct {
 	// MaxItemsOne is true when a TF block is projected to Pulumi as a single
 	// object rather than a list of objects. Only meaningful when TFBlock.
 	MaxItemsOne bool
-	// Nested is the inner-block mapping, populated only for TFBlock fields.
+	// Nested is the inner-body mapping for fields with named nested fields:
+	// blocks (TFBlock) and object-typed attributes (nested attributes).
 	Nested *BodyMapping
 }
 
@@ -136,14 +137,9 @@ func bodyMappingFromSchema(sm shim.SchemaMap, overrides map[string]*tfbridge.Sch
 		if elemRes, isBlock := elemAsResource(sch); isBlock {
 			fm.TFBlock = true
 			fm.MaxItemsOne = computeMaxItemsOne(sch, ov)
-			var nestedOverrides map[string]*tfbridge.SchemaInfo
-			if ov != nil {
-				nestedOverrides = ov.Fields
-				if ov.Elem != nil && len(ov.Elem.Fields) > 0 {
-					nestedOverrides = ov.Elem.Fields
-				}
-			}
-			fm.Nested = bodyMappingFromSchema(elemRes.Schema(), nestedOverrides)
+			fm.Nested = bodyMappingFromSchema(elemRes.Schema(), nestedOverrides(ov))
+		} else if objRes, isObject := elemAsObject(sch); isObject {
+			fm.Nested = bodyMappingFromSchema(objRes.Schema(), nestedOverrides(ov))
 		}
 		m.Fields[tfName] = fm
 		return true
@@ -151,14 +147,55 @@ func bodyMappingFromSchema(sm shim.SchemaMap, overrides map[string]*tfbridge.Sch
 	return m
 }
 
+// nestedOverrides returns the SchemaInfo field overrides that apply to a
+// field's nested body.
+func nestedOverrides(ov *tfbridge.SchemaInfo) map[string]*tfbridge.SchemaInfo {
+	if ov == nil {
+		return nil
+	}
+	if ov.Elem != nil && len(ov.Elem.Fields) > 0 {
+		return ov.Elem.Fields
+	}
+	return ov.Fields
+}
+
 // elemAsResource returns the nested-block element shim if sch is a TF block
-// (TypeList/TypeSet with a Resource Elem). For TypeMap with Resource Elem we
-// also return the resource — SDKv2 reinterprets that case as a string-string
-// map at the schema level, but as a body shape, TF source still uses block
-// syntax.
+// (TypeList/TypeSet with a Resource Elem).
 func elemAsResource(sch shim.Schema) (shim.Resource, bool) {
 	switch sch.Type() {
 	case shim.TypeList, shim.TypeSet:
+		if res, ok := sch.Elem().(shim.Resource); ok {
+			return res, true
+		}
+	}
+	return nil, false
+}
+
+// elemAsObject returns the pseudo-resource carrying an object-typed
+// attribute's named fields. Object types use the tfshim convention
+// Schema{Type: Map, Elem: Resource}: collection-nested attributes carry that
+// schema as their Elem, and a single nested attribute is that schema directly.
+func elemAsObject(sch shim.Schema) (shim.Resource, bool) {
+	switch sch.Type() {
+	case shim.TypeList, shim.TypeSet:
+		if e, ok := sch.Elem().(shim.Schema); ok {
+			return objectSchemaResource(e)
+		}
+	case shim.TypeMap:
+		switch e := sch.Elem().(type) {
+		case shim.Resource:
+			return e, true
+		case shim.Schema:
+			return objectSchemaResource(e)
+		}
+	}
+	return nil, false
+}
+
+// objectSchemaResource unwraps the tfshim object-type convention
+// (Schema{Type: Map, Elem: Resource}) to its pseudo-resource.
+func objectSchemaResource(sch shim.Schema) (shim.Resource, bool) {
+	if sch.Type() == shim.TypeMap {
 		if res, ok := sch.Elem().(shim.Resource); ok {
 			return res, true
 		}
