@@ -110,7 +110,6 @@ func (s *hookInvokingMonitor) RegisterResource(
 		OldOutputs: req.Object,
 	}
 	for _, name := range req.GetHooks().GetBeforeDelete() {
-		name := name
 		s.mu.Lock()
 		s.deferredDeletes = append(s.deferredDeletes, func(ctx context.Context) error {
 			return s.invokeHook(ctx, name, deleteReq)
