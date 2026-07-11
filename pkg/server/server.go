@@ -1222,17 +1222,7 @@ func (r *resourceMonitorAdapter) RegisterResource(
 		}
 	}
 
-	if req.Hooks != nil {
-		registerReq.Hooks = &pulumirpc.RegisterResourceRequest_ResourceHooksBinding{
-			BeforeCreate: req.Hooks.BeforeCreate,
-			BeforeUpdate: req.Hooks.BeforeUpdate,
-			AfterCreate:  req.Hooks.AfterCreate,
-			AfterUpdate:  req.Hooks.AfterUpdate,
-			BeforeDelete: req.Hooks.BeforeDelete,
-			AfterDelete:  req.Hooks.AfterDelete,
-			OnError:      req.Hooks.OnError,
-		}
-	}
+	registerReq.Hooks = hooksToProto(req.Hooks)
 
 	// Add replacement trigger if specified
 	if !req.ReplacementTrigger.IsNull() {

@@ -76,6 +76,8 @@ type HCLProvider struct {
 
 	// schema is the generated schema for the module.
 	schema *schema.ModuleSchema
+
+	hooks lazyCallbackServer
 }
 
 // NewHCLProvider creates a new HCL component provider.
@@ -324,6 +326,9 @@ func (p *HCLProvider) Construct(ctx context.Context, req *pulumirpc.ConstructReq
 		replacementTrigger:      req.ReplacementTrigger,
 		mapOutputs:              p.schema.OutputsToPulumi,
 	}
+	if resmon.hooks, err = p.hooks.get(); err != nil {
+		return nil, fmt.Errorf("starting hook callback server: %w", err)
+	}
 
 	// Set up config from inputs, prefixing with project name as the engine
 	// expects. Inputs arrive under their camelCase schema property names (with
@@ -384,6 +389,7 @@ func (p *HCLProvider) GetPluginInfo(ctx context.Context, req *emptypb.Empty) (*p
 
 // Cancel cancels any in-flight operations.
 func (p *HCLProvider) Cancel(ctx context.Context, req *emptypb.Empty) (*emptypb.Empty, error) {
+	p.hooks.close()
 	return &emptypb.Empty{}, nil
 }
 
@@ -425,6 +431,11 @@ type constructResourceMonitor struct {
 	// mapOutputs transforms the HCL module's top-level outputs into the
 	// component's output property map before they are registered.
 	mapOutputs func(property.Map) property.Map
+
+	// hooks is the provider-owned callback server (not this monitor's): a
+	// `before_delete` hook fires after this Construct call has returned, so the
+	// callback server must outlive any single construct.
+	hooks *callbackServer
 }
 
 // constructMarshalOptions are the property (un)marshal options used on every
@@ -526,6 +537,7 @@ func (m *constructResourceMonitor) RegisterResource(
 		PackageRef:          string(req.PackageRef),
 		Version:             req.Version,
 		PluginDownloadURL:   req.PluginDownloadURL,
+		Hooks:               hooksToProto(req.Hooks),
 		AcceptSecrets:       true,
 		AcceptResources:     true,
 	})
@@ -711,13 +723,27 @@ func (m *constructResourceMonitor) RegisterPackage(
 	return registerPackage(ctx, m.client, pkg)
 }
 
-// RegisterResourceHook is not yet supported in Construct modules: the callback
-// server would need to be hosted on the provider (outliving any single
-// Construct call) rather than per-monitor.
+// RegisterResourceHook hosts the callback on the provider-owned callback server
+// and registers it with the engine's monitor.
 func (m *constructResourceMonitor) RegisterResourceHook(
 	ctx context.Context, name string, callback run.ResourceHookFunction, opts run.ResourceHookOptions,
 ) error {
-	return fmt.Errorf("resource hooks are not supported within component constructions")
+	if m.hooks == nil {
+		return fmt.Errorf("resource hooks are not supported: no callback server is available")
+	}
+	cb, err := m.hooks.register(resourceHookCallback(callback))
+	if err != nil {
+		return fmt.Errorf("registering hook callback: %w", err)
+	}
+	_, err = m.client.RegisterResourceHook(ctx, &pulumirpc.RegisterResourceHookRequest{
+		Name:     name,
+		Callback: cb,
+		OnDryRun: opts.OnDryRun,
+	})
+	if err != nil {
+		return fmt.Errorf("registering hook %q: %w", name, err)
+	}
+	return nil
 }
 
 // LogWarning emits a non-fatal warning diagnostic to the engine.

@@ -118,6 +118,54 @@ var hookMarshalOptions = plugin.MarshalOptions{
 	KeepOutputValues: true,
 }
 
+// lazyCallbackServer is a callback server created on first use and shared for
+// the lifetime of the owning provider, so a `before_delete` hook — which fires
+// during a later `destroy --run-program`, after Construct returns — still has a
+// live callback server to reach.
+type lazyCallbackServer struct {
+	mu  sync.Mutex
+	cbs *callbackServer
+}
+
+func (l *lazyCallbackServer) get() (*callbackServer, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.cbs == nil {
+		cbs, err := newCallbackServer()
+		if err != nil {
+			return nil, err
+		}
+		l.cbs = cbs
+	}
+	return l.cbs, nil
+}
+
+func (l *lazyCallbackServer) close() {
+	l.mu.Lock()
+	cbs := l.cbs
+	l.cbs = nil
+	l.mu.Unlock()
+	if cbs != nil {
+		_ = cbs.Close()
+	}
+}
+
+// hooksToProto returns nil for a nil binding so the field is omitted.
+func hooksToProto(hooks *run.ResourceHookBinding) *pulumirpc.RegisterResourceRequest_ResourceHooksBinding {
+	if hooks == nil {
+		return nil
+	}
+	return &pulumirpc.RegisterResourceRequest_ResourceHooksBinding{
+		BeforeCreate: hooks.BeforeCreate,
+		BeforeUpdate: hooks.BeforeUpdate,
+		AfterCreate:  hooks.AfterCreate,
+		AfterUpdate:  hooks.AfterUpdate,
+		BeforeDelete: hooks.BeforeDelete,
+		AfterDelete:  hooks.AfterDelete,
+		OnError:      hooks.OnError,
+	}
+}
+
 // resourceHookCallback adapts a run.ResourceHookFunction to the proto-level
 // hook callback contract.
 func resourceHookCallback(fn run.ResourceHookFunction) callbackFunction {
