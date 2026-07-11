@@ -20,6 +20,8 @@ import (
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
 	"github.com/pulumi-labs/pulumi-hcl/pkg/hcl/bridge"
 	"github.com/pulumi/pulumi-terraform-bridge/v3/pkg/tfbridge"
+	shim "github.com/pulumi/pulumi-terraform-bridge/v3/pkg/tfshim"
+	mockschema "github.com/pulumi/pulumi-terraform-bridge/v3/pkg/tfshim/schema"
 	shimv2 "github.com/pulumi/pulumi-terraform-bridge/v3/pkg/tfshim/sdk-v2"
 	"github.com/stretchr/testify/require"
 )
@@ -189,6 +191,62 @@ func TestResourceBodyMapping_NestedBlocks(t *testing.T) {
 	require.NotNil(t, rule.Nested)
 	require.NotNil(t, rule.Nested.Lookup("action"))
 	require.False(t, rule.Nested.Lookup("action").TFBlock)
+}
+
+// Nested attributes are not blocks, but their nested names still need
+// TF→Pulumi translation: pluralized Pulumi names do not snake-case back to
+// their TF names.
+func TestResourceBodyMapping_NestedObjectAttributes(t *testing.T) {
+	t.Parallel()
+	objectOf := func(fields mockschema.SchemaMap) shim.Schema {
+		return (&mockschema.Schema{
+			Type: shim.TypeMap,
+			Elem: (&mockschema.Resource{Schema: fields}).Shim(),
+		}).Shim()
+	}
+	nested := objectOf(mockschema.SchemaMap{
+		"value": (&mockschema.Schema{Type: shim.TypeString, Computed: true}).Shim(),
+	})
+	elem := objectOf(mockschema.SchemaMap{
+		"nested_attr": (&mockschema.Schema{Type: shim.TypeList, Computed: true, Elem: nested}).Shim(),
+	})
+	p := (&mockschema.Provider{ResourcesMap: mockschema.ResourceMap{
+		"test_res": (&mockschema.Resource{Schema: mockschema.SchemaMap{
+			"attr": (&mockschema.Schema{Type: shim.TypeList, Computed: true, Elem: elem}).Shim(),
+			"obj_attr": objectOf(mockschema.SchemaMap{
+				"value": (&mockschema.Schema{Type: shim.TypeString, Optional: true}).Shim(),
+			}),
+		}}).Shim(),
+	}}).Shim()
+	info := &tfbridge.ProviderInfo{P: p, Name: "test", Version: "0.0.1"}
+
+	m := bridge.ResourceBodyMapping(info, "test_res")
+	require.NotNil(t, m)
+
+	attrFM := m.Lookup("attr")
+	require.NotNil(t, attrFM)
+	require.Equal(t, &bridge.FieldMapping{
+		TFName:     "attr",
+		PulumiName: "attrs",
+		Nested:     attrFM.Nested, // verified next
+	}, attrFM)
+	require.NotNil(t, attrFM.Nested)
+
+	nestedFM := attrFM.Nested.Lookup("nested_attr")
+	require.NotNil(t, nestedFM)
+	require.Equal(t, &bridge.FieldMapping{
+		TFName:     "nested_attr",
+		PulumiName: "nestedAttrs",
+		Nested:     nestedFM.Nested, // verified next
+	}, nestedFM)
+	require.NotNil(t, nestedFM.Nested)
+	require.NotNil(t, nestedFM.Nested.Lookup("value"))
+
+	objFM := m.Lookup("obj_attr")
+	require.NotNil(t, objFM)
+	require.False(t, objFM.TFBlock)
+	require.NotNil(t, objFM.Nested)
+	require.NotNil(t, objFM.Nested.Lookup("value"))
 }
 
 func TestResourceBodyMapping_MissingResourceReturnsNil(t *testing.T) {

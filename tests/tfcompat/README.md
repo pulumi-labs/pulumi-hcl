@@ -129,6 +129,12 @@ Tests should be named after the noun under test, not the behavior under test. Fo
 to test that variable defaults are applied correctly, we the test might be called
 `l1_var`, not `l1_var_defaults_applied`.
 
+Tests must never mention the real-world providers or fields that motivated
+them (no `aws`, `cluster`, `oidc`, `issuer`, ...). All names are generic and
+describe the *shape* of what they are: prefer field names like `attr`,
+`block`, `nested_block` and resource names like `pfx_res` or
+`simple_resource` over domain nouns like `record`, `cluster`, or `rule`.
+
 ## Scope
 
 Cases here must be valid Terraform programs — both paths run the same `.tf`

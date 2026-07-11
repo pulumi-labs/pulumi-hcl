@@ -18,8 +18,10 @@ import (
 	"context"
 	"strings"
 
+	"github.com/hashicorp/terraform-plugin-framework/attr"
 	"github.com/hashicorp/terraform-plugin-framework/datasource"
 	dschema "github.com/hashicorp/terraform-plugin-framework/datasource/schema"
+	"github.com/hashicorp/terraform-plugin-framework/diag"
 	"github.com/hashicorp/terraform-plugin-framework/function"
 	"github.com/hashicorp/terraform-plugin-framework/provider"
 	pschema "github.com/hashicorp/terraform-plugin-framework/provider/schema"
@@ -60,6 +62,7 @@ func (p *pfxProvider) Resources(context.Context) []func() resource.Resource {
 	return []func() resource.Resource{
 		func() resource.Resource { return &pfxThing{} },
 		func() resource.Resource { return &pfxWidget{} },
+		func() resource.Resource { return &pfxRes{} },
 	}
 }
 
@@ -258,6 +261,95 @@ func (f *pfxJoinStr) Run(ctx context.Context, req function.RunRequest, resp *fun
 		return
 	}
 	resp.Error = function.ConcatFuncErrors(resp.Error, resp.Result.Set(ctx, strings.Join(parts, separator)))
+}
+
+// pfxRes carries a computed list-nested attribute whose element holds
+// another computed list-nested attribute.
+type pfxRes struct{}
+
+var _ resource.Resource = (*pfxRes)(nil)
+
+func (r *pfxRes) Metadata(_ context.Context, req resource.MetadataRequest, resp *resource.MetadataResponse) {
+	resp.TypeName = req.ProviderTypeName + "_res"
+}
+
+func (r *pfxRes) Schema(_ context.Context, _ resource.SchemaRequest, resp *resource.SchemaResponse) {
+	resp.Schema = rschema.Schema{
+		Attributes: map[string]rschema.Attribute{
+			"id": rschema.StringAttribute{
+				Computed:      true,
+				PlanModifiers: []planmodifier.String{stringplanmodifier.UseStateForUnknown()},
+			},
+			"attr": rschema.ListNestedAttribute{
+				Computed: true,
+				NestedObject: rschema.NestedAttributeObject{
+					Attributes: map[string]rschema.Attribute{
+						"nested_attr": rschema.ListNestedAttribute{
+							Computed: true,
+							NestedObject: rschema.NestedAttributeObject{
+								Attributes: map[string]rschema.Attribute{
+									"value": rschema.StringAttribute{Computed: true},
+								},
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+}
+
+type pfxResModel struct {
+	ID   types.String `tfsdk:"id"`
+	Attr types.List   `tfsdk:"attr"`
+}
+
+func pfxResAttrValue(ctx context.Context) (types.List, diag.Diagnostics) {
+	nestedType := types.ObjectType{AttrTypes: map[string]attr.Type{"value": types.StringType}}
+	attrType := types.ObjectType{AttrTypes: map[string]attr.Type{"nested_attr": types.ListType{ElemType: nestedType}}}
+	nested, diags := types.ObjectValue(nestedType.AttrTypes, map[string]attr.Value{
+		"value": types.StringValue("computed-value"),
+	})
+	if diags.HasError() {
+		return types.List{}, diags
+	}
+	nestedList, d := types.ListValue(nestedType, []attr.Value{nested})
+	diags.Append(d...)
+	if diags.HasError() {
+		return types.List{}, diags
+	}
+	attrVal, d := types.ObjectValue(attrType.AttrTypes, map[string]attr.Value{"nested_attr": nestedList})
+	diags.Append(d...)
+	if diags.HasError() {
+		return types.List{}, diags
+	}
+	attrList, d := types.ListValue(attrType, []attr.Value{attrVal})
+	diags.Append(d...)
+	return attrList, diags
+}
+
+func (r *pfxRes) Create(ctx context.Context, req resource.CreateRequest, resp *resource.CreateResponse) {
+	attrVal, diags := pfxResAttrValue(ctx)
+	resp.Diagnostics.Append(diags...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+	state := pfxResModel{ID: types.StringValue("pfx-res-id"), Attr: attrVal}
+	resp.Diagnostics.Append(resp.State.Set(ctx, &state)...)
+}
+
+func (r *pfxRes) Read(_ context.Context, _ resource.ReadRequest, _ *resource.ReadResponse) {}
+
+func (r *pfxRes) Update(ctx context.Context, req resource.UpdateRequest, resp *resource.UpdateResponse) {
+	var plan pfxResModel
+	resp.Diagnostics.Append(req.Plan.Get(ctx, &plan)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+	resp.Diagnostics.Append(resp.State.Set(ctx, &plan)...)
+}
+
+func (r *pfxRes) Delete(_ context.Context, _ resource.DeleteRequest, _ *resource.DeleteResponse) {
 }
 
 type pfxLookup struct{}

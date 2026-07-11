@@ -2508,7 +2508,7 @@ type attrPathNameResolver struct {
 // and advances the resolver into the nested schema for the following segment.
 func (r *attrPathNameResolver) next(tfName string) (string, error) {
 	if fm := r.mapping.Lookup(tfName); fm != nil {
-		if fm.TFBlock {
+		if fm.Nested != nil {
 			r.mapping, r.props = fm.Nested, nil
 		} else {
 			r.mapping, r.props = nil, nil
