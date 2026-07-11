@@ -1172,21 +1172,21 @@ func propertyObjectToCtyMap(path string, m property.Map, properties []*schema.Pr
 		// `r.settings[0].x` resolves the same way as in TF.
 		singularBlock := mapping != nil && fieldIsSingularBlock(mapping, p.Name)
 		v, ok := m.GetOk(p.Name)
-		if !ok {
-			if dryRun {
-				result[hclName] = cty.UnknownVal(ctyTypeFromType(p.Type, nested))
-			} else {
-				result[hclName] = cty.NullVal(ctyTypeFromType(p.Type, nested))
-			}
-			continue
-		}
 		// During preview, required properties that are null are treated as unknown.
 		// This is because resource.Computed{} (the SDK's representation of an unknown value)
 		// has a null inner element, which gets serialized to a null proto value by gRPC
 		// marshaling, losing the "unknown" signal. Since a required property should never
 		// legitimately be null, we safely treat null-during-preview as unknown.
-		if dryRun && v.IsNull() && p.IsRequired() {
-			result[hclName] = cty.UnknownVal(ctyTypeFromType(p.Type, nested))
+		if !ok || (dryRun && v.IsNull() && p.IsRequired()) {
+			t := ctyTypeFromType(p.Type, nested)
+			if singularBlock && !t.IsListType() && !t.IsTupleType() {
+				t = cty.List(t)
+			}
+			if dryRun {
+				result[hclName] = cty.UnknownVal(t)
+			} else {
+				result[hclName] = cty.NullVal(t)
+			}
 			continue
 		}
 		var vPath string

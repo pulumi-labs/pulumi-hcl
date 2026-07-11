@@ -19,6 +19,7 @@ import (
 
 	"github.com/hashicorp/hcl/v2"
 	"github.com/hashicorp/hcl/v2/hclsyntax"
+	"github.com/pulumi-labs/pulumi-hcl/pkg/hcl/bridge"
 	"github.com/pulumi-labs/pulumi-hcl/pkg/hcl/eval"
 	"github.com/pulumi/pulumi/pkg/v3/codegen/schema"
 	"github.com/pulumi/pulumi/pkg/v3/codegen/testing/utils/rapidresource"
@@ -969,6 +970,61 @@ func TestResourceOutputToCtyDoesNotErrorOnValidValues(t *testing.T) {
 			_, err := ResourceOutputToCty(outputs, res, nil, false)
 			require.NoError(t, err)
 		}
+	})
+}
+
+// TestResourceOutputToCtySingularBlockPlaceholder pins the shape of the
+// placeholder emitted when a MaxItemsOne block property is missing or null:
+// TF models the block as a list, so the unknown/null value must be list-typed
+// for a traversal like `r.block[0].field` to resolve.
+func TestResourceOutputToCtySingularBlockPlaceholder(t *testing.T) {
+	t.Parallel()
+
+	res := &schema.Resource{
+		Token: "test:index:R",
+		Properties: []*schema.Property{
+			{Name: "block", Type: &schema.ObjectType{
+				Properties: []*schema.Property{
+					{Name: "field", Type: schema.StringType},
+				},
+			}},
+		},
+	}
+	mapping := &bridge.BodyMapping{Fields: map[string]*bridge.FieldMapping{
+		"block": {
+			TFName:      "block",
+			PulumiName:  "block",
+			TFBlock:     true,
+			MaxItemsOne: true,
+			Nested: &bridge.BodyMapping{Fields: map[string]*bridge.FieldMapping{
+				"field": {TFName: "field", PulumiName: "field"},
+			}},
+		},
+	}}
+	blockList := cty.List(cty.Object(map[string]cty.Type{"field": cty.String}))
+
+	t.Run("missing during preview", func(t *testing.T) {
+		t.Parallel()
+		r, err := ResourceOutputToCty(property.Map{}, res, mapping, true)
+		require.NoError(t, err)
+		assert.Equal(t, map[string]cty.Value{"block": cty.UnknownVal(blockList)}, r)
+	})
+
+	t.Run("null during preview", func(t *testing.T) {
+		t.Parallel()
+		outputs := property.NewMap(map[string]property.Value{
+			"block": property.New(property.Null),
+		})
+		r, err := ResourceOutputToCty(outputs, res, mapping, true)
+		require.NoError(t, err)
+		assert.Equal(t, map[string]cty.Value{"block": cty.UnknownVal(blockList)}, r)
+	})
+
+	t.Run("missing during apply", func(t *testing.T) {
+		t.Parallel()
+		r, err := ResourceOutputToCty(property.Map{}, res, mapping, false)
+		require.NoError(t, err)
+		assert.Equal(t, map[string]cty.Value{"block": cty.NullVal(blockList)}, r)
 	})
 }
 
