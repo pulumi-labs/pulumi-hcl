@@ -1,0 +1,6 @@
+kind: bug-fixes
+body: Run `precondition`, `postcondition`, and provisioner blocks in modules consumed as components
+time: 2026-07-11T13:47:38Z
+custom:
+    Component: runtime
+    PR: "352"

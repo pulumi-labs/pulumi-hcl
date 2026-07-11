@@ -1,0 +1,19 @@
+name: smoke-destroy-hooks
+runtime: yaml
+description: Instantiates an HCL module with pre/post conditions and create/destroy provisioners.
+config:
+  # Set by the test to the absolute path of ../module.
+  moduleSource:
+    type: string
+  # Set by the test to a scratch directory the provisioners write markers into.
+  markerDir:
+    type: string
+resources:
+  mod:
+    type: hcl:index:Module
+    properties:
+      source: ${moduleSource}
+      inputs:
+        marker: ${markerDir}
+outputs:
+  marker: ${mod.outputs["marker"]}

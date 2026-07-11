@@ -68,6 +68,10 @@ type moduleProvider struct {
 	// module source (via Parameterize). It makes the provider serve that module's
 	// typed component schema instead of the generic hcl:index:Module.
 	param *parameterizedModule
+
+	// hooks is provider-scoped so a `before_delete` hook survives past the
+	// Construct call that registered it, to fire during `destroy --run-program`.
+	hooks lazyCallbackServer
 }
 
 // NewModuleProvider builds the fully dynamic HCL provider on top of the raw
@@ -156,6 +160,7 @@ func (m *moduleProvider) getSchema(context.Context, p.GetSchemaRequest) (p.GetSc
 
 // cancel removes any unpacked module bundle when the provider shuts down.
 func (m *moduleProvider) cancel(context.Context) error {
+	m.hooks.close()
 	if m.param != nil && m.param.tempDir != "" {
 		return os.RemoveAll(m.param.tempDir)
 	}
@@ -239,8 +244,12 @@ func (m *moduleProvider) construct(ctx context.Context, req p.ConstructRequest) 
 		return p.ConstructResponse{}, fmt.Errorf("marshaling inputs: %w", err)
 	}
 
+	hooks, err := m.hooks.get()
+	if err != nil {
+		return p.ConstructResponse{}, fmt.Errorf("starting hook callback server: %w", err)
+	}
 	resmon := m.newConstructMonitor(ctx, req,
-		pulumirpc.NewResourceMonitorClient(monitorConn), componentInputs, wrapModuleOutputs)
+		pulumirpc.NewResourceMonitorClient(monitorConn), componentInputs, wrapModuleOutputs, hooks)
 
 	engineRun, err := run.NewEngine(ctx, loaded.Config, &run.EngineOptions{
 		ProjectName:        string(req.Urn.Project()),
@@ -303,8 +312,12 @@ func (m *moduleProvider) constructParameterized(ctx context.Context, req p.Const
 		return p.ConstructResponse{}, fmt.Errorf("marshaling inputs: %w", err)
 	}
 
+	hooks, err := m.hooks.get()
+	if err != nil {
+		return p.ConstructResponse{}, fmt.Errorf("starting hook callback server: %w", err)
+	}
 	resmon := m.newConstructMonitor(ctx, req,
-		pulumirpc.NewResourceMonitorClient(monitorConn), componentInputs, param.schema.OutputsToPulumi)
+		pulumirpc.NewResourceMonitorClient(monitorConn), componentInputs, param.schema.OutputsToPulumi, hooks)
 
 	loader := pulumiSchema.NewCachedLoader(packages.NewParameterizationAwareLoader(
 		m.schemaLoader, param.packages))
@@ -344,11 +357,12 @@ func (m *moduleProvider) constructParameterized(ctx context.Context, req p.Const
 // component's output property map.
 func (m *moduleProvider) newConstructMonitor(
 	ctx context.Context, req p.ConstructRequest, client pulumirpc.ResourceMonitorClient,
-	componentInputs *structpb.Struct, mapOutputs func(property.Map) property.Map,
+	componentInputs *structpb.Struct, mapOutputs func(property.Map) property.Map, hooks *callbackServer,
 ) *constructResourceMonitor {
 	return &constructResourceMonitor{
 		client:                  client,
 		engine:                  m.engine,
+		hooks:                   hooks,
 		ctx:                     ctx,
 		parentURN:               string(req.Parent),
 		componentType:           string(req.Urn.Type()),

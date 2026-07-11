@@ -242,6 +242,41 @@ func TestSmokeParameterizedModule(t *testing.T) {
 	})
 }
 
+// TestSmokeDestroyHooks proves resource-hook-backed constructs (precondition,
+// postcondition, create and destroy provisioners) work end-to-end through the
+// dynamic MLC. `up` runs the create provisioner and `destroy --run-program`
+// fires the destroy provisioner; each drops a marker file the test asserts on.
+func TestSmokeDestroyHooks(t *testing.T) {
+	t.Parallel()
+
+	moduleDir, err := filepath.Abs(filepath.Join("testdata", "destroy-hooks", "module"))
+	require.NoError(t, err)
+	markerDir := t.TempDir()
+
+	integration.ProgramTest(t, &integration.ProgramTestOptions{
+		NoParallel: true,
+		Dir:        filepath.Join("testdata", "destroy-hooks", "program"),
+		Config: map[string]string{
+			"moduleSource": moduleDir,
+			"markerDir":    markerDir,
+		},
+		Quick:       true,
+		SkipRefresh: true,
+		// The destroy-time provisioner is a before_delete hook; the engine only
+		// runs it when destroy re-runs the program to re-register it.
+		DestroyCommandlineFlags: []string{"--run-program"},
+		ExtraRuntimeValidation: func(t *testing.T, _ integration.RuntimeValidationStackInfo) {
+			require.FileExists(t, filepath.Join(markerDir, "created"),
+				"create-time provisioner should have run during up")
+		},
+	})
+
+	// ProgramTest runs up (validated above) then destroy --run-program; once it
+	// returns, the destroy-time provisioner must have left its marker.
+	require.FileExists(t, filepath.Join(markerDir, "destroyed"),
+		"destroy-time provisioner should have run during destroy --run-program")
+}
+
 func copyDir(t *testing.T, src, dst string) {
 	t.Helper()
 	require.NoError(t, filepath.WalkDir(src, func(path string, d os.DirEntry, err error) error {
