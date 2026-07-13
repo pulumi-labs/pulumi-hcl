@@ -1,0 +1,6 @@
+kind: bug-fixes
+body: Fix "resource hook already registered" when a module with a provisioner, precondition, or postcondition is instantiated more than once via `for_each`/`count`
+time: 2026-07-13T16:00:05Z
+custom:
+    Component: runtime
+    PR: "358"

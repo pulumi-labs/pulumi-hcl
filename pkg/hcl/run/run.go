@@ -1481,25 +1481,25 @@ func (e *Engine) registerResourceInstanceInContext(
 
 	opts.PackageRef = e.packageRefForType(res.Type)
 
+	resourceName := e.extractModuleResourceName(res.Name, instance.Key, node.ModuleInfo, modInst)
+
 	if len(res.Preconditions) > 0 {
-		if err := e.bindPreconditionHooks(ctx, res, instance, evalCtx, opts); err != nil {
+		if err := e.bindPreconditionHooks(ctx, res, instance, evalCtx, opts, resourceName); err != nil {
 			return err
 		}
 	}
 
 	if len(res.Postconditions) > 0 {
-		if err := e.bindPostconditionHooks(ctx, res, resSchema, resourceMapping, instance, evalCtx, opts); err != nil {
+		if err := e.bindPostconditionHooks(ctx, res, resSchema, resourceMapping, instance, evalCtx, opts, resourceName); err != nil {
 			return err
 		}
 	}
 
 	if len(res.Provisioners) > 0 {
-		if err := e.bindProvisionerHooks(ctx, res, resSchema, resourceMapping, instance, evalCtx, opts); err != nil {
+		if err := e.bindProvisionerHooks(ctx, res, resSchema, resourceMapping, instance, evalCtx, opts, resourceName); err != nil {
 			return err
 		}
 	}
-
-	resourceName := e.extractModuleResourceName(res.Name, instance.Key, node.ModuleInfo, modInst)
 
 	urn, id, outputs, err := e.registerResource(ctx, res.Type, resSchema.Token, resourceName, resourceInputs, opts)
 	if err != nil {
@@ -3947,6 +3947,7 @@ func (e *Engine) bindPreconditionHooks(
 	instance *graph.ExpandedResource,
 	evalCtx *eval.Context,
 	opts *ResourceOptions,
+	resourceName string,
 ) error {
 	if opts.Hooks == nil {
 		opts.Hooks = &ResourceHookBinding{}
@@ -3954,7 +3955,7 @@ func (e *Engine) bindPreconditionHooks(
 	hclSnapshot := evalCtx.HCLContext()
 	for i, rule := range res.Preconditions {
 		rule, index := rule, i+1
-		hookName := fmt.Sprintf("%s:precondition:%d", instance.Key, i)
+		hookName := fmt.Sprintf("%s.%s:precondition:%d", res.Type, resourceName, i)
 		callback := func(_ context.Context, _ *ResourceHookArgs) error {
 			return evaluatePrecondition(rule, hclSnapshot, index, instance.Key)
 		}
@@ -3982,6 +3983,7 @@ func (e *Engine) bindPostconditionHooks(
 	instance *graph.ExpandedResource,
 	evalCtx *eval.Context,
 	opts *ResourceOptions,
+	resourceName string,
 ) error {
 	if opts.Hooks == nil {
 		opts.Hooks = &ResourceHookBinding{}
@@ -3990,7 +3992,7 @@ func (e *Engine) bindPostconditionHooks(
 	dryRun := e.dryRun
 	for i, rule := range res.Postconditions {
 		rule, index := rule, i+1
-		hookName := fmt.Sprintf("%s:postcondition:%d", instance.Key, i)
+		hookName := fmt.Sprintf("%s.%s:postcondition:%d", res.Type, resourceName, i)
 		callback := func(_ context.Context, args *ResourceHookArgs) error {
 			return evaluatePostcondition(rule, hclSnapshot, args.NewOutputs, resSchema, mapping, dryRun, index, instance.Key)
 		}

@@ -43,6 +43,7 @@ func (e *Engine) bindProvisionerHooks(
 	instance *graph.ExpandedResource,
 	evalCtx *eval.Context,
 	opts *ResourceOptions,
+	resourceName string,
 ) error {
 	if len(res.Provisioners) == 0 {
 		return nil
@@ -66,7 +67,7 @@ func (e *Engine) bindProvisionerHooks(
 		}
 		onFailureContinue := prov.OnFailure == "continue"
 		useOldOutputs := when == "destroy"
-		hookName := fmt.Sprintf("%s:provisioner:%d", instance.Key, i)
+		hookName := fmt.Sprintf("%s.%s:provisioner:%d", res.Type, resourceName, i)
 
 		callback := func(hookCtx context.Context, args *ResourceHookArgs) error {
 			outputs := args.NewOutputs
