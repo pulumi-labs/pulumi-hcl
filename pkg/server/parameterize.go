@@ -25,6 +25,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -496,6 +497,36 @@ func sanitizePackageName(name string) string {
 // provider identity — are deterministic.
 var bundleEpoch = time.Unix(0, 0).UTC()
 
+// excludedFromBundle reports whether an archive-relative path should be left out
+// of the bundle (skip), and whether its whole subtree can be pruned (skipDeep).
+func excludedFromBundle(rel string) (skip, skipDeep bool) {
+	// It mirrors go-slug's default `.terraformignore` ruleset that Terraform applies
+	// when it packages a configuration for transmission.
+
+	parts := strings.Split(filepath.ToSlash(rel), "/")
+	// A `.git` anywhere wins, even under `.terraform/modules` (go-slug applies
+	// the `.git` rule last, so it overrides the modules exception).
+	if slices.Contains(parts, ".git") {
+		return true, true
+	}
+	for i, part := range parts {
+		if part != ".terraform" {
+			continue
+		}
+		switch {
+		case i+1 >= len(parts):
+			// The `.terraform` directory itself: exclude it, but descend so a
+			// `.terraform/modules` child below can still be kept.
+			return true, false
+		case parts[i+1] == "modules":
+			return false, false
+		default:
+			return true, true
+		}
+	}
+	return false, false
+}
+
 // packArchive packs each (archive-path → directory) tree into a deterministic
 // tar.gz: entries are sorted, modification times fixed, and only regular files
 // and directories are included.
@@ -515,6 +546,12 @@ func packArchive(dirs map[string]string) ([]byte, error) {
 			rel, err := filepath.Rel(absDir, p)
 			if err != nil {
 				return err
+			}
+			if skip, skipDeep := excludedFromBundle(rel); skip {
+				if info.IsDir() && skipDeep {
+					return filepath.SkipDir
+				}
+				return nil
 			}
 			files = append(files, entry{name: path.Join(relPath, filepath.ToSlash(rel)), absPath: p, info: info})
 			return nil
