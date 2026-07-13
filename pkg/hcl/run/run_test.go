@@ -1176,7 +1176,7 @@ variable "required_var" {
 			err := engine.Run(t.Context())
 			assert.EqualError(t, err, `variable "required_var" is required but no value was provided. `+
 				`Set it with TF_VAR_required_var environment variable or Pulumi config: `+
-				`pulumi config set required_var <value>`+"\ncontext canceled")
+				`pulumi config set required_var <value>`)
 		})
 	}
 }
@@ -1259,7 +1259,7 @@ output "item_count" {
 
 		_, err := run(t, childNoDefault)
 		assert.EqualError(t, err, `variable "items" must not be set to null: `+
-			`it is declared with nullable = false and has no default`+"\ncontext canceled")
+			`it is declared with nullable = false and has no default`)
 	})
 }
 
@@ -1330,8 +1330,7 @@ output "name" {
 
 		_, err := run(t, "xy")
 		assert.EqualError(t, err,
-			`validation failed for variable "name": name must be longer than three characters`+
-				"\ncontext canceled")
+			`validation failed for variable "name": name must be longer than three characters`)
 	})
 }
 
@@ -1443,7 +1442,7 @@ output "child_result" {
 
 		_, engine := newEngine(t, config, tmpDir)
 		assert.EqualError(t, engine.Run(t.Context()),
-			`precondition for output "result": child output not ok`+"\ncontext canceled")
+			`precondition for output "result": child output not ok`)
 	})
 }
 
@@ -1669,7 +1668,7 @@ output "name" {
 	t.Run("fail", func(t *testing.T) {
 		t.Parallel()
 		assert.EqualError(t, runProgram(t, "xy"),
-			`validation failed for variable "name": name is shorter than min`+"\ncontext canceled")
+			`validation failed for variable "name": name is shorter than min`)
 	})
 }
 

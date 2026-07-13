@@ -250,7 +250,7 @@ func (g *Graph) recordRef(key string, rng hcl.Range) {
 }
 
 func (g *Graph) Walk(ctx context.Context, apply func(context.Context, *Node) error, parallel int) error {
-	return g.dag.Walk(ctx, func(ctx context.Context, n dagNode) error {
+	err := g.dag.Walk(ctx, func(ctx context.Context, n dagNode) error {
 		if n.exec != nil {
 			return n.exec(ctx)
 		}
@@ -258,6 +258,33 @@ func (g *Graph) Walk(ctx context.Context, apply func(context.Context, *Node) err
 		contract.Assertf(ok, "invalid graph - key not interned")
 		return apply(ctx, node.n)
 	}, pdag.MaxProcs(parallel))
+	return dropSpuriousCancel(err)
+}
+
+// dropSpuriousCancel removes a top-level context.Canceled that the parallel
+// walker joins onto a genuine failure. When a node fails, pdag.Walk cancels the
+// walk's context and — depending on whether the drain loop is still mid-iteration
+// when cancellation fires — non-deterministically joins the resulting
+// context.Canceled onto the real error. That trailing cancellation is a
+// scheduling artifact, not a distinct failure, so it is dropped whenever a
+// genuine error remains; a walk that fails solely because its context was
+// canceled still surfaces that.
+func dropSpuriousCancel(err error) error {
+	joined, ok := err.(interface{ Unwrap() []error })
+	if !ok {
+		return err
+	}
+	kept := make([]error, 0, len(joined.Unwrap()))
+	for _, e := range joined.Unwrap() {
+		if errors.Is(e, context.Canceled) {
+			continue
+		}
+		kept = append(kept, e)
+	}
+	if len(kept) == 0 {
+		return err
+	}
+	return errors.Join(kept...)
 }
 
 // InjectAfter injects a step to run after all nodes matching the predicate, and before any
