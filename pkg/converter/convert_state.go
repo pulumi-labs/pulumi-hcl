@@ -53,8 +53,9 @@ type tfStateResource struct {
 type tfStateInstance struct {
 	// IndexKey is null for a singleton, a number for `count`, or a string
 	// for `for_each`.
-	IndexKey   any                        `json:"index_key"`
-	Attributes map[string]json.RawMessage `json:"attributes"`
+	IndexKey      any                        `json:"index_key"`
+	SchemaVersion uint64                     `json:"schema_version"`
+	Attributes    map[string]json.RawMessage `json:"attributes"`
 }
 
 // ConvertState reads a Terraform/OpenTofu state file and emits parameterized

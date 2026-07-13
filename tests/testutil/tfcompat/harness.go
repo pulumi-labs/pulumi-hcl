@@ -329,6 +329,7 @@ func runCaseFromDir(t *testing.T, caseDir string, c Case) {
 			lastOKTfOutputs = tfOut
 			if !t.Failed() {
 				runImportCheck(t, c, i, stage.files, store, tfDriver.Dir())
+				runSynthCheck(t, c, i, stage.files, store, tfDriver.Dir())
 			}
 		}
 	}

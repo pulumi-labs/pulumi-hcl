@@ -99,6 +99,9 @@ type Provider struct {
 // descriptor and the Parameterize response must agree on it.
 const parameterizedVersion = "0.0.1"
 
+// projectName is the Pulumi project name every Driver runs under.
+const projectName = "tfcompat"
+
 // pluginName is the name the engine resolves the provider's plugin by: the
 // package name itself, or the base plugin's name when parameterized.
 func (p Provider) pluginName() string {
@@ -180,7 +183,7 @@ func NewDriver(t *testing.T, provs []Provider, config map[string]string) *Driver
 	// The project name is used as the default namespace for user config. It
 	// must not collide with any attached provider name, or user config like
 	// "<project>:foo" would be misrouted to the provider.
-	pulumiYAML := `name: tfcompat
+	pulumiYAML := `name: ` + projectName + `
 runtime: hcl
 backend:
   url: file://` + filepath.Join(dir, "state") + "\n"
@@ -418,6 +421,25 @@ func (d *Driver) ImportFromFile(t *testing.T, programFiles map[string]string, im
 		optimport.Protect(false),
 	)
 	return res.StdOut + res.StdErr, err
+}
+
+// StackImport replaces the stack's checkpoint with the given deployment.
+func (d *Driver) StackImport(t *testing.T, deployment apitype.UntypedDeployment) error {
+	t.Helper()
+	stack := d.pt.CurrentStack()
+	require.NotNil(t, stack, "driver has no stack")
+	return stack.Import(t.Context(), deployment)
+}
+
+// ProjectName returns the Pulumi project name the driver runs under.
+func (d *Driver) ProjectName() string { return projectName }
+
+// StackName returns the name of the driver's current stack.
+func (d *Driver) StackName(t *testing.T) string {
+	t.Helper()
+	stack := d.pt.CurrentStack()
+	require.NotNil(t, stack, "driver has no stack")
+	return stack.Name()
 }
 
 // PreviewSteps runs `pulumi preview --json` and returns the planned steps.

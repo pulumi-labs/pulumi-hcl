@@ -60,40 +60,7 @@ func runImportCheck(
 		name = fmt.Sprintf("state-import-%d", stage)
 	}
 	t.Run(name, func(t *testing.T) {
-		if c.SkipImport != "" {
-			t.Skipf("state check skipped: %s", c.SkipImport)
-		}
-		for _, p := range c.Providers {
-			if p.PFFactory != nil {
-				t.Skip("TODO[github.com/pulumi-labs/pulumi-hcl#167]: state-import check does not support plugin-framework providers yet")
-			}
-		}
-		statePath := filepath.Join(tfStateDir, "terraform.tfstate")
-		stateJSON, err := os.ReadFile(statePath)
-		require.NoError(t, err)
-
-		var state struct {
-			Resources []struct {
-				Mode   string `json:"mode"`
-				Type   string `json:"type"`
-				Module string `json:"module"`
-			} `json:"resources"`
-		}
-		require.NoError(t, json.Unmarshal(stateJSON, &state))
-		// Module-nested resources and terraform_data cannot import completely
-		// yet (pulumi-labs/pulumi-hcl#167), so their previews would propose
-		// creates.
-		for _, r := range state.Resources {
-			if r.Mode != "managed" {
-				continue
-			}
-			if r.Module != "" {
-				t.Skip("state has module-nested resources; import does not support modules yet")
-			}
-			if r.Type == "terraform_data" {
-				t.Skip("state has terraform_data resources; import does not support the builtin yet")
-			}
-		}
+		statePath := importableTFState(t, c, tfStateDir)
 
 		infos := make(map[string]tfbridge.ProviderInfo, len(c.Providers))
 		for _, p := range c.Providers {
@@ -160,24 +127,71 @@ func runImportCheck(
 
 		steps, err := d.PreviewSteps(t)
 		require.NoError(t, err)
-		for _, step := range steps {
-			if step.Op == "same" {
-				continue
-			}
-			// The stack shell, providers, and module component shells are not
-			// imported and carry no provider state, so their creates are
-			// benign. Matched via the URN: plan steps do not always populate
-			// the type field.
-			leaf := resource.URN(step.URN).Type().String()
-			if step.Op == "create" &&
-				(leaf == "pulumi:pulumi:Stack" ||
-					strings.HasPrefix(leaf, "pulumi:providers:") ||
-					strings.HasPrefix(leaf, "components:")) {
-				continue
-			}
-			t.Errorf("unexpected %q step for %s in the preview after import", step.Op, step.URN)
-		}
+		assertCleanPostImportPreview(t, steps)
 	})
+}
+
+// importableTFState applies the shared skips of the state-based checks (both
+// state-import and state-synthesis) and returns the path to the tofu state
+// file.
+func importableTFState(t *testing.T, c Case, tfStateDir string) string {
+	t.Helper()
+	if c.SkipImport != "" {
+		t.Skipf("state check skipped: %s", c.SkipImport)
+	}
+	for _, p := range c.Providers {
+		if p.PFFactory != nil {
+			t.Skip("TODO[github.com/pulumi-labs/pulumi-hcl#167]: state checks do not support plugin-framework providers yet")
+		}
+	}
+	statePath := filepath.Join(tfStateDir, "terraform.tfstate")
+	stateJSON, err := os.ReadFile(statePath)
+	require.NoError(t, err)
+
+	var state struct {
+		Resources []struct {
+			Mode   string `json:"mode"`
+			Type   string `json:"type"`
+			Module string `json:"module"`
+		} `json:"resources"`
+	}
+	require.NoError(t, json.Unmarshal(stateJSON, &state))
+	// Module-nested resources and terraform_data cannot import completely
+	// yet (pulumi-labs/pulumi-hcl#167), so their previews would propose
+	// creates.
+	for _, r := range state.Resources {
+		if r.Mode != "managed" {
+			continue
+		}
+		if r.Module != "" {
+			t.Skip("state has module-nested resources; import does not support modules yet")
+		}
+		if r.Type == "terraform_data" {
+			t.Skip("state has terraform_data resources; import does not support the builtin yet")
+		}
+	}
+	return statePath
+}
+
+// assertCleanPostImportPreview requires every planned step to be a "same",
+// tolerating creates of the stack shell, providers, and module component
+// shells: those are not imported and carry no provider state. Matched via the
+// URN: plan steps do not always populate the type field.
+func assertCleanPostImportPreview(t *testing.T, steps []pulexec.PreviewStep) {
+	t.Helper()
+	for _, step := range steps {
+		if step.Op == "same" {
+			continue
+		}
+		leaf := resource.URN(step.URN).Type().String()
+		if step.Op == "create" &&
+			(leaf == "pulumi:pulumi:Stack" ||
+				strings.HasPrefix(leaf, "pulumi:providers:") ||
+				strings.HasPrefix(leaf, "components:")) {
+			continue
+		}
+		t.Errorf("unexpected %q step for %s in the preview after import", step.Op, step.URN)
+	}
 }
 
 // providerInfoMapper is a convert.Mapper serving the bridged ProviderInfo
