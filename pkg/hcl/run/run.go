@@ -1094,8 +1094,8 @@ func (e *Engine) registerProviderInContext(
 	typeToken := "pulumi:providers:" + provider.Name
 
 	if inst != nil {
-		evalCtx.SetEach(cty.StringVal(inst.key), inst.value)
-		defer evalCtx.ClearEach()
+		key := cty.StringVal(inst.key)
+		evalCtx = evalCtx.WithIteration(nil, &key, &inst.value)
 	}
 
 	hclCtx := evalCtx.HCLContext()
@@ -1395,14 +1395,7 @@ func (e *Engine) registerResourceInstanceInContext(
 	parentURN urn.URN,
 	modInst *moduleInstance,
 ) error {
-	if instance.Index != nil {
-		evalCtx.SetCount(*instance.Index)
-		defer evalCtx.ClearCount()
-	}
-	if instance.EachKey != nil && instance.EachValue != nil {
-		evalCtx.SetEach(*instance.EachKey, *instance.EachValue)
-		defer evalCtx.ClearEach()
-	}
+	evalCtx = evalCtx.WithIteration(instance.Index, instance.EachKey, instance.EachValue)
 
 	hclCtx := evalCtx.HCLContext()
 
@@ -2773,21 +2766,9 @@ func (e *Engine) processRangedDataSource(
 	isForEach := ds.ForEach != nil
 
 	for _, instance := range result.Instances {
-		if instance.Index != nil {
-			evalCtx.SetCount(*instance.Index)
-		}
-		if instance.EachKey != nil && instance.EachValue != nil {
-			evalCtx.SetEach(*instance.EachKey, *instance.EachValue)
-		}
+		instCtx := evalCtx.WithIteration(instance.Index, instance.EachKey, instance.EachValue)
 
-		ctyOut, invokeErr := e.invokeDataSourceOnce(ctx, node, ds, funcSchema, evalCtx)
-
-		if instance.Index != nil {
-			evalCtx.ClearCount()
-		}
-		if instance.EachKey != nil {
-			evalCtx.ClearEach()
-		}
+		ctyOut, invokeErr := e.invokeDataSourceOnce(ctx, node, ds, funcSchema, instCtx)
 
 		if invokeErr != nil {
 			return invokeErr
