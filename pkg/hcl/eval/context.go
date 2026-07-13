@@ -42,8 +42,9 @@ func splitResourceKey(key string) []string {
 // Context manages the evaluation context for HCL expressions.
 // It tracks variables, locals, resources, and other values that can be referenced.
 type Context struct {
-	// mu protects concurrent access to maps
-	mu sync.RWMutex
+	// mu protects concurrent access to maps. A pointer so a WithIteration view
+	// shares the lock with the context it derives from.
+	mu *sync.RWMutex
 
 	// rootModuleDir is the directory of the root module (the program files).
 	rootModuleDir string
@@ -216,6 +217,7 @@ func NewAbsolutePathContext(moduleDir, rootDir, rootModuleDir, stack, project, o
 
 func newContext(path PathContext, rootModuleDir, stack, project, organization string) *Context {
 	return &Context{
+		mu:              new(sync.RWMutex),
 		rootModuleDir:   rootModuleDir,
 		variables:       make(map[string]cty.Value),
 		locals:          make(map[string]cty.Value),
@@ -349,6 +351,23 @@ func (c *Context) SetProvider(name string, value cty.Value) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.providers[name] = value
+}
+
+// WithIteration returns a view of c that shares its evaluation state and lock
+// but carries its own count.index / each.key / each.value, so concurrent
+// registrations bind the iteration goroutine-locally instead of racing on the
+// shared context. A nil index or nil each pair leaves that namespace unbound.
+func (c *Context) WithIteration(index *int, eachKey, eachValue *cty.Value) *Context {
+	view := *c
+	view.count = nil
+	view.each = nil
+	if index != nil {
+		view.count = &CountContext{Index: *index}
+	}
+	if eachKey != nil && eachValue != nil {
+		view.each = &EachContext{Key: *eachKey, Value: *eachValue}
+	}
+	return &view
 }
 
 // SetCount sets the count context for count iteration.
@@ -642,6 +661,7 @@ func (c *Context) Clone() *Context {
 	}
 
 	clone := &Context{
+		mu:                new(sync.RWMutex),
 		rootModuleDir:     c.rootModuleDir,
 		providerFunctions: c.providerFunctions,
 		variables:         maps.Clone(c.variables),

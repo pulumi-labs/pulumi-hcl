@@ -1,0 +1,6 @@
+kind: bug-fixes
+body: Fix concurrent `count`/`for_each` registration binding the wrong `count.index`
+time: 2026-07-13T14:05:51Z
+custom:
+    Component: runtime
+    PR: "356"
