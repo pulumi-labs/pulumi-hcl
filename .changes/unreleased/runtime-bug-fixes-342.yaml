@@ -1,6 +1,0 @@
-kind: bug-fixes
-body: Enforce `precondition` and `postcondition` blocks on data sources
-time: 2026-07-10T13:44:11Z
-custom:
-    Component: runtime
-    PR: "342"

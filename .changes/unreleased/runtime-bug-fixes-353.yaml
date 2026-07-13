@@ -1,6 +1,0 @@
-kind: bug-fixes
-body: Exclude `.git` and `.terraform` artifacts when bundling a module into a parameterized package
-time: 2026-07-13T08:20:15Z
-custom:
-    Component: runtime
-    PR: "353"

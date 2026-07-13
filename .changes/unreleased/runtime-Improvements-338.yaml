@@ -1,6 +1,0 @@
-kind: Improvements
-body: Support `terraform.workspace`, resolving to the current stack name
-time: 2026-07-10T12:31:16Z
-custom:
-    Component: runtime
-    PR: "338"

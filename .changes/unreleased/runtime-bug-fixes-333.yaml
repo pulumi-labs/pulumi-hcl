@@ -1,6 +1,0 @@
-kind: bug-fixes
-body: Fix a panic when a `provisioner` or `connection` block references another resource's outputs or a sensitive value
-time: 2026-07-10T10:03:38Z
-custom:
-    Component: runtime
-    PR: "333"
