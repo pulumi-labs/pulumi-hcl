@@ -273,6 +273,85 @@ func TestPackArchiveDeterministic(t *testing.T) {
 	require.Equal(t, first, second)
 }
 
+func TestExcludedFromBundle(t *testing.T) {
+	t.Parallel()
+
+	type result struct{ skip, skipDeep bool }
+	cases := []struct {
+		path string
+		want result
+	}{
+		{"main.tf", result{false, false}},
+		{"sub/main.tf", result{false, false}},
+		{".gitignore", result{false, false}},      // a file, not the .git dir
+		{".gitattributes", result{false, false}},  // likewise
+		{"modules/main.tf", result{false, false}}, // "modules" only matters under .terraform
+		{".git", result{true, true}},
+		{".git/config", result{true, true}},
+		{"sub/.git/HEAD", result{true, true}},
+		{".terraform", result{true, false}},            // exclude, but descend for modules
+		{".terraform/environment", result{true, true}}, // any non-modules .terraform subtree
+		{".terraform/providers/x/y", result{true, true}},
+		{".terraform/modules", result{false, false}},
+		{".terraform/modules/child/main.tf", result{false, false}},
+		{".terraform/modules/.git/config", result{true, true}}, // .git wins over the modules exception
+	}
+	for _, tt := range cases {
+		t.Run(tt.path, func(t *testing.T) {
+			t.Parallel()
+			skip, skipDeep := excludedFromBundle(tt.path)
+			require.Equal(t, tt.want, result{skip, skipDeep})
+		})
+	}
+}
+
+// TestPackArchiveExcludesVCSArtifacts proves the bundle drops `.git` trees and
+// `.terraform` (except `.terraform/modules`) — the go-slug default ruleset — so a
+// git-fetched module's VCS/cache artifacts do not bloat the parameterization
+// Value, while real module content is preserved end to end through pack+unpack.
+func TestPackArchiveExcludesVCSArtifacts(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	write := func(rel, content string) {
+		t.Helper()
+		full := filepath.Join(dir, filepath.FromSlash(rel))
+		require.NoError(t, os.MkdirAll(filepath.Dir(full), 0o755))
+		require.NoError(t, os.WriteFile(full, []byte(content), 0o600))
+	}
+	write("main.tf", "root")
+	write(".gitignore", "*.tfstate")
+	write(".git/config", "[core]")
+	write("sub/.git/HEAD", "ref: refs/heads/main")
+	write(".terraform/environment", "default")
+	write(".terraform/modules/child/main.tf", "child")
+
+	archive, err := packArchive(map[string]string{"": dir})
+	require.NoError(t, err)
+
+	dest := t.TempDir()
+	require.NoError(t, unpackArchive(t.Context(), archive, dest))
+
+	var got []string
+	require.NoError(t, filepath.Walk(dest, func(p string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		if !info.IsDir() {
+			rel, err := filepath.Rel(dest, p)
+			require.NoError(t, err)
+			got = append(got, filepath.ToSlash(rel))
+		}
+		return nil
+	}))
+
+	require.ElementsMatch(t, []string{
+		"main.tf",
+		".gitignore",
+		".terraform/modules/child/main.tf",
+	}, got)
+}
+
 // TestBundleBakesPackages verifies the resolved provider descriptors survive the
 // bundle round-trip — including a bridged provider's parameterization — so the
 // usage path can reuse them instead of re-resolving, and that the encoding is
