@@ -1,7 +1,0 @@
-kind: bug-fixes
-body: Fix `Invalid index` errors when indexing into a MaxItems=1 block that is
-    unknown during preview
-time: 2026-07-11T12:00:00Z
-custom:
-    Component: runtime
-    PR: "351"

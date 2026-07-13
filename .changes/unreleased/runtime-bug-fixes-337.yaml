@@ -1,6 +1,0 @@
-kind: bug-fixes
-body: Fix a panic when a `timeouts` block value or a `pulumi` block option (`retain_on_delete`, `version`, `plugin_download_url`, `env_var_mappings`) is sensitive
-time: 2026-07-10T12:30:13Z
-custom:
-    Component: runtime
-    PR: "337"

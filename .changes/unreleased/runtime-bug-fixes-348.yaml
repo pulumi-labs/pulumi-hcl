@@ -1,6 +1,0 @@
-kind: bug-fixes
-body: Resolve `providers = { x = x }` module arguments and bare `provider = x` references when no `provider "x"` block exists, instead of failing with `unknown node "x"`; report `missing provider` for `providers` entries the parent scope does not declare
-time: 2026-07-10T18:30:00Z
-custom:
-    Component: runtime
-    PR: "348"

@@ -1,6 +1,0 @@
-kind: Improvements
-body: Support `for_each` on aliased `provider` blocks and indexed provider instance references
-time: 2026-07-10T13:51:34Z
-custom:
-    Component: runtime
-    PR: "343"

@@ -1,6 +1,0 @@
-kind: bug-fixes
-body: Reject `base64decode` results that are not valid UTF-8
-time: 2026-07-10T13:39:01Z
-custom:
-    Component: runtime
-    PR: "341"
