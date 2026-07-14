@@ -2379,18 +2379,16 @@ func (g *generator) providerFunctionInvokeTokens(
 		}
 	}
 
-	tokens := hclwrite.Tokens{
-		{Type: hclsyntax.TokenIdent, Bytes: []byte(ast.ProviderFunctionName(pkgName, funcName))},
-		{Type: hclsyntax.TokenOParen, Bytes: []byte("(")},
-	}
+	args := make([]hclwrite.Tokens, 0, len(fn.Inputs.Properties))
 	var diags hcl.Diagnostics
-	for i, p := range fn.Inputs.Properties {
-		if i > 0 {
-			tokens = append(tokens, &hclwrite.Token{Type: hclsyntax.TokenComma, Bytes: []byte(",")})
-		}
+	for _, p := range fn.Inputs.Properties {
 		arg, ok := provided[p.Name]
 		if !ok {
-			tokens = append(tokens, &hclwrite.Token{Type: hclsyntax.TokenIdent, Bytes: []byte("null")})
+			// A non-variadic provider function requires a value for every
+			// parameter, so an omitted optional invoke argument is passed as an
+			// explicit null. Both OpenTofu and the HCL runtime reject a missing
+			// argument (see tfcompat TestL2ProviderFunctionPartial).
+			args = append(args, hclwrite.TokensForValue(cty.NullVal(cty.DynamicPseudoType)))
 			continue
 		}
 		argTokens, d := g.exprTokens(arg, p.Type)
@@ -2398,10 +2396,9 @@ func (g *generator) providerFunctionInvokeTokens(
 		if d.HasErrors() {
 			return nil, diags
 		}
-		tokens = append(tokens, argTokens...)
+		args = append(args, argTokens)
 	}
-	tokens = append(tokens, &hclwrite.Token{Type: hclsyntax.TokenCParen, Bytes: []byte(")")})
-	return tokens, diags
+	return hclwrite.TokensForFunctionCall(ast.ProviderFunctionName(pkgName, funcName), args...), diags
 }
 
 // notImplementedTokens handles PCL's notImplemented("expression") by extracting the original
