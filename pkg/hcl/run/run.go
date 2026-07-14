@@ -1488,7 +1488,7 @@ func (e *Engine) registerResourceInstanceInContext(
 		opts.PluginDownloadURL = resSchema.PackageReference.PluginDownloadURL()
 	}
 
-	opts.PackageRef = e.packageRefForType(res.Type)
+	opts.PackageRef = e.packageRefForResource(res.Type, resSchema)
 
 	resourceName := e.extractModuleResourceName(res.Name, instance.Key, node.ModuleInfo, modInst)
 
@@ -2330,6 +2330,20 @@ func packageNameFromResourceType(token string) string {
 // packageRefForType returns the RegisterPackage ref for the given HCL resource type, or empty if none.
 func (e *Engine) packageRefForType(hclToken string) PackageRef {
 	return e.packageRefs[packageNameFromResourceType(hclToken)]
+}
+
+// packageRefForResource returns the registered package ref for a resource. An
+// extension resource's token lives in the base provider's namespace, but its
+// resolved schema names the extension package (e.g. "myext"), which is the one
+// registered as a parameterized package — using it lets the engine record the
+// resource's ExtensionRef.
+func (e *Engine) packageRefForResource(hclToken string, resSchema *schema.Resource) PackageRef {
+	if resSchema != nil && resSchema.PackageReference != nil {
+		if ref, ok := e.packageRefs[resSchema.PackageReference.Name()]; ok {
+			return ref
+		}
+	}
+	return e.packageRefForType(hclToken)
 }
 
 func knownProviders(tfBlock *ast.Terraform) []string {

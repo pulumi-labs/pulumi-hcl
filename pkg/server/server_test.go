@@ -19,8 +19,10 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/blang/semver"
 	"github.com/pulumi-labs/pulumi-hcl/pkg/hcl/parser"
 	"github.com/pulumi-labs/pulumi-hcl/pkg/hcl/run"
+	"github.com/pulumi/pulumi/sdk/v3/go/common/apitype"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/workspace"
 	pulumirpc "github.com/pulumi/pulumi/sdk/v3/proto/go"
 	"github.com/stretchr/testify/assert"
@@ -694,4 +696,35 @@ data "terraform_remote_state" "rs" {
 		Version: run.TerraformStatePackageVersion,
 		Kind:    "resource",
 	}, resp.Packages[0])
+}
+
+// TestPackageDescriptorFromSchemaExtension verifies that an extension
+// parameterization in a package schema is read into the descriptor's extension
+// slot, naming the base provider (whose namespace the extension's tokens use).
+func TestPackageDescriptorFromSchemaExtension(t *testing.T) {
+	t.Parallel()
+
+	desc, err := packageDescriptorFromSchema([]byte(`{
+		"name": "myext",
+		"version": "2.0.0",
+		"extensionParameterization": {
+			"baseProvider": {"name": "extbase", "version": "45.0.0"},
+			"parameter": "SGVsbG8="
+		}
+	}`))
+	require.NoError(t, err)
+
+	baseVersion := semver.MustParse("45.0.0")
+	assert.Equal(t, workspace.PackageDescriptor{
+		PluginDescriptor: workspace.PluginDescriptor{
+			Name:    "extbase",
+			Kind:    apitype.ResourcePlugin,
+			Version: &baseVersion,
+		},
+		ExtensionParameterization: &workspace.Parameterization{
+			Name:    "myext",
+			Version: semver.MustParse("2.0.0"),
+			Value:   []byte("Hello"),
+		},
+	}, desc)
 }

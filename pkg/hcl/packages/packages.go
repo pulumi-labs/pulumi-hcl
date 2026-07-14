@@ -197,12 +197,48 @@ func ResolveResource(ctx context.Context, loader schema.ReferenceLoader, knownPr
 
 	res, err := findResource(pkg, knownProviders, token)
 	if err != nil {
+		if extPkg, ok := extensionReference(ctx, loader, knownProviders, token); ok {
+			if extRes, extErr := findResource(extPkg, knownProviders, token); extErr == nil {
+				res, err = extRes, nil
+			}
+		}
+	}
+	if err != nil {
 		return nil, err
 	}
 	if res != nil && res.IsProvider {
 		return nil, &ProviderAsResourceError{Token: res.Token}
 	}
 	return res, nil
+}
+
+// extensionAwareLoader is implemented by loaders that can supply the schema an
+// extension contributes to a base provider's namespace.
+type extensionAwareLoader interface {
+	LoadExtensionReference(ctx context.Context, baseName string) (schema.PackageReference, bool, error)
+}
+
+// extensionReference returns the extension schema for token's package, when the
+// loader knows of an extension applied to that base provider. An extension's
+// resources and functions share the base provider's namespace but are served
+// only via the extension parameterization, so a token missing from the base
+// schema may still be defined by an extension.
+func extensionReference(
+	ctx context.Context, loader schema.ReferenceLoader, knownProviders []string, token string,
+) (schema.PackageReference, bool) {
+	el, ok := loader.(extensionAwareLoader)
+	if !ok {
+		return nil, false
+	}
+	pkgName, err := PackageFromToken(knownProviders, token)
+	if err != nil {
+		return nil, false
+	}
+	ref, found, err := el.LoadExtensionReference(ctx, pkgName)
+	if err != nil || !found {
+		return nil, false
+	}
+	return ref, true
 }
 
 // resolvePackageForToken collapses package-load failures to ErrNotFound;
@@ -350,6 +386,40 @@ func (l *ParameterizationAwareLoader) enrich(descriptor *schema.PackageDescripto
 	}
 }
 
+// LoadExtensionReference loads the schema an extension contributes to baseName's
+// namespace, or (nil, false) when no extension applies. An extension's resource
+// tokens live in the base provider's namespace but are served only when the base
+// provider is parameterized with the extension, so the extension schema is loaded
+// by treating the extension as a parameterization of the base provider.
+func (l *ParameterizationAwareLoader) LoadExtensionReference(
+	ctx context.Context, baseName string,
+) (schema.PackageReference, bool, error) {
+	for _, desc := range l.aliases {
+		if desc.ExtensionParameterization == nil || desc.Name != baseName {
+			continue
+		}
+		var baseVersion *semver.Version
+		if desc.Version != nil {
+			v := *desc.Version
+			baseVersion = &v
+		}
+		ref, err := l.inner.LoadPackageReferenceV2(ctx, &schema.PackageDescriptor{
+			Name:    baseName,
+			Version: baseVersion,
+			Parameterization: &schema.ParameterizationDescriptor{
+				Name:    desc.ExtensionParameterization.Name,
+				Version: desc.ExtensionParameterization.Version,
+				Value:   desc.ExtensionParameterization.Value,
+			},
+		})
+		if err != nil {
+			return nil, false, err
+		}
+		return ref, true, nil
+	}
+	return nil, false, nil
+}
+
 func (l *ParameterizationAwareLoader) LoadPackage(pkg string, version *semver.Version) (*schema.Package, error) {
 	return l.LoadPackageV2(context.TODO(), &schema.PackageDescriptor{Name: pkg, Version: version})
 }
@@ -394,12 +464,6 @@ func ResolveFunction(ctx context.Context, loader schema.ReferenceLoader, knownPr
 	suffixParts := strings.Split(suffix, "_")
 
 	key := strings.ReplaceAll(suffix, "_", "")
-	for iter := pkg.Functions().Range(); iter.Next(); {
-		if tokenSearchKey(pkg, iter.Token()) == key {
-			return iter.Function()
-		}
-	}
-
 	// Allow omitting the "get" on Pulumi datasources. Try two placements:
 	// after the first segment (for `<mod>_<name>` HCL forms — e.g.
 	// "aws_iam_role" → "iamgetrole") and prepended to the whole suffix (for
@@ -410,11 +474,26 @@ func ResolveFunction(ctx context.Context, loader schema.ReferenceLoader, knownPr
 		suffixParts[0] + "get" + strings.Join(suffixParts[1:], ""),
 		"get" + strings.Join(suffixParts, ""),
 	}
-	for _, implicitGetKey := range implicitGetKeys {
-		for iter := pkg.Functions().Range(); iter.Next(); {
-			if tokenSearchKey(pkg, iter.Token()) == implicitGetKey {
-				return iter.Function()
+	search := func(pkg schema.PackageReference) (*schema.Function, bool) {
+		for _, k := range append([]string{key}, implicitGetKeys...) {
+			for iter := pkg.Functions().Range(); iter.Next(); {
+				if tokenSearchKey(pkg, iter.Token()) == k {
+					fn, err := iter.Function()
+					if err == nil {
+						return fn, true
+					}
+				}
 			}
+		}
+		return nil, false
+	}
+
+	if fn, ok := search(pkg); ok {
+		return fn, nil
+	}
+	if extPkg, ok := extensionReference(ctx, loader, knownProviders, token); ok {
+		if fn, ok := search(extPkg); ok {
+			return fn, nil
 		}
 	}
 

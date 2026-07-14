@@ -2290,19 +2290,27 @@ func sortedKeys[V any](m map[string]V) []string {
 }
 
 // emitPackageBlock writes a PCL "package" block from a workspace.PackageDescriptor.
+// A replacement parameterization is labelled with the package alias; an
+// extension keeps the base provider's namespace and so is written label-less,
+// which is how PCL tells the two apart.
 func emitPackageBlock(out *hclwrite.Body, alias string, desc workspace.PackageDescriptor) {
-	if desc.Parameterization == nil {
+	param := desc.Parameterization
+	labels := []string{alias}
+	if desc.ExtensionParameterization != nil {
+		param, labels = desc.ExtensionParameterization, nil
+	}
+	if param == nil {
 		return
 	}
-	blk := out.AppendNewBlock("package", []string{alias})
+	blk := out.AppendNewBlock("package", labels)
 	blk.Body().SetAttributeValue("baseProviderName", cty.StringVal(desc.Name))
 	if desc.Version != nil {
 		blk.Body().SetAttributeValue("baseProviderVersion", cty.StringVal(desc.Version.String()))
 	}
 	paramBlk := blk.Body().AppendNewBlock("parameterization", nil)
-	paramBlk.Body().SetAttributeValue("name", cty.StringVal(desc.Parameterization.Name))
-	paramBlk.Body().SetAttributeValue("version", cty.StringVal(desc.Parameterization.Version.String()))
-	paramBlk.Body().SetAttributeValue("value", cty.StringVal(base64.StdEncoding.EncodeToString(desc.Parameterization.Value)))
+	paramBlk.Body().SetAttributeValue("name", cty.StringVal(param.Name))
+	paramBlk.Body().SetAttributeValue("version", cty.StringVal(param.Version.String()))
+	paramBlk.Body().SetAttributeValue("value", cty.StringVal(base64.StdEncoding.EncodeToString(param.Value)))
 	out.AppendNewline()
 }
 
