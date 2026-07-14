@@ -49,6 +49,38 @@ func evalExpr(t *testing.T, baseDir, src string) cty.Value {
 	return val
 }
 
+func TestRecoverFunction(t *testing.T) {
+	t.Parallel()
+
+	// thing has a "present" attribute but not "missing", so `thing.missing` is an
+	// evaluation error that recover catches — standing in for a reference to a
+	// resource that failed to create.
+	thing := cty.ObjectVal(map[string]cty.Value{"present": cty.StringVal("v")})
+	eval := func(src string) cty.Value {
+		expr, diags := hclsyntax.ParseExpression([]byte(src), "test.hcl", hcl.Pos{Line: 1, Column: 1})
+		require.False(t, diags.HasErrors(), diags.Error())
+		val, diags := expr.Value(&hcl.EvalContext{
+			Functions: Functions("/tmp"),
+			Variables: map[string]cty.Value{"thing": thing},
+		})
+		require.False(t, diags.HasErrors(), diags.Error())
+		return val
+	}
+
+	// When the value evaluates successfully, recover returns it and never
+	// evaluates the recovery expression.
+	assert.Equal(t, cty.StringVal("v"), eval(`recover(thing.present, "fallback")`))
+
+	// When the value fails, recover evaluates the recovery expression with
+	// `error` bound to the value's actual evaluation error.
+	assert.Equal(t, cty.StringVal(
+		`recovered: test.hcl:1,14-22: Unsupported attribute; `+
+			`This object does not have an attribute named "missing".`),
+		eval(`recover(thing.missing, "recovered: ${error}")`))
+
+	assert.Equal(t, cty.True, eval(`recover(thing.missing, error != "")`))
+}
+
 func TestStringFunctions(t *testing.T) {
 	t.Parallel()
 	tests := []struct {

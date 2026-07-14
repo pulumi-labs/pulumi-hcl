@@ -18,6 +18,7 @@ import (
 	"fmt"
 
 	"github.com/hashicorp/hcl/v2"
+	"github.com/hashicorp/hcl/v2/hclsyntax"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/resource/urn"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/util/contract"
 	"github.com/zclconf/go-cty/cty"
@@ -300,39 +301,83 @@ func ParseTraversal(traversal hcl.Traversal) (namespace string, parts []string) 
 func ExtractDependencies(expr hcl.Expression) []string {
 	var deps []string
 	seen := make(map[string]bool)
-
 	for _, traversal := range expr.Variables() {
-		namespace, parts := ParseTraversal(traversal)
-
-		var dep string
-		switch namespace {
-		case "var", "local", "path", "terraform", "count", "each", "self":
-			// These are not resource dependencies
-			continue
-		case "data":
-			// Data source reference: data.type.name
-			if len(parts) >= 2 {
-				dep = fmt.Sprintf("data.%s.%s", parts[0], parts[1])
-			}
-		case "module":
-			// Module reference: module.name
-			if len(parts) >= 1 {
-				dep = fmt.Sprintf("module.%s", parts[0])
-			}
-		default:
-			// Resource reference: type.name (namespace is the type)
-			if len(parts) >= 1 {
-				dep = fmt.Sprintf("%s.%s", namespace, parts[0])
-			}
-		}
-
-		if dep != "" && !seen[dep] {
+		if dep := traversalToDep(traversal); dep != "" && !seen[dep] {
 			deps = append(deps, dep)
 			seen[dep] = true
 		}
 	}
-
 	return deps
+}
+
+// NonRecoverableDependencies is ExtractDependencies restricted to references
+// that are not the recoverable value argument of a recover(value, recovery)
+// call. A dependency reached only through such an argument does not gate the
+// referencing node: if the dependency fails, recover() substitutes the recovery
+// value rather than failing the node.
+func NonRecoverableDependencies(expr hcl.Expression) []string {
+	recoverArgRanges := recoverValueArgRanges(expr)
+	var deps []string
+	seen := make(map[string]bool)
+	for _, traversal := range expr.Variables() {
+		if within(traversal.SourceRange(), recoverArgRanges) {
+			continue
+		}
+		if dep := traversalToDep(traversal); dep != "" && !seen[dep] {
+			deps = append(deps, dep)
+			seen[dep] = true
+		}
+	}
+	return deps
+}
+
+// recoverValueArgRanges returns the source ranges of the first (value) argument
+// of every recover(...) call in expr.
+func recoverValueArgRanges(expr hcl.Expression) []hcl.Range {
+	node, ok := expr.(hclsyntax.Node)
+	if !ok {
+		return nil
+	}
+	var ranges []hcl.Range
+	_ = hclsyntax.VisitAll(node, func(n hclsyntax.Node) hcl.Diagnostics {
+		if call, ok := n.(*hclsyntax.FunctionCallExpr); ok && call.Name == "recover" && len(call.Args) >= 1 {
+			ranges = append(ranges, call.Args[0].Range())
+		}
+		return nil
+	})
+	return ranges
+}
+
+func within(r hcl.Range, ranges []hcl.Range) bool {
+	for _, outer := range ranges {
+		if outer.ContainsOffset(r.Start.Byte) {
+			return true
+		}
+	}
+	return false
+}
+
+// traversalToDep converts a traversal to its resource/data/module dependency
+// key, or "" when the traversal is not a dependency (var, local, count, ...).
+func traversalToDep(traversal hcl.Traversal) string {
+	namespace, parts := ParseTraversal(traversal)
+	switch namespace {
+	case "var", "local", "path", "terraform", "count", "each", "self":
+		return ""
+	case "data":
+		if len(parts) >= 2 {
+			return fmt.Sprintf("data.%s.%s", parts[0], parts[1])
+		}
+	case "module":
+		if len(parts) >= 1 {
+			return fmt.Sprintf("module.%s", parts[0])
+		}
+	default:
+		if len(parts) >= 1 {
+			return fmt.Sprintf("%s.%s", namespace, parts[0])
+		}
+	}
+	return ""
 }
 
 // IsKnown returns true if the value is fully known (not unknown).

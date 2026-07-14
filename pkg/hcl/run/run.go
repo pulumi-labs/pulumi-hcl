@@ -586,18 +586,21 @@ func (e *Engine) Run(ctx context.Context) error {
 	// Collect errors from resources that failed to register but were not fatal
 	// (i.e., we continued processing to allow independent resources to proceed).
 	nodeErrs := slices.Collect(e.failedNodes.Values())
-	if len(nodeErrs) > 0 {
-		return errors.Join(nodeErrs...)
-	}
 
 	// Evaluate check blocks after the program has exited.
-	if err := e.evaluateChecks(ctx); err != nil {
+	if err := e.evaluateChecks(ctx); err != nil && len(nodeErrs) == 0 {
 		return err
 	}
 
-	// Process outputs (collect them into stackOutputs)
+	// Process outputs (collect them into stackOutputs). Under continue-on-error
+	// some resources failed but recover() can still surface fallback values, so
+	// outputs are computed regardless; an output that cannot be computed on a
+	// failed run is dropped rather than masking the resource failures below.
 	for name, output := range e.config.Outputs {
 		if err := e.processOutput(ctx, name, output); err != nil {
+			if len(nodeErrs) > 0 {
+				continue
+			}
 			return fmt.Errorf("processing output %s: %w", name, err)
 		}
 	}
@@ -605,6 +608,12 @@ func (e *Engine) Run(ctx context.Context) error {
 	// Register stack outputs
 	if err := e.registerStackOutputs(ctx); err != nil {
 		return fmt.Errorf("registering stack outputs: %w", err)
+	}
+
+	// Surface resource failures; the engine turns these into a bail under
+	// continue-on-error, after the recovered outputs above are registered.
+	if len(nodeErrs) > 0 {
+		return errors.Join(nodeErrs...)
 	}
 
 	return nil
@@ -2347,11 +2356,13 @@ func (e *Engine) hasFailedDependency(res *ast.Resource) bool {
 			}
 		}
 	}
-	// Check resource body expressions.
+	// Check resource body expressions. A dependency reached only through a
+	// recover(value, recovery) value argument does not gate the resource: if it
+	// failed, recover() supplies the recovery value instead.
 	if res.Config != nil {
 		attrs, _ := res.Config.JustAttributes()
 		for _, attr := range attrs {
-			for _, depKey := range eval.ExtractDependencies(attr.Expr) {
+			for _, depKey := range eval.NonRecoverableDependencies(attr.Expr) {
 				if _, failed := e.failedNodes.Get(depKey); failed {
 					return true
 				}

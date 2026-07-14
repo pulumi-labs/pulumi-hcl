@@ -2366,6 +2366,7 @@ var pclSupportedFunctions = func() map[string]bool {
 		"range",
 		"readDir",
 		"readFile",
+		"recover",
 		"remoteArchive",
 		"remoteAsset",
 		"rootDirectory",

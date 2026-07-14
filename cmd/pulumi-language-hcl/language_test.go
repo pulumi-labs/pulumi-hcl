@@ -147,8 +147,6 @@ var expectedFailures = map[string]string{
 		" HCL language host (the test expects the extension package among required packages)",
 	"l2-extension-parameterized-resource": "extension parameterization is not yet supported by" +
 		" the HCL language host (the test expects the extension package among required packages)",
-	"l2-failed-create-recover-continue-on-error": "HCL has no `recover` function or `error`" +
-		" scope variable, so the recover-from-failed-create fixture cannot be expressed",
 }
 
 // expectedEjectFailures lists tests whose eject (HCL→PCL conversion) step is
