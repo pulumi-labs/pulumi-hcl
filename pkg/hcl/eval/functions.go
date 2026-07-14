@@ -205,6 +205,7 @@ func Functions(baseDir string) map[string]function.Function {
 
 		// Type conversion functions
 		"can":          canFunc,
+		"recover":      recoverFunc,
 		"issensitive":  issensitiveFunc,
 		"nonsensitive": nonsensitiveFunc,
 		"sensitive":    sensitiveFunc,
@@ -245,6 +246,49 @@ func Functions(baseDir string) map[string]function.Function {
 	funcs["templatestring"] = templateStringFunc(nestedTemplateFuncs)
 
 	return funcs
+}
+
+// recoverFunc implements PCL's recover(value, recovery): it returns value if
+// value evaluates successfully, and otherwise evaluates recovery with the
+// variable `error` bound to the failure message. It mirrors try()/can() by
+// taking its arguments as unevaluated expression closures so it can catch the
+// evaluation error of value — which happens when value references a resource
+// that failed to create under continue-on-error.
+var recoverFunc = function.New(&function.Spec{
+	Params: []function.Parameter{
+		{Name: "value", Type: customdecode.ExpressionClosureType},
+		{Name: "recovery", Type: customdecode.ExpressionClosureType},
+	},
+	Type: func(args []cty.Value) (cty.Type, error) {
+		v, err := recoverImpl(args)
+		if err != nil {
+			return cty.NilType, err
+		}
+		return v.Type(), nil
+	},
+	Impl: func(args []cty.Value, _ cty.Type) (cty.Value, error) {
+		return recoverImpl(args)
+	},
+})
+
+func recoverImpl(args []cty.Value) (cty.Value, error) {
+	value := customdecode.ExpressionClosureFromVal(args[0])
+	v, diags := value.Value()
+	if !diags.HasErrors() {
+		// value resolved (possibly to an unknown during preview); use it.
+		return v, nil
+	}
+
+	// value failed to evaluate — recover by evaluating the recovery expression
+	// with `error` bound to the failure message.
+	recovery := customdecode.ExpressionClosureFromVal(args[1])
+	childCtx := recovery.EvalContext.NewChild()
+	childCtx.Variables = map[string]cty.Value{"error": cty.StringVal(diags.Error())}
+	rv, rdiags := recovery.Expression.Value(childCtx)
+	if rdiags.HasErrors() {
+		return cty.NilVal, rdiags
+	}
+	return rv, nil
 }
 
 var canFunc = function.New(&function.Spec{

@@ -23,6 +23,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/hashicorp/hcl/v2"
@@ -47,6 +48,23 @@ func evalExpr(t *testing.T, baseDir, src string) cty.Value {
 		t.Fatalf("Failed to evaluate expression %q: %s", src, diags.Error())
 	}
 	return val
+}
+
+func TestRecoverFunction(t *testing.T) {
+	t.Parallel()
+
+	// When the value evaluates successfully, recover returns it and never
+	// evaluates the recovery expression.
+	assert.Equal(t, cty.StringVal("ok"), evalExpr(t, "/tmp", `recover("ok", "fallback")`))
+
+	// When the value fails (here, an undefined reference), recover evaluates the
+	// recovery expression with `error` bound to a non-empty failure message.
+	assert.Equal(t, cty.True, evalExpr(t, "/tmp", `recover(missing.thing, error != "")`))
+
+	got := evalExpr(t, "/tmp", `recover(missing.thing, "recovered: ${error}")`)
+	require.Equal(t, cty.String, got.Type())
+	assert.True(t, strings.HasPrefix(got.AsString(), "recovered: "))
+	assert.Greater(t, len(got.AsString()), len("recovered: "), "error message should be non-empty")
 }
 
 func TestStringFunctions(t *testing.T) {
