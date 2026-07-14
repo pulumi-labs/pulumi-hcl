@@ -1,0 +1,6 @@
+kind: bug-fixes
+body: Propagate schema-declared `secret` output properties to stack outputs
+time: 2026-07-14T12:00:00Z
+custom:
+    Component: runtime
+    PR: "362"

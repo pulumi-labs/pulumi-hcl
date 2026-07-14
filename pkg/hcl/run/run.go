@@ -1743,6 +1743,14 @@ func (e *Engine) buildResourceOptionsInContext(
 		opts.AdditionalSecretOutputs = append(opts.AdditionalSecretOutputs, name)
 	}
 
+	// Properties the schema declares as secret are marked as secret outputs, so
+	// the engine stores and surfaces them as secrets just as the generated SDKs do.
+	for _, p := range outputProps {
+		if p.Secret && !slices.Contains(opts.AdditionalSecretOutputs, p.Name) {
+			opts.AdditionalSecretOutputs = append(opts.AdditionalSecretOutputs, p.Name)
+		}
+	}
+
 	if res.RetainOnDelete != nil {
 		val, diags := res.RetainOnDelete.Value(hclCtx)
 		val, _ = val.Unmark()

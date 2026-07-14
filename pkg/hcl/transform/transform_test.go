@@ -1028,6 +1028,26 @@ func TestResourceOutputToCtySingularBlockPlaceholder(t *testing.T) {
 	})
 }
 
+// TestResourceOutputToCtySchemaSecretElided pins that a schema-secret output
+// keeps its sensitive mark even when the provider elides the (unknown) value
+// during preview, so a downstream stack output stays secret.
+func TestResourceOutputToCtySchemaSecretElided(t *testing.T) {
+	t.Parallel()
+
+	res := &schema.Resource{
+		Token: "test:index:R",
+		Properties: []*schema.Property{
+			{Name: "secretOutput", Type: schema.StringType, Secret: true},
+		},
+	}
+
+	r, err := ResourceOutputToCty(property.Map{}, res, nil, true)
+	require.NoError(t, err)
+	assert.Equal(t, map[string]cty.Value{
+		"secret_output": cty.UnknownVal(cty.String).Mark(eval.SensitiveMark),
+	}, r)
+}
+
 func TestResourceOutputToCtyUnionTypeCollapse(t *testing.T) {
 	t.Parallel()
 
