@@ -390,6 +390,70 @@ resource "test_item" "inbound" {
 	assert.Equal(t, expected, string(out.Bytes()))
 }
 
+// TestEjectProviderFunctionInvoke verifies that a multi-argument invoke — which
+// the codegen emits as a provider-defined function call — ejects back to a
+// positional invoke, with an omitted optional argument preserved as null.
+func TestEjectProviderFunctionInvoke(t *testing.T) {
+	t.Parallel()
+
+	testSchema := schema.PackageSpec{
+		Name:    "test",
+		Version: "1.0.0",
+		Functions: map[string]schema.FunctionSpec{
+			"test:index:multiArg": {
+				MultiArgumentInputs: []string{"first", "second"},
+				Inputs: &schema.ObjectTypeSpec{
+					Properties: map[string]schema.PropertySpec{
+						"first":  {TypeSpec: schema.TypeSpec{Type: "string"}},
+						"second": {TypeSpec: schema.TypeSpec{Type: "string"}},
+					},
+					Required: []string{"first"},
+				},
+				Outputs: &schema.ObjectTypeSpec{
+					Properties: map[string]schema.PropertySpec{
+						"result": {TypeSpec: schema.TypeSpec{Type: "string"}},
+					},
+					Required: []string{"result"},
+				},
+			},
+		},
+	}
+	loader := schemaloader.New(t, testSchema)
+
+	src := []byte(`terraform {
+  required_providers {
+    test = {
+      source  = "pulumi/test"
+      version = "1.0.0"
+    }
+  }
+}
+
+output "both" {
+  value = provider::test::multi_arg("hello", "world").result
+}
+
+output "onlyRequired" {
+  value = provider::test::multi_arg("hello", null).result
+}
+`)
+
+	out := hclwrite.NewEmptyFile()
+	diags := transformSingleFile(t, src, "main.tf", out.Body(), loader, nil)
+	require.False(t, diags.HasErrors(), diags.Error())
+
+	expected := `output "both" {
+  value = invoke("test:index:multiArg", "hello", "world").result
+}
+
+output "onlyRequired" {
+  value = invoke("test:index:multiArg", "hello", null).result
+}
+
+`
+	assert.Equal(t, expected, string(out.Bytes()))
+}
+
 // TestEjectInvokeInListComprehension feeds in the HCL shape produced by the
 // codegen when a PCL invoke inside a list comprehension is hoisted: a data
 // block with for_each over the comprehension's collection, plus a
