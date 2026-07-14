@@ -3,4 +3,4 @@ body: Wait for a whole module's resources when it is referenced only through `de
 time: 2026-07-14T07:51:39Z
 custom:
     Component: runtime
-    PR: "361"
+    PR: "359"
