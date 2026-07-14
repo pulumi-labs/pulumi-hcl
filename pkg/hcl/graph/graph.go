@@ -1268,13 +1268,30 @@ func (g *Graph) inlineModule(
 		}
 	}
 
-	// Completion node: depends on all outputs + init. The completion key
-	// is the module call's identifier (without the trailing "."), so that
-	// expressions like `module.<name>` in the parent scope resolve to it.
+	// Completion node: depends on init plus everything the module declares —
+	// its resources, data sources, outputs, and nested module completions. The
+	// completion key is the module call's identifier (without the trailing "."),
+	// so that a whole-module reference like `module.<name>` in the parent scope
+	// (an output-less `depends_on`, in particular) waits for the module's entire
+	// contents, not only the resources that happen to feed an output. Node keys
+	// for the nested modules are forward references resolved once they are
+	// inlined below.
 	completionKey := parentPrefix + "module." + name
 	completionDeps := []pdag.Node{initIdx}
+	for key := range loaded.Config.Resources {
+		_, idx := g.newNode(prefix + key)
+		completionDeps = append(completionDeps, idx)
+	}
+	for key := range loaded.Config.DataSources {
+		_, idx := g.newNode(prefix + "data." + key)
+		completionDeps = append(completionDeps, idx)
+	}
 	for outputName := range loaded.Config.Outputs {
 		_, idx := g.newNode(prefix + "output." + outputName)
+		completionDeps = append(completionDeps, idx)
+	}
+	for nestedName := range loaded.Config.Modules {
+		_, idx := g.newNode(prefix + "module." + nestedName)
 		completionDeps = append(completionDeps, idx)
 	}
 	if err := g.AddNode(&Node{
