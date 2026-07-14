@@ -1187,6 +1187,12 @@ func propertyObjectToCtyMap(path string, m property.Map, properties []*schema.Pr
 			} else {
 				result[hclName] = cty.NullVal(t)
 			}
+			// A property the schema declares secret stays secret even when the
+			// provider elided its (unknown) value, matching the secret marking a
+			// known value carries in through propertyValueToCtyWithMapping.
+			if p.Secret {
+				result[hclName] = result[hclName].Mark(eval.SensitiveMark)
+			}
 			continue
 		}
 		var vPath string

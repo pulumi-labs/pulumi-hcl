@@ -143,8 +143,6 @@ var expectedFailures = map[string]string{
 		" is reserved as the namespace for resource method calls in HCL",
 	"l2-config-default-from-invoke": "HCL codegen does not support a config variable whose" +
 		" default is sourced from an invoke result",
-	"l2-resource-schema-secret": "HCL runtime does not propagate a schema-declared `secret`" +
-		" property to stack outputs",
 	"l2-extension-and-base-resource": "extension parameterization is not yet supported by the" +
 		" HCL language host (the test expects the extension package among required packages)",
 	"l2-extension-parameterized-resource": "extension parameterization is not yet supported by" +
