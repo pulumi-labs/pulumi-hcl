@@ -7,17 +7,9 @@ terraform {
   }
 }
 
-data "multi-argument-invoke_multi_argument_invoke" "invoke_0" {
-  first  = "hello"
-  second = "world"
-}
-data "multi-argument-invoke_multi_argument_invoke" "invoke_1" {
-  first = "hello"
-}
-
 output "both" {
-  value = data.multi-argument-invoke_multi_argument_invoke.invoke_0.result
+  value = provider::multi-argument-invoke::multi_argument_invoke("hello", "world").result
 }
 output "onlyRequired" {
-  value = data.multi-argument-invoke_multi_argument_invoke.invoke_1.result
+  value = provider::multi-argument-invoke::multi_argument_invoke("hello", null).result
 }

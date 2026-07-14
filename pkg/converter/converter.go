@@ -32,6 +32,7 @@ import (
 	"github.com/hashicorp/hcl/v2"
 	"github.com/hashicorp/hcl/v2/hclsyntax"
 	"github.com/hashicorp/hcl/v2/hclwrite"
+	"github.com/pulumi-labs/pulumi-hcl/pkg/hcl/ast"
 	"github.com/pulumi-labs/pulumi-hcl/pkg/hcl/comments"
 	"github.com/pulumi-labs/pulumi-hcl/pkg/hcl/packages"
 	"github.com/pulumi-labs/pulumi-hcl/pkg/hcl/transform"
@@ -237,7 +238,11 @@ type fileTransformer struct {
 	loader          schema.ReferenceLoader
 	resourceSchemas map[string]*schema.Resource // cache: HCL type label → resolved schema resource
 	functionSchemas map[string]*schema.Function // cache: HCL type label → resolved schema function
-	nameRewrites    map[string]string           // logical name → sanitized PCL identifier (only for invalid names)
+	// providerFunctions maps a provider-defined function call name
+	// ("provider::<local>::<fn>") to its resolved schema; a nil value marks a
+	// name that could not be resolved so it falls back to notImplemented.
+	providerFunctions map[string]*schema.Function
+	nameRewrites      map[string]string // logical name → sanitized PCL identifier (only for invalid names)
 	// comprehensionStack tracks the iteration variables of enclosing PCL
 	// for-expressions while we are emitting their body. When non-empty and we
 	// are inside an inlined invoke body, each.key / each.value references
@@ -293,17 +298,18 @@ func newProjectTransformer(
 	ctx context.Context, loader schema.ReferenceLoader, bodies []*hclsyntax.Body,
 ) (*fileTransformer, hcl.Diagnostics) {
 	ft := &fileTransformer{
-		sources:         make(map[string][]byte),
-		knownHCLTypes:   make(map[string]bool),
-		stackRefNames:   make(map[string]bool),
-		callBlocks:      make(map[callReference]*hclsyntax.Body),
-		dataBlocks:      make(map[dataReference]*hclsyntax.Body),
-		dataTokens:      make(map[string]string),
-		loader:          loader,
-		resourceSchemas: make(map[string]*schema.Resource),
-		nameRewrites:    make(map[string]string),
-		functionSchemas: make(map[string]*schema.Function),
-		providerAliases: make(map[string]bool),
+		sources:           make(map[string][]byte),
+		knownHCLTypes:     make(map[string]bool),
+		stackRefNames:     make(map[string]bool),
+		callBlocks:        make(map[callReference]*hclsyntax.Body),
+		dataBlocks:        make(map[dataReference]*hclsyntax.Body),
+		dataTokens:        make(map[string]string),
+		loader:            loader,
+		resourceSchemas:   make(map[string]*schema.Resource),
+		nameRewrites:      make(map[string]string),
+		functionSchemas:   make(map[string]*schema.Function),
+		providerFunctions: make(map[string]*schema.Function),
+		providerAliases:   make(map[string]bool),
 	}
 	// Phase 1: collect pulumi.required_providers across every body so that
 	// later resolution sees the full set regardless of which file declared it.
@@ -314,6 +320,11 @@ func newProjectTransformer(
 	var diags hcl.Diagnostics
 	for _, body := range bodies {
 		diags = append(diags, ft.scanSymbols(ctx, body)...)
+	}
+	// Phase 2.5: resolve provider-defined function calls (provider::<local>::<fn>)
+	// that appear anywhere in expressions, so they eject as positional invokes.
+	for _, body := range bodies {
+		diags = append(diags, ft.scanProviderFunctions(ctx, body)...)
 	}
 	// Phase 3: compute name rewrites against the union of declarations.
 	ft.computeNameRewrites(bodies)
@@ -386,6 +397,42 @@ func (ft *fileTransformer) scanSymbols(ctx context.Context, body *hclsyntax.Body
 			}
 		}
 	}
+	return diags
+}
+
+// scanProviderFunctions walks every expression in body, resolving each
+// provider-defined function call (provider::<local>::<fn>) to its Pulumi schema
+// so transformExpr can eject it as a positional invoke.
+func (ft *fileTransformer) scanProviderFunctions(ctx context.Context, body *hclsyntax.Body) hcl.Diagnostics {
+	var diags hcl.Diagnostics
+	_ = hclsyntax.VisitAll(body, func(n hclsyntax.Node) hcl.Diagnostics {
+		call, ok := n.(*hclsyntax.FunctionCallExpr)
+		if !ok {
+			return nil
+		}
+		local, fnName, ok := ast.ParseProviderFunctionName(call.Name)
+		if !ok {
+			return nil
+		}
+		if _, seen := ft.providerFunctions[call.Name]; seen {
+			return nil
+		}
+		// The provider function's Pulumi token resolves from the same
+		// "<local>_<fn>" HCL form that data sources use.
+		fn, err := packages.ResolveFunction(ctx, ft.loader, ft.knownProviders, local+"_"+fnName)
+		if err != nil {
+			diags = append(diags, &hcl.Diagnostic{
+				Severity: hcl.DiagError,
+				Summary:  "unknown provider function",
+				Detail:   fmt.Sprintf("cannot convert %q to a PCL invoke: %v", call.Name, err),
+				Subject:  call.Range().Ptr(),
+			})
+			ft.providerFunctions[call.Name] = nil
+			return nil
+		}
+		ft.providerFunctions[call.Name] = fn
+		return nil
+	})
 	return diags
 }
 
@@ -1034,6 +1081,18 @@ func (ft *fileTransformer) transformExpr(expr hclsyntax.Expression) hclwrite.Tok
 				if attr, ok := trav.Traversal[1].(hcl.TraverseAttr); ok && attr.Name == "root" {
 					return hclwrite.TokensForFunctionCall("cwd")
 				}
+			}
+		}
+		// A provider-defined function call ejects as a positional invoke:
+		// provider::<local>::<fn>(a, b) → invoke("<token>", a, b).
+		if _, _, ok := ast.ParseProviderFunctionName(e.Name); ok {
+			if fn := ft.providerFunctions[e.Name]; fn != nil {
+				args := make([]hclwrite.Tokens, 0, len(e.Args)+1)
+				args = append(args, hclwrite.TokensForValue(cty.StringVal(fn.Token)))
+				for _, arg := range e.Args {
+					args = append(args, ft.transformExpr(arg))
+				}
+				return hclwrite.TokensForFunctionCall("invoke", args...)
 			}
 		}
 		pclName := transformFunctionName(e.Name)

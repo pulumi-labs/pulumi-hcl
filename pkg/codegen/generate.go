@@ -24,10 +24,12 @@ import (
 	"github.com/hashicorp/hcl/v2"
 	"github.com/hashicorp/hcl/v2/hclsyntax"
 	"github.com/hashicorp/hcl/v2/hclwrite"
+	"github.com/pulumi-labs/pulumi-hcl/pkg/hcl/ast"
 	"github.com/pulumi-labs/pulumi-hcl/pkg/hcl/comments"
 	"github.com/pulumi-labs/pulumi-hcl/pkg/hcl/eval"
 	"github.com/pulumi-labs/pulumi-hcl/pkg/hcl/packages"
 	"github.com/pulumi-labs/pulumi-hcl/pkg/hcl/transform"
+	"github.com/pulumi/pulumi-terraform-bridge/v3/pkg/tfbridge"
 	"github.com/pulumi/pulumi/pkg/v3/codegen"
 	"github.com/pulumi/pulumi/pkg/v3/codegen/hcl2/model"
 	"github.com/pulumi/pulumi/pkg/v3/codegen/pcl"
@@ -681,7 +683,8 @@ func (g *generator) collectInvokes(node pcl.Node) {
 		// variable (e.g. `local x = invoke(...)` becomes
 		// `data "<token>" "x"`) instead of the auto-generated `invoke_N`.
 		if call, ok := n.Definition.Value.(*model.FunctionCallExpression); ok && call.Name == pcl.Invoke {
-			if _, inlinable := inlinableStdFunc(call); !inlinable {
+			_, inlinable := inlinableStdFunc(call)
+			if !inlinable && !call.Signature.MultiArgumentInputs {
 				for _, arg := range call.Args {
 					g.collectInvokesInExpr(arg, nil, srcFile)
 				}
@@ -718,6 +721,12 @@ func (g *generator) collectInvokesInExpr(expr model.Expression, parent *pcl.Reso
 		}
 		if call, ok := e.(*model.FunctionCallExpression); ok && call.Name == pcl.Invoke {
 			if _, inlinable := inlinableStdFunc(call); inlinable {
+				return e, nil
+			}
+			// Multi-argument invokes project as provider-defined functions
+			// (provider::<name>::<fn>(...)), emitted inline rather than spilled
+			// to a data block.
+			if call.Signature.MultiArgumentInputs {
 				return e, nil
 			}
 			ds := spilledDataSource{
@@ -2023,6 +2032,12 @@ func (g *generator) exprTokens(expr model.Expression, typ schema.Type) (hclwrite
 	case *model.TemplateExpression:
 		return g.templateTokens(e)
 	case *model.FunctionCallExpression:
+		// A multi-argument invoke projects as a provider-defined function call,
+		// provider::<name>::<fn>(...), whose return object is accessed directly
+		// (e.g. .result), so no data block or result-object wrapper is involved.
+		if e.Name == pcl.Invoke && e.Signature.MultiArgumentInputs {
+			return g.providerFunctionInvokeTokens(e)
+		}
 		// Check if this is an invoke or a TF builtin — inline it.
 		// Standalone use (not wrapped in .result) wraps the call in a single-
 		// field object so downstream .result access resolves correctly; the
@@ -2321,6 +2336,69 @@ func (g *generator) funcCallTokens(expr *model.FunctionCallExpression) (hclwrite
 	default:
 		return g.passthroughFuncCallTokensExpand(expr.Name, expr.Args, expr.ExpandFinal)
 	}
+}
+
+// providerFunctionInvokeTokens emits a multi-argument invoke as a
+// provider-defined function call: provider::<localName>::<funcName>(a1, a2, …).
+// The bound invoke is in object-argument form; its fields are re-expanded into
+// positional arguments in the schema's declared input order. An optional input
+// the program omitted is passed as null, since the runtime's cty projection
+// binds one positional parameter per input (see transform.ProviderFunction).
+func (g *generator) providerFunctionInvokeTokens(
+	call *model.FunctionCallExpression,
+) (hclwrite.Tokens, hcl.Diagnostics) {
+	token, ok := extractStringLiteral(call.Args[0])
+	if !ok {
+		return nil, hcl.Diagnostics{{
+			Severity: hcl.DiagError,
+			Summary:  "invalid invoke call",
+			Detail:   "invoke token must be a string literal",
+		}}
+	}
+	fn, canonical, diag := g.lookupInvokeSchema(token)
+	if diag != nil {
+		return nil, hcl.Diagnostics{diag}
+	}
+	if fn == nil || fn.Inputs == nil {
+		return nil, hcl.Diagnostics{{
+			Severity: hcl.DiagError,
+			Summary:  "invalid multi-argument invoke",
+			Detail:   fmt.Sprintf("no input schema found for function %q", token),
+		}}
+	}
+
+	pkgName, _, name, _ := pcl.DecomposeToken(canonical, hcl.Range{})
+	funcName := tfbridge.PulumiToTerraformName(name, nil, nil)
+
+	provided := map[string]model.Expression{}
+	if obj, ok := call.Args[1].(*model.ObjectConsExpression); ok {
+		for _, item := range obj.Items {
+			if key, ok := extractStringLiteral(item.Key); ok {
+				provided[key] = item.Value
+			}
+		}
+	}
+
+	args := make([]hclwrite.Tokens, 0, len(fn.Inputs.Properties))
+	var diags hcl.Diagnostics
+	for _, p := range fn.Inputs.Properties {
+		arg, ok := provided[p.Name]
+		if !ok {
+			// A non-variadic provider function requires a value for every
+			// parameter, so an omitted optional invoke argument is passed as an
+			// explicit null. Both OpenTofu and the HCL runtime reject a missing
+			// argument (see tfcompat TestL2ProviderFunctionPartial).
+			args = append(args, hclwrite.TokensForValue(cty.NullVal(cty.DynamicPseudoType)))
+			continue
+		}
+		argTokens, d := g.exprTokens(arg, p.Type)
+		diags = append(diags, d...)
+		if d.HasErrors() {
+			return nil, diags
+		}
+		args = append(args, argTokens)
+	}
+	return hclwrite.TokensForFunctionCall(ast.ProviderFunctionName(pkgName, funcName), args...), diags
 }
 
 // notImplementedTokens handles PCL's notImplemented("expression") by extracting the original
