@@ -151,6 +151,8 @@ var expectedFailures = map[string]string{
 		" the HCL language host (the test expects the extension package among required packages)",
 	"l2-invoke-multi-argument": "HCL codegen does not support functions declared with" +
 		" multi-argument (positional) inputs; invoke() only takes a single object argument",
+	"l2-failed-create-recover-continue-on-error": "HCL has no `recover` function or `error`" +
+		" scope variable, so the recover-from-failed-create fixture cannot be expressed",
 }
 
 // expectedEjectFailures lists tests whose eject (HCL→PCL conversion) step is

@@ -9,5 +9,19 @@ resource "res" "secret:index:Resource" {
     private = "closed"
     public  = "open"
   }
+  privateArray = ["closed"]
+  privateMap = {
+    "key" = "closed"
+  }
+  privateDataMap = {
+    "key" = {
+      private = "closed"
+      public  = "open"
+    }
+  }
+  privateDataArray = [{
+    private = "closed"
+    public  = "open"
+  }]
 }
 
