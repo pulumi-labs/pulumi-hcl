@@ -460,11 +460,15 @@ func evalDynamicBlocks(
 					if unmarked, _ := existing.Unmark(); !unmarked.IsKnown() {
 						continue
 					}
-					// Merge with existing static blocks.
+					// Prepend blocks already accumulated for this property
+					// (earlier static or dynamic blocks) so the expanded groups
+					// keep their source order in the order-significant list.
+					prior := make([]cty.Value, 0, len(values))
 					for it := existing.ElementIterator(); it.Next(); {
 						_, v := it.Element()
-						values = append(values, v)
+						prior = append(prior, v)
 					}
+					values = append(prior, values...)
 				}
 				// Per-element object types can diverge when content sets
 				// disjoint subsets of optional fields (e.g. `lookup(v, "k",

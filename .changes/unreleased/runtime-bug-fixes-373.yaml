@@ -1,0 +1,6 @@
+kind: bug-fixes
+body: Preserve source order when merging multiple `dynamic` blocks for one list block
+time: 2026-07-15T12:00:00Z
+custom:
+    Component: runtime
+    PR: "373"
