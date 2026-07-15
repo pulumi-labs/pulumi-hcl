@@ -322,21 +322,21 @@ resource "aws_instance" "web" {
 }
 ```
 
-| Attribute                   | Type         | Description                                                                                       |
-|-----------------------------|--------------|---------------------------------------------------------------------------------------------------|
-| `name`                      | string       | Override the full Pulumi logical name (evaluated per instance, with `count.index`/`each.key` and `pulumi.module.name` in scope; null means no override) |
-| `parent`                    | reference    | Parent resource for component hierarchy                                                           |
-| `additional_secret_outputs` | list(string) | Output properties to encrypt in state                                                             |
-| `retain_on_delete`          | bool         | Keep the cloud resource when removed from the program                                             |
-| `deleted_with`              | reference    | Cascade deletion when the referenced resource is deleted                                          |
-| `replace_with`              | list         | Resources whose replacement triggers replacement of this one                                      |
-| `hide_diffs`                | list(string) | Property paths whose diffs should not be displayed                                                |
-| `replace_on_changes`        | list(string) | Property paths that force replacement when changed                                                |
-| `import_id`                 | string       | Cloud resource ID to import                                                                       |
-| `aliases`                   | list         | Alternative names for this resource (used during renames)                                         |
-| `version`                   | string       | Provider plugin version                                                                           |
-| `plugin_download_url`       | string       | URL to download the provider plugin from                                                          |
-| `env_var_mappings`          | expression   | Environment variable remappings for the provider                                                  |
+| Attribute                   | Type         | Description                                                  |
+|-----------------------------|--------------|--------------------------------------------------------------|
+| `name`                      | string       | Override the Pulumi logical name                             |
+| `parent`                    | reference    | Parent resource for component hierarchy                      |
+| `additional_secret_outputs` | list(string) | Output properties to encrypt in state                        |
+| `retain_on_delete`          | bool         | Keep the cloud resource when removed from the program        |
+| `deleted_with`              | reference    | Cascade deletion when the referenced resource is deleted     |
+| `replace_with`              | list         | Resources whose replacement triggers replacement of this one |
+| `hide_diffs`                | list(string) | Property paths whose diffs should not be displayed           |
+| `replace_on_changes`        | list(string) | Property paths that force replacement when changed           |
+| `import_id`                 | string       | Cloud resource ID to import                                  |
+| `aliases`                   | list         | Alternative names for this resource (used during renames)    |
+| `version`                   | string       | Provider plugin version                                      |
+| `plugin_download_url`       | string       | URL to download the provider plugin from                     |
+| `env_var_mappings`          | expression   | Environment variable remappings for the provider             |
 
 To trigger replacement when another resource or attribute changes, use the
 standard Terraform [`replace_triggered_by`](#lifecycle-block) lifecycle
