@@ -24,11 +24,10 @@ import (
 	"crypto/sha1"
 	"crypto/sha256"
 	"crypto/sha512"
-	"crypto/x509"
+	"encoding/asn1"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
-	"encoding/pem"
 	"errors"
 	"fmt"
 	"io"
@@ -64,6 +63,7 @@ import (
 	"github.com/zclconf/go-cty/cty/function"
 	"github.com/zclconf/go-cty/cty/function/stdlib"
 	"golang.org/x/crypto/bcrypt"
+	"golang.org/x/crypto/ssh"
 	"golang.org/x/text/encoding/ianaindex"
 )
 
@@ -1877,24 +1877,24 @@ var rsaDecryptFunc = function.New(&function.Spec{
 			return cty.NilVal, fmt.Errorf("invalid base64 ciphertext: %w", err)
 		}
 
-		// Parse PEM-encoded private key
-		block, _ := pem.Decode([]byte(privateKeyPEM))
-		if block == nil {
-			return cty.NilVal, fmt.Errorf("invalid PEM-encoded private key")
-		}
-
-		// Parse the private key (supports PKCS1 and PKCS8)
-		var privKey *rsa.PrivateKey
-		if key, err := x509.ParsePKCS1PrivateKey(block.Bytes); err == nil {
-			privKey = key
-		} else if key, err := x509.ParsePKCS8PrivateKey(block.Bytes); err == nil {
-			var ok bool
-			privKey, ok = key.(*rsa.PrivateKey)
-			if !ok {
-				return cty.NilVal, fmt.Errorf("private key is not an RSA key")
+		// Parse the private key. ssh.ParseRawPrivateKey accepts PKCS#1,
+		// PKCS#8, SEC1, and OpenSSH-format PEM blocks.
+		rawKey, err := ssh.ParseRawPrivateKey([]byte(privateKeyPEM))
+		if err != nil {
+			var errStr string
+			switch e := err.(type) {
+			case asn1.SyntaxError:
+				errStr = strings.ReplaceAll(e.Error(), "asn1: syntax error", "invalid ASN1 data in the given private key")
+			case asn1.StructuralError:
+				errStr = strings.ReplaceAll(e.Error(), "asn1: structure error", "invalid ASN1 data in the given private key")
+			default:
+				errStr = fmt.Sprintf("invalid private key: %s", e)
 			}
-		} else {
-			return cty.NilVal, fmt.Errorf("failed to parse private key")
+			return cty.NilVal, errors.New(errStr)
+		}
+		privKey, ok := rawKey.(*rsa.PrivateKey)
+		if !ok {
+			return cty.NilVal, fmt.Errorf("invalid private key type %T", rawKey)
 		}
 
 		// Decrypt using PKCS1v15 (Terraform's default)
