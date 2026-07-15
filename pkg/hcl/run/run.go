@@ -399,6 +399,11 @@ type Engine struct {
 	// before registering it).
 	graph *graph.Graph
 
+	// forcedCBD holds the resource node keys that must be created before their
+	// prior instance is destroyed because they, or a resource depending on
+	// them, declared create_before_destroy. Computed once from the graph.
+	forcedCBD map[string]bool
+
 	// alwaysRegisterProviders forces every `provider` block to be registered
 	// as a resource even when nothing references it, bypassing Terraform's
 	// lazy provider-configure semantics. Test-only; see
@@ -576,6 +581,7 @@ func (e *Engine) Run(ctx context.Context) error {
 		return errors.Join(errs...)
 	}
 	e.graph = g
+	e.forcedCBD = g.ForcedCreateBeforeDestroy()
 
 	// Process nodes in parallel where possible
 	if err := e.processGraph(ctx, g); err != nil {
@@ -652,6 +658,8 @@ func (e *Engine) processNode(ctx context.Context, node *graph.Node) error {
 	switch node.Type {
 	case graph.NodeTypeVariable:
 		return e.processVariable(ctx, node)
+	case graph.NodeTypeVariableValidation:
+		return e.processVariableValidation(node)
 	case graph.NodeTypeLocal:
 		return e.processLocal(ctx, node)
 	case graph.NodeTypeResource:
@@ -701,7 +709,7 @@ func (e *Engine) processVariable(ctx context.Context, node *graph.Node) error {
 		return e.processModuleVariable(node)
 	}
 
-	varName := node.Key[4:] // Remove "var." prefix
+	varName := v.Name
 	var val cty.Value
 	var isSecret bool
 	var valueSource string
@@ -807,6 +815,24 @@ func (e *Engine) processVariable(ctx context.Context, node *graph.Node) error {
 	e.evaluator.Context().SetVariable(varName, val)
 
 	return runVariableValidations(e.evaluator, varName, v.Validations)
+}
+
+// processVariableValidation runs the validation rules of a variable whose
+// rules reference other objects (e.g. a resource's computed output). The rules
+// live on their own graph node, ordered after both the variable's value and
+// the referenced objects, so consumers of the variable only observe a
+// validated value.
+func (e *Engine) processVariableValidation(node *graph.Node) error {
+	v := node.Variable
+	if v == nil {
+		return fmt.Errorf("variable validation node missing Variable field")
+	}
+	if node.ModuleInfo != nil {
+		return e.forEachModuleInstance(node, func(inst *moduleInstance) error {
+			return runVariableValidations(eval.NewEvaluator(inst.EvalCtx), v.Name, v.Validations)
+		})
+	}
+	return runVariableValidations(e.evaluator, v.Name, v.Validations)
 }
 
 // runVariableValidations evaluates a variable's `validation` rules against ev
@@ -1478,9 +1504,12 @@ func (e *Engine) registerResourceInstanceInContext(
 			}
 		}
 	}
-	// count/for_each references are not tied to any body property, so they stay
-	// out of PropertyDependencies but still gate ordering through DependsOn.
-	for _, dep := range metaArgDeps {
+	// count/for_each and lifecycle precondition/postcondition references are
+	// not tied to any body property, so they stay out of PropertyDependencies
+	// but still gate ordering through DependsOn.
+	checkDeps := checkRuleDeps(res.Preconditions, hclCtx)
+	checkDeps = append(checkDeps, checkRuleDeps(res.Postconditions, hclCtx)...)
+	for _, dep := range slices.Concat(metaArgDeps, checkDeps) {
 		if !slices.Contains(opts.DependsOn, dep) {
 			opts.DependsOn = append(opts.DependsOn, dep)
 		}
@@ -1637,8 +1666,15 @@ func (e *Engine) buildResourceOptionsInContext(
 	//   - cbd=true  -> DeleteBeforeReplace=false
 	//   - cbd=false -> DeleteBeforeReplace=true
 	//   - cbd unset -> DeleteBeforeReplace=true (TF default, opposite of Pulumi's)
+	//
+	// create_before_destroy also propagates to a resource's dependencies, so a
+	// dependency of a create-before-destroy resource is forced to the same
+	// ordering even when it does not declare it (forcedCBD, computed from the
+	// graph). This keeps every create in a replacement chain ahead of the deletes.
+	cbd := res.Lifecycle != nil && res.Lifecycle.CreateBeforeDestroy != nil && *res.Lifecycle.CreateBeforeDestroy
+	cbd = cbd || e.forcedCBD[instance.OriginalKey]
 	opts.DeleteBeforeReplaceDef = true
-	opts.DeleteBeforeReplace = res.Lifecycle == nil || res.Lifecycle.CreateBeforeDestroy == nil || !*res.Lifecycle.CreateBeforeDestroy
+	opts.DeleteBeforeReplace = !cbd
 
 	if res.ResourceParent != nil {
 		depKey := graph.FormatTraversal(res.ResourceParent)
@@ -1755,7 +1791,7 @@ func (e *Engine) buildResourceOptionsInContext(
 	}
 
 	// Handle import blocks - resolve import ID from import blocks that target this resource
-	opts.ImportId = e.resolveImportId(res)
+	opts.ImportId = e.resolveImportId(res, instance.Index, instance.EachKeyString(), modInst)
 
 	hclCtx := evalCtx.HCLContext()
 
@@ -1831,6 +1867,14 @@ func (e *Engine) buildResourceOptionsInContext(
 	// ReplacementTrigger property value: any element flipping triggers a
 	// replacement. A single-element list is unwrapped to a scalar so the
 	// trigger value round-trips with Pulumi's scalar `replacementTrigger`.
+	// A reference in a trigger also establishes a dependency, as in TF.
+	//
+	// An element whose value is a whole resource is action-based, not
+	// value-based: it must fire when the referenced resource is replaced even
+	// if every attribute value is unchanged. The value trigger covers in-place
+	// updates (an update implies the object value changed); the replacement
+	// action is covered by also listing the referenced instances' URNs in
+	// ReplaceWith.
 	if res.Lifecycle != nil && len(res.Lifecycle.ReplaceTriggeredBy) > 0 {
 		vals := make([]cty.Value, 0, len(res.Lifecycle.ReplaceTriggeredBy))
 		for _, expr := range res.Lifecycle.ReplaceTriggeredBy {
@@ -1839,7 +1883,13 @@ func (e *Engine) buildResourceOptionsInContext(
 				return nil, fmt.Errorf("evaluating replace_triggered_by on %q: %s",
 					res.Type+"."+res.Name, diags.Error())
 			}
+			for _, dep := range eval.CollectDepURNs(val) {
+				if !slices.Contains(opts.DependsOn, dep) {
+					opts.DependsOn = append(opts.DependsOn, dep)
+				}
+			}
 			vals = append(vals, val)
+			opts.ReplaceWith = append(opts.ReplaceWith, resourceURNsFromValue(val)...)
 		}
 		var triggerVal cty.Value
 		if len(vals) == 1 {
@@ -1911,10 +1961,10 @@ func (e *Engine) buildResourceOptionsInContext(
 	return opts, nil
 }
 
-// movedAddr is a parsed `moved` block address: optional module-call steps
-// followed by an optional resource. A whole-module-call address (e.g.
-// `module.a`) has an empty Type.
-type movedAddr struct {
+// targetAddr is a parsed `moved` or `import` block address: optional
+// module-call steps followed by an optional resource. A whole-module-call
+// address (e.g. `module.a`) has an empty Type.
+type targetAddr struct {
 	modules  []modulepath.Step // module-call steps, outermost first
 	Type     string            // resource type, or "" for a whole-module-call address
 	Name     string            // resource name
@@ -1923,12 +1973,13 @@ type movedAddr struct {
 }
 
 // keyed reports whether the address names a specific count/for_each instance.
-func (a movedAddr) keyed() bool { return a.keyIndex != nil || a.keyEach != nil }
+func (a targetAddr) keyed() bool { return a.keyIndex != nil || a.keyEach != nil }
 
-// parseMovedAddr decodes a `moved` from/to traversal into its module-call steps
-// and (optional) resource. It returns false for a traversal it cannot model.
-func parseMovedAddr(t hcl.Traversal) (movedAddr, bool) {
-	var a movedAddr
+// parseTargetAddr decodes a `moved` or `import` address traversal into its
+// module-call steps and (optional) resource. It returns false for a traversal
+// it cannot model.
+func parseTargetAddr(t hcl.Traversal) (targetAddr, bool) {
+	var a targetAddr
 	head := func(step hcl.Traverser) (string, bool) {
 		switch s := step.(type) {
 		case hcl.TraverseRoot:
@@ -2053,7 +2104,7 @@ func (e *Engine) resolveMovedAliases(
 
 	for _, scope := range ancestorPaths(resPath) {
 		for _, moved := range e.graph.MovedBlocks(scope) {
-			to, ok := parseMovedAddr(moved.To)
+			to, ok := parseTargetAddr(moved.To)
 			if !ok || to.Type == "" { // skip whole-module-call moves
 				continue
 			}
@@ -2061,7 +2112,7 @@ func (e *Engine) resolveMovedAliases(
 			if toPath != resPath || to.Type != res.Type || to.Name != res.Name {
 				continue
 			}
-			from, ok := parseMovedAddr(moved.From)
+			from, ok := parseTargetAddr(moved.From)
 			if !ok || from.Type == "" {
 				continue
 			}
@@ -2128,11 +2179,11 @@ func (e *Engine) resolveMovedAliases(
 func (e *Engine) oldModulePath(path modulepath.Path) modulepath.Path {
 	for _, scope := range ancestorPaths(path) {
 		for _, moved := range e.graph.MovedBlocks(scope) {
-			to, ok := parseMovedAddr(moved.To)
+			to, ok := parseTargetAddr(moved.To)
 			if !ok || to.Type != "" || len(to.modules) == 0 {
 				continue // not a whole-module-call address
 			}
-			from, ok := parseMovedAddr(moved.From)
+			from, ok := parseTargetAddr(moved.From)
 			if !ok || from.Type != "" || len(from.modules) == 0 {
 				continue
 			}
@@ -2261,17 +2312,33 @@ func instanceKeysEqual(aIdx *int, aEach *string, bIdx *int, bEach *string) bool 
 	}
 }
 
-// resolveImportId finds any import blocks that target this resource and returns
-// the import ID.
-func (e *Engine) resolveImportId(res *ast.Resource) string {
-	resourceAddr := res.Type + "." + res.Name
+// resolveImportId finds the import block that targets this resource instance
+// and returns its import ID. An import address names a single instance: its
+// module-call steps must match the resource's module instance path, and on a
+// count/for_each resource each instance takes only the ID of the import block
+// keyed with its own instance key.
+func (e *Engine) resolveImportId(
+	res *ast.Resource, index *int, eachKey *string, modInst *moduleInstance,
+) string {
+	resPath := modulepath.Root()
+	if modInst != nil {
+		resPath = modInst.Path
+	}
 
 	for _, imp := range e.config.Imports {
-		// Check if this import block targets the current resource
-		toAddr := graph.FormatTraversal(imp.To)
-		if toAddr == resourceAddr {
-			return imp.Id
+		to, ok := parseTargetAddr(imp.To)
+		if !ok || to.Type != res.Type || to.Name != res.Name {
+			continue
 		}
+		if appendModuleSteps(modulepath.Root(), to.modules) != resPath {
+			continue
+		}
+		if to.keyed() || index != nil || eachKey != nil {
+			if !instanceKeysEqual(index, eachKey, to.keyIndex, to.keyEach) {
+				continue
+			}
+		}
+		return imp.Id
 	}
 
 	return ""
@@ -2893,6 +2960,16 @@ func (e *Engine) invokeDataSourceOnce(
 		depMarks[eval.DepMark(urn)] = struct{}{}
 	}
 
+	// Check-rule references establish dependencies, as in TF; carry them on
+	// the outputs alongside the input-derived deps so downstream readers
+	// inherit them.
+	for _, urn := range checkRuleDeps(ds.Preconditions, hclCtx) {
+		addURN(urn)
+	}
+	for _, urn := range checkRuleDeps(ds.Postconditions, hclCtx) {
+		addURN(urn)
+	}
+
 	dataSourceMapping := e.resolver.DataSourceBodyMapping(ctx, ds.Type)
 	inputs, diags := transform.EvalFunctionWithSchema(ds.Config, funcSchema, dataSourceMapping,
 		func(propKey resource.PropertyKey, expr hcl.Expression, extraVars map[string]cty.Value) (cty.Value, hcl.Diagnostics) {
@@ -3413,7 +3490,7 @@ func (e *Engine) forEachModuleInstance(node *graph.Node, fn func(inst *moduleIns
 func (e *Engine) processModuleVariable(node *graph.Node) error {
 	v := node.Variable
 	modInfo := node.ModuleInfo
-	varName := strings.TrimPrefix(node.Key, modInfo.Prefix()+"var.")
+	varName := v.Name
 
 	moduleInputAttrs, _ := modInfo.Module.Config.JustAttributes()
 	inputAttr, hasInput := moduleInputAttrs[varName]
@@ -4000,6 +4077,33 @@ func Validate(config *ast.Config) []error {
 	return errs
 }
 
+// checkRuleDeps collects the URNs of the resources referenced by the condition
+// and error_message expressions of the given check rules. A reference in a
+// precondition/postcondition establishes a dependency, as in TF, even though
+// the rules themselves are only evaluated later by hooks. Each referenced
+// variable is resolved through the eval context instead of evaluating the
+// expression, so no function fires early while values reached through locals
+// still carry their DepMarks. Traversals that do not resolve are skipped —
+// notably self, which is only in scope once a postcondition hook fires.
+func checkRuleDeps(rules []*ast.CheckRule, hclCtx *hcl.EvalContext) []string {
+	var deps []string
+	for _, rule := range rules {
+		for _, expr := range []hcl.Expression{rule.Condition, rule.ErrorMessage} {
+			if expr == nil {
+				continue
+			}
+			for _, traversal := range expr.Variables() {
+				val, diags := traversal.TraverseAbs(hclCtx)
+				if diags.HasErrors() {
+					continue
+				}
+				deps = append(deps, eval.CollectDepURNs(val)...)
+			}
+		}
+	}
+	return deps
+}
+
 // bindPreconditionHooks registers a hook per precondition and binds it to
 // BeforeCreate/BeforeUpdate so a false condition blocks the operation.
 //
@@ -4297,6 +4401,29 @@ func ptr[T any](v T) *T { return &v }
 // ctyAsString reads a cty value as a string, tolerating marks (resource
 // output leaves carry DepMarks) and returning "" for null / unknown /
 // non-string. Use the cty API directly if you need to distinguish those.
+// resourceURNsFromValue extracts the URNs of the resource instances val
+// represents when it is a whole-resource value: a single instance carries a
+// resource reference mark, while a reference to a resource with count or
+// for_each yields a tuple or object of such instance values. An attribute of a
+// resource inherits the mark but not its hash, so it yields no URNs.
+func resourceURNsFromValue(val cty.Value) []string {
+	if u, ok := eval.ResourceReferenceURN(val); ok {
+		return []string{string(u)}
+	}
+	val, _ = val.Unmark()
+	if val.IsNull() || !val.IsKnown() || !val.CanIterateElements() {
+		return nil
+	}
+	var urns []string
+	for it := val.ElementIterator(); it.Next(); {
+		_, el := it.Element()
+		if u, ok := eval.ResourceReferenceURN(el); ok {
+			urns = append(urns, string(u))
+		}
+	}
+	return urns
+}
+
 func ctyAsString(v cty.Value) string {
 	if v.IsMarked() {
 		v, _ = v.Unmark()

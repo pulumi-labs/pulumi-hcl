@@ -3228,6 +3228,109 @@ resource "aws_instance" "imported" {
 	}
 }
 
+// TestEngine_ImportBlockInstanceKey covers import blocks whose `to` address
+// names one instance of an expanded resource: each instance takes the ID of
+// the import block keyed with its own key, and an import address never
+// matches an instance with a different (or missing) key.
+func TestEngine_ImportBlockInstanceKey(t *testing.T) {
+	t.Parallel()
+
+	awsSchema := schema.PackageSpec{
+		Name: "aws",
+		Resources: map[string]schema.ResourceSpec{
+			"aws:index:Instance": {
+				InputProperties: map[string]schema.PropertySpec{
+					"ami": {TypeSpec: schema.TypeSpec{Type: "string"}},
+				},
+				ObjectTypeSpec: schema.ObjectTypeSpec{
+					Properties: map[string]schema.PropertySpec{
+						"ami": {TypeSpec: schema.TypeSpec{Type: "string"}},
+					},
+				},
+			},
+		},
+	}
+
+	// importIdsByName runs src and returns the ImportId of every registered
+	// aws:index:Instance, keyed by resource name.
+	importIdsByName := func(t *testing.T, tmpDir string) map[string]string {
+		p := parser.NewParser()
+		config, diags := p.ParseDirectory(tmpDir)
+		require.False(t, diags.HasErrors(), "parse error: %s", diags.Error())
+
+		mock := &testutil.MockResourceMonitor{}
+		engine := newTestEngine(t, config, &run.EngineOptions{
+			ModuleLoader:    testLiveModuleLoader(t),
+			ProjectName:     "test-project",
+			StackName:       "dev",
+			ResourceMonitor: mock,
+			WorkDir:         tmpDir,
+			RootDir:         tmpDir,
+			SchemaLoader:    schemaloader.New(t, awsSchema),
+		})
+		require.NoError(t, engine.Run(t.Context()))
+
+		got := map[string]string{}
+		for _, r := range mock.RegisteredResources {
+			if r.Type == "aws:index:Instance" {
+				got[r.Name] = r.ImportId
+			}
+		}
+		return got
+	}
+
+	writeRoot := func(t *testing.T, src string) string {
+		tmpDir := t.TempDir()
+		require.NoError(t, os.WriteFile(tmpDir+"/main.tf", []byte(src), 0o644))
+		return tmpDir
+	}
+
+	t.Run("for_each", func(t *testing.T) {
+		t.Parallel()
+
+		tmpDir := writeRoot(t, `
+resource "aws_instance" "web" {
+  for_each = toset(["a", "b"])
+  ami      = "ami-12345"
+}
+
+import {
+  to = aws_instance.web["a"]
+  id = "id-a"
+}
+
+import {
+  to = aws_instance.web["b"]
+  id = "id-b"
+}
+`)
+		assert.Equal(t, map[string]string{
+			"web-a": "id-a",
+			"web-b": "id-b",
+		}, importIdsByName(t, tmpDir))
+	})
+
+	t.Run("unkeyed_import_does_not_match_expanded_resource", func(t *testing.T) {
+		t.Parallel()
+
+		tmpDir := writeRoot(t, `
+resource "aws_instance" "web" {
+  for_each = toset(["a", "b"])
+  ami      = "ami-12345"
+}
+
+import {
+  to = aws_instance.web
+  id = "id-unkeyed"
+}
+`)
+		assert.Equal(t, map[string]string{
+			"web-a": "",
+			"web-b": "",
+		}, importIdsByName(t, tmpDir))
+	})
+}
+
 // testSchema returns a minimal schema for a test_resource resource.
 func testSchema() schema.PackageSpec {
 	return schema.PackageSpec{
@@ -3604,6 +3707,90 @@ resource "test_resource" "res" {
 	req := mock.RegisteredResources[1]
 	require.False(t, req.ReplacementTrigger.IsNull(),
 		"expected replacement_trigger to be set from lifecycle.replace_triggered_by")
+}
+
+// TestEngine_ReplaceTriggeredByWholeResource covers the action-based half of a
+// whole-resource replace_triggered_by element: the referenced instance's URN
+// must be recorded in ReplaceWith so the engine replaces the dependent whenever
+// the referenced resource is replaced, even if its value is unchanged. The
+// detection is value-based, so a local aliasing the resource behaves the same,
+// while an attribute of the resource stays purely value-triggered.
+func TestEngine_ReplaceTriggeredByWholeResource(t *testing.T) {
+	t.Parallel()
+
+	src := []byte(`
+resource "test_resource" "middle" {
+  field = "const"
+}
+
+locals {
+  indirect = test_resource.middle
+}
+
+resource "test_resource" "byWhole" {
+  field = "dep"
+
+  lifecycle {
+    replace_triggered_by = [test_resource.middle]
+  }
+}
+
+resource "test_resource" "byLocal" {
+  field = "dep"
+
+  lifecycle {
+    replace_triggered_by = [local.indirect]
+  }
+}
+
+resource "test_resource" "byAttr" {
+  field = "dep"
+
+  lifecycle {
+    replace_triggered_by = [test_resource.middle.field]
+  }
+}
+`)
+
+	p := parser.NewParser()
+	config, diags := p.ParseSource("test.hcl", src)
+	require.False(t, diags.HasErrors(), diags.Error())
+
+	mock := &testutil.MockResourceMonitor{}
+	engine := newTestEngine(t, config, &run.EngineOptions{
+		ModuleLoader:    testModuleLoader(t),
+		ProjectName:     "test-project",
+		StackName:       "dev",
+		ResourceMonitor: mock,
+		WorkDir:         t.TempDir(),
+		RootDir:         t.TempDir(),
+		SchemaLoader:    schemaloader.New(t, testSchema()),
+	})
+
+	require.NoError(t, engine.Run(t.Context()))
+
+	byName := make(map[string]run.RegisterResourceRequest)
+	for _, req := range mock.RegisteredResources {
+		byName[req.Name] = req
+	}
+
+	middleURN := "urn:pulumi:test::project::test:index:Resource::middle"
+
+	byWhole, ok := byName["byWhole"]
+	require.True(t, ok, "expected byWhole to be registered")
+	assert.Equal(t, []string{middleURN}, byWhole.ReplaceWith)
+	assert.False(t, byWhole.ReplacementTrigger.IsNull(),
+		"a whole-resource reference keeps its value trigger to cover in-place updates")
+
+	byLocal, ok := byName["byLocal"]
+	require.True(t, ok, "expected byLocal to be registered")
+	assert.Equal(t, []string{middleURN}, byLocal.ReplaceWith,
+		"a local aliasing a whole resource behaves like the resource itself")
+
+	byAttr, ok := byName["byAttr"]
+	require.True(t, ok, "expected byAttr to be registered")
+	assert.Empty(t, byAttr.ReplaceWith, "an attribute reference is value-based only")
+	assert.False(t, byAttr.ReplacementTrigger.IsNull())
 }
 
 // TestEngine_HetListOutputRoundTrip drives the engine against a mock provider whose
@@ -4819,4 +5006,89 @@ resource "aws_instance" "base" {
 `, true, true)
 		require.NoError(t, err)
 	})
+}
+
+// TestEngine_LifecycleRefDependencies: a resource referenced only from a
+// lifecycle precondition/postcondition/replace_triggered_by establishes a
+// dependency, as in TF — directly, through a local, and through a data
+// source's check rule — while staying out of PropertyDependencies (no body
+// property carries it). `self` in a postcondition is not a reference and
+// must not break dep collection.
+func TestEngine_LifecycleRefDependencies(t *testing.T) {
+	t.Parallel()
+
+	mock, err := tryExpansion(t, `
+resource "aws_instance" "first" {
+  ami = "ami-first"
+}
+
+locals {
+  first_id = aws_instance.first.id
+}
+
+resource "aws_instance" "pre" {
+  ami = "ami-pre"
+  lifecycle {
+    precondition {
+      condition     = aws_instance.first.id != ""
+      error_message = "first must exist"
+    }
+  }
+}
+
+resource "aws_instance" "post" {
+  ami = "ami-post"
+  lifecycle {
+    postcondition {
+      condition     = self.ami != "" && local.first_id != ""
+      error_message = "self and first must exist"
+    }
+  }
+}
+
+resource "aws_instance" "replace" {
+  ami = "ami-replace"
+  lifecycle {
+    replace_triggered_by = [aws_instance.first.id]
+  }
+}
+
+data "aws_instance" "d" {
+  filter = "static"
+  lifecycle {
+    precondition {
+      condition     = aws_instance.first.id != ""
+      error_message = "first must exist"
+    }
+  }
+}
+
+resource "aws_instance" "reader" {
+  ami = data.aws_instance.d.result
+}
+`, false, false)
+	require.NoError(t, err)
+
+	find := func(name string) *run.RegisterResourceRequest {
+		for i := range mock.RegisteredResources {
+			r := &mock.RegisteredResources[i]
+			if r.Type == "aws:index:Instance" && r.Name == name {
+				return r
+			}
+		}
+		return nil
+	}
+	firstURN := "urn:pulumi:test::project::aws:index:Instance::first"
+
+	for _, name := range []string{"pre", "post", "replace"} {
+		r := find(name)
+		require.NotNilf(t, r, "%s resource should be registered", name)
+		assert.Equal(t, []string{firstURN}, r.Dependencies)
+		assert.Empty(t, r.PropertyDependencies)
+	}
+
+	reader := find("reader")
+	require.NotNil(t, reader, "reader resource should be registered")
+	assert.Equal(t, []string{firstURN}, reader.Dependencies)
+	assert.Equal(t, map[string][]string{"ami": {firstURN}}, reader.PropertyDependencies)
 }

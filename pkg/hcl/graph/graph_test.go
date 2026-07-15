@@ -86,6 +86,167 @@ output "instance_id" {
 	}
 }
 
+func TestVariableValidationResourceRefSplitsNode(t *testing.T) {
+	t.Parallel()
+	// gate's validation references a resource, so the rules move to a
+	// validation node that owns "var.gate" while an internal value node
+	// evaluates the value. An InjectAfter barrier on variable nodes (as the
+	// runtime adds before walking) must then order value -> barrier ->
+	// resource -> validation without a cycle.
+	src := []byte(`
+resource "simple_resource" "r" {
+  input_one = "a"
+}
+
+variable "gate" {
+  type    = string
+  default = "a"
+
+  validation {
+    condition     = simple_resource.r.result == "${var.gate}-false"
+    error_message = "failed"
+  }
+}
+
+output "gate" {
+  value = var.gate
+}
+`)
+
+	p := parser.NewParser()
+	config, diags := p.ParseSource("test.hcl", src)
+	require.Empty(t, diags)
+
+	g, err := BuildFromConfig(config, nil, "")
+	require.NoError(t, err)
+
+	assert.Equal(t, NodeTypeVariableValidation, g.seen["var.gate"].n.Type)
+	assert.Equal(t, NodeTypeVariable, g.seen["var.gate!value"].n.Type)
+
+	barrierKey := "barrier"
+	require.NoError(t, g.InjectAfter(func(context.Context) error { return nil }, func(n *Node) bool {
+		return n.Type == NodeTypeVariable
+	}))
+
+	var sorted []string
+	err = g.dag.Walk(t.Context(), func(_ context.Context, n dagNode) error {
+		key := n.key
+		if n.exec != nil {
+			key = barrierKey
+		}
+		sorted = append(sorted, key)
+		return nil
+	}, pdag.MaxProcs(1))
+	require.NoError(t, err)
+
+	positions := make(map[string]int)
+	for i, key := range sorted {
+		positions[key] = i
+	}
+	assert.Less(t, positions["var.gate!value"], positions[barrierKey])
+	assert.Less(t, positions[barrierKey], positions["simple_resource.r"])
+	assert.Less(t, positions["simple_resource.r"], positions["var.gate"])
+	assert.Less(t, positions["var.gate"], positions["output.gate"])
+}
+
+func TestVariableValidationSelfRefKeepsSingleNode(t *testing.T) {
+	t.Parallel()
+	src := []byte(`
+variable "name" {
+  type = string
+
+  validation {
+    condition     = length(var.name) > 0
+    error_message = "empty"
+  }
+}
+`)
+
+	p := parser.NewParser()
+	config, diags := p.ParseSource("test.hcl", src)
+	require.Empty(t, diags)
+
+	g, err := BuildFromConfig(config, nil, "")
+	require.NoError(t, err)
+
+	assert.Equal(t, NodeTypeVariable, g.seen["var.name"].n.Type)
+	assert.NotContains(t, g.seen, "var.name!value")
+}
+
+func TestForcedCreateBeforeDestroy(t *testing.T) {
+	t.Parallel()
+	// c declares create_before_destroy and depends on b, which depends on a, so
+	// the behaviour propagates back to b and a. d is independent and unaffected.
+	src := []byte(`
+resource "aws_instance" "a" {
+  ami = "x"
+}
+
+resource "aws_instance" "b" {
+  ami = aws_instance.a.id
+}
+
+resource "aws_instance" "c" {
+  ami = aws_instance.b.id
+  lifecycle {
+    create_before_destroy = true
+  }
+}
+
+resource "aws_instance" "d" {
+  ami = "y"
+}
+`)
+
+	p := parser.NewParser()
+	config, diags := p.ParseSource("test.hcl", src)
+	require.Empty(t, diags)
+
+	g, err := BuildFromConfig(config, nil, "")
+	require.NoError(t, err)
+
+	assert.Equal(t, map[string]bool{
+		"aws_instance.a": true,
+		"aws_instance.b": true,
+		"aws_instance.c": true,
+	}, g.ForcedCreateBeforeDestroy())
+}
+
+func TestForcedCreateBeforeDestroyOverridesExplicitFalse(t *testing.T) {
+	t.Parallel()
+	// The dependency explicitly sets create_before_destroy = false, but a
+	// dependent has it true. The behaviour is forced onto the dependency
+	// anyway, matching tofu's auto-upgrade (a CBD node depending on a non-CBD
+	// one would otherwise create a cycle).
+	src := []byte(`
+resource "aws_instance" "dep" {
+  ami = "x"
+  lifecycle {
+    create_before_destroy = false
+  }
+}
+
+resource "aws_instance" "user" {
+  ami = aws_instance.dep.id
+  lifecycle {
+    create_before_destroy = true
+  }
+}
+`)
+
+	p := parser.NewParser()
+	config, diags := p.ParseSource("test.hcl", src)
+	require.Empty(t, diags)
+
+	g, err := BuildFromConfig(config, nil, "")
+	require.NoError(t, err)
+
+	assert.Equal(t, map[string]bool{
+		"aws_instance.dep":  true,
+		"aws_instance.user": true,
+	}, g.ForcedCreateBeforeDestroy())
+}
+
 func TestValidate(t *testing.T) {
 	t.Parallel()
 	g := NewGraph()

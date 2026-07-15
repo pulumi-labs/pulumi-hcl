@@ -27,6 +27,14 @@ import (
 // plain input change is an in-place update with a stable id. Its dependencies
 // are already folded into DependsOn, so the property-level entry is dropped too.
 //
+// The engine treats a null trigger on either side of a diff as "no trigger",
+// so a bare triggers_replace value could never diff against an absent one:
+// setting or clearing triggers_replace would go unnoticed. terraform_data
+// therefore always registers a non-null trigger, the fixed 2-tuple
+// [triggers_replace, replace_triggered_by trigger] (each null when absent),
+// which also keeps triggers_replace from clobbering a replace_triggered_by
+// trigger already captured on the options.
+//
 // input is optional in terraform_data but required by Stash, so an omitted input
 // is supplied as an explicit null: Stash stores it and mirrors it back as a null
 // output, matching terraform_data used purely for its triggers_replace lifecycle.
@@ -34,11 +42,10 @@ func lowerTerraformDataInputs(resType string, inputs property.Map, opts *Resourc
 	if resType != packages.TerraformDataType {
 		return inputs
 	}
-	if t, ok := inputs.GetOk("triggers_replace"); ok {
-		opts.ReplacementTrigger = t
-		inputs = inputs.Delete("triggers_replace")
-	}
+	triggers := inputs.Get("triggers_replace")
+	inputs = inputs.Delete("triggers_replace")
 	delete(opts.PropertyDependencies, "triggers_replace")
+	opts.ReplacementTrigger = property.New([]property.Value{triggers, opts.ReplacementTrigger})
 	if _, ok := inputs.GetOk("input"); !ok {
 		inputs = inputs.Set("input", property.New(property.Null))
 	}
@@ -50,11 +57,11 @@ func lowerTerraformDataInputs(resType string, inputs property.Map, opts *Resourc
 //
 // terraform_data's `output` mirrors `input`, read back from Stash's tracking
 // `input` output; `triggers_replace` is not a Stash output, so it is echoed
-// from the replacement trigger captured by lowerTerraformDataInputs.
+// from the trigger tuple encoded by lowerTerraformDataInputs.
 func lowerTerraformDataOutputs(resType string, outputs property.Map, opts *ResourceOptions) property.Map {
 	if resType != packages.TerraformDataType {
 		return outputs
 	}
 	outputs = outputs.Set("output", outputs.Get("input"))
-	return outputs.Set("triggers_replace", opts.ReplacementTrigger)
+	return outputs.Set("triggers_replace", opts.ReplacementTrigger.AsArray().Get(0))
 }

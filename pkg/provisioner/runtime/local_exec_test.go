@@ -55,6 +55,65 @@ func TestEvalStringUnmarksDepMarkedValue(t *testing.T) {
 	assert.Equal(t, "echo from-upstream", command)
 }
 
+func TestEvalStringMapCoercesValues(t *testing.T) {
+	t.Parallel()
+	body := parseBody(t, `
+command = "true"
+environment = {
+  COUNT = 5
+  FLAG  = true
+  NAME  = "x"
+  SKIP  = null
+}
+`)
+	content, diags := body.Content(localExecSchema)
+	require.False(t, diags.HasErrors(), diags.Error())
+
+	env, err := evalStringMap(content, "environment", &hcl.EvalContext{})
+	require.NoError(t, err)
+	assert.Equal(t, map[string]string{
+		"COUNT": "5",
+		"FLAG":  "true",
+		"NAME":  "x",
+	}, env)
+}
+
+func TestEvalStringMapRejectsNonMap(t *testing.T) {
+	t.Parallel()
+	body := parseBody(t, `
+command     = "true"
+environment = "not-a-map"
+`)
+	content, diags := body.Content(localExecSchema)
+	require.False(t, diags.HasErrors(), diags.Error())
+
+	_, err := evalStringMap(content, "environment", &hcl.EvalContext{})
+	assert.EqualError(t, err, "environment: map of string required, but have string")
+}
+
+func TestEvalHelpersCoerce(t *testing.T) {
+	t.Parallel()
+	body := parseBody(t, `
+command     = 5
+quiet       = "true"
+interpreter = ["/bin/sh", 42, null]
+`)
+	content, diags := body.Content(localExecSchema)
+	require.False(t, diags.HasErrors(), diags.Error())
+
+	command, err := evalString(content, "command", &hcl.EvalContext{})
+	require.NoError(t, err)
+	assert.Equal(t, "5", command)
+
+	quiet, err := evalOptionalBool(content, "quiet", &hcl.EvalContext{})
+	require.NoError(t, err)
+	assert.Equal(t, true, quiet)
+
+	interpreter, err := evalStringSlice(content, "interpreter", &hcl.EvalContext{})
+	require.NoError(t, err)
+	assert.Equal(t, []string{"/bin/sh", "42"}, interpreter)
+}
+
 func TestConfigSensitive(t *testing.T) {
 	t.Parallel()
 	body := parseBody(t, `command = "echo ${var_secret}"`)
