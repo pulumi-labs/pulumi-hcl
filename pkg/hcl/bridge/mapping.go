@@ -34,6 +34,9 @@ type FieldMapping struct {
 	// MaxItemsOne is true when a TF block is projected to Pulumi as a single
 	// object rather than a list of objects. Only meaningful when TFBlock.
 	MaxItemsOne bool
+	// TFSet is true when the TF schema types this field as TypeSet — an
+	// unordered collection — whether a set of blocks or a set-typed attribute.
+	TFSet bool
 	// Nested is the inner-body mapping for fields with named nested fields:
 	// blocks (TFBlock) and object-typed attributes (nested attributes).
 	Nested *BodyMapping
@@ -133,6 +136,7 @@ func bodyMappingFromSchema(sm shim.SchemaMap, overrides map[string]*tfbridge.Sch
 		fm := &FieldMapping{
 			TFName:     tfName,
 			PulumiName: tfbridge.TerraformToPulumiNameV2(tfName, sm, overrides),
+			TFSet:      sch.Type() == shim.TypeSet,
 		}
 		if elemRes, isBlock := elemAsResource(sch); isBlock {
 			fm.TFBlock = true

@@ -1175,6 +1175,11 @@ func propertyObjectToCtyMap(path string, m property.Map, properties []*schema.Pr
 		// re-wrap them as singleton lists on output so HCL source like
 		// `r.settings[0].x` resolves the same way as in TF.
 		singularBlock := mapping != nil && fieldIsSingularBlock(mapping, p.Name)
+		// A TF TypeSet field (set block or set attribute) materializes as a
+		// cty set, so set semantics — content-based, order-independent
+		// equality — match TF. The Pulumi wire encoding carries it as an
+		// ordered array; re-type it on the way back out.
+		setField := mapping != nil && fieldIsSet(mapping, p.Name)
 		v, ok := m.GetOk(p.Name)
 		// During preview, required properties that are null are treated as unknown.
 		// This is because resource.Computed{} (the SDK's representation of an unknown value)
@@ -1185,6 +1190,9 @@ func propertyObjectToCtyMap(path string, m property.Map, properties []*schema.Pr
 			t := ctyTypeFromType(p.Type, nested)
 			if singularBlock && !t.IsListType() && !t.IsTupleType() {
 				t = cty.List(t)
+			}
+			if setField && t.IsListType() {
+				t = cty.Set(t.ElementType())
 			}
 			if dryRun {
 				result[hclName] = cty.UnknownVal(t)
@@ -1218,6 +1226,9 @@ func propertyObjectToCtyMap(path string, m property.Map, properties []*schema.Pr
 				convertedV = cty.TupleVal([]cty.Value{convertedV})
 			}
 		}
+		if setField {
+			convertedV = ctySetFromSequence(convertedV)
+		}
 		result[hclName] = convertedV
 	}
 
@@ -1236,6 +1247,46 @@ func fieldIsSingularBlock(mapping *bridge.BodyMapping, pulumiName string) bool {
 		}
 	}
 	return false
+}
+
+// fieldIsSet reports whether the Pulumi property is a TF TypeSet field per
+// the bridge mapping.
+func fieldIsSet(mapping *bridge.BodyMapping, pulumiName string) bool {
+	if mapping == nil {
+		return false
+	}
+	for _, fm := range mapping.Fields {
+		if fm.PulumiName == pulumiName {
+			return fm.TFSet
+		}
+	}
+	return false
+}
+
+// ctySetFromSequence re-types a re-expanded TF TypeSet field from the ordered
+// list/tuple the Pulumi wire encoding carries to the cty set TF materializes.
+// A tuple whose element types cannot unify keeps its original type. Sets
+// cannot carry per-element marks, so element marks are lifted to the set.
+func ctySetFromSequence(v cty.Value) cty.Value {
+	v, marks := v.Unmark()
+	t := v.Type()
+	switch {
+	case t.IsListType() && !v.IsKnown():
+		v = cty.UnknownVal(cty.Set(t.ElementType()))
+	case t.IsListType() && v.IsNull():
+		v = cty.NullVal(cty.Set(t.ElementType()))
+	case t.IsListType():
+		if converted, err := convert.Convert(v, cty.Set(t.ElementType())); err == nil {
+			v = converted
+		}
+	case t.IsTupleType():
+		// A tuple has no single element type; a dynamic-element set asks
+		// convert to unify the per-element types.
+		if converted, err := convert.Convert(v, cty.Set(cty.DynamicPseudoType)); err == nil {
+			v = converted
+		}
+	}
+	return v.WithMarks(marks)
 }
 
 func convertToSchemaCtyType(path string, val cty.Value, typ schema.Type) (cty.Value, error) {
@@ -1389,6 +1440,10 @@ func ctyObjectTypeRec(
 		// types the same way it resolves at runtime (see propertyObjectToCtyMap).
 		if fieldIsSingularBlock(mapping, p.Name) && !t.IsListType() && !t.IsTupleType() {
 			t = cty.List(t)
+		}
+		// A TF TypeSet field is set-typed; see propertyObjectToCtyMap.
+		if fieldIsSet(mapping, p.Name) && t.IsListType() {
+			t = cty.Set(t.ElementType())
 		}
 		attrs[key] = t
 	}
