@@ -4657,6 +4657,149 @@ resource "simple_resource" "r" {
 		"the resource must bind to the provider instance selected by its key")
 }
 
+// An aliased provider passed into a module via `providers` must survive a
+// second hop into a nested module, whether re-passed explicitly or inherited
+// implicitly as the nested call's default.
+func TestEngine_ProviderResolution_AliasedPassThroughSecondHop(t *testing.T) {
+	t.Parallel()
+
+	tmpDir := t.TempDir()
+	explicitInnerDir := tmpDir + "/modules/outer/inner"
+	implicitInnerDir := tmpDir + "/modules/outer_implicit/inner"
+	require.NoError(t, os.MkdirAll(explicitInnerDir, 0o755))
+	require.NoError(t, os.MkdirAll(implicitInnerDir, 0o755))
+
+	require.NoError(t, os.WriteFile(tmpDir+"/main.tf", []byte(`
+provider "simple" {
+  prefix = "default"
+}
+
+provider "simple" {
+  alias  = "special"
+  prefix = "special"
+}
+
+module "outer" {
+  source = "./modules/outer"
+  providers = {
+    simple = simple.special
+  }
+}
+
+module "outer_implicit" {
+  source = "./modules/outer_implicit"
+  providers = {
+    simple = simple.special
+  }
+}
+`), 0o644))
+
+	require.NoError(t, os.WriteFile(tmpDir+"/modules/outer/main.tf", []byte(`
+module "inner" {
+  source = "./inner"
+  providers = {
+    simple = simple
+  }
+}
+`), 0o644))
+
+	require.NoError(t, os.WriteFile(explicitInnerDir+"/main.tf", []byte(`
+resource "simple_resource" "r" {
+  input = "explicit"
+}
+`), 0o644))
+
+	require.NoError(t, os.WriteFile(tmpDir+"/modules/outer_implicit/main.tf", []byte(`
+terraform {
+  required_providers {
+    simple = {
+      source = "hashicorp/simple"
+    }
+  }
+}
+
+module "inner" {
+  source = "./inner"
+}
+`), 0o644))
+
+	require.NoError(t, os.WriteFile(implicitInnerDir+"/main.tf", []byte(`
+terraform {
+  required_providers {
+    simple = {
+      source = "hashicorp/simple"
+    }
+  }
+}
+
+resource "simple_resource" "r" {
+  input = "implicit"
+}
+`), 0o644))
+
+	p := parser.NewParser()
+	config, diags := p.ParseDirectory(tmpDir)
+	require.False(t, diags.HasErrors(), "parse error: %s", diags.Error())
+
+	mock := &testutil.MockResourceMonitor{}
+	engine := newTestEngine(t, config, &run.EngineOptions{
+		ModuleLoader:    testLiveModuleLoader(t),
+		ProjectName:     "test-project",
+		StackName:       "dev",
+		ResourceMonitor: mock,
+		WorkDir:         tmpDir,
+		RootDir:         tmpDir,
+		SchemaLoader: schemaloader.New(t, schema.PackageSpec{
+			Name: "simple",
+			Provider: &schema.ResourceSpec{
+				InputProperties: map[string]schema.PropertySpec{
+					"prefix": {TypeSpec: schema.TypeSpec{Type: "string"}},
+				},
+			},
+			Resources: map[string]schema.ResourceSpec{
+				"simple:index:Resource": {
+					InputProperties: map[string]schema.PropertySpec{
+						"input": {TypeSpec: schema.TypeSpec{Type: "string"}},
+					},
+					ObjectTypeSpec: schema.ObjectTypeSpec{
+						Properties: map[string]schema.PropertySpec{
+							"input": {TypeSpec: schema.TypeSpec{Type: "string"}},
+						},
+					},
+				},
+			},
+		}),
+	})
+
+	require.NoError(t, engine.Run(t.Context()))
+
+	var specialProvider *run.RegisterResourceRequest
+	resources := map[string]*run.RegisterResourceRequest{}
+	for i := range mock.RegisteredResources {
+		r := &mock.RegisteredResources[i]
+		switch r.Type {
+		case "pulumi:providers:simple":
+			if v, ok := r.Inputs.GetOk("prefix"); ok && v.IsString() && v.AsString() == "special" {
+				specialProvider = r
+			}
+		case "simple:index:Resource":
+			if v, ok := r.Inputs.GetOk("input"); ok && v.IsString() {
+				resources[v.AsString()] = r
+			}
+		}
+	}
+	require.NotNil(t, specialProvider, "the aliased provider block should register")
+	require.NotNil(t, resources["explicit"], "the explicitly re-passed resource should register")
+	require.NotNil(t, resources["implicit"], "the implicitly inheriting resource should register")
+
+	specialRef := "urn:pulumi:test::project::" + specialProvider.Type + "::" + specialProvider.Name +
+		"::" + specialProvider.Name + "-id"
+	assert.Equal(t, specialRef, resources["explicit"].Provider,
+		"an explicit `providers = { simple = simple }` re-pass must carry the aliased config")
+	assert.Equal(t, specialRef, resources["implicit"].Provider,
+		"an implicit nested call must inherit the middle module's passed-in default")
+}
+
 func TestEngine_ProviderResolution_ChildModuleBlockWins(t *testing.T) {
 	t.Parallel()
 

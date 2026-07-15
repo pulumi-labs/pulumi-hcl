@@ -251,6 +251,9 @@ type moduleInstance struct {
 	// leaf [modulepath.Step] carries the count index or for_each key, if
 	// any.
 	Path modulepath.Path
+	// ModuleInfo describes the module call this instance belongs to,
+	// shared by every instance of the call.
+	ModuleInfo *graph.ModuleInfo
 	// Name is the resolved Pulumi logical name of this instance's component:
 	// a `pulumi { name = ... }` override when present, else the parent
 	// instance's Name joined to this instance's step with ".". It prefixes
@@ -1043,7 +1046,9 @@ func (e *Engine) registerProvider(
 // resolvePassThroughProvider looks up a provider passed into a module via
 // `providers = { <localKey> = <parentExpr> }` and returns the resolved
 // URN::ID, or "" when the resource isn't in a module, there's no entry for
-// localKey, or the parent expression doesn't yield a provider reference.
+// localKey, or the parent expression doesn't yield a provider reference. An
+// expression the parent's scope doesn't bind is chased recursively through
+// the parent's own pass-through entries.
 func (e *Engine) resolvePassThroughProvider(modInfo *graph.ModuleInfo, localKey string) string {
 	if modInfo == nil || modInfo.Module == nil || localKey == "" {
 		return ""
@@ -1052,19 +1057,28 @@ func (e *Engine) resolvePassThroughProvider(modInfo *graph.ModuleInfo, localKey 
 	if !ok {
 		return ""
 	}
-	parentCtx := e.parentEvalContext(modInfo)
-	if parentCtx == nil {
-		return ""
+	if parentCtx := e.parentEvalContext(modInfo); parentCtx != nil {
+		val, diags := eval.NewEvaluator(parentCtx).EvaluateExpression(passExpr)
+		if !diags.HasErrors() {
+			if ref, err := providerRefFromCty(val); err == nil {
+				return ref
+			}
+		}
 	}
-	val, diags := eval.NewEvaluator(parentCtx).EvaluateExpression(passExpr)
-	if diags.HasErrors() {
-		return ""
+	return e.resolvePassThroughProvider(e.parentModuleInfo(modInfo), providerExprKey(passExpr))
+}
+
+// parentModuleInfo returns the ModuleInfo of the module call enclosing
+// modInfo, or nil when the parent is the root config (or has no instances).
+func (e *Engine) parentModuleInfo(modInfo *graph.ModuleInfo) *graph.ModuleInfo {
+	if modInfo.ParentPrefix() == "" {
+		return nil
 	}
-	ref, err := providerRefFromCty(val)
-	if err != nil {
-		return ""
+	insts, ok := e.moduleInstances.Get(modInfo.ParentPath())
+	if !ok || len(insts) == 0 {
+		return nil
 	}
-	return ref
+	return insts[0].ModuleInfo
 }
 
 // resolveExplicitProvider resolves a resource/data source `provider = ...`
@@ -1101,10 +1115,11 @@ func (e *Engine) resolveExplicitProvider(
 	return "", nil
 }
 
-// inheritedDefaultProvider walks up the module tree from modInfo, returning the
-// nearest ancestor's registered un-aliased default provider config for pkg
-// (URN::ID), or "" if none. The graph adds a matching edge so that block is
-// registered before this resolves.
+// inheritedDefaultProvider walks up the module tree from modInfo, returning
+// the nearest ancestor's un-aliased default provider config for pkg
+// (URN::ID), or "" if none. An ancestor's default is its own registered block
+// or one passed to it through its module call. The graph adds a matching edge
+// so that block is registered before this resolves.
 func (e *Engine) inheritedDefaultProvider(modInfo *graph.ModuleInfo, pkg string) string {
 	for path := modInfo.Path; ; {
 		parent, _, ok := path.Parent()
@@ -1113,6 +1128,11 @@ func (e *Engine) inheritedDefaultProvider(modInfo *graph.ModuleInfo, pkg string)
 		}
 		if outputs, ok := e.resourceOutputs.Get(parent.PrefixString() + pkg); ok {
 			if ref, err := providerRefFromCty(outputs); err == nil {
+				return ref
+			}
+		}
+		if insts, ok := e.moduleInstances.Get(parent); ok && len(insts) > 0 {
+			if ref := e.resolvePassThroughProvider(insts[0].ModuleInfo, pkg); ref != "" {
 				return ref
 			}
 		}
@@ -3746,15 +3766,16 @@ func (e *Engine) initModuleCallIn(
 		instCtx.SetProviderFunctions(moduleFunctions)
 		instCtx.SetModuleName(instName)
 		return &moduleInstance{
-			Path:    instPath,
-			Name:    instName,
-			EvalCtx: instCtx,
-			URN:     componentURN,
-			Parent:  parent,
-			Index:   index,
-			EachKey: eachKey,
-			EachVal: eachVal,
-			Outputs: make(map[string]cty.Value),
+			Path:       instPath,
+			ModuleInfo: modInfo,
+			Name:       instName,
+			EvalCtx:    instCtx,
+			URN:        componentURN,
+			Parent:     parent,
+			Index:      index,
+			EachKey:    eachKey,
+			EachVal:    eachVal,
+			Outputs:    make(map[string]cty.Value),
 		}, nil
 	}
 
