@@ -60,7 +60,6 @@ func (m *MockResourceMonitor) RegisterResource(ctx context.Context, req run.Regi
 	if req.Type == "pulumi:pulumi:Stack" {
 		m.stackURN = resURN
 	}
-	hooks := m.hooks
 	m.mu.Unlock()
 
 	// The mock has no state, so every registration is treated as a create.
@@ -71,7 +70,7 @@ func (m *MockResourceMonitor) RegisterResource(ctx context.Context, req run.Regi
 		NewInputs: req.Inputs,
 	}
 	if req.Hooks != nil {
-		if err := m.runHooks(ctx, hooks, req.Hooks.BeforeCreate, args); err != nil {
+		if err := m.runHooks(ctx, req.Hooks.BeforeCreate, args); err != nil {
 			return nil, err
 		}
 	}
@@ -99,7 +98,7 @@ func (m *MockResourceMonitor) RegisterResource(ctx context.Context, req run.Regi
 	if req.Hooks != nil {
 		args.NewOutputs = resp.Outputs
 		args.ID = resp.ID
-		if err := m.runHooks(ctx, hooks, req.Hooks.AfterCreate, args); err != nil {
+		if err := m.runHooks(ctx, req.Hooks.AfterCreate, args); err != nil {
 			return resp, err
 		}
 	}
@@ -125,11 +124,20 @@ func (m *MockResourceMonitor) ReadResource(ctx context.Context, req run.ReadReso
 	}, nil
 }
 
+// getHook looks up a registered hook under the lock. Hook callbacks must run
+// outside the lock because they can re-enter the monitor.
+func (m *MockResourceMonitor) getHook(name string) (registeredHook, bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	h, ok := m.hooks[name]
+	return h, ok
+}
+
 func (m *MockResourceMonitor) runHooks(
-	ctx context.Context, hooks map[string]registeredHook, names []string, args *run.ResourceHookArgs,
+	ctx context.Context, names []string, args *run.ResourceHookArgs,
 ) error {
 	for _, name := range names {
-		h, ok := hooks[name]
+		h, ok := m.getHook(name)
 		if !ok {
 			return fmt.Errorf("hook %q not registered", name)
 		}
