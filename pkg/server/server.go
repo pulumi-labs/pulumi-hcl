@@ -196,7 +196,8 @@ func (host *LanguageHost) GetRequiredPackages(
 		// parameterization that a `required_providers` entry alone lacks. Prefer
 		// it even for pulumi-sourced packages, whose parameterized form resolves
 		// to a base provider plus parameter rather than a plain dependency. The
-		// raw source it shadows must not also be installed.
+		// raw source it shadows must not also be installed. An extension package
+		// reports its base provider with the parameter in the extension slot.
 		info, ok := paramInfos[alias]
 		if !ok {
 			continue
@@ -206,11 +207,21 @@ func (host *LanguageHost) GetRequiredPackages(
 			Version:          versionString(info.Version),
 			Kind:             "resource",
 			Parameterization: parameterizationProto(info.Parameterization),
+			Extension:        parameterizationProto(info.ExtensionParameterization),
 		})
 		req := aliases[alias]
 		delete(tfSpecs, tfProviderSource(alias, req))
 		if req.IsPulumi() {
 			delete(pulumiPkgs, pulumiPackageName(alias, req.Source))
+		}
+		// An extension's resource tokens live in the base provider's namespace,
+		// so a program that uses only extension resources infers a bare
+		// terraform-provider requirement for the base. That base is served by
+		// the extension reported above, so drop the inferred spec. A base that
+		// is separately declared in required_providers (used directly by a base
+		// resource) stays in pulumiPkgs and is still reported.
+		if info.ExtensionParameterization != nil {
+			delete(tfSpecs, tfProviderSource(info.Name, aliases[info.Name]))
 		}
 	}
 
@@ -319,11 +330,28 @@ func missingNonPulumiSDKs(
 		if isBuiltinProvider(alias) || aliases[alias].IsPulumi() {
 			continue
 		}
-		if _, ok := sdks[alias]; !ok {
-			missing = append(missing, alias)
+		if _, ok := sdks[alias]; ok {
+			continue
 		}
+		// An extension resource's type namespace is its base provider name; the
+		// base is served by the extension's SDK, so it is not itself missing.
+		if isExtensionBase(sdks, alias) {
+			continue
+		}
+		missing = append(missing, alias)
 	}
 	return missing
+}
+
+// isExtensionBase reports whether name is the base provider of some extension
+// package described in sdks.
+func isExtensionBase(sdks map[string]workspace.PackageDescriptor, name string) bool {
+	for _, d := range sdks {
+		if d.ExtensionParameterization != nil && d.Name == name {
+			return true
+		}
+	}
+	return false
 }
 
 func isBuiltinProvider(alias string) bool { return alias == "pulumi" || alias == "terraform" }
@@ -537,9 +565,12 @@ func (host *LanguageHost) Run(
 		}, nil
 	}
 
-	loader := schema.ReferenceLoader(schemaLoader)
+	// Cache the underlying loader, then wrap with the parameterization-aware
+	// loader so it stays the outermost layer — the resolver type-asserts it to
+	// discover extension schemas that a token's base package omits.
+	loader := schema.ReferenceLoader(schema.NewCachedLoader(schemaLoader))
 	if len(paramDescriptors) > 0 {
-		loader = packages.NewParameterizationAwareLoader(schemaLoader, paramDescriptors)
+		loader = packages.NewParameterizationAwareLoader(loader, paramDescriptors)
 	}
 
 	req.Parallel = max(req.Parallel, 1) // (req.Parallel <= 1) => serial
@@ -562,7 +593,7 @@ func (host *LanguageHost) Run(
 		Config:                  configMap,
 		DryRun:                  req.DryRun,
 		ResourceMonitor:         resmon,
-		SchemaLoader:            schema.NewCachedLoader(loader),
+		SchemaLoader:            loader,
 		ProviderInfoSource:      providerInfoSource,
 		WorkDir:                 req.Info.ProgramDirectory,
 		RootDir:                 req.Info.RootDirectory,
@@ -930,7 +961,7 @@ func (host *LanguageHost) GenerateProject(
 		if err := json.Unmarshal(data, &desc); err != nil {
 			continue
 		}
-		if desc.Parameterization == nil {
+		if desc.Parameterization == nil && desc.ExtensionParameterization == nil {
 			continue
 		}
 		sdkDir := filepath.Join(programDir, "sdks", alias)
@@ -1011,6 +1042,24 @@ func packageDescriptorFromSchema(schemaJSON []byte) (workspace.PackageDescriptor
 			Value:   spec.Parameterization.Parameter,
 		}
 		desc.Name = spec.Parameterization.BaseProvider.Name
+		desc.Version = &baseVersion
+	}
+
+	// An extension parameterizes a base provider without replacing it: its
+	// resource tokens live in the base provider's namespace, so the descriptor
+	// names the base provider and carries the extension in the extension slot.
+	if spec.ExtensionParameterization != nil {
+		baseVersion, err := semver.Parse(spec.ExtensionParameterization.BaseProvider.Version)
+		if err != nil {
+			return workspace.PackageDescriptor{}, fmt.Errorf(
+				"parsing base provider version %q: %w", spec.ExtensionParameterization.BaseProvider.Version, err)
+		}
+		desc.ExtensionParameterization = &workspace.Parameterization{
+			Name:    desc.Name,
+			Version: *desc.Version,
+			Value:   spec.ExtensionParameterization.Parameter,
+		}
+		desc.Name = spec.ExtensionParameterization.BaseProvider.Name
 		desc.Version = &baseVersion
 	}
 
@@ -1095,6 +1144,13 @@ func registerPackage(
 			Name:    pkg.Parameterization.Name,
 			Version: pkg.Parameterization.Version.String(),
 			Value:   pkg.Parameterization.Value,
+		}
+	}
+	if pkg.ExtensionParameterization != nil {
+		req.Extension = &pulumirpc.Parameterization{
+			Name:    pkg.ExtensionParameterization.Name,
+			Version: pkg.ExtensionParameterization.Version.String(),
+			Value:   pkg.ExtensionParameterization.Value,
 		}
 	}
 	resp, err := client.RegisterPackage(ctx, req)
