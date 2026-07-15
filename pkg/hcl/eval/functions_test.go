@@ -30,6 +30,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/zclconf/go-cty/cty"
+	"golang.org/x/crypto/ssh"
 )
 
 func evalExpr(t *testing.T, baseDir, src string) cty.Value {
@@ -648,6 +649,51 @@ func TestRsaDecryptPKCS8(t *testing.T) {
 	}
 }
 
+func TestRsaDecryptOpenSSH(t *testing.T) {
+	t.Parallel()
+	privateKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatalf("Failed to generate RSA key: %v", err)
+	}
+
+	message := "openssh secret"
+
+	//nolint:staticcheck // SA1019: Using deprecated function for Terraform compatibility testing
+	ciphertext, err := rsa.EncryptPKCS1v15(rand.Reader, &privateKey.PublicKey, []byte(message))
+	if err != nil {
+		t.Fatalf("Failed to encrypt: %v", err)
+	}
+	ciphertextB64 := base64.StdEncoding.EncodeToString(ciphertext)
+
+	block, err := ssh.MarshalPrivateKey(privateKey, "")
+	if err != nil {
+		t.Fatalf("Failed to marshal OpenSSH key: %v", err)
+	}
+	pemStr := string(pem.EncodeToMemory(block))
+
+	ctx := &hcl.EvalContext{
+		Functions: Functions("/tmp"),
+		Variables: map[string]cty.Value{
+			"ciphertext": cty.StringVal(ciphertextB64),
+			"privatekey": cty.StringVal(pemStr),
+		},
+	}
+
+	expr, diags := hclsyntax.ParseExpression([]byte(`rsadecrypt(ciphertext, privatekey)`), "test.hcl", hcl.Pos{Line: 1, Column: 1})
+	if diags.HasErrors() {
+		t.Fatalf("Failed to parse expression: %s", diags.Error())
+	}
+
+	result, diags := expr.Value(ctx)
+	if diags.HasErrors() {
+		t.Fatalf("Failed to evaluate rsadecrypt with OpenSSH key: %s", diags.Error())
+	}
+
+	if result.AsString() != message {
+		t.Errorf("Expected %q, got %q", message, result.AsString())
+	}
+}
+
 func TestRsaDecryptErrors(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
@@ -666,7 +712,7 @@ func TestRsaDecryptErrors(t *testing.T) {
 			name:       "invalid pem",
 			ciphertext: "aGVsbG8=",
 			privatekey: "not a pem key",
-			errContain: "invalid PEM",
+			errContain: "invalid private key",
 		},
 	}
 
