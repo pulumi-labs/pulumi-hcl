@@ -15,73 +15,11 @@
 package tfcompat_test
 
 import (
-	"context"
-	"sync"
 	"testing"
-	"time"
-
-	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
-	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
 
 	"github.com/pulumi-labs/pulumi-hcl/tests/testutil/tfcompat"
+	"github.com/pulumi-labs/pulumi-hcl/tests/testutil/tfcompat/providers"
 )
-
-// orderDepProvider exposes `orderdep_resource`, which enforces destroy
-// ordering. Each resource has a `name` and an optional `needs` (the name of
-// the resource it depends on). A resource that declares `needs` sleeps during
-// its own Delete and then asserts its dependency has not been deleted yet. So
-// the dependency must be destroyed *after* the dependent; if it is destroyed
-// first, the dependent's Delete fails.
-//
-// The `deleted` set is captured per factory call (one per runtime), so the
-// concurrently-run tofu and pulumi runtimes keep independent state, mirroring
-// providers.OrderingProvider.
-func orderDepProvider() *schema.Provider {
-	var mu sync.Mutex
-	deleted := map[string]bool{}
-
-	return &schema.Provider{
-		ResourcesMap: map[string]*schema.Resource{
-			"orderdep_resource": {
-				Schema: map[string]*schema.Schema{
-					"name":   {Type: schema.TypeString, Required: true},
-					"needs":  {Type: schema.TypeString, Optional: true},
-					"result": {Type: schema.TypeString, Computed: true},
-				},
-				CreateContext: func(_ context.Context, d *schema.ResourceData, _ any) diag.Diagnostics {
-					name, _ := d.Get("name").(string)
-					d.SetId(name)
-					if err := d.Set("result", name); err != nil {
-						return diag.FromErr(err)
-					}
-					return nil
-				},
-				ReadContext:   func(_ context.Context, _ *schema.ResourceData, _ any) diag.Diagnostics { return nil },
-				UpdateContext: func(_ context.Context, _ *schema.ResourceData, _ any) diag.Diagnostics { return nil },
-				DeleteContext: func(_ context.Context, d *schema.ResourceData, _ any) diag.Diagnostics {
-					name, _ := d.Get("name").(string)
-					needs, _ := d.Get("needs").(string)
-					if needs != "" {
-						// Give an out-of-order delete of `needs` time to land.
-						time.Sleep(3 * time.Second)
-						mu.Lock()
-						already := deleted[needs]
-						mu.Unlock()
-						if already {
-							return diag.Errorf(
-								"orderdep_resource %q: its dependency %q was destroyed first; "+
-									"destroy order was not honored", name, needs)
-						}
-					}
-					mu.Lock()
-					deleted[name] = true
-					mu.Unlock()
-					return nil
-				},
-			},
-		},
-	}
-}
 
 // TestL2CountRefDestroyOrder proves that a reference expressed only through a
 // resource's `count` meta-argument establishes a dependency that governs
@@ -94,7 +32,7 @@ func TestL2CountRefDestroyOrder(t *testing.T) {
 	t.Parallel()
 	tfcompat.RunCase(t, "l2_count_ref_destroy_order", tfcompat.Case{
 		Providers: []tfcompat.Provider{
-			{Name: "orderdep", Factory: orderDepProvider},
+			{Name: "orderdep", Factory: providers.OrderDepProvider},
 		},
 		Stages: []tfcompat.Stage{
 			{Mode: tfcompat.StageApply},
