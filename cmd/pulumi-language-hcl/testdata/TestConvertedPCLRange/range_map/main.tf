@@ -12,6 +12,9 @@ resource "test_item" "myItem" {
     "a" = "alpha"
     "b" = "bravo"
   }
+  pulumi {
+    name ="myItem-${each.key}"
+  }
   lifecycle {
     create_before_destroy = true
   }

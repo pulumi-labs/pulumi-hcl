@@ -1014,7 +1014,7 @@ func (g *generator) genInvokeDataSource(body *hclwrite.Body, ds spilledDataSourc
 	// give the data block its own matching range so the rewrite in
 	// scopeTraversalTokens (range.* → each.* / count.index) is well-bound.
 	if ds.parentResource != nil && ds.parentResource.Options != nil && ds.parentResource.Options.Range != nil {
-		d := g.genRange(block.Body(), ds.parentResource.Options.Range)
+		_, d := g.genRange(block.Body(), ds.parentResource.Options.Range)
 		diags = append(diags, d...)
 		defer func() { g.currentRangeKind = rangeKindNone }()
 	}
@@ -1292,8 +1292,14 @@ func (g *generator) genResourceOptions(body *hclwrite.Body, r *pcl.Resource) hcl
 
 	// Terraform-standard meta-arguments stay at the top level.
 	if opts.Range != nil {
-		d := g.genRange(body, opts.Range)
+		naming, d := g.genRange(body, opts.Range)
 		diags = append(diags, d...)
+		// Pin per-instance names to the "<name>-<key>" scheme the other
+		// languages' generated programs use; the runtime would otherwise
+		// derive Terraform-style "<name>[<key>]" names.
+		if tokens := instanceNameTokens(naming, r.LogicalName()); tokens != nil {
+			pulumiBody().SetAttributeRaw("name", tokens)
+		}
 	}
 
 	if opts.Provider != nil {
@@ -1424,31 +1430,44 @@ func (g *generator) genResourceOptions(body *hclwrite.Body, r *pcl.Resource) hcl
 	return diags
 }
 
-// genRange emits a count or for_each meta-argument based on the PCL range expression type.
-func (g *generator) genRange(body *hclwrite.Body, rangeExpr model.Expression) hcl.Diagnostics {
+// instanceNaming describes how a range shapes the Pulumi logical names of the
+// instances it creates.
+type instanceNaming int
+
+const (
+	instanceNamingNone  instanceNaming = iota // bool range: one unsuffixed instance
+	instanceNamingIndex                       // number count: keyed by count.index
+	instanceNamingKey                         // for_each: keyed by each.key
+)
+
+// genRange emits a count or for_each meta-argument based on the PCL range
+// expression type, and reports how the range keys its instances' names.
+func (g *generator) genRange(body *hclwrite.Body, rangeExpr model.Expression) (instanceNaming, hcl.Diagnostics) {
 	rangeType := model.ResolveOutputs(rangeExpr.Type())
 
 	switch {
 	case model.InputType(model.BoolType).ConversionFrom(rangeType) == model.SafeConversion:
 		tokens, d := g.exprTokens(rangeExpr, schema.AnyType)
 		if d.HasErrors() {
-			return d
+			return instanceNamingNone, d
 		}
 		body.SetAttributeRaw("count", tokens)
 		g.currentRangeKind = rangeKindCount
+		return instanceNamingNone, nil
 
 	case model.InputType(model.NumberType).ConversionFrom(rangeType) == model.SafeConversion:
 		tokens, d := g.exprTokens(rangeExpr, schema.AnyType)
 		if d.HasErrors() {
-			return d
+			return instanceNamingNone, d
 		}
 		body.SetAttributeRaw("count", tokens)
 		g.currentRangeKind = rangeKindCount
+		return instanceNamingIndex, nil
 
 	default:
 		exprTokens, d := g.exprTokens(rangeExpr, schema.AnyType)
 		if d.HasErrors() {
-			return d
+			return instanceNamingNone, d
 		}
 		var tokens hclwrite.Tokens
 		switch rangeType.(type) {
@@ -1459,8 +1478,27 @@ func (g *generator) genRange(body *hclwrite.Body, rangeExpr model.Expression) hc
 		}
 		body.SetAttributeRaw("for_each", tokens)
 		g.currentRangeKind = rangeKindForEach
+		return instanceNamingKey, nil
 	}
-	return nil
+}
+
+// instanceNameTokens builds the `pulumi { name = ... }` template that pins a
+// ranged resource's per-instance Pulumi names to the "<name>-<key>" scheme
+// PCL codegen produces in every other language (e.g. "res-${count.index}").
+// Returns nil when the range creates a single unsuffixed instance.
+func instanceNameTokens(naming instanceNaming, logicalName string) hclwrite.Tokens {
+	var key string
+	switch naming {
+	case instanceNamingIndex:
+		key = "count.index"
+	case instanceNamingKey:
+		key = "each.key"
+	default:
+		return nil
+	}
+	return hclwrite.Tokens{
+		{Type: hclsyntax.TokenQuotedLit, Bytes: fmt.Appendf(nil, `"%s-${%s}"`, logicalName, key)},
+	}
 }
 
 // wrapListAsMapForEach generates `{ for __key, __value in <expr> : tostring(__key) => __value }`.
@@ -1915,7 +1953,7 @@ func (g *generator) genModule(body *hclwrite.Body, c *pcl.Component) hcl.Diagnos
 	var diags hcl.Diagnostics
 
 	if c.Options != nil && c.Options.Range != nil {
-		d := g.genRange(block.Body(), c.Options.Range)
+		_, d := g.genRange(block.Body(), c.Options.Range)
 		diags = append(diags, d...)
 	}
 

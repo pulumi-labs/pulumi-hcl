@@ -9,6 +9,9 @@ terraform {
 
 resource "nestedobject_target" "item" {
   count = 2
+  pulumi {
+    name ="item-${count.index}"
+  }
   lifecycle {
     create_before_destroy = true
   }

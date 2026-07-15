@@ -14,6 +14,9 @@ data "test_echo" "invoke_0" {
 
 resource "test_item" "inbound" {
   count = 2
+  pulumi {
+    name ="inbound-${count.index}"
+  }
   lifecycle {
     create_before_destroy = true
   }

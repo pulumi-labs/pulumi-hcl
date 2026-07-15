@@ -9,6 +9,9 @@ terraform {
 
 resource "test_item" "myItem" {
   count = 3
+  pulumi {
+    name ="myItem-${count.index}"
+  }
   lifecycle {
     create_before_destroy = true
   }
