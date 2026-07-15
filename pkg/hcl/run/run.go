@@ -1789,7 +1789,7 @@ func (e *Engine) buildResourceOptionsInContext(
 	}
 
 	// Handle import blocks - resolve import ID from import blocks that target this resource
-	opts.ImportId = e.resolveImportId(res)
+	opts.ImportId = e.resolveImportId(res, instance.Index, instance.EachKeyString(), modInst)
 
 	hclCtx := evalCtx.HCLContext()
 
@@ -1951,10 +1951,10 @@ func (e *Engine) buildResourceOptionsInContext(
 	return opts, nil
 }
 
-// movedAddr is a parsed `moved` block address: optional module-call steps
-// followed by an optional resource. A whole-module-call address (e.g.
-// `module.a`) has an empty Type.
-type movedAddr struct {
+// targetAddr is a parsed `moved` or `import` block address: optional
+// module-call steps followed by an optional resource. A whole-module-call
+// address (e.g. `module.a`) has an empty Type.
+type targetAddr struct {
 	modules  []modulepath.Step // module-call steps, outermost first
 	Type     string            // resource type, or "" for a whole-module-call address
 	Name     string            // resource name
@@ -1963,12 +1963,13 @@ type movedAddr struct {
 }
 
 // keyed reports whether the address names a specific count/for_each instance.
-func (a movedAddr) keyed() bool { return a.keyIndex != nil || a.keyEach != nil }
+func (a targetAddr) keyed() bool { return a.keyIndex != nil || a.keyEach != nil }
 
-// parseMovedAddr decodes a `moved` from/to traversal into its module-call steps
-// and (optional) resource. It returns false for a traversal it cannot model.
-func parseMovedAddr(t hcl.Traversal) (movedAddr, bool) {
-	var a movedAddr
+// parseTargetAddr decodes a `moved` or `import` address traversal into its
+// module-call steps and (optional) resource. It returns false for a traversal
+// it cannot model.
+func parseTargetAddr(t hcl.Traversal) (targetAddr, bool) {
+	var a targetAddr
 	head := func(step hcl.Traverser) (string, bool) {
 		switch s := step.(type) {
 		case hcl.TraverseRoot:
@@ -2093,7 +2094,7 @@ func (e *Engine) resolveMovedAliases(
 
 	for _, scope := range ancestorPaths(resPath) {
 		for _, moved := range e.graph.MovedBlocks(scope) {
-			to, ok := parseMovedAddr(moved.To)
+			to, ok := parseTargetAddr(moved.To)
 			if !ok || to.Type == "" { // skip whole-module-call moves
 				continue
 			}
@@ -2101,7 +2102,7 @@ func (e *Engine) resolveMovedAliases(
 			if toPath != resPath || to.Type != res.Type || to.Name != res.Name {
 				continue
 			}
-			from, ok := parseMovedAddr(moved.From)
+			from, ok := parseTargetAddr(moved.From)
 			if !ok || from.Type == "" {
 				continue
 			}
@@ -2174,11 +2175,11 @@ func (e *Engine) resolveMovedAliases(
 func (e *Engine) oldModulePath(path modulepath.Path) modulepath.Path {
 	for _, scope := range ancestorPaths(path) {
 		for _, moved := range e.graph.MovedBlocks(scope) {
-			to, ok := parseMovedAddr(moved.To)
+			to, ok := parseTargetAddr(moved.To)
 			if !ok || to.Type != "" || len(to.modules) == 0 {
 				continue // not a whole-module-call address
 			}
-			from, ok := parseMovedAddr(moved.From)
+			from, ok := parseTargetAddr(moved.From)
 			if !ok || from.Type != "" || len(from.modules) == 0 {
 				continue
 			}
@@ -2307,17 +2308,33 @@ func instanceKeysEqual(aIdx *int, aEach *string, bIdx *int, bEach *string) bool 
 	}
 }
 
-// resolveImportId finds any import blocks that target this resource and returns
-// the import ID.
-func (e *Engine) resolveImportId(res *ast.Resource) string {
-	resourceAddr := res.Type + "." + res.Name
+// resolveImportId finds the import block that targets this resource instance
+// and returns its import ID. An import address names a single instance: its
+// module-call steps must match the resource's module instance path, and on a
+// count/for_each resource each instance takes only the ID of the import block
+// keyed with its own instance key.
+func (e *Engine) resolveImportId(
+	res *ast.Resource, index *int, eachKey *string, modInst *moduleInstance,
+) string {
+	resPath := modulepath.Root()
+	if modInst != nil {
+		resPath = modInst.Path
+	}
 
 	for _, imp := range e.config.Imports {
-		// Check if this import block targets the current resource
-		toAddr := graph.FormatTraversal(imp.To)
-		if toAddr == resourceAddr {
-			return imp.Id
+		to, ok := parseTargetAddr(imp.To)
+		if !ok || to.Type != res.Type || to.Name != res.Name {
+			continue
 		}
+		if appendModuleSteps(modulepath.Root(), to.modules) != resPath {
+			continue
+		}
+		if to.keyed() || index != nil || eachKey != nil {
+			if !instanceKeysEqual(index, eachKey, to.keyIndex, to.keyEach) {
+				continue
+			}
+		}
+		return imp.Id
 	}
 
 	return ""

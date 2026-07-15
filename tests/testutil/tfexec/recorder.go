@@ -71,8 +71,11 @@ func (r *Recorder) add(op Op) {
 	r.ops = append(r.ops, op)
 }
 
-// Ops returns a copy of recorded ops, sorted by (Kind, Type, serialized Inputs)
-// so set-equality between two recorders is order-independent.
+// Ops returns a copy of recorded ops, sorted by (Kind, Type, serialized
+// Inputs, serialized Outputs) so set-equality between two recorders is
+// order-independent. Outputs participate in the key because ops can tie on
+// inputs (e.g. several imports of one resource type read distinct ids, with no
+// inputs set before the Read) while execution order differs across paths.
 func (r *Recorder) Ops() []Op {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -87,7 +90,12 @@ func (r *Recorder) Ops() []Op {
 		}
 		ai, _ := json.Marshal(out[i].Inputs)
 		aj, _ := json.Marshal(out[j].Inputs)
-		return string(ai) < string(aj)
+		if string(ai) != string(aj) {
+			return string(ai) < string(aj)
+		}
+		bi, _ := json.Marshal(out[i].Outputs)
+		bj, _ := json.Marshal(out[j].Outputs)
+		return string(bi) < string(bj)
 	})
 	return out
 }

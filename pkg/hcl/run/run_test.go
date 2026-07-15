@@ -3149,6 +3149,109 @@ resource "aws_instance" "imported" {
 	}
 }
 
+// TestEngine_ImportBlockInstanceKey covers import blocks whose `to` address
+// names one instance of an expanded resource: each instance takes the ID of
+// the import block keyed with its own key, and an import address never
+// matches an instance with a different (or missing) key.
+func TestEngine_ImportBlockInstanceKey(t *testing.T) {
+	t.Parallel()
+
+	awsSchema := schema.PackageSpec{
+		Name: "aws",
+		Resources: map[string]schema.ResourceSpec{
+			"aws:index:Instance": {
+				InputProperties: map[string]schema.PropertySpec{
+					"ami": {TypeSpec: schema.TypeSpec{Type: "string"}},
+				},
+				ObjectTypeSpec: schema.ObjectTypeSpec{
+					Properties: map[string]schema.PropertySpec{
+						"ami": {TypeSpec: schema.TypeSpec{Type: "string"}},
+					},
+				},
+			},
+		},
+	}
+
+	// importIdsByName runs src and returns the ImportId of every registered
+	// aws:index:Instance, keyed by resource name.
+	importIdsByName := func(t *testing.T, tmpDir string) map[string]string {
+		p := parser.NewParser()
+		config, diags := p.ParseDirectory(tmpDir)
+		require.False(t, diags.HasErrors(), "parse error: %s", diags.Error())
+
+		mock := &testutil.MockResourceMonitor{}
+		engine := newTestEngine(t, config, &run.EngineOptions{
+			ModuleLoader:    testLiveModuleLoader(t),
+			ProjectName:     "test-project",
+			StackName:       "dev",
+			ResourceMonitor: mock,
+			WorkDir:         tmpDir,
+			RootDir:         tmpDir,
+			SchemaLoader:    schemaloader.New(t, awsSchema),
+		})
+		require.NoError(t, engine.Run(t.Context()))
+
+		got := map[string]string{}
+		for _, r := range mock.RegisteredResources {
+			if r.Type == "aws:index:Instance" {
+				got[r.Name] = r.ImportId
+			}
+		}
+		return got
+	}
+
+	writeRoot := func(t *testing.T, src string) string {
+		tmpDir := t.TempDir()
+		require.NoError(t, os.WriteFile(tmpDir+"/main.tf", []byte(src), 0o644))
+		return tmpDir
+	}
+
+	t.Run("for_each", func(t *testing.T) {
+		t.Parallel()
+
+		tmpDir := writeRoot(t, `
+resource "aws_instance" "web" {
+  for_each = toset(["a", "b"])
+  ami      = "ami-12345"
+}
+
+import {
+  to = aws_instance.web["a"]
+  id = "id-a"
+}
+
+import {
+  to = aws_instance.web["b"]
+  id = "id-b"
+}
+`)
+		assert.Equal(t, map[string]string{
+			"web-a": "id-a",
+			"web-b": "id-b",
+		}, importIdsByName(t, tmpDir))
+	})
+
+	t.Run("unkeyed_import_does_not_match_expanded_resource", func(t *testing.T) {
+		t.Parallel()
+
+		tmpDir := writeRoot(t, `
+resource "aws_instance" "web" {
+  for_each = toset(["a", "b"])
+  ami      = "ami-12345"
+}
+
+import {
+  to = aws_instance.web
+  id = "id-unkeyed"
+}
+`)
+		assert.Equal(t, map[string]string{
+			"web-a": "",
+			"web-b": "",
+		}, importIdsByName(t, tmpDir))
+	})
+}
+
 // testSchema returns a minimal schema for a test_resource resource.
 func testSchema() schema.PackageSpec {
 	return schema.PackageSpec{
