@@ -108,6 +108,66 @@ func TestResourceBodyMapping_RepeatedBlockProjectedAsList(t *testing.T) {
 	require.False(t, tag.MaxItemsOne, "no MaxItems set, so the bridge keeps it as a list")
 }
 
+func TestResourceBodyMapping_SetFields(t *testing.T) {
+	t.Parallel()
+	sdk := &schema.Provider{
+		ResourcesMap: map[string]*schema.Resource{
+			"test_thing": {
+				Schema: map[string]*schema.Schema{
+					"filter": {
+						Type:     schema.TypeSet,
+						Optional: true,
+						Elem: &schema.Resource{
+							Schema: map[string]*schema.Schema{
+								"name": {Type: schema.TypeString, Required: true},
+							},
+						},
+					},
+					"ports": {
+						Type:     schema.TypeSet,
+						Optional: true,
+						Elem:     &schema.Schema{Type: schema.TypeInt},
+					},
+					"tag": {
+						Type:     schema.TypeList,
+						Optional: true,
+						Elem: &schema.Resource{
+							Schema: map[string]*schema.Schema{
+								"key": {Type: schema.TypeString, Required: true},
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+	info := newTestProvider(t, sdk, nil)
+	m := bridge.ResourceBodyMapping(info, "test_thing")
+	require.NotNil(t, m)
+
+	filter := m.Lookup("filter")
+	require.NotNil(t, filter)
+	require.Equal(t, &bridge.FieldMapping{
+		TFName:     "filter",
+		PulumiName: "filters",
+		TFBlock:    true,
+		TFSet:      true,
+		Nested:     filter.Nested,
+	}, filter)
+
+	ports := m.Lookup("ports")
+	require.NotNil(t, ports)
+	require.Equal(t, &bridge.FieldMapping{
+		TFName:     "ports",
+		PulumiName: "ports",
+		TFSet:      true,
+	}, ports)
+
+	tag := m.Lookup("tag")
+	require.NotNil(t, tag)
+	require.False(t, tag.TFSet, "a TypeList block is ordered, not a set")
+}
+
 func TestResourceBodyMapping_ExplicitMaxItemsOneOverride(t *testing.T) {
 	t.Parallel()
 	sdk := &schema.Provider{

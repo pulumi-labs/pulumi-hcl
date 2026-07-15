@@ -1028,6 +1028,111 @@ func TestResourceOutputToCtySingularBlockPlaceholder(t *testing.T) {
 	})
 }
 
+// TestResourceOutputToCtySetField pins that a TF TypeSet field — a set block
+// or a set-typed attribute — re-expands as a cty set (content-based,
+// order-independent equality), not an ordered list/tuple.
+func TestResourceOutputToCtySetField(t *testing.T) {
+	t.Parallel()
+
+	elemObj := &schema.ObjectType{
+		Properties: []*schema.Property{
+			{Name: "name", Type: schema.StringType},
+		},
+	}
+	res := &schema.Resource{
+		Token: "test:index:R",
+		Properties: []*schema.Property{
+			{Name: "filters", Type: &schema.ArrayType{ElementType: elemObj}},
+			{Name: "ports", Type: &schema.ArrayType{ElementType: schema.NumberType}},
+		},
+	}
+	mapping := &bridge.BodyMapping{Fields: map[string]*bridge.FieldMapping{
+		"filter": {
+			TFName:     "filter",
+			PulumiName: "filters",
+			TFBlock:    true,
+			TFSet:      true,
+			Nested: &bridge.BodyMapping{Fields: map[string]*bridge.FieldMapping{
+				"name": {TFName: "name", PulumiName: "name"},
+			}},
+		},
+		"ports": {TFName: "ports", PulumiName: "ports", TFSet: true},
+	}}
+	filterSet := cty.Set(cty.Object(map[string]cty.Type{"name": cty.String}))
+
+	t.Run("elements", func(t *testing.T) {
+		t.Parallel()
+		outputs := property.NewMap(map[string]property.Value{
+			"filters": property.New([]property.Value{
+				property.New(property.NewMap(map[string]property.Value{"name": property.New("zebra")})),
+				property.New(property.NewMap(map[string]property.Value{"name": property.New("apple")})),
+			}),
+			"ports": property.New([]property.Value{property.New(443.0), property.New(80.0)}),
+		})
+		r, err := ResourceOutputToCty(outputs, res, mapping, false)
+		require.NoError(t, err)
+		assert.Equal(t, map[string]cty.Value{
+			"filter": cty.SetVal([]cty.Value{
+				cty.ObjectVal(map[string]cty.Value{"name": cty.StringVal("apple")}),
+				cty.ObjectVal(map[string]cty.Value{"name": cty.StringVal("zebra")}),
+			}),
+			"ports": cty.SetVal([]cty.Value{cty.NumberFloatVal(80), cty.NumberFloatVal(443)}),
+		}, r)
+	})
+
+	t.Run("missing during preview", func(t *testing.T) {
+		t.Parallel()
+		r, err := ResourceOutputToCty(property.Map{}, res, mapping, true)
+		require.NoError(t, err)
+		assert.Equal(t, map[string]cty.Value{
+			"filter": cty.UnknownVal(filterSet),
+			"ports":  cty.UnknownVal(cty.Set(cty.Number)),
+		}, r)
+	})
+
+	t.Run("missing during apply", func(t *testing.T) {
+		t.Parallel()
+		r, err := ResourceOutputToCty(property.Map{}, res, mapping, false)
+		require.NoError(t, err)
+		assert.Equal(t, map[string]cty.Value{
+			"filter": cty.NullVal(filterSet),
+			"ports":  cty.NullVal(cty.Set(cty.Number)),
+		}, r)
+	})
+
+	t.Run("secret element lifts to the set", func(t *testing.T) {
+		t.Parallel()
+		outputs := property.NewMap(map[string]property.Value{
+			"ports": property.New([]property.Value{property.New(443.0).WithSecret(true)}),
+		})
+		r, err := ResourceOutputToCty(outputs, res, mapping, false)
+		require.NoError(t, err)
+		assert.Equal(t,
+			cty.SetVal([]cty.Value{cty.NumberFloatVal(443)}).Mark(eval.SensitiveMark),
+			r["ports"])
+	})
+}
+
+// TestResourceReferenceTypeSetField pins that the static type of a reference
+// to a resource types TF TypeSet fields as cty sets, matching the runtime
+// values ResourceOutputToCty produces.
+func TestResourceReferenceTypeSetField(t *testing.T) {
+	t.Parallel()
+
+	res := &schema.Resource{
+		Token: "test:index:R",
+		Properties: []*schema.Property{
+			{Name: "ports", Type: &schema.ArrayType{ElementType: schema.NumberType}},
+		},
+	}
+	mapping := &bridge.BodyMapping{Fields: map[string]*bridge.FieldMapping{
+		"ports": {TFName: "ports", PulumiName: "ports", TFSet: true},
+	}}
+
+	typ := ResourceReferenceType(res, mapping)
+	assert.Equal(t, cty.Set(cty.Number), typ.AttributeType("ports"))
+}
+
 // TestResourceOutputToCtySchemaSecretElided pins that a schema-secret output
 // keeps its sensitive mark even when the provider elides the (unknown) value
 // during preview, so a downstream stack output stays secret.
