@@ -4741,3 +4741,88 @@ resource "aws_instance" "base" {
 		require.NoError(t, err)
 	})
 }
+
+// TestEngine_LifecycleRefDependencies: a resource referenced only from a
+// lifecycle precondition/postcondition/replace_triggered_by establishes a
+// dependency, as in TF — directly, through a local, and through a data
+// source's check rule — while staying out of PropertyDependencies (no body
+// property carries it). `self` in a postcondition is not a reference and
+// must not break dep collection.
+func TestEngine_LifecycleRefDependencies(t *testing.T) {
+	t.Parallel()
+
+	mock, err := tryExpansion(t, `
+resource "aws_instance" "first" {
+  ami = "ami-first"
+}
+
+locals {
+  first_id = aws_instance.first.id
+}
+
+resource "aws_instance" "pre" {
+  ami = "ami-pre"
+  lifecycle {
+    precondition {
+      condition     = aws_instance.first.id != ""
+      error_message = "first must exist"
+    }
+  }
+}
+
+resource "aws_instance" "post" {
+  ami = "ami-post"
+  lifecycle {
+    postcondition {
+      condition     = self.ami != "" && local.first_id != ""
+      error_message = "self and first must exist"
+    }
+  }
+}
+
+resource "aws_instance" "replace" {
+  ami = "ami-replace"
+  lifecycle {
+    replace_triggered_by = [aws_instance.first.id]
+  }
+}
+
+data "aws_instance" "d" {
+  filter = "static"
+  lifecycle {
+    precondition {
+      condition     = aws_instance.first.id != ""
+      error_message = "first must exist"
+    }
+  }
+}
+
+resource "aws_instance" "reader" {
+  ami = data.aws_instance.d.result
+}
+`, false, false)
+	require.NoError(t, err)
+
+	find := func(name string) *run.RegisterResourceRequest {
+		for i := range mock.RegisteredResources {
+			r := &mock.RegisteredResources[i]
+			if r.Type == "aws:index:Instance" && r.Name == name {
+				return r
+			}
+		}
+		return nil
+	}
+	firstURN := "urn:pulumi:test::project::aws:index:Instance::first"
+
+	for _, name := range []string{"pre", "post", "replace"} {
+		r := find(name)
+		require.NotNilf(t, r, "%s resource should be registered", name)
+		assert.Equal(t, []string{firstURN}, r.Dependencies)
+		assert.Empty(t, r.PropertyDependencies)
+	}
+
+	reader := find("reader")
+	require.NotNil(t, reader, "reader resource should be registered")
+	assert.Equal(t, []string{firstURN}, reader.Dependencies)
+	assert.Equal(t, map[string][]string{"ami": {firstURN}}, reader.PropertyDependencies)
+}
