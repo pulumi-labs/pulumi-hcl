@@ -1996,6 +1996,68 @@ output "name" {
 	assert.Equal(t, property.New("my-bucket"), result)
 }
 
+// TestComponentRangedResourceNames verifies that a ranged resource inside a
+// component pins its per-instance names by combining the enclosing instance's
+// name with the range key ("${pulumi.module.name}-<label>-${each.key}"), and
+// that the runtime evaluates the pin to the "<parent>-<child>-<key>" names
+// the other languages' generated programs produce. The golden component
+// source records the combined template.
+func TestComponentRangedResourceNames(t *testing.T) {
+	t.Parallel()
+
+	testSchema := schema.PackageSpec{
+		Name:    "test",
+		Version: "1.0.0",
+		Resources: map[string]schema.ResourceSpec{
+			"test:index:Item": {
+				InputProperties: map[string]schema.PropertySpec{
+					"name": {TypeSpec: schema.TypeSpec{Type: "string"}},
+				},
+				ObjectTypeSpec: schema.ObjectTypeSpec{
+					Properties: map[string]schema.PropertySpec{
+						"name": {TypeSpec: schema.TypeSpec{Type: "string"}},
+					},
+				},
+			},
+		},
+	}
+
+	componentPCL := `resource "keyed" "test:index:Item" {
+  options {
+    range = {
+      x = "alpha"
+      y = "bravo"
+    }
+  }
+  name = range.value
+}
+
+resource "counted" "test:index:Item" {
+  options {
+    range = 2
+  }
+  name = "item-${range.value}"
+}
+`
+	parentPCL := `component "mod" "./mod" {
+}
+`
+	mock := testConvertedPCLWithComponent(t, parentPCL, map[string]string{
+		"./mod": componentPCL,
+	}, nil, testSchema)
+
+	names := []string{}
+	for _, r := range mock.RegisteredResources {
+		if r.Type == "test:index:Item" {
+			names = append(names, r.Name)
+		}
+	}
+	assert.ElementsMatch(t, []string{
+		"mod-keyed-x", "mod-keyed-y",
+		"mod-counted-0", "mod-counted-1",
+	}, names)
+}
+
 // TestNestedModuleVariableResolution verifies that a nested module (a module
 // called from within another module) can receive inputs from its parent module's
 // scope. This reproduces https://github.com/pulumi-labs/pulumi-hcl/issues/78.
