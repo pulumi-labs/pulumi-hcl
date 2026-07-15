@@ -253,6 +253,7 @@ type moduleInstance struct {
 	Path    modulepath.Path
 	EvalCtx *eval.Context        // per-instance evaluation context
 	URN     urn.URN              // component URN
+	Parent  *moduleInstance      // enclosing module instance (nil for root-level calls)
 	Index   *int                 // count index (nil if not using count)
 	EachKey *cty.Value           // for_each key (nil if not using for_each)
 	EachVal *cty.Value           // for_each value (nil if not using for_each)
@@ -260,21 +261,27 @@ type moduleInstance struct {
 	Outputs map[string]cty.Value // collected output values
 }
 
-// instancePath builds the path for one instance of a module call, replacing
-// the leaf step with one that carries the runtime disambiguator (count
-// index or for_each key, if any).
-func instancePath(modInfo *graph.ModuleInfo, index *int, eachKey *cty.Value) modulepath.Path {
-	parent, leaf, ok := modInfo.Path.Parent()
-	if !ok {
-		return modInfo.Path
+// outputObject returns the instance's collected outputs as an object value.
+func (inst *moduleInstance) outputObject() cty.Value {
+	inst.mu.Lock()
+	defer inst.mu.Unlock()
+	if len(inst.Outputs) == 0 {
+		return cty.EmptyObjectVal
 	}
+	return cty.ObjectVal(inst.Outputs)
+}
+
+// instancePath builds the path for one instance of a module call named name
+// within the enclosing instance at parentPath, with the leaf step carrying
+// the runtime disambiguator (count index or for_each key, if any).
+func instancePath(parentPath modulepath.Path, name string, index *int, eachKey *cty.Value) modulepath.Path {
 	switch {
 	case index != nil:
-		return parent.Append(modulepath.NewIndexedStep(leaf.Name(), *index))
+		return parentPath.Append(modulepath.NewIndexedStep(name, *index))
 	case eachKey != nil:
-		return parent.Append(modulepath.NewKeyedStep(leaf.Name(), eachKey.AsString()))
+		return parentPath.Append(modulepath.NewKeyedStep(name, eachKey.AsString()))
 	default:
-		return modInfo.Path
+		return parentPath.Append(modulepath.NewStep(name))
 	}
 }
 
@@ -3495,21 +3502,17 @@ func (e *Engine) processModuleVariable(node *graph.Node) error {
 	moduleInputAttrs, _ := modInfo.Module.Config.JustAttributes()
 	inputAttr, hasInput := moduleInputAttrs[varName]
 
-	// Determine the parent evaluation context. For root-level modules this is
-	// the root evaluator context; for nested modules it is the enclosing module
-	// instance's context so that expressions like var.name resolve correctly.
-	parentEvalCtx := e.evaluator.Context()
-	if modInfo.ParentPrefix() != "" {
-		parentInstances, ok := e.moduleInstances.Get(modInfo.ParentPath())
-		if ok && len(parentInstances) > 0 {
-			parentEvalCtx = parentInstances[0].EvalCtx
-		}
-	}
-
 	return e.forEachModuleInstance(node, func(inst *moduleInstance) error {
 		var val cty.Value
 
 		if hasInput {
+			// The input expression lives in the enclosing module instance's
+			// scope so that expressions like var.name resolve correctly; for
+			// root-level calls that is the root evaluator context.
+			parentEvalCtx := e.evaluator.Context()
+			if inst.Parent != nil {
+				parentEvalCtx = inst.Parent.EvalCtx
+			}
 			var diags hcl.Diagnostics
 			hclCtx := parentEvalCtx.HCLContextWithIteration(inst.Index, inst.EachKey, inst.EachVal)
 			val, diags = inputAttr.Expr.Value(hclCtx)
@@ -3576,25 +3579,20 @@ func (e *Engine) processModuleInit(ctx context.Context, node *graph.Node) error 
 
 	componentType := fmt.Sprintf("components:index:%s", componentTypeName(modInfo.SourcePath))
 
-	// For simple (non-counted) modules, create a single instance.
-	// For count/for_each, evaluate and create multiple instances.
-
-	parentURN := e.stackURN
-	parentEvalCtx := e.evaluator.Context()
-
-	// If this is a nested module, look up the parent instance URN. When the
-	// parent has zero instances (count=0 / for_each empty) the entire inner
-	// subtree must be skipped — registering an empty instances slice lets
-	// downstream per-instance work (vars, locals, nested modules, resources)
-	// loop zero times instead of falling back to the root context.
+	// A nested module call runs once per instance of the enclosing module; a
+	// root-level call runs in the single root scope (a nil parent instance).
+	// When the parent has zero instances (count=0 / for_each empty) the
+	// entire inner subtree must be skipped — registering an empty instances
+	// slice lets downstream per-instance work (vars, locals, nested modules,
+	// resources) loop zero times instead of falling back to the root context.
+	parents := []*moduleInstance{nil}
 	if modInfo.ParentPrefix() != "" {
 		parentInstances, ok := e.moduleInstances.Get(modInfo.ParentPath())
 		if !ok || len(parentInstances) == 0 {
 			e.moduleInstances.Set(modInfo.Path, nil)
 			return nil
 		}
-		parentURN = parentInstances[0].URN
-		parentEvalCtx = parentInstances[0].EvalCtx
+		parents = parentInstances
 	}
 
 	// Load the child module to get variable type constraints for input coercion.
@@ -3612,6 +3610,35 @@ func (e *Engine) processModuleInit(ctx context.Context, node *graph.Node) error 
 	moduleFunctions, err := e.providerFunctionTable(ctx, childMod.Config, modInfo)
 	if err != nil {
 		return fmt.Errorf("module %s: %w", mod.Source, err)
+	}
+
+	var instances []*moduleInstance
+	for _, parent := range parents {
+		insts, err := e.initModuleCallIn(ctx, node, childMod, moduleFunctions, componentType, parent)
+		if err != nil {
+			return err
+		}
+		instances = append(instances, insts...)
+	}
+	e.moduleInstances.Set(modInfo.Path, instances)
+	return nil
+}
+
+// initModuleCallIn creates the instances of one module call within a single
+// instance of the enclosing module (nil parent = the root config): it
+// evaluates the call's inputs and count/for_each in that instance's scope and
+// registers one component resource per resulting instance.
+func (e *Engine) initModuleCallIn(
+	ctx context.Context, node *graph.Node, childMod *modules.LoadedModule,
+	moduleFunctions map[string]function.Function, componentType string,
+	parent *moduleInstance,
+) ([]*moduleInstance, error) {
+	modInfo := node.ModuleInfo
+	mod := modInfo.Module
+
+	parentURN, parentEvalCtx, parentPath := e.stackURN, e.evaluator.Context(), modulepath.Root()
+	if parent != nil {
+		parentURN, parentEvalCtx, parentPath = parent.URN, parent.EvalCtx, parent.Path
 	}
 
 	// Evaluate module inputs for the component resource registration
@@ -3634,115 +3661,87 @@ func (e *Engine) processModuleInit(ctx context.Context, node *graph.Node) error 
 		}
 	}
 
-	// No count/for_each: single instance.
-	if mod.Count == nil && mod.ForEach == nil {
-		instPath := instancePath(modInfo, nil, nil)
+	newInstance := func(index *int, eachKey, eachVal *cty.Value) (*moduleInstance, error) {
+		instPath := instancePath(parentPath, modInfo.ModuleName(), index, eachKey)
 		componentOpts := &ResourceOptions{Parent: parentURN}
 		componentOpts.Aliases = e.moduleComponentAliases(instPath)
 		componentURN, _, _, err := e.registerComponentResource(ctx, componentType, instPath.LogicalName(), property.NewMap(inputs), componentOpts)
 		if err != nil {
-			return fmt.Errorf("registering module component: %w", err)
+			return nil, fmt.Errorf("registering module component %s: %w", instPath.String(), err)
 		}
-
 		instCtx, err := newEvalContext(
 			e.absolutePaths, modInfo.SourcePath, e.workDir, e.workDir,
 			e.stackName, e.projectName, e.organization,
 		)
 		if err != nil {
-			return fmt.Errorf("creating the module evaluation context: %w", err)
+			return nil, fmt.Errorf("creating the module evaluation context: %w", err)
 		}
 		instCtx.SetProviderFunctions(moduleFunctions)
-
-		e.moduleInstances.Set(modInfo.Path, []*moduleInstance{{
+		return &moduleInstance{
 			Path:    instPath,
 			EvalCtx: instCtx,
 			URN:     componentURN,
+			Parent:  parent,
+			Index:   index,
+			EachKey: eachKey,
+			EachVal: eachVal,
 			Outputs: make(map[string]cty.Value),
-		}})
-		return nil
+		}, nil
+	}
+
+	// No count/for_each: single instance.
+	if mod.Count == nil && mod.ForEach == nil {
+		inst, err := newInstance(nil, nil, nil)
+		if err != nil {
+			return nil, err
+		}
+		return []*moduleInstance{inst}, nil
 	}
 
 	if mod.Count != nil {
 		count, _, unknown, _, diags := eval.NewEvaluator(parentEvalCtx).EvaluateCount(mod.Count)
 		if diags.HasErrors() {
-			return fmt.Errorf("evaluating module count: %s", diags.Error())
+			return nil, fmt.Errorf("evaluating module count: %s", diags.Error())
 		}
 		if unknown {
 			// TODO: support unknown module expansion during preview the way
 			// resources do (register no instances, bind outputs to unknown).
-			return fmt.Errorf("%s: the count value depends on values that are not yet known", node.Key)
+			return nil, fmt.Errorf("%s: the count value depends on values that are not yet known", node.Key)
 		}
 		var instances []*moduleInstance
 		for idx := range count {
-			instPath := instancePath(modInfo, &idx, nil)
-			componentOpts := &ResourceOptions{Parent: parentURN}
-			componentOpts.Aliases = e.moduleComponentAliases(instPath)
-			componentURN, _, _, err := e.registerComponentResource(ctx, componentType, instPath.LogicalName(), property.NewMap(inputs), componentOpts)
+			inst, err := newInstance(&idx, nil, nil)
 			if err != nil {
-				return fmt.Errorf("registering module component %s: %w", instPath.String(), err)
+				return nil, err
 			}
-			instCtx, err := newEvalContext(
-				e.absolutePaths, modInfo.SourcePath, e.workDir, e.workDir,
-				e.stackName, e.projectName, e.organization,
-			)
-			if err != nil {
-				return fmt.Errorf("creating the module evaluation context: %w", err)
-			}
-			instCtx.SetProviderFunctions(moduleFunctions)
-			instCtx.SetCount(idx)
-			instances = append(instances, &moduleInstance{
-				Path:    instPath,
-				EvalCtx: instCtx,
-				URN:     componentURN,
-				Index:   &idx,
-				Outputs: make(map[string]cty.Value),
-			})
+			inst.EvalCtx.SetCount(idx)
+			instances = append(instances, inst)
 		}
-		e.moduleInstances.Set(modInfo.Path, instances)
-		return nil
+		return instances, nil
 	}
 
 	forEach, unknown, _, diags := eval.NewEvaluator(parentEvalCtx).EvaluateForEach(mod.ForEach)
 	if diags.HasErrors() {
-		return fmt.Errorf("evaluating module for_each: %s", diags.Error())
+		return nil, fmt.Errorf("evaluating module for_each: %s", diags.Error())
 	}
 	if unknown {
 		// TODO: support unknown module expansion during preview the way
 		// resources do (register no instances, bind outputs to unknown).
-		return fmt.Errorf("%s: the for_each value depends on values that are not yet known", node.Key)
+		return nil, fmt.Errorf("%s: the for_each value depends on values that are not yet known", node.Key)
 	}
 
 	var instances []*moduleInstance
 	for _, ks := range slices.Sorted(maps.Keys(forEach)) {
 		k := cty.StringVal(ks)
 		v := forEach[ks]
-		instPath := instancePath(modInfo, nil, &k)
-		componentOpts := &ResourceOptions{Parent: parentURN}
-		componentOpts.Aliases = e.moduleComponentAliases(instPath)
-		componentURN, _, _, err := e.registerComponentResource(ctx, componentType, instPath.LogicalName(), property.NewMap(inputs), componentOpts)
+		inst, err := newInstance(nil, &k, &v)
 		if err != nil {
-			return fmt.Errorf("registering module component %s: %w", instPath.String(), err)
+			return nil, err
 		}
-		instCtx, err := newEvalContext(
-			e.absolutePaths, modInfo.SourcePath, e.workDir, e.workDir,
-			e.stackName, e.projectName, e.organization,
-		)
-		if err != nil {
-			return fmt.Errorf("creating the module evaluation context: %w", err)
-		}
-		instCtx.SetProviderFunctions(moduleFunctions)
-		instCtx.SetEach(k, v)
-		instances = append(instances, &moduleInstance{
-			Path:    instPath,
-			EvalCtx: instCtx,
-			URN:     componentURN,
-			EachKey: &k,
-			EachVal: &v,
-			Outputs: make(map[string]cty.Value),
-		})
+		inst.EvalCtx.SetEach(k, v)
+		instances = append(instances, inst)
 	}
-	e.moduleInstances.Set(modInfo.Path, instances)
-	return nil
+	return instances, nil
 }
 
 // processModuleOutput evaluates a module output in each instance and stores it in the parent context.
@@ -3750,9 +3749,6 @@ func (e *Engine) processModuleOutput(_ context.Context, node *graph.Node) error 
 	output := node.Output
 	modInfo := node.ModuleInfo
 	outputName := strings.TrimPrefix(node.Key, modInfo.Prefix()+"output.")
-	mod := modInfo.Module
-	isCounted := mod.Count != nil
-	isForEach := mod.ForEach != nil
 
 	err := e.forEachModuleInstance(node, func(inst *moduleInstance) error {
 		if err := runOutputPreconditions(output, inst.EvalCtx.HCLContext(), outputName); err != nil {
@@ -3776,72 +3772,80 @@ func (e *Engine) processModuleOutput(_ context.Context, node *graph.Node) error 
 		return err
 	}
 
-	// Eagerly publish outputs to the parent context so other module variables
-	// can reference them before the completion node runs. For nested modules,
-	// the parent context is the enclosing module instance's eval context.
-	parentCtx := e.evaluator.Context()
-	if modInfo.ParentPrefix() != "" {
-		parentInstances, ok := e.moduleInstances.Get(modInfo.ParentPath())
-		if ok && len(parentInstances) > 0 {
-			parentCtx = parentInstances[0].EvalCtx
-		}
-	}
+	// Eagerly publish outputs to the parent contexts so other module variables
+	// can reference them before the completion node runs.
 	instances, ok := e.moduleInstances.Get(modInfo.Path)
 	if !ok {
 		return nil
 	}
+	e.publishModuleValue(modInfo, instances)
+	return nil
+}
 
-	if !isCounted && !isForEach {
-		if len(instances) == 1 {
-			inst := instances[0]
-			inst.mu.Lock()
-			v, has := inst.Outputs[outputName]
-			inst.mu.Unlock()
-			if has {
-				parentCtx.SetModuleOutput(modInfo.ModuleName(), outputName, v)
-			}
+// publishModuleValue assembles the value of `module.<name>` from the
+// instances' collected outputs and publishes it into each enclosing module
+// instance's eval context (or the root context for a top-level call). Each
+// enclosing instance sees only its own instances of the call.
+func (e *Engine) publishModuleValue(modInfo *graph.ModuleInfo, instances []*moduleInstance) {
+	parents := []*moduleInstance{nil}
+	if modInfo.ParentPrefix() != "" {
+		parentInstances, ok := e.moduleInstances.Get(modInfo.ParentPath())
+		if !ok {
+			return
 		}
-	} else if isCounted {
-		// Rebuild the full tuple from all collected outputs so far.
-		tupleVals := make([]cty.Value, len(instances))
-		for i, inst := range instances {
-			inst.mu.Lock()
-			if len(inst.Outputs) > 0 {
-				tupleVals[i] = cty.ObjectVal(inst.Outputs)
-			} else {
-				tupleVals[i] = cty.EmptyObjectVal
-			}
-			inst.mu.Unlock()
-		}
-		if len(tupleVals) > 0 {
-			parentCtx.SetModule(modInfo.ModuleName(), cty.TupleVal(tupleVals))
-		} else {
-			parentCtx.SetModule(modInfo.ModuleName(), cty.EmptyTupleVal)
-		}
-	} else {
-		// ForEach: rebuild the map.
-		mapVals := make(map[string]cty.Value, len(instances))
-		for _, inst := range instances {
-			if inst.EachKey == nil {
-				continue
-			}
-			keyStr := inst.EachKey.AsString()
-			inst.mu.Lock()
-			if len(inst.Outputs) > 0 {
-				mapVals[keyStr] = cty.ObjectVal(inst.Outputs)
-			} else {
-				mapVals[keyStr] = cty.EmptyObjectVal
-			}
-			inst.mu.Unlock()
-		}
-		if len(mapVals) > 0 {
-			parentCtx.SetModule(modInfo.ModuleName(), cty.ObjectVal(mapVals))
-		} else {
-			parentCtx.SetModule(modInfo.ModuleName(), cty.EmptyObjectVal)
-		}
+		parents = parentInstances
 	}
 
-	return nil
+	mod := modInfo.Module
+	name := modInfo.ModuleName()
+	for _, parent := range parents {
+		parentCtx := e.evaluator.Context()
+		if parent != nil {
+			parentCtx = parent.EvalCtx
+		}
+		var children []*moduleInstance
+		for _, inst := range instances {
+			if inst.Parent == parent {
+				children = append(children, inst)
+			}
+		}
+
+		switch {
+		case mod.Count != nil:
+			tupleVals := make([]cty.Value, len(children))
+			for i, inst := range children {
+				tupleVals[i] = inst.outputObject()
+			}
+			if len(tupleVals) > 0 {
+				parentCtx.SetModule(name, cty.TupleVal(tupleVals))
+			} else {
+				parentCtx.SetModule(name, cty.EmptyTupleVal)
+			}
+		case mod.ForEach != nil:
+			mapVals := make(map[string]cty.Value, len(children))
+			for _, inst := range children {
+				if inst.EachKey == nil {
+					continue
+				}
+				mapVals[inst.EachKey.AsString()] = inst.outputObject()
+			}
+			if len(mapVals) > 0 {
+				parentCtx.SetModule(name, cty.ObjectVal(mapVals))
+			} else {
+				parentCtx.SetModule(name, cty.EmptyObjectVal)
+			}
+		default:
+			if len(children) == 1 {
+				inst := children[0]
+				inst.mu.Lock()
+				outs := maps.Clone(inst.Outputs)
+				inst.mu.Unlock()
+				for k, v := range outs {
+					parentCtx.SetModuleOutput(name, k, v)
+				}
+			}
+		}
+	}
 }
 
 // processModuleComplete handles the module completion node: registers component outputs
@@ -3856,10 +3860,6 @@ func (e *Engine) processModuleComplete(ctx context.Context, node *graph.Node) er
 	if !ok {
 		return fmt.Errorf("no module instances for prefix %q", modInfo.Prefix())
 	}
-
-	mod := modInfo.Module
-	isCounted := mod.Count != nil
-	isForEach := mod.ForEach != nil
 
 	// Register component outputs and collect per-instance output objects.
 	for _, inst := range instances {
@@ -3877,59 +3877,7 @@ func (e *Engine) processModuleComplete(ctx context.Context, node *graph.Node) er
 		}
 	}
 
-	// Assemble module value in parent eval context. For nested modules, the
-	// parent context is the enclosing module instance's eval context.
-	parentCtx := e.evaluator.Context()
-	if modInfo.ParentPrefix() != "" {
-		parentInstances, ok := e.moduleInstances.Get(modInfo.ParentPath())
-		if ok && len(parentInstances) > 0 {
-			parentCtx = parentInstances[0].EvalCtx
-		}
-	}
-
-	if !isCounted && !isForEach {
-		// Single instance: module.X is an object of outputs.
-		if len(instances) == 1 {
-			for k, v := range instances[0].Outputs {
-				parentCtx.SetModuleOutput(modInfo.ModuleName(), k, v)
-			}
-		}
-	} else if isCounted {
-		// Counted: module.X is a tuple/list of output objects.
-		tupleVals := make([]cty.Value, len(instances))
-		for i, inst := range instances {
-			if len(inst.Outputs) > 0 {
-				tupleVals[i] = cty.ObjectVal(inst.Outputs)
-			} else {
-				tupleVals[i] = cty.EmptyObjectVal
-			}
-		}
-		if len(tupleVals) > 0 {
-			parentCtx.SetModule(modInfo.ModuleName(), cty.TupleVal(tupleVals))
-		} else {
-			parentCtx.SetModule(modInfo.ModuleName(), cty.EmptyTupleVal)
-		}
-	} else {
-		// ForEach: module.X is a map of key → output object.
-		mapVals := make(map[string]cty.Value, len(instances))
-		for _, inst := range instances {
-			if inst.EachKey == nil {
-				continue
-			}
-			keyStr := inst.EachKey.AsString()
-			if len(inst.Outputs) > 0 {
-				mapVals[keyStr] = cty.ObjectVal(inst.Outputs)
-			} else {
-				mapVals[keyStr] = cty.EmptyObjectVal
-			}
-		}
-		if len(mapVals) > 0 {
-			parentCtx.SetModule(modInfo.ModuleName(), cty.ObjectVal(mapVals))
-		} else {
-			parentCtx.SetModule(modInfo.ModuleName(), cty.EmptyObjectVal)
-		}
-	}
-
+	e.publishModuleValue(modInfo, instances)
 	return nil
 }
 

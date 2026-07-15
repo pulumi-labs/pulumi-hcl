@@ -2836,6 +2836,125 @@ module "m" {
 	require.NoError(t, engine.Run(t.Context()))
 }
 
+// A nested module call runs once per instance of its count/for_each-expanded
+// parent, with each instance evaluating in its own parent instance's scope
+// and parented to that instance's component.
+func TestEngine_NestedModuleUnderExpandedParent(t *testing.T) {
+	t.Parallel()
+
+	deploy := func(t *testing.T, rootMain string) *testutil.MockResourceMonitor {
+		tmpDir := t.TempDir()
+		require.NoError(t, os.MkdirAll(tmpDir+"/outer/inner", 0o755))
+		require.NoError(t, os.WriteFile(tmpDir+"/outer/main.tf", []byte(`
+variable "base" {
+  type = string
+}
+
+module "inner" {
+  source = "./inner"
+  v      = var.base
+}
+
+output "combined" {
+  value = module.inner.doubled
+}
+`), 0o644))
+		require.NoError(t, os.WriteFile(tmpDir+"/outer/inner/main.tf", []byte(`
+variable "v" {
+  type = string
+}
+
+output "doubled" {
+  value = "${var.v}-${var.v}"
+}
+`), 0o644))
+		require.NoError(t, os.WriteFile(tmpDir+"/main.tf", []byte(rootMain), 0o644))
+
+		p := parser.NewParser()
+		config, diags := p.ParseDirectory(tmpDir)
+		require.False(t, diags.HasErrors(), "parse error: %s", diags.Error())
+
+		mock := &testutil.MockResourceMonitor{}
+		engine := newTestEngine(t, config, &run.EngineOptions{
+			ModuleLoader:    testLiveModuleLoader(t),
+			ProjectName:     "test-project",
+			StackName:       "dev",
+			ResourceMonitor: mock,
+			WorkDir:         tmpDir,
+			RootDir:         tmpDir,
+			SchemaLoader:    schemaloader.New(t, testSchema()),
+		})
+		require.NoError(t, engine.Run(t.Context()))
+		return mock
+	}
+
+	componentParents := func(mock *testutil.MockResourceMonitor) map[string]urn.URN {
+		parents := make(map[string]urn.URN)
+		for _, req := range mock.RegisteredResources {
+			if strings.HasPrefix(req.Type, "components:index:") {
+				parents[req.Name] = req.Parent
+			}
+		}
+		return parents
+	}
+
+	stackURN := urn.URN("urn:pulumi:test::project::pulumi:pulumi:Stack::test-project-dev")
+
+	t.Run("count", func(t *testing.T) {
+		t.Parallel()
+
+		mock := deploy(t, `
+module "outer" {
+  source = "./outer"
+  count  = 2
+  base   = "b${count.index}"
+}
+
+output "all" {
+  value = [for m in module.outer : m.combined]
+}
+`)
+		assert.Equal(t, property.New([]property.Value{
+			property.New("b0-b0"),
+			property.New("b1-b1"),
+		}), mock.StackOutputs.Get("all"))
+
+		assert.Equal(t, map[string]urn.URN{
+			"outer[0]":       stackURN,
+			"outer[1]":       stackURN,
+			"outer[0]-inner": "urn:pulumi:test::project::components:index:Outer::outer[0]",
+			"outer[1]-inner": "urn:pulumi:test::project::components:index:Outer::outer[1]",
+		}, componentParents(mock))
+	})
+
+	t.Run("for_each", func(t *testing.T) {
+		t.Parallel()
+
+		mock := deploy(t, `
+module "outer" {
+  source   = "./outer"
+  for_each = { x = "b0", y = "b1" }
+  base     = each.value
+}
+
+output "all" {
+  value = { for k, m in module.outer : k => m.combined }
+}
+`)
+		assert.Equal(t, property.New(map[string]property.Value{
+			"x": property.New("b0-b0"),
+			"y": property.New("b1-b1"),
+		}), mock.StackOutputs.Get("all"))
+
+		assert.Equal(t, map[string]urn.URN{
+			`outer["x"]`:       stackURN,
+			`outer["y"]`:       stackURN,
+			`outer["x"]-inner`: `urn:pulumi:test::project::components:index:Outer::outer["x"]`,
+			`outer["y"]-inner`: `urn:pulumi:test::project::components:index:Outer::outer["y"]`,
+		}, componentParents(mock))
+	})
+}
+
 // TestEngine_ModuleOutputRace verifies that concurrent processing of multiple
 // module outputs does not trigger a data race on moduleInstance.Outputs.
 // This is a regression test for https://github.com/pulumi-labs/pulumi-hcl/issues/60.
