@@ -177,6 +177,9 @@ func Functions(baseDir string) map[string]function.Function {
 		"timeadd":    timeAddFunc,
 		"timecmp":    timeCmpFunc,
 		"timestamp":  timestampFunc,
+		// Pulumi has no plan/apply split, so there is no distinct plan-time
+		// clock: plantimestamp resolves to the current time like timestamp.
+		"plantimestamp": timestampFunc,
 
 		// Hash and crypto functions
 		"base64sha256":     base64Sha256Func,

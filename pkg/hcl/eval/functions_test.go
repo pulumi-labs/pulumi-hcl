@@ -1080,6 +1080,15 @@ func TestDateTimeFunctions(t *testing.T) {
 			},
 		},
 		{
+			"plantimestamp format",
+			`plantimestamp()`,
+			func(v cty.Value) bool {
+				// Resolves to the current time in RFC3339 format.
+				s := v.AsString()
+				return len(s) > 0 && s[4] == '-' && s[10] == 'T'
+			},
+		},
+		{
 			"timeadd",
 			`timeadd("2023-01-01T00:00:00Z", "24h")`,
 			is(cty.StringVal("2023-01-02T00:00:00Z")),

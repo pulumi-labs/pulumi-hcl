@@ -1,0 +1,6 @@
+kind: bug-fixes
+body: Support `plantimestamp()`, returning the current time (Pulumi has no plan/apply split)
+time: 2026-07-15T13:00:00Z
+custom:
+    Component: runtime
+    PR: "369"
