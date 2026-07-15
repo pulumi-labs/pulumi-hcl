@@ -24,6 +24,7 @@ import (
 
 	"github.com/hashicorp/hcl/v2"
 	"github.com/zclconf/go-cty/cty"
+	"github.com/zclconf/go-cty/cty/convert"
 
 	"github.com/pulumi-labs/pulumi-hcl/pkg/hcl/eval"
 )
@@ -136,21 +137,34 @@ func configSensitive(content *hcl.BodyContent, hclCtx *hcl.EvalContext) bool {
 // dependencies and sensitivity as cty marks, and marked values panic in
 // AsString and friends.
 
-func evalString(content *hcl.BodyContent, name string, hclCtx *hcl.EvalContext) (string, error) {
+// evalAttr evaluates the named attribute and coerces the result to ty, the
+// way schema-based decoding coerces provisioner config (number 5 and bool
+// true become "5" and "true" under map(string)). Missing attributes and
+// unknown values yield a null of ty.
+func evalAttr(content *hcl.BodyContent, name string, ty cty.Type, hclCtx *hcl.EvalContext) (cty.Value, error) {
 	attr, ok := content.Attributes[name]
 	if !ok {
-		return "", nil
+		return cty.NullVal(ty), nil
 	}
 	val, diags := attr.Expr.Value(hclCtx)
 	if diags.HasErrors() {
-		return "", fmt.Errorf("evaluating %s: %s", name, diags.Error())
+		return cty.NullVal(ty), fmt.Errorf("evaluating %s: %s", name, diags.Error())
 	}
 	val, _ = val.UnmarkDeep()
-	if !val.IsKnown() || val.IsNull() {
-		return "", nil
+	if !val.IsKnown() {
+		return cty.NullVal(ty), nil
 	}
-	if val.Type() != cty.String {
-		return "", fmt.Errorf("%s must be a string, got %s", name, val.Type().FriendlyName())
+	converted, err := convert.Convert(val, ty)
+	if err != nil {
+		return cty.NullVal(ty), fmt.Errorf("%s: %s", name, err)
+	}
+	return converted, nil
+}
+
+func evalString(content *hcl.BodyContent, name string, hclCtx *hcl.EvalContext) (string, error) {
+	val, err := evalAttr(content, name, cty.String, hclCtx)
+	if err != nil || val.IsNull() {
+		return "", err
 	}
 	return val.AsString(), nil
 }
@@ -160,46 +174,23 @@ func evalOptionalString(content *hcl.BodyContent, name string, hclCtx *hcl.EvalC
 }
 
 func evalOptionalBool(content *hcl.BodyContent, name string, hclCtx *hcl.EvalContext) (bool, error) {
-	attr, ok := content.Attributes[name]
-	if !ok {
-		return false, nil
-	}
-	val, diags := attr.Expr.Value(hclCtx)
-	if diags.HasErrors() {
-		return false, fmt.Errorf("evaluating %s: %s", name, diags.Error())
-	}
-	val, _ = val.UnmarkDeep()
-	if !val.IsKnown() || val.IsNull() {
-		return false, nil
-	}
-	if val.Type() != cty.Bool {
-		return false, fmt.Errorf("%s must be a bool, got %s", name, val.Type().FriendlyName())
+	val, err := evalAttr(content, name, cty.Bool, hclCtx)
+	if err != nil || val.IsNull() {
+		return false, err
 	}
 	return val.True(), nil
 }
 
 func evalStringSlice(content *hcl.BodyContent, name string, hclCtx *hcl.EvalContext) ([]string, error) {
-	attr, ok := content.Attributes[name]
-	if !ok {
-		return nil, nil
-	}
-	val, diags := attr.Expr.Value(hclCtx)
-	if diags.HasErrors() {
-		return nil, fmt.Errorf("evaluating %s: %s", name, diags.Error())
-	}
-	val, _ = val.UnmarkDeep()
-	if !val.IsKnown() || val.IsNull() {
-		return nil, nil
-	}
-	if !val.CanIterateElements() {
-		return nil, fmt.Errorf("%s must be a list of strings", name)
+	val, err := evalAttr(content, name, cty.List(cty.String), hclCtx)
+	if err != nil || val.IsNull() {
+		return nil, err
 	}
 	out := make([]string, 0, val.LengthInt())
-	it := val.ElementIterator()
-	for it.Next() {
+	for it := val.ElementIterator(); it.Next(); {
 		_, v := it.Element()
-		if v.Type() != cty.String {
-			return nil, fmt.Errorf("%s elements must be strings", name)
+		if v.IsNull() {
+			continue
 		}
 		out = append(out, v.AsString())
 	}
@@ -207,27 +198,15 @@ func evalStringSlice(content *hcl.BodyContent, name string, hclCtx *hcl.EvalCont
 }
 
 func evalStringMap(content *hcl.BodyContent, name string, hclCtx *hcl.EvalContext) (map[string]string, error) {
-	attr, ok := content.Attributes[name]
-	if !ok {
-		return nil, nil
-	}
-	val, diags := attr.Expr.Value(hclCtx)
-	if diags.HasErrors() {
-		return nil, fmt.Errorf("evaluating %s: %s", name, diags.Error())
-	}
-	val, _ = val.UnmarkDeep()
-	if !val.IsKnown() || val.IsNull() {
-		return nil, nil
-	}
-	if !val.CanIterateElements() {
-		return nil, fmt.Errorf("%s must be a map of strings", name)
+	val, err := evalAttr(content, name, cty.Map(cty.String), hclCtx)
+	if err != nil || val.IsNull() {
+		return nil, err
 	}
 	out := make(map[string]string, val.LengthInt())
-	it := val.ElementIterator()
-	for it.Next() {
+	for it := val.ElementIterator(); it.Next(); {
 		k, v := it.Element()
-		if k.Type() != cty.String || v.Type() != cty.String {
-			return nil, fmt.Errorf("%s keys and values must be strings", name)
+		if v.IsNull() {
+			continue
 		}
 		out[k.AsString()] = v.AsString()
 	}
