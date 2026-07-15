@@ -206,27 +206,26 @@ func (p Path) Steps(yield func(Step) bool) {
 	}
 }
 
-// LogicalName returns the canonical Pulumi resource name for this path
-// (joining each step's [Step.LogicalName] with "-").
+// LogicalName returns the canonical derived Pulumi resource name for this
+// path (joining each step's [Step.LogicalName] with ".").
 //
 //	Root                              -> ""
 //	["outer"]                         -> "outer"
-//	["outer", "inner"]                -> "outer-inner"
-//	["outer"[0], "inner"]             -> "outer[0]-inner"
-//	["outer"["a"], "inner"]           -> `outer["a"]-inner`
+//	["outer", "inner"]                -> "outer.inner"
+//	["outer"[0], "inner"]             -> "outer[0].inner"
+//	["outer"["a"], "inner"]           -> `outer["a"].inner`
 //
-// Instance keys are bracket-quoted and "[" cannot appear in an HCL label, so
-// distinct instance keys always produce distinct logical names. The "-"
-// joiner itself is legal in labels, however, so a logical name produced by
-// this function is a one-way derivation, not a round-trippable encoding of
-// the path: ["a", "b-c"] and ["a-b", "c"] collide. Use the path itself
-// ([Path] equality / map-key) when collision safety is required.
+// HCL block labels cannot contain ".", "[", or `"`, and instance keys are
+// bracket-quoted, so distinct paths built from valid HCL labels always
+// produce distinct logical names. Labels that themselves contain "." (which
+// HCL cannot express) are not escaped; for such pathological labels this is
+// a one-way derivation, not a round-trippable encoding of the path.
 func (p Path) LogicalName() string {
 	var b strings.Builder
 	first := true
 	for s := range p.Steps {
 		if !first {
-			b.WriteByte('-')
+			b.WriteByte('.')
 		}
 		b.WriteString(s.LogicalName())
 		first = false

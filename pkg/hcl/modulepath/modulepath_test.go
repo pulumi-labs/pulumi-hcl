@@ -91,7 +91,7 @@ func TestPath_Append(t *testing.T) {
 	p := modulepath.Root().Append(modulepath.NewStep("a")).Append(modulepath.NewStep("b"))
 	assert.Equal(t, 2, p.Len())
 	assert.False(t, p.IsRoot())
-	assert.Equal(t, "a-b", p.LogicalName())
+	assert.Equal(t, "a.b", p.LogicalName())
 }
 
 func TestPath_AppendDoesNotMutate(t *testing.T) {
@@ -101,7 +101,7 @@ func TestPath_AppendDoesNotMutate(t *testing.T) {
 	p2 := p1.Append(modulepath.NewStep("b"))
 	// p1 must still be just "a".
 	assert.Equal(t, "a", p1.LogicalName())
-	assert.Equal(t, "a-b", p2.LogicalName())
+	assert.Equal(t, "a.b", p2.LogicalName())
 }
 
 func TestPath_LogicalName_RoundTripsDottedLabels(t *testing.T) {
@@ -111,7 +111,7 @@ func TestPath_LogicalName_RoundTripsDottedLabels(t *testing.T) {
 	p := modulepath.Root().
 		Append(modulepath.NewStep("vpc.primary")).
 		Append(modulepath.NewStep("inner"))
-	assert.Equal(t, "vpc.primary-inner", p.LogicalName())
+	assert.Equal(t, "vpc.primary.inner", p.LogicalName())
 }
 
 func TestPath_LogicalName_MixedExpansions(t *testing.T) {
@@ -120,7 +120,7 @@ func TestPath_LogicalName_MixedExpansions(t *testing.T) {
 	p := modulepath.Root().
 		Append(modulepath.NewIndexedStep("outer", 2)).
 		Append(modulepath.NewKeyedStep("inner", "prod"))
-	assert.Equal(t, `outer[2]-inner["prod"]`, p.LogicalName())
+	assert.Equal(t, `outer[2].inner["prod"]`, p.LogicalName())
 }
 
 func TestPath_Parent(t *testing.T) {
@@ -209,6 +209,9 @@ func TestPath_NoCollisionAcrossDottedLabels(t *testing.T) {
 
 	// "a.b" / "c" must not collide with "a" / "b.c" — the bug we set out
 	// to fix. With length-prefixed encoding, these produce distinct paths.
+	// (Their logical names DO collide — labels containing "." cannot be
+	// written in HCL, so LogicalName documents this as a one-way
+	// derivation — but the paths themselves stay distinct.)
 	p1 := modulepath.Root().
 		Append(modulepath.NewStep("a.b")).
 		Append(modulepath.NewStep("c"))
@@ -217,8 +220,8 @@ func TestPath_NoCollisionAcrossDottedLabels(t *testing.T) {
 		Append(modulepath.NewStep("b.c"))
 
 	assert.False(t, p1 == p2)
-	assert.Equal(t, "a.b-c", p1.LogicalName())
-	assert.Equal(t, "a-b.c", p2.LogicalName())
+	assert.Equal(t, "a.b.c", p1.LogicalName())
+	assert.Equal(t, "a.b.c", p2.LogicalName())
 }
 
 func TestPath_LogicalName_NoCollisionAcrossDashedKeys(t *testing.T) {

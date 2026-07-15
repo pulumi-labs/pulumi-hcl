@@ -27,5 +27,8 @@ module "another" {
 module "many" {
   source = "./second"
   count  = 2
-  input  = module.another.untainted
+  pulumi {
+    name ="many-${count.index}"
+  }
+  input = module.another.untainted
 }

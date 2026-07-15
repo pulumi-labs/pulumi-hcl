@@ -8,6 +8,9 @@ terraform {
 }
 
 resource "test_bucket" "bucket" {
+  pulumi {
+    name ="${pulumi.module.name}-bucket"
+  }
   lifecycle {
     create_before_destroy = true
   }

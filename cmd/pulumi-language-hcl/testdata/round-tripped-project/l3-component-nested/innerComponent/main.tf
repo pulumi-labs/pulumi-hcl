@@ -8,6 +8,9 @@ terraform {
 }
 
 resource "simple_resource" "res" {
+  pulumi {
+    name ="${pulumi.module.name}-res"
+  }
   lifecycle {
     create_before_destroy = true
   }

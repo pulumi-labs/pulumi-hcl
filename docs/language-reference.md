@@ -324,7 +324,7 @@ resource "aws_instance" "web" {
 
 | Attribute                   | Type         | Description                                                                                       |
 |-----------------------------|--------------|---------------------------------------------------------------------------------------------------|
-| `name`                      | string       | Override the Pulumi logical name (evaluated per instance, with `count.index`/`each.key` in scope) |
+| `name`                      | string       | Override the full Pulumi logical name (evaluated per instance, with `count.index`/`each.key` and `pulumi.module.name` in scope; null means no override) |
 | `parent`                    | reference    | Parent resource for component hierarchy                                                           |
 | `additional_secret_outputs` | list(string) | Output properties to encrypt in state                                                             |
 | `retain_on_delete`          | bool         | Keep the cloud resource when removed from the program                                             |
@@ -554,6 +554,22 @@ Remote modules are cached in `~/.pulumi/modules/`.
 
 Module outputs are referenced as `module.<name>.<output_name>`.
 
+Like resources, a module block accepts a nested `pulumi` block; its `name`
+attribute overrides the Pulumi logical name of each module instance
+(evaluated per instance, with `count.index`/`each.key` in scope). The
+overridden name also prefixes the derived names of everything inside the
+instance, and is visible to the module source as `pulumi.module.name`.
+
+```hcl
+module "vpc" {
+  source = "./modules/vpc"
+
+  pulumi {
+    name = "vpc-primary"
+  }
+}
+```
+
 ## Call Blocks
 
 Call blocks invoke methods on existing resources. This is a Pulumi-specific extension with no Terraform equivalent.
@@ -694,6 +710,7 @@ EOF
 | `pulumi.stack`           | Current stack name                 |
 | `pulumi.project`         | Current project name               |
 | `pulumi.organization`    | Current organization name          |
+| `pulumi.module.name`     | Pulumi logical name of the enclosing module instance (null at the root) |
 
 ### Operators
 

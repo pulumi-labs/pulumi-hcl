@@ -12,7 +12,10 @@ variable "name" {
 }
 module "inner" {
   source = "./inner"
-  name   ="outer(${var.name})"
+  pulumi {
+    name ="${pulumi.module.name}-inner"
+  }
+  name ="outer(${var.name})"
 }
 output "bucketName" {
   value = module.inner.bucketName

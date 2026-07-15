@@ -241,7 +241,9 @@ var provisionerSchema = &hcl.BodySchema{
 	},
 }
 
-// moduleSchema defines the structure of a module block.
+// moduleSchema defines the structure of a module block. The nested `pulumi`
+// block holds Pulumi-specific options so they cannot collide with the
+// module's own input variables.
 var moduleSchema = &hcl.BodySchema{
 	Attributes: []hcl.AttributeSchema{
 		{Name: "source", Required: true},
@@ -250,6 +252,17 @@ var moduleSchema = &hcl.BodySchema{
 		{Name: "for_each"},
 		{Name: "depends_on"},
 		{Name: "providers"},
+	},
+	Blocks: []hcl.BlockHeaderSchema{
+		{Type: "pulumi"},
+	},
+}
+
+// pulumiModuleOptionsSchema defines the Pulumi-specific options allowed
+// inside a module block's nested `pulumi` block.
+var pulumiModuleOptionsSchema = &hcl.BodySchema{
+	Attributes: []hcl.AttributeSchema{
+		{Name: "name"},
 	},
 }
 
