@@ -145,6 +145,7 @@ const (
 	NodeTypeBuiltin
 	NodeTypeCall
 	NodeTypeModuleInit
+	NodeTypeVariableValidation
 )
 
 func (t NodeType) String() string {
@@ -169,6 +170,8 @@ func (t NodeType) String() string {
 		return "call"
 	case NodeTypeModuleInit:
 		return "module_init"
+	case NodeTypeVariableValidation:
+		return "variable_validation"
 	default:
 		return "unknown"
 	}
@@ -415,12 +418,7 @@ func BuildFromConfig(config *ast.Config, moduleLoader ModuleLoader, workDir stri
 	// Variable values come from outside, so a variable depends only on whatever
 	// its validation rules reference (e.g. another variable).
 	for name, v := range config.Variables {
-		err := g.AddNode(&Node{
-			Key:      "var." + name,
-			Type:     NodeTypeVariable,
-			Variable: v,
-		}, g.variableValidationDeps(v, "var."+name, ""))
-		if err != nil {
+		if err := g.addVariableNodes("var."+name, v, nil, nil, ""); err != nil {
 			return nil, err
 		}
 	}
@@ -907,6 +905,55 @@ func (g *Graph) variableValidationDeps(v *ast.Variable, key, prefix string) []pd
 	return slices.DeleteFunc(deps, func(n pdag.Node) bool { return n == self })
 }
 
+// variableValueKeySuffix marks the internal value node of a variable whose
+// validation rules were split onto a separate node. "!" cannot appear in an
+// HCL identifier, so the key can never collide with a referenceable node.
+const variableValueKeySuffix = "!value"
+
+// addVariableNodes adds the graph node(s) for one variable declaration. key is
+// the node key consumers reference (prefix + "var." + name); valueDeps are the
+// dependencies of evaluating the variable's value (module init and the input
+// expression from the calling module block).
+//
+// A validation rule may reference other objects — say a resource's computed
+// output — and the rule must then run after that object, while the variable's
+// value must stay available to everything ordered before it (such as nodes on
+// the far side of an InjectAfter barrier). Keeping rules with such references
+// on the value node would turn that ordering into a cycle, so they are split
+// onto a NodeTypeVariableValidation node that owns the public key: consumers
+// wait for the checks, and the value itself is evaluated by an internal value
+// node that carries a copy of the declaration with the split rules removed.
+func (g *Graph) addVariableNodes(key string, v *ast.Variable, modInfo *ModuleInfo, valueDeps []pdag.Node, prefix string) error {
+	validationDeps := g.variableValidationDeps(v, key, prefix)
+	if len(validationDeps) == 0 {
+		return g.AddNode(&Node{
+			Key:        key,
+			Type:       NodeTypeVariable,
+			Variable:   v,
+			ModuleInfo: modInfo,
+		}, valueDeps)
+	}
+
+	valueVar := *v
+	valueVar.Validations = nil
+	valueKey := key + variableValueKeySuffix
+	if err := g.AddNode(&Node{
+		Key:        valueKey,
+		Type:       NodeTypeVariable,
+		Variable:   &valueVar,
+		ModuleInfo: modInfo,
+	}, valueDeps); err != nil {
+		return err
+	}
+	_, valueIdx := g.newNode(valueKey)
+	return g.AddNode(&Node{
+		Key:        key,
+		Type:       NodeTypeVariableValidation,
+		Variable:   v,
+		ModuleInfo: modInfo,
+	}, append(validationDeps, valueIdx))
+}
+
 // exprDeps extracts all dependencies from an expression, applying prefix to resolved keys.
 func (g *Graph) exprDeps(expr hcl.Expression, prefix string) []pdag.Node {
 	return g.exprDepsExcluding(expr, prefix, nil)
@@ -1192,13 +1239,7 @@ func (g *Graph) inlineModule(
 		if inputAttr, ok := moduleInputAttrs[varName]; ok {
 			varDeps = append(varDeps, g.exprDeps(inputAttr.Expr, parentPrefix)...)
 		}
-		varDeps = append(varDeps, g.variableValidationDeps(v, prefix+"var."+varName, prefix)...)
-		if err := g.AddNode(&Node{
-			Key:        prefix + "var." + varName,
-			Type:       NodeTypeVariable,
-			Variable:   v,
-			ModuleInfo: modInfo,
-		}, varDeps); err != nil {
+		if err := g.addVariableNodes(prefix+"var."+varName, v, modInfo, varDeps, prefix); err != nil {
 			return err
 		}
 	}
