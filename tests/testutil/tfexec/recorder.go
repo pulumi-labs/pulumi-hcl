@@ -17,7 +17,7 @@ package tfexec
 import (
 	"context"
 	"encoding/json"
-	"reflect"
+	"slices"
 	"sort"
 	"sync"
 
@@ -56,19 +56,14 @@ type Recorder struct {
 func (r *Recorder) add(op Op) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	// OpenTofu evaluates expressions in both the plan and the apply walk, so a
-	// provider-defined function call records once per walk, while the Pulumi
-	// path evaluates once per operation. Functions are pure by the Terraform
-	// contract, so identical repeat calls carry no comparison signal — record
-	// them once and let call multiplicity differ across paths.
-	if op.Kind == OpCallFunction {
-		for _, prev := range r.ops {
-			if prev.Kind == OpCallFunction && reflect.DeepEqual(prev, op) {
-				return
-			}
-		}
-	}
 	r.ops = append(r.ops, op)
+}
+
+// OrderedOps returns a copy of recorded ops in arrival order.
+func (r *Recorder) OrderedOps() []Op {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return slices.Clone(r.ops)
 }
 
 // Ops returns a copy of recorded ops, sorted by (Kind, Type, serialized

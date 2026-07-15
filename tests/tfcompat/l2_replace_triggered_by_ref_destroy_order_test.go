@@ -22,20 +22,20 @@ import (
 )
 
 // `second` references `first` only through replace_triggered_by. Terraform
-// derives an implicit dependency from that reference, so on destroy `second`
-// is deleted before `first`. destroyorder_resource errors if a second delete
-// starts while the first is still in flight, so a missing dependency edge
-// surfaces as overlapping deletes. The case applies both resources, then
-// destroys them.
+// derives an implicit dependency from that reference, so the recorded sequence
+// is [create first, create second, delete second, delete first];
+// OrderDeterministic asserts it, with the op that must complete first in each
+// phase delayed so a missing edge flips the recorded order deterministically.
 func TestL2ReplaceTriggeredByRefDestroyOrder(t *testing.T) {
 	t.Parallel()
 	tfcompat.RunCase(t, "l2_replace_triggered_by_ref_destroy_order", tfcompat.Case{
 		Providers: []tfcompat.Provider{
-			{Name: "destroyorder", Factory: providers.DestroyOrderingProvider},
+			{Name: "order", Factory: providers.OrderProvider},
 		},
 		Stages: []tfcompat.Stage{
 			{Mode: tfcompat.StageApply},
 			{Mode: tfcompat.StageDestroy},
 		},
+		OrderDeterministic: true,
 	})
 }

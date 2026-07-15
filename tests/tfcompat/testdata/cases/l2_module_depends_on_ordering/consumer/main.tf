@@ -1,3 +1,3 @@
-resource "ordering_resource" "consumer" {
+resource "order_resource" "consumer" {
   name = "consumer"
 }

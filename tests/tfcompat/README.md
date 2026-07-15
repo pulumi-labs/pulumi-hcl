@@ -2,7 +2,8 @@
 
 Each `*_test.go` file in this directory pairs a Terraform program (under
 `testdata/cases/<case-name>/`) with both execution paths and asserts they agree
-on outputs and on the sequence of provider CRUD calls.
+on outputs and on the set of provider CRUD calls (or their exact sequence,
+with `Case.OrderDeterministic`).
 
 The harness, recorder, and reusable providers live in
 [`../testutil/tfcompat/`](../testutil/tfcompat/README.md) — start there for how the comparison works and how

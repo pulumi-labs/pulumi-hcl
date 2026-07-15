@@ -40,12 +40,32 @@ Each test runs both paths in parallel against the same wrapped providers:
 The harness asserts equality of two things:
 
 1. **Stack outputs** — `terraform.tfstate` outputs vs. Pulumi stack outputs.
-2. **Provider operations** — set-equal recordings of every `CreateContext`,
-   `ReadContext`, `UpdateContext`, `DeleteContext`, and data-source
-   `ReadContext` call. Order-independent (sorted by kind/type/inputs).
+2. **Provider operations** — recordings of every `CreateContext`,
+   `ReadContext`, `UpdateContext`, `DeleteContext`, data-source
+   `ReadContext`, and provider-function call, with no deduplication.
 
 Recordings are captured at the `*schema.Provider` CRUD boundary so both
 transports produce identical shapes when behavior matches.
+
+## Ordering cases
+
+`Case.OrderDeterministic: true` turns the op sequence itself into the
+assertion: both runtimes must provoke the same provider calls *in the same
+order*. This is how dependency-edge behavior (create serialization, destroy
+ordering) is tested — no assertion logic in the provider.
+
+Two rules for such cases:
+
+- **Every recorded op must sit on one dependency chain.** Both runtimes run
+  independent ops concurrently, so any two ops not ordered by the program's
+  dependency graph record in a racy order and the comparison flakes. This
+  includes data-source reads and provider-function calls.
+- **Delay the op that must complete first** When the test is ordering focused,
+  (`providers.OrderProvider`'s `delay_create`/`delay_delete`). When the edge
+  under test is honored, the delay just stretches the serialized sequence; when
+  it is missing, the ops run concurrently and the undelayed op reliably records
+  ahead of the delayed one — so a regression fails deterministically instead of
+  racing.
 
 ## Test levels
 
