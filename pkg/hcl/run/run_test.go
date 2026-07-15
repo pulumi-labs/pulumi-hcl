@@ -3305,8 +3305,8 @@ import {
 }
 `)
 		assert.Equal(t, map[string]string{
-			"web-a": "id-a",
-			"web-b": "id-b",
+			`web["a"]`: "id-a",
+			`web["b"]`: "id-b",
 		}, importIdsByName(t, tmpDir))
 	})
 
@@ -3325,8 +3325,8 @@ import {
 }
 `)
 		assert.Equal(t, map[string]string{
-			"web-a": "",
-			"web-b": "",
+			`web["a"]`: "",
+			`web["b"]`: "",
 		}, importIdsByName(t, tmpDir))
 	})
 }
