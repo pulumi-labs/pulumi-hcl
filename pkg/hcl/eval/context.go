@@ -121,6 +121,10 @@ type PulumiContext struct {
 	Project string
 	// Organization is the current organization name
 	Organization string
+	// ModuleName is the resolved Pulumi logical name of the module instance
+	// this context evaluates, exposed as pulumi.module.name. Nil at the root,
+	// where pulumi.module.name is null.
+	ModuleName *string
 }
 
 // CountContext contains count iteration context.
@@ -398,6 +402,14 @@ func (c *Context) ClearEach() {
 	c.each = nil
 }
 
+// SetModuleName records the resolved Pulumi logical name of the module
+// instance this context evaluates, exposed as pulumi.module.name.
+func (c *Context) SetModuleName(name string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.pulumi.ModuleName = &name
+}
+
 // SetSelf sets the self reference (for provisioner expressions).
 func (c *Context) SetSelf(value cty.Value) {
 	c.mu.Lock()
@@ -560,10 +572,15 @@ func (c *Context) HCLContext() *hcl.EvalContext {
 	})
 
 	// Add pulumi.* namespace
+	moduleName := cty.NullVal(cty.String)
+	if c.pulumi.ModuleName != nil {
+		moduleName = cty.StringVal(*c.pulumi.ModuleName)
+	}
 	vars["pulumi"] = cty.ObjectVal(map[string]cty.Value{
 		"stack":        cty.StringVal(c.pulumi.Stack),
 		"project":      cty.StringVal(c.pulumi.Project),
 		"organization": cty.StringVal(c.pulumi.Organization),
+		"module":       cty.ObjectVal(map[string]cty.Value{"name": moduleName}),
 	})
 
 	// terraform.workspace is the stack name: a Pulumi stack, like a Terraform

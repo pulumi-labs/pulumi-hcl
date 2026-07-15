@@ -8,12 +8,18 @@ terraform {
 }
 
 resource "simple_resource" "second-untainted" {
+  pulumi {
+    name ="${pulumi.module.name}-second-untainted"
+  }
   lifecycle {
     create_before_destroy = true
   }
   value = true
 }
 resource "simple_resource" "second-tainted" {
+  pulumi {
+    name ="${pulumi.module.name}-second-tainted"
+  }
   lifecycle {
     create_before_destroy = true
   }

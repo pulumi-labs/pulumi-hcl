@@ -12,6 +12,9 @@ provider "config" {
   name  = "my config"
 }
 resource "config_resource" "res" {
+  pulumi {
+    name ="${pulumi.module.name}-res"
+  }
   provider = config.prov
   lifecycle {
     create_before_destroy = true

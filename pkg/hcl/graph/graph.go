@@ -983,7 +983,7 @@ func (g *Graph) exprDepsExcluding(expr hcl.Expression, prefix string, exclude ma
 			if len(parts) >= 1 {
 				dep = fmt.Sprintf("%slocal.%s", prefix, parts[0])
 			}
-		case "path", "terraform", "count", "each", "self":
+		case "path", "terraform", "count", "each", "self", "pulumi":
 			continue
 		case "data":
 			if len(parts) >= 2 {
@@ -1068,7 +1068,7 @@ func formatTraversal(traversal hcl.Traversal) string {
 	namespace, parts := eval.ParseTraversal(traversal)
 
 	switch namespace {
-	case "var", "local", "path", "terraform", "count", "each", "self":
+	case "var", "local", "path", "terraform", "count", "each", "self", "pulumi":
 		// These are handled differently
 		if namespace == "local" && len(parts) >= 1 {
 			return "local." + parts[0]

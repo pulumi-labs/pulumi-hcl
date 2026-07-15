@@ -249,8 +249,14 @@ type CallResponse struct {
 type moduleInstance struct {
 	// Path identifies this instance within the module nesting tree. The
 	// leaf [modulepath.Step] carries the count index or for_each key, if
-	// any. Path.LogicalName() is the canonical Pulumi component name.
-	Path    modulepath.Path
+	// any.
+	Path modulepath.Path
+	// Name is the resolved Pulumi logical name of this instance's component:
+	// a `pulumi { name = ... }` override when present, else the parent
+	// instance's Name joined to this instance's step with ".". It prefixes
+	// the derived names of everything inside the instance and is exposed to
+	// the instance as pulumi.module.name.
+	Name    string
 	EvalCtx *eval.Context        // per-instance evaluation context
 	URN     urn.URN              // component URN
 	Parent  *moduleInstance      // enclosing module instance (nil for root-level calls)
@@ -283,6 +289,32 @@ func instancePath(parentPath modulepath.Path, name string, index *int, eachKey *
 	default:
 		return parentPath.Append(modulepath.NewStep(name))
 	}
+}
+
+// moduleInstanceName resolves the Pulumi logical name of one module instance:
+// a `pulumi { name = ... }` override evaluated in the calling scope (with the
+// instance's count.index/each.key in scope) is the full name; a null or
+// absent override derives the name from the parent instance's resolved name
+// joined to this instance's own step with ".".
+func moduleInstanceName(
+	mod *ast.Module, parentEvalCtx *eval.Context, parentName string,
+	instPath modulepath.Path, index *int, eachKey, eachVal *cty.Value,
+) (string, error) {
+	if mod.PulumiName != nil {
+		hclCtx := parentEvalCtx.HCLContextWithIteration(index, eachKey, eachVal)
+		name, ok, err := evaluatePulumiName(mod.PulumiName, hclCtx, "module "+mod.Name)
+		if err != nil {
+			return "", err
+		}
+		if ok {
+			return name, nil
+		}
+	}
+	_, leaf, ok := instPath.Parent()
+	if !ok {
+		return "", fmt.Errorf("module %s: instance path is empty", mod.Name)
+	}
+	return joinModuleName(parentName, leaf.LogicalName()), nil
 }
 
 // inheritableOpts holds the resource options that child resources can inherit from their parent.
@@ -1179,7 +1211,7 @@ func (e *Engine) registerProviderInContext(
 		logicalName = buildResourceName(logicalName, nil, &inst.key)
 	}
 	if modInst != nil {
-		logicalName = prefixWithModulePath(modInst.Path, logicalName)
+		logicalName = joinModuleName(modInst.Name, logicalName)
 	}
 
 	// Version comes from an explicit attribute, else required_providers.
@@ -2480,39 +2512,68 @@ func buildResourceName(logicalName string, index *int, eachKey *string) string {
 }
 
 // prefixWithModulePath prefixes name with the logical name of the module
-// instance path it lives in, joined with "-" (the cross-language Pulumi
-// convention for component-child names).
+// instance path it lives in, joined with ".". The "." separator cannot appear
+// in an HCL label, so the module prefix cannot collide with a dash in a
+// sibling's label or for_each key. Used where only a path (not a resolved
+// [moduleInstance]) is available — the moved-block alias reconstruction; live
+// instances prefix with [joinModuleName] on the instance's resolved Name.
 func prefixWithModulePath(path modulepath.Path, name string) string {
 	if path.IsRoot() {
 		return name
 	}
-	return path.LogicalName() + "-" + name
+	return joinModuleName(path.LogicalName(), name)
+}
+
+// joinModuleName joins an enclosing module instance's resolved name and a
+// child name with ".". An empty parent (the root) leaves the name bare.
+func joinModuleName(parentName, name string) string {
+	if parentName == "" {
+		return name
+	}
+	return parentName + "." + name
+}
+
+// evaluatePulumiName evaluates a `pulumi { name = ... }` override expression.
+// ok is false when the expression evaluates to null, which means "no
+// override"; subject names the block for error messages.
+func evaluatePulumiName(expr hcl.Expression, hclCtx *hcl.EvalContext, subject string) (name string, ok bool, err error) {
+	val, diags := expr.Value(hclCtx)
+	if diags.HasErrors() {
+		return "", false, fmt.Errorf("evaluating pulumi name for %s: %s", subject, diags.Error())
+	}
+	val, _ = val.Unmark()
+	if val.IsNull() {
+		return "", false, nil
+	}
+	if !val.IsKnown() || val.Type() != cty.String {
+		return "", false, fmt.Errorf("pulumi name for %s must be a known string", subject)
+	}
+	return val.AsString(), true, nil
 }
 
 // resourceInstanceName computes the Pulumi resource name for one resource
 // instance. A `pulumi { name = ... }` override is evaluated per instance
-// (count.index/each.key are in scope) and replaces the derived instance name.
-// Either way the name is prefixed with the module instance name (e.g. "many"
-// or "many[0]") when the resource lives inside a module.
+// (count.index/each.key and pulumi.module.name are in scope) and is the full
+// logical name — no module prefix is applied; a null override falls back to
+// the derived name. Derived names are prefixed with the enclosing module
+// instance's resolved name (e.g. "many" or "many[0]") joined with ".".
 func (*Engine) resourceInstanceName(
 	res *ast.Resource, instance *graph.ExpandedResource, hclCtx *hcl.EvalContext, modInst *moduleInstance,
 ) (string, error) {
-	name := buildResourceName(res.Name, instance.Index, instance.EachKeyString())
 	if res.PulumiName != nil {
-		val, diags := res.PulumiName.Value(hclCtx)
-		if diags.HasErrors() {
-			return "", fmt.Errorf("evaluating pulumi name for %s.%s: %s", res.Type, res.Name, diags.Error())
+		name, ok, err := evaluatePulumiName(res.PulumiName, hclCtx, res.Type+"."+res.Name)
+		if err != nil {
+			return "", err
 		}
-		val, _ = val.Unmark()
-		if !val.IsKnown() || val.IsNull() || val.Type() != cty.String {
-			return "", fmt.Errorf("pulumi name for %s.%s must be a known string", res.Type, res.Name)
+		if ok {
+			return name, nil
 		}
-		name = val.AsString()
 	}
+	name := buildResourceName(res.Name, instance.Index, instance.EachKeyString())
 	if modInst == nil {
 		return name, nil
 	}
-	return prefixWithModulePath(modInst.Path, name), nil
+	return joinModuleName(modInst.Name, name), nil
 }
 
 // translateAttrPathTraversal formats an attribute-path traversal (e.g. an
@@ -3636,9 +3697,9 @@ func (e *Engine) initModuleCallIn(
 	modInfo := node.ModuleInfo
 	mod := modInfo.Module
 
-	parentURN, parentEvalCtx, parentPath := e.stackURN, e.evaluator.Context(), modulepath.Root()
+	parentURN, parentEvalCtx, parentPath, parentName := e.stackURN, e.evaluator.Context(), modulepath.Root(), ""
 	if parent != nil {
-		parentURN, parentEvalCtx, parentPath = parent.URN, parent.EvalCtx, parent.Path
+		parentURN, parentEvalCtx, parentPath, parentName = parent.URN, parent.EvalCtx, parent.Path, parent.Name
 	}
 
 	// Evaluate module inputs for the component resource registration
@@ -3663,9 +3724,13 @@ func (e *Engine) initModuleCallIn(
 
 	newInstance := func(index *int, eachKey, eachVal *cty.Value) (*moduleInstance, error) {
 		instPath := instancePath(parentPath, modInfo.ModuleName(), index, eachKey)
+		instName, err := moduleInstanceName(mod, parentEvalCtx, parentName, instPath, index, eachKey, eachVal)
+		if err != nil {
+			return nil, err
+		}
 		componentOpts := &ResourceOptions{Parent: parentURN}
 		componentOpts.Aliases = e.moduleComponentAliases(instPath)
-		componentURN, _, _, err := e.registerComponentResource(ctx, componentType, instPath.LogicalName(), property.NewMap(inputs), componentOpts)
+		componentURN, _, _, err := e.registerComponentResource(ctx, componentType, instName, property.NewMap(inputs), componentOpts)
 		if err != nil {
 			return nil, fmt.Errorf("registering module component %s: %w", instPath.String(), err)
 		}
@@ -3677,8 +3742,10 @@ func (e *Engine) initModuleCallIn(
 			return nil, fmt.Errorf("creating the module evaluation context: %w", err)
 		}
 		instCtx.SetProviderFunctions(moduleFunctions)
+		instCtx.SetModuleName(instName)
 		return &moduleInstance{
 			Path:    instPath,
+			Name:    instName,
 			EvalCtx: instCtx,
 			URN:     componentURN,
 			Parent:  parent,

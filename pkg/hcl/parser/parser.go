@@ -1310,6 +1310,16 @@ func (p *Parser) parseModuleBlock(config *ast.Config, block *hcl.Block) hcl.Diag
 		}
 	}
 
+	for _, subBlock := range content.Blocks {
+		if subBlock.Type == "pulumi" {
+			optContent, optDiags := subBlock.Body.Content(pulumiModuleOptionsSchema)
+			diags = append(diags, optDiags...)
+			if attr, ok := optContent.Attributes["name"]; ok {
+				module.PulumiName = attr.Expr
+			}
+		}
+	}
+
 	config.Modules[name] = module
 	return diags
 }

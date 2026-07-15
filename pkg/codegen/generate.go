@@ -44,6 +44,15 @@ type GenerateProgramOption func(*generateProgramOptions)
 
 type generateProgramOptions struct {
 	skipRequiredProvidersVersion bool
+	insideComponent              bool
+}
+
+// insideComponentSource marks the generated program as a component's module
+// source: every resource and nested module call pins its Pulumi logical name
+// (prefixed via pulumi.module.name) so instances keep the "<parent>-<child>"
+// names PCL codegen produces in every other language.
+func insideComponentSource() GenerateProgramOption {
+	return func(o *generateProgramOptions) { o.insideComponent = true }
 }
 
 // SkipRequiredProvidersVersion omits the `version` attribute from each entry
@@ -75,6 +84,7 @@ func GenerateProgram(program *pcl.Program, opts ...GenerateProgramOption) (map[s
 		program:                      program,
 		comments:                     buildProgramComments(program),
 		skipRequiredProvidersVersion: o.skipRequiredProvidersVersion,
+		insideComponent:              o.insideComponent,
 	}
 
 	for _, node := range program.Nodes {
@@ -187,7 +197,7 @@ func GenerateProgram(program *pcl.Program, opts ...GenerateProgramOption) (map[s
 	}
 
 	for componentDir, component := range program.CollectComponents() {
-		subFiles, d, err := GenerateProgram(component.Program)
+		subFiles, d, err := GenerateProgram(component.Program, insideComponentSource())
 		diags = append(diags, d...)
 		if err != nil {
 			return nil, diags, err
@@ -324,6 +334,9 @@ type generator struct {
 	// skipRequiredProvidersVersion suppresses the `version` attribute on
 	// each `required_providers` entry. See SkipRequiredProvidersVersion.
 	skipRequiredProvidersVersion bool
+	// insideComponent marks this program as a component's module source.
+	// See insideComponentSource.
+	insideComponent bool
 }
 
 // buildProgramComments parses the source of every PCL file in the program and
@@ -1284,23 +1297,30 @@ func (g *generator) genResourceOptions(body *hclwrite.Body, r *pcl.Resource) hcl
 		}
 	}
 
+	// Pin per-instance names to the "<parent>-<name>-<key>" scheme the other
+	// languages' generated programs use; the runtime would otherwise derive
+	// Terraform-style "<parent>.<name>[<key>]" names.
+	pinName := func(naming instanceNaming) {
+		if tokens := pinnedNameTokens(g.insideComponent, r.LogicalName(), naming); tokens != nil {
+			pulumiBody().SetAttributeRaw("name", tokens)
+		}
+	}
+
 	if opts == nil {
+		pinName(instanceNamingNone)
 		emitReplaceOnChanges()
 		g.genLifecycleBlock(body, nil, &diags)
 		return diags
 	}
 
 	// Terraform-standard meta-arguments stay at the top level.
+	naming := instanceNamingNone
 	if opts.Range != nil {
-		naming, d := g.genRange(body, opts.Range)
+		var d hcl.Diagnostics
+		naming, d = g.genRange(body, opts.Range)
 		diags = append(diags, d...)
-		// Pin per-instance names to the "<name>-<key>" scheme the other
-		// languages' generated programs use; the runtime would otherwise
-		// derive Terraform-style "<name>[<key>]" names.
-		if tokens := instanceNameTokens(naming, r.LogicalName()); tokens != nil {
-			pulumiBody().SetAttributeRaw("name", tokens)
-		}
 	}
+	pinName(naming)
 
 	if opts.Provider != nil {
 		tokens, d := g.exprTokens(opts.Provider, schema.AnyType)
@@ -1482,22 +1502,31 @@ func (g *generator) genRange(body *hclwrite.Body, rangeExpr model.Expression) (i
 	}
 }
 
-// instanceNameTokens builds the `pulumi { name = ... }` template that pins a
-// ranged resource's per-instance Pulumi names to the "<name>-<key>" scheme
-// PCL codegen produces in every other language (e.g. "res-${count.index}").
-// Returns nil when the range creates a single unsuffixed instance.
-func instanceNameTokens(naming instanceNaming, logicalName string) hclwrite.Tokens {
-	var key string
+// pinnedNameTokens builds the `pulumi { name = ... }` template that pins a
+// generated resource's or module call's Pulumi logical names to the scheme
+// PCL codegen produces in every other language: inside a component source the
+// name is prefixed with the enclosing instance's name via pulumi.module.name,
+// and ranged blocks get a "-${count.index}" / "-${each.key}" suffix (e.g.
+// "${pulumi.module.name}-res-${each.key}"). Returns nil when the derived
+// runtime name already matches (a root-level block with no range, or with a
+// bool range's single unsuffixed instance).
+func pinnedNameTokens(insideComponent bool, logicalName string, naming instanceNaming) hclwrite.Tokens {
+	prefix := ""
+	if insideComponent {
+		prefix = "${pulumi.module.name}-"
+	}
+	suffix := ""
 	switch naming {
 	case instanceNamingIndex:
-		key = "count.index"
+		suffix = "-${count.index}"
 	case instanceNamingKey:
-		key = "each.key"
-	default:
+		suffix = "-${each.key}"
+	}
+	if prefix == "" && suffix == "" {
 		return nil
 	}
 	return hclwrite.Tokens{
-		{Type: hclsyntax.TokenQuotedLit, Bytes: fmt.Appendf(nil, `"%s-${%s}"`, logicalName, key)},
+		{Type: hclsyntax.TokenQuotedLit, Bytes: fmt.Appendf(nil, `"%s%s%s"`, prefix, logicalName, suffix)},
 	}
 }
 
@@ -1952,9 +1981,17 @@ func (g *generator) genModule(body *hclwrite.Body, c *pcl.Component) hcl.Diagnos
 	block.Body().SetAttributeValue("source", cty.StringVal(source))
 	var diags hcl.Diagnostics
 
+	naming := instanceNamingNone
 	if c.Options != nil && c.Options.Range != nil {
-		_, d := g.genRange(block.Body(), c.Options.Range)
+		var d hcl.Diagnostics
+		naming, d = g.genRange(block.Body(), c.Options.Range)
 		diags = append(diags, d...)
+	}
+	// Pin the component instances' names the same way ranged resources are
+	// pinned, so nested components keep the "<parent>-<child>" names the
+	// other languages produce.
+	if tokens := pinnedNameTokens(g.insideComponent, c.LogicalName(), naming); tokens != nil {
+		block.Body().AppendNewBlock("pulumi", nil).Body().SetAttributeRaw("name", tokens)
 	}
 
 	for _, attr := range c.Inputs {

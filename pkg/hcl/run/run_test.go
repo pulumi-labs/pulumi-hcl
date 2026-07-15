@@ -403,6 +403,185 @@ resource "aws_instance" "single" {
 	}, names)
 }
 
+// A module's `pulumi { name = ... }` pins the component instance's name, the
+// pinned name prefixes derived child names and is exposed inside the module
+// as pulumi.module.name, and a resource override is absolute (no module
+// prefix). A null override means no override.
+func TestEngine_PulumiNameOverrideModules(t *testing.T) {
+	t.Parallel()
+
+	tmpDir := t.TempDir()
+	moduleDir := tmpDir + "/modules/child"
+	require.NoError(t, os.MkdirAll(moduleDir, 0o755))
+
+	moduleMain := `
+resource "aws_instance" "derived" {
+  ami = "ami-derived"
+}
+
+resource "aws_instance" "pinned" {
+  ami = "ami-pinned"
+
+  pulumi {
+    name = "${pulumi.module.name}-pinned"
+  }
+}
+
+resource "aws_instance" "null_override" {
+  ami = "ami-null"
+
+  pulumi {
+    name = null
+  }
+}
+`
+	require.NoError(t, os.WriteFile(moduleDir+"/main.tf", []byte(moduleMain), 0o644))
+
+	rootMain := `
+module "plain" {
+  source = "./modules/child"
+}
+
+module "named" {
+  source = "./modules/child"
+
+  pulumi {
+    name = "renamed"
+  }
+}
+
+module "keyed" {
+  source   = "./modules/child"
+  for_each = toset(["k"])
+
+  pulumi {
+    name = "keyed-${each.key}"
+  }
+}
+`
+	require.NoError(t, os.WriteFile(tmpDir+"/main.tf", []byte(rootMain), 0o644))
+
+	p := parser.NewParser()
+	config, diags := p.ParseDirectory(tmpDir)
+	require.False(t, diags.HasErrors(), "parse error: %s", diags.Error())
+
+	mock := &testutil.MockResourceMonitor{}
+	engine := newTestEngine(t, config, &run.EngineOptions{
+		ModuleLoader:    testLiveModuleLoader(t),
+		ProjectName:     "test-project",
+		StackName:       "dev",
+		ResourceMonitor: mock,
+		WorkDir:         tmpDir,
+		RootDir:         tmpDir,
+		SchemaLoader: schemaloader.New(t, schema.PackageSpec{
+			Name: "aws",
+			Resources: map[string]schema.ResourceSpec{
+				"aws:index:Instance": {
+					InputProperties: map[string]schema.PropertySpec{
+						"ami": {TypeSpec: schema.TypeSpec{Type: "string"}},
+					},
+					ObjectTypeSpec: schema.ObjectTypeSpec{
+						Properties: map[string]schema.PropertySpec{
+							"ami": {TypeSpec: schema.TypeSpec{Type: "string"}},
+						},
+					},
+				},
+			},
+		}),
+	})
+
+	require.NoError(t, engine.Run(t.Context()))
+
+	componentNames := []string{}
+	instanceNames := []string{}
+	for _, req := range mock.RegisteredResources {
+		switch {
+		case strings.HasPrefix(req.Type, "components:index:"):
+			componentNames = append(componentNames, req.Name)
+		case req.Type == "aws:index:Instance":
+			instanceNames = append(instanceNames, req.Name)
+		}
+	}
+	assert.ElementsMatch(t, []string{"plain", "renamed", "keyed-k"}, componentNames)
+	assert.ElementsMatch(t, []string{
+		"plain.derived", "plain-pinned", "plain.null_override",
+		"renamed.derived", "renamed-pinned", "renamed.null_override",
+		"keyed-k.derived", "keyed-k-pinned", "keyed-k.null_override",
+	}, instanceNames)
+}
+
+// Distinct addresses must derive distinct names even when labels and keys
+// contain dashes: instance keys are bracket-quoted and module prefixes join
+// with ".", neither of which can appear in an HCL label.
+func TestEngine_ModuleResourceNamesDoNotCollide(t *testing.T) {
+	t.Parallel()
+
+	tmpDir := t.TempDir()
+	moduleDir := tmpDir + "/modules/child"
+	require.NoError(t, os.MkdirAll(moduleDir, 0o755))
+
+	moduleMain := `
+resource "aws_instance" "r" {
+  ami = "ami-r"
+}
+
+resource "aws_instance" "b-r" {
+  ami = "ami-b-r"
+}
+`
+	require.NoError(t, os.WriteFile(moduleDir+"/main.tf", []byte(moduleMain), 0o644))
+
+	rootMain := `
+module "a" {
+  source = "./modules/child"
+}
+
+module "a-b" {
+  source = "./modules/child"
+}
+`
+	require.NoError(t, os.WriteFile(tmpDir+"/main.tf", []byte(rootMain), 0o644))
+
+	p := parser.NewParser()
+	config, diags := p.ParseDirectory(tmpDir)
+	require.False(t, diags.HasErrors(), "parse error: %s", diags.Error())
+
+	mock := &testutil.MockResourceMonitor{}
+	engine := newTestEngine(t, config, &run.EngineOptions{
+		ModuleLoader:    testLiveModuleLoader(t),
+		ProjectName:     "test-project",
+		StackName:       "dev",
+		ResourceMonitor: mock,
+		WorkDir:         tmpDir,
+		RootDir:         tmpDir,
+		SchemaLoader: schemaloader.New(t, schema.PackageSpec{
+			Name: "aws",
+			Resources: map[string]schema.ResourceSpec{
+				"aws:index:Instance": {
+					InputProperties: map[string]schema.PropertySpec{
+						"ami": {TypeSpec: schema.TypeSpec{Type: "string"}},
+					},
+					ObjectTypeSpec: schema.ObjectTypeSpec{
+						Properties: map[string]schema.PropertySpec{
+							"ami": {TypeSpec: schema.TypeSpec{Type: "string"}},
+						},
+					},
+				},
+			},
+		}),
+	})
+
+	require.NoError(t, engine.Run(t.Context()))
+
+	names := []string{}
+	for _, req := range mock.RegisteredResources {
+		if req.Type == "aws:index:Instance" {
+			names = append(names, req.Name)
+		}
+	}
+	assert.ElementsMatch(t, []string{"a.r", "a.b-r", "a-b.r", "a-b.b-r"}, names)
+}
+
 func TestEngine_PulumiResourceNamePreviewUnknown(t *testing.T) {
 	t.Parallel()
 
@@ -2514,7 +2693,7 @@ module "child" {
 			"modulePath": property.New(tmpDir),
 			"rootPath":   property.New(tmpDir),
 		}),
-		"child-inner": property.NewMap(map[string]property.Value{
+		"child.inner": property.NewMap(map[string]property.Value{
 			"modulePath": property.New(moduleDir),
 			"rootPath":   property.New(tmpDir),
 		}),
@@ -2596,7 +2775,7 @@ module "vpc.primary" {
 		}
 	}
 	require.NotNil(t, vpcResource, "expected aws:index:Vpc resource to be registered")
-	assert.Equal(t, "vpc.primary-main", vpcResource.Name)
+	assert.Equal(t, "vpc.primary.main", vpcResource.Name)
 }
 
 // TestEngine_ResourceTypeWithDot verifies that a resource whose HCL type label
@@ -2922,8 +3101,8 @@ output "all" {
 		assert.Equal(t, map[string]urn.URN{
 			"outer[0]":       stackURN,
 			"outer[1]":       stackURN,
-			"outer[0]-inner": "urn:pulumi:test::project::components:index:Outer::outer[0]",
-			"outer[1]-inner": "urn:pulumi:test::project::components:index:Outer::outer[1]",
+			"outer[0].inner": "urn:pulumi:test::project::components:index:Outer::outer[0]",
+			"outer[1].inner": "urn:pulumi:test::project::components:index:Outer::outer[1]",
 		}, componentParents(mock))
 	})
 
@@ -2949,8 +3128,8 @@ output "all" {
 		assert.Equal(t, map[string]urn.URN{
 			`outer["x"]`:       stackURN,
 			`outer["y"]`:       stackURN,
-			`outer["x"]-inner`: `urn:pulumi:test::project::components:index:Outer::outer["x"]`,
-			`outer["y"]-inner`: `urn:pulumi:test::project::components:index:Outer::outer["y"]`,
+			`outer["x"].inner`: `urn:pulumi:test::project::components:index:Outer::outer["x"]`,
+			`outer["y"].inner`: `urn:pulumi:test::project::components:index:Outer::outer["y"]`,
 		}, componentParents(mock))
 	})
 }
@@ -4352,8 +4531,8 @@ module "child" {
 	}
 
 	upstream := find("upstream")
-	first := find("child-first[0]")
-	second := find("child-second")
+	first := find("child.first[0]")
+	second := find("child.second")
 	require.NotNil(t, upstream, "upstream resource should be registered")
 	require.NotNil(t, first, "child-first resource should be registered")
 	require.NotNil(t, second, "child-second resource should be registered")

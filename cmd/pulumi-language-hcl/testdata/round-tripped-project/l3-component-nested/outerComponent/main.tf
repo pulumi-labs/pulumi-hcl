@@ -13,7 +13,10 @@ variable "input" {
 }
 module "innerComponent" {
   source = "./innerComponent"
-  input  = ! var.input
+  pulumi {
+    name ="${pulumi.module.name}-innerComponent"
+  }
+  input = ! var.input
 }
 output "output" {
   value = module.innerComponent.output

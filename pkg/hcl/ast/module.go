@@ -68,6 +68,11 @@ type Module struct {
 	// Each expression is evaluated at runtime to obtain the provider URN/ID.
 	Providers map[string]hcl.Expression
 
+	// PulumiName, if present, overrides the Pulumi logical name of each
+	// instance of this module call. It is evaluated per instance in the
+	// calling scope, with count.index/each.key in scope.
+	PulumiName hcl.Expression
+
 	// DeclRange is the source range of the module block.
 	DeclRange hcl.Range
 }
