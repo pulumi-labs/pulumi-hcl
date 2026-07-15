@@ -1,0 +1,6 @@
+kind: bug-fixes
+body: Honor lifecycle attribute paths that index a `MaxItems=1` block (e.g. `ignore_changes = [settings[0].mode]`)
+time: 2026-07-15T12:00:00Z
+custom:
+    Component: runtime
+    PR: "370"

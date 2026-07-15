@@ -2420,21 +2420,33 @@ func translateAttrPathTraversal(
 	}
 	segments := make([]property.GlobSegment, 0, len(traversal))
 	resolver := attrPathNameResolver{mapping: mapping, props: props}
+	prevSingularBlock := false
 	for _, step := range traversal {
 		switch s := step.(type) {
 		case hcl.TraverseRoot:
-			name, err := resolver.next(s.Name)
+			name, singularBlock, err := resolver.next(s.Name)
 			if err != nil {
 				return property.Glob{}, err
 			}
 			segments = append(segments, property.NewSegment(name))
+			prevSingularBlock = singularBlock
 		case hcl.TraverseAttr:
-			name, err := resolver.next(s.Name)
+			name, singularBlock, err := resolver.next(s.Name)
 			if err != nil {
 				return property.Glob{}, err
 			}
 			segments = append(segments, property.NewSegment(name))
+			prevSingularBlock = singularBlock
 		case hcl.TraverseIndex:
+			// The bridge flattens a MaxItems=1 block to a single object, so the
+			// TF list index addressing it (settings[0]) has no Pulumi
+			// counterpart: the flattened object property already stands in for
+			// the sole element, and the index is dropped so the translated path
+			// (settings.mode) matches.
+			if prevSingularBlock {
+				prevSingularBlock = false
+				continue
+			}
 			// Index segments are dynamic map keys or list indices, not schema
 			// properties: they are emitted verbatim and not validated (the
 			// preceding attribute already advanced the resolver past the
@@ -2479,7 +2491,8 @@ func translateSecretOutputName(
 		return "", fmt.Errorf("invalid additional_secret_outputs entry: expected a property name")
 	}
 	resolver := attrPathNameResolver{mapping: mapping, props: props}
-	return resolver.next(name)
+	pulumiName, _, err := resolver.next(name)
+	return pulumiName, err
 }
 
 // formatAttrTraversal renders an attribute-path traversal as a dotted/bracketed
@@ -2517,26 +2530,29 @@ type attrPathNameResolver struct {
 }
 
 // next translates one TF (snake_case) attribute-name segment to its Pulumi name
-// and advances the resolver into the nested schema for the following segment.
-func (r *attrPathNameResolver) next(tfName string) (string, error) {
+// and advances the resolver into the nested schema for the following segment. It
+// reports whether the resolved field is a MaxItems=1 block flattened to a single
+// Pulumi object, so the caller can drop the TF list index that follows it.
+func (r *attrPathNameResolver) next(tfName string) (name string, singularBlock bool, err error) {
 	if fm := r.mapping.Lookup(tfName); fm != nil {
 		if fm.Nested != nil {
 			r.mapping, r.props = fm.Nested, nil
 		} else {
 			r.mapping, r.props = nil, nil
 		}
-		return fm.PulumiName, nil
+		return fm.PulumiName, fm.TFBlock && fm.MaxItemsOne, nil
 	}
 	pulumiName, prop := transform.PulumiCaseFromSnakeCase(tfName, r.props)
 	if prop != nil {
 		r.mapping, r.props = nil, objectProperties(prop.Type)
-		return pulumiName, nil
+		_, isObject := codegen.UnwrapType(prop.Type).(*schema.ObjectType)
+		return pulumiName, isObject, nil
 	}
 	if r.mapping != nil || len(r.props) > 0 {
-		return "", fmt.Errorf("unknown property %q", tfName)
+		return "", false, fmt.Errorf("unknown property %q", tfName)
 	}
 	r.mapping, r.props = nil, nil
-	return tfName, nil
+	return tfName, false, nil
 }
 
 // objectProperties returns the nested properties of an object-typed schema,
