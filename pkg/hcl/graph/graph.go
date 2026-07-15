@@ -338,6 +338,50 @@ func (g *Graph) AddNode(node *Node, deps []pdag.Node) error {
 	return nil
 }
 
+// ForcedCreateBeforeDestroy returns the set of resource node keys that must be
+// created before their prior instance is destroyed. A resource is included when
+// it declares create_before_destroy, or when a resource that transitively
+// depends on it does: the behaviour propagates to a resource's dependencies so
+// that every create in a replacement chain runs before any delete.
+func (g *Graph) ForcedCreateBeforeDestroy() map[string]bool {
+	forced := make(map[string]bool)
+	visited := make(map[pdag.Node]bool)
+
+	var mark func(node pdag.Node)
+	mark = func(node pdag.Node) {
+		if visited[node] {
+			return
+		}
+		visited[node] = true
+		if key, ok := g.keyByDagNode[node]; ok {
+			if n, ok := g.seen[key]; ok && n.n.Type == NodeTypeResource {
+				forced[key] = true
+			}
+		}
+		// Recurse into dependencies through any node type, so a dependency
+		// reached via a local or other intermediary is still forced.
+		for dep := range g.dag.Predecessors(node) {
+			mark(dep)
+		}
+	}
+
+	for _, n := range g.seen {
+		if declaresCreateBeforeDestroy(n.n) {
+			mark(n.i)
+		}
+	}
+	return forced
+}
+
+// declaresCreateBeforeDestroy reports whether a resource node sets
+// create_before_destroy = true in its lifecycle block.
+func declaresCreateBeforeDestroy(n *Node) bool {
+	return n.Type == NodeTypeResource && n.Resource != nil &&
+		n.Resource.Lifecycle != nil &&
+		n.Resource.Lifecycle.CreateBeforeDestroy != nil &&
+		*n.Resource.Lifecycle.CreateBeforeDestroy
+}
+
 // HasDependents reports whether any other node in the graph lists `key` in
 // its dependency list. Used by the engine to skip work for nodes whose
 // output nothing consumes (e.g. unused `provider` blocks).

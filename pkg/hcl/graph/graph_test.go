@@ -86,6 +86,80 @@ output "instance_id" {
 	}
 }
 
+func TestForcedCreateBeforeDestroy(t *testing.T) {
+	t.Parallel()
+	// c declares create_before_destroy and depends on b, which depends on a, so
+	// the behaviour propagates back to b and a. d is independent and unaffected.
+	src := []byte(`
+resource "aws_instance" "a" {
+  ami = "x"
+}
+
+resource "aws_instance" "b" {
+  ami = aws_instance.a.id
+}
+
+resource "aws_instance" "c" {
+  ami = aws_instance.b.id
+  lifecycle {
+    create_before_destroy = true
+  }
+}
+
+resource "aws_instance" "d" {
+  ami = "y"
+}
+`)
+
+	p := parser.NewParser()
+	config, diags := p.ParseSource("test.hcl", src)
+	require.Empty(t, diags)
+
+	g, err := BuildFromConfig(config, nil, "")
+	require.NoError(t, err)
+
+	assert.Equal(t, map[string]bool{
+		"aws_instance.a": true,
+		"aws_instance.b": true,
+		"aws_instance.c": true,
+	}, g.ForcedCreateBeforeDestroy())
+}
+
+func TestForcedCreateBeforeDestroyOverridesExplicitFalse(t *testing.T) {
+	t.Parallel()
+	// The dependency explicitly sets create_before_destroy = false, but a
+	// dependent has it true. The behaviour is forced onto the dependency
+	// anyway, matching tofu's auto-upgrade (a CBD node depending on a non-CBD
+	// one would otherwise create a cycle).
+	src := []byte(`
+resource "aws_instance" "dep" {
+  ami = "x"
+  lifecycle {
+    create_before_destroy = false
+  }
+}
+
+resource "aws_instance" "user" {
+  ami = aws_instance.dep.id
+  lifecycle {
+    create_before_destroy = true
+  }
+}
+`)
+
+	p := parser.NewParser()
+	config, diags := p.ParseSource("test.hcl", src)
+	require.Empty(t, diags)
+
+	g, err := BuildFromConfig(config, nil, "")
+	require.NoError(t, err)
+
+	assert.Equal(t, map[string]bool{
+		"aws_instance.dep":  true,
+		"aws_instance.user": true,
+	}, g.ForcedCreateBeforeDestroy())
+}
+
 func TestValidate(t *testing.T) {
 	t.Parallel()
 	g := NewGraph()

@@ -399,6 +399,11 @@ type Engine struct {
 	// before registering it).
 	graph *graph.Graph
 
+	// forcedCBD holds the resource node keys that must be created before their
+	// prior instance is destroyed because they, or a resource depending on
+	// them, declared create_before_destroy. Computed once from the graph.
+	forcedCBD map[string]bool
+
 	// alwaysRegisterProviders forces every `provider` block to be registered
 	// as a resource even when nothing references it, bypassing Terraform's
 	// lazy provider-configure semantics. Test-only; see
@@ -576,6 +581,7 @@ func (e *Engine) Run(ctx context.Context) error {
 		return errors.Join(errs...)
 	}
 	e.graph = g
+	e.forcedCBD = g.ForcedCreateBeforeDestroy()
 
 	// Process nodes in parallel where possible
 	if err := e.processGraph(ctx, g); err != nil {
@@ -1635,8 +1641,15 @@ func (e *Engine) buildResourceOptionsInContext(
 	//   - cbd=true  -> DeleteBeforeReplace=false
 	//   - cbd=false -> DeleteBeforeReplace=true
 	//   - cbd unset -> DeleteBeforeReplace=true (TF default, opposite of Pulumi's)
+	//
+	// create_before_destroy also propagates to a resource's dependencies, so a
+	// dependency of a create-before-destroy resource is forced to the same
+	// ordering even when it does not declare it (forcedCBD, computed from the
+	// graph). This keeps every create in a replacement chain ahead of the deletes.
+	cbd := res.Lifecycle != nil && res.Lifecycle.CreateBeforeDestroy != nil && *res.Lifecycle.CreateBeforeDestroy
+	cbd = cbd || e.forcedCBD[instance.OriginalKey]
 	opts.DeleteBeforeReplaceDef = true
-	opts.DeleteBeforeReplace = res.Lifecycle == nil || res.Lifecycle.CreateBeforeDestroy == nil || !*res.Lifecycle.CreateBeforeDestroy
+	opts.DeleteBeforeReplace = !cbd
 
 	if res.ResourceParent != nil {
 		depKey := graph.FormatTraversal(res.ResourceParent)
