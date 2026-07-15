@@ -123,43 +123,46 @@ func SensitiveArgumentDiagnostic(argName string, expr hcl.Expression) *hcl.Diagn
 }
 
 // EvaluateCount evaluates a count expression and returns
-// (count, isBool, unknown, diags). isBool is true when the expression
+// (count, isBool, unknown, deps, diags). isBool is true when the expression
 // evaluated to a boolean (true→1, false→0), which suppresses the numeric
 // index suffix on resource names. unknown is true when the expression reads
 // values the current operation has not yet produced, so the number of
-// instances cannot be determined.
-// Returns (1, false, false, nil) if expr is nil (no count specified).
-func (e *Evaluator) EvaluateCount(expr hcl.Expression) (int, bool, bool, hcl.Diagnostics) {
+// instances cannot be determined. deps holds the URNs of the resources the
+// expression references — even though count itself is not applied, a
+// reference in it establishes a dependency, as in TF.
+// Returns (1, false, false, nil, nil) if expr is nil (no count specified).
+func (e *Evaluator) EvaluateCount(expr hcl.Expression) (count int, isBool bool, unknown bool, deps []string, diags hcl.Diagnostics) {
 	if expr == nil {
-		return 1, false, false, nil
+		return 1, false, false, nil, nil
 	}
 
 	val, diags := e.Evaluate(expr)
 	if diags.HasErrors() {
-		return 0, false, false, diags
+		return 0, false, false, nil, diags
 	}
+	deps = CollectDepURNs(val)
 
 	if val.HasMark(SensitiveMark) {
-		return 0, false, false, hcl.Diagnostics{SensitiveArgumentDiagnostic("count", expr)}
+		return 0, false, false, deps, hcl.Diagnostics{SensitiveArgumentDiagnostic("count", expr)}
 	}
 
-	// Count never flows into deps, so drop marks; AsBigFloat / True panic on them.
+	// Count never flows into inputs, so drop marks; AsBigFloat / True panic on them.
 	val, _ = val.Unmark()
 
 	if !val.IsKnown() {
-		return 0, false, true, nil
+		return 0, false, true, deps, nil
 	}
 
 	if val.Type() == cty.Bool {
 		if val.True() {
-			return 1, true, false, nil
+			return 1, true, false, deps, nil
 		}
-		return 0, true, false, nil
+		return 0, true, false, deps, nil
 	}
 
 	converted, err := convert.Convert(val, cty.Number)
 	if err != nil {
-		return 0, false, false, hcl.Diagnostics{{
+		return 0, false, false, deps, hcl.Diagnostics{{
 			Severity: hcl.DiagError,
 			Summary:  "Invalid count value",
 			Detail:   fmt.Sprintf("Count must be a number or boolean, got %s.", val.Type().FriendlyName()),
@@ -168,10 +171,10 @@ func (e *Evaluator) EvaluateCount(expr hcl.Expression) (int, bool, bool, hcl.Dia
 	}
 	bf := converted.AsBigFloat()
 	i64, _ := bf.Int64()
-	count := int(i64)
+	count = int(i64)
 
 	if count < 0 {
-		return 0, false, false, hcl.Diagnostics{{
+		return 0, false, false, deps, hcl.Diagnostics{{
 			Severity: hcl.DiagError,
 			Summary:  "Invalid count value",
 			Detail:   "Count must be a non-negative integer.",
@@ -179,28 +182,30 @@ func (e *Evaluator) EvaluateCount(expr hcl.Expression) (int, bool, bool, hcl.Dia
 		}}
 	}
 
-	return count, false, false, nil
+	return count, false, false, deps, nil
 }
 
 // EvaluateForEach evaluates a for_each expression and returns
-// (result, unknown, diags). unknown is true when the collection — or, for a
-// set, any of its elements, since those become instance keys — reads values
+// (result, unknown, deps, diags). unknown is true when the collection — or, for
+// a set, any of its elements, since those become instance keys — reads values
 // the current operation has not yet produced, so the instances cannot be
 // enumerated. Map and object values may be unknown as long as their keys are
-// known.
+// known. deps holds the URNs of the resources the expression references, so a
+// reference in for_each establishes a dependency, as in TF.
 // Returns a nil map if expr is nil (no for_each specified).
-func (e *Evaluator) EvaluateForEach(expr hcl.Expression) (map[string]cty.Value, bool, hcl.Diagnostics) {
+func (e *Evaluator) EvaluateForEach(expr hcl.Expression) (result map[string]cty.Value, unknown bool, deps []string, diags hcl.Diagnostics) {
 	if expr == nil {
-		return nil, false, nil
+		return nil, false, nil, nil
 	}
 
 	val, diags := e.Evaluate(expr)
 	if diags.HasErrors() {
-		return nil, false, diags
+		return nil, false, nil, diags
 	}
+	deps = CollectDepURNs(val)
 
 	if val.HasMark(SensitiveMark) {
-		return nil, false, hcl.Diagnostics{SensitiveArgumentDiagnostic("for_each", expr)}
+		return nil, false, deps, hcl.Diagnostics{SensitiveArgumentDiagnostic("for_each", expr)}
 	}
 
 	// Unmark only the container — per-element DepMarks must survive on the
@@ -208,7 +213,7 @@ func (e *Evaluator) EvaluateForEach(expr hcl.Expression) (map[string]cty.Value, 
 	val, _ = val.Unmark()
 
 	if !val.IsKnown() {
-		return nil, true, nil
+		return nil, true, deps, nil
 	}
 
 	if val.IsNull() {
@@ -218,11 +223,11 @@ func (e *Evaluator) EvaluateForEach(expr hcl.Expression) (map[string]cty.Value, 
 			Detail:   "for_each cannot be null.",
 			Subject:  expr.Range().Ptr(),
 		})
-		return nil, false, diags
+		return nil, false, deps, diags
 	}
 
 	ty := val.Type()
-	result := make(map[string]cty.Value)
+	result = make(map[string]cty.Value)
 
 	switch {
 	case ty.IsMapType() || ty.IsObjectType():
@@ -241,10 +246,10 @@ func (e *Evaluator) EvaluateForEach(expr hcl.Expression) (map[string]cty.Value, 
 				Detail:   "for_each set must contain strings.",
 				Subject:  expr.Range().Ptr(),
 			})
-			return nil, false, diags
+			return nil, false, deps, diags
 		}
 		if !val.IsWhollyKnown() {
-			return nil, true, nil
+			return nil, true, deps, nil
 		}
 		for it := val.ElementIterator(); it.Next(); {
 			_, v := it.Element()
@@ -258,10 +263,10 @@ func (e *Evaluator) EvaluateForEach(expr hcl.Expression) (map[string]cty.Value, 
 			Detail:   fmt.Sprintf("for_each must be a map or set, not %s.", ty.FriendlyName()),
 			Subject:  expr.Range().Ptr(),
 		})
-		return nil, false, diags
+		return nil, false, deps, diags
 	}
 
-	return result, false, diags
+	return result, false, deps, diags
 }
 
 // GetReferencedVariables returns all variables referenced by an expression.
