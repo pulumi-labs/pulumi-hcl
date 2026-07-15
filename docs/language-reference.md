@@ -804,7 +804,6 @@ These Terraform functions have no equivalent:
 
 | Function          | Reason                                        |
 |-------------------|-----------------------------------------------|
-| `plantimestamp`   | No Pulumi equivalent for plan-time timestamps |
 | `ephemeralasnull` | Pulumi has no ephemeral value concept         |
 
 ## Stack References

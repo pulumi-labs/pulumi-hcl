@@ -33,7 +33,6 @@ Pulumi HCL supports nearly all of Terraform's built-in functions with identical 
 
 | Function          | Category        | Notes                                                                         |
 |-------------------|-----------------|-------------------------------------------------------------------------------|
-| `plantimestamp`   | Date and Time   | Returns the timestamp at the start of a plan, which has no Pulumi equivalent. |
 | `ephemeralasnull` | Type Conversion | Replaces ephemeral values with `null`; Pulumi has no ephemeral value concept. |
 
 The `provider::terraform::*` provider functions and `terraform.applying` are Terraform-internal and have no equivalent here.
