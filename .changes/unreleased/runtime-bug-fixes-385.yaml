@@ -1,0 +1,6 @@
+kind: bug-fixes
+body: Instantiate a nested module once per instance of its `count`/`for_each`-expanded parent module
+time: 2026-07-15T20:30:00Z
+custom:
+    Component: runtime
+    PR: "385"
