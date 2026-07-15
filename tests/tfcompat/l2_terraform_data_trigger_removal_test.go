@@ -22,9 +22,10 @@ import (
 )
 
 // TestL2TerraformDataTriggerRemoval removes terraform_data's triggers_replace
-// between two stages ("x" -> absent). OpenTofu treats clearing this ForceNew
-// attribute as a change and replaces the resource, rolling its id and replacing
-// the dependent that watches it via replace_triggered_by. Both runtimes must
+// between stages 0 and 1 ("x" -> absent), then re-adds it in stage 2
+// (absent -> "y"). OpenTofu treats clearing or setting this ForceNew attribute
+// as a change and replaces the resource, rolling its id and replacing the
+// dependent that watches it via replace_triggered_by. Both runtimes must
 // produce the same simple provider op trace.
 func TestL2TerraformDataTriggerRemoval(t *testing.T) {
 	t.Parallel()
