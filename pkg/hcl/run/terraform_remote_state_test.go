@@ -15,6 +15,7 @@
 package run
 
 import (
+	"path/filepath"
 	"testing"
 
 	"github.com/pulumi-labs/pulumi-hcl/pkg/hcl/packages"
@@ -210,16 +211,64 @@ func TestLowerRemoteStateInvoke(t *testing.T) {
 			`terraform_remote_state: workspace "prod" is invalid with config.workspaces.name (only "default" is)`)
 	})
 
-	t.Run("workspace is rejected on the local backend", func(t *testing.T) {
+	t.Run("local workspace resolves to a path under workspace_dir", func(t *testing.T) {
 		t.Parallel()
-		_, _, err := lowerRemoteStateInvoke(packages.RemoteStateType, InvokeRequest{
+		got, _, err := lowerRemoteStateInvoke(packages.RemoteStateType, InvokeRequest{
+			Args: property.NewMap(map[string]property.Value{
+				"backend":   property.New("local"),
+				"workspace": property.New("staging"),
+				"config": property.New(map[string]property.Value{
+					"path":          property.New("state.tfstate"),
+					"workspace_dir": property.New("envs"),
+				}),
+			}),
+		})
+		require.NoError(t, err)
+		assert.Equal(t, InvokeRequest{
+			Token: packages.LocalReferenceToken,
+			Args: property.NewMap(map[string]property.Value{
+				"path": property.New(filepath.Join("envs", "staging", "terraform.tfstate")),
+			}),
+		}, got)
+	})
+
+	t.Run("local workspace defaults workspace_dir to terraform.tfstate.d", func(t *testing.T) {
+		t.Parallel()
+		got, _, err := lowerRemoteStateInvoke(packages.RemoteStateType, InvokeRequest{
 			Args: property.NewMap(map[string]property.Value{
 				"backend":   property.New("local"),
 				"workspace": property.New("staging"),
 			}),
 		})
-		require.EqualError(t, err,
-			`terraform_remote_state: the local backend does not support the workspace attribute`)
+		require.NoError(t, err)
+		assert.Equal(t, InvokeRequest{
+			Token: packages.LocalReferenceToken,
+			Args: property.NewMap(map[string]property.Value{
+				"path": property.New(filepath.Join("terraform.tfstate.d", "staging", "terraform.tfstate")),
+			}),
+		}, got)
+	})
+
+	t.Run("local workspace=default reads path as if unset", func(t *testing.T) {
+		t.Parallel()
+		got, _, err := lowerRemoteStateInvoke(packages.RemoteStateType, InvokeRequest{
+			Args: property.NewMap(map[string]property.Value{
+				"backend":   property.New("local"),
+				"workspace": property.New("default"),
+				"config": property.New(map[string]property.Value{
+					"path":          property.New("state.tfstate"),
+					"workspace_dir": property.New("envs"),
+				}),
+			}),
+		})
+		require.NoError(t, err)
+		assert.Equal(t, InvokeRequest{
+			Token: packages.LocalReferenceToken,
+			Args: property.NewMap(map[string]property.Value{
+				"path":         property.New("state.tfstate"),
+				"workspaceDir": property.New("envs"),
+			}),
+		}, got)
 	})
 
 	t.Run("other data sources are untouched", func(t *testing.T) {
