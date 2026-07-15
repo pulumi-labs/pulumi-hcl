@@ -1866,6 +1866,13 @@ func (e *Engine) buildResourceOptionsInContext(
 	// replacement. A single-element list is unwrapped to a scalar so the
 	// trigger value round-trips with Pulumi's scalar `replacementTrigger`.
 	// A reference in a trigger also establishes a dependency, as in TF.
+	//
+	// An element whose value is a whole resource is action-based, not
+	// value-based: it must fire when the referenced resource is replaced even
+	// if every attribute value is unchanged. The value trigger covers in-place
+	// updates (an update implies the object value changed); the replacement
+	// action is covered by also listing the referenced instances' URNs in
+	// ReplaceWith.
 	if res.Lifecycle != nil && len(res.Lifecycle.ReplaceTriggeredBy) > 0 {
 		vals := make([]cty.Value, 0, len(res.Lifecycle.ReplaceTriggeredBy))
 		for _, expr := range res.Lifecycle.ReplaceTriggeredBy {
@@ -1880,6 +1887,7 @@ func (e *Engine) buildResourceOptionsInContext(
 				}
 			}
 			vals = append(vals, val)
+			opts.ReplaceWith = append(opts.ReplaceWith, resourceURNsFromValue(val)...)
 		}
 		var triggerVal cty.Value
 		if len(vals) == 1 {
@@ -4375,6 +4383,29 @@ func ptr[T any](v T) *T { return &v }
 // ctyAsString reads a cty value as a string, tolerating marks (resource
 // output leaves carry DepMarks) and returning "" for null / unknown /
 // non-string. Use the cty API directly if you need to distinguish those.
+// resourceURNsFromValue extracts the URNs of the resource instances val
+// represents when it is a whole-resource value: a single instance carries a
+// resource reference mark, while a reference to a resource with count or
+// for_each yields a tuple or object of such instance values. An attribute of a
+// resource inherits the mark but not its hash, so it yields no URNs.
+func resourceURNsFromValue(val cty.Value) []string {
+	if u, ok := eval.ResourceReferenceURN(val); ok {
+		return []string{string(u)}
+	}
+	val, _ = val.Unmark()
+	if val.IsNull() || !val.IsKnown() || !val.CanIterateElements() {
+		return nil
+	}
+	var urns []string
+	for it := val.ElementIterator(); it.Next(); {
+		_, el := it.Element()
+		if u, ok := eval.ResourceReferenceURN(el); ok {
+			urns = append(urns, string(u))
+		}
+	}
+	return urns
+}
+
 func ctyAsString(v cty.Value) string {
 	if v.IsMarked() {
 		v, _ = v.Unmark()

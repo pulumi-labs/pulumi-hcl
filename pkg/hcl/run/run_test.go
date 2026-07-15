@@ -3630,6 +3630,90 @@ resource "test_resource" "res" {
 		"expected replacement_trigger to be set from lifecycle.replace_triggered_by")
 }
 
+// TestEngine_ReplaceTriggeredByWholeResource covers the action-based half of a
+// whole-resource replace_triggered_by element: the referenced instance's URN
+// must be recorded in ReplaceWith so the engine replaces the dependent whenever
+// the referenced resource is replaced, even if its value is unchanged. The
+// detection is value-based, so a local aliasing the resource behaves the same,
+// while an attribute of the resource stays purely value-triggered.
+func TestEngine_ReplaceTriggeredByWholeResource(t *testing.T) {
+	t.Parallel()
+
+	src := []byte(`
+resource "test_resource" "middle" {
+  field = "const"
+}
+
+locals {
+  indirect = test_resource.middle
+}
+
+resource "test_resource" "byWhole" {
+  field = "dep"
+
+  lifecycle {
+    replace_triggered_by = [test_resource.middle]
+  }
+}
+
+resource "test_resource" "byLocal" {
+  field = "dep"
+
+  lifecycle {
+    replace_triggered_by = [local.indirect]
+  }
+}
+
+resource "test_resource" "byAttr" {
+  field = "dep"
+
+  lifecycle {
+    replace_triggered_by = [test_resource.middle.field]
+  }
+}
+`)
+
+	p := parser.NewParser()
+	config, diags := p.ParseSource("test.hcl", src)
+	require.False(t, diags.HasErrors(), diags.Error())
+
+	mock := &testutil.MockResourceMonitor{}
+	engine := newTestEngine(t, config, &run.EngineOptions{
+		ModuleLoader:    testModuleLoader(t),
+		ProjectName:     "test-project",
+		StackName:       "dev",
+		ResourceMonitor: mock,
+		WorkDir:         t.TempDir(),
+		RootDir:         t.TempDir(),
+		SchemaLoader:    schemaloader.New(t, testSchema()),
+	})
+
+	require.NoError(t, engine.Run(t.Context()))
+
+	byName := make(map[string]run.RegisterResourceRequest)
+	for _, req := range mock.RegisteredResources {
+		byName[req.Name] = req
+	}
+
+	middleURN := "urn:pulumi:test::project::test:index:Resource::middle"
+
+	byWhole, ok := byName["byWhole"]
+	require.True(t, ok, "expected byWhole to be registered")
+	assert.Equal(t, []string{middleURN}, byWhole.ReplaceWith)
+	assert.False(t, byWhole.ReplacementTrigger.IsNull(),
+		"a whole-resource reference keeps its value trigger to cover in-place updates")
+
+	byLocal, ok := byName["byLocal"]
+	require.True(t, ok, "expected byLocal to be registered")
+	assert.Equal(t, []string{middleURN}, byLocal.ReplaceWith,
+		"a local aliasing a whole resource behaves like the resource itself")
+
+	byAttr, ok := byName["byAttr"]
+	require.True(t, ok, "expected byAttr to be registered")
+	assert.Empty(t, byAttr.ReplaceWith, "an attribute reference is value-based only")
+	assert.False(t, byAttr.ReplacementTrigger.IsNull())
+}
+
 // TestEngine_HetListOutputRoundTrip drives the engine against a mock provider whose
 // resource output is a list of objects with a nested optional object populated in some
 // elements and absent in others.
