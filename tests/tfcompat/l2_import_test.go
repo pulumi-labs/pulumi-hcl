@@ -21,9 +21,9 @@ import (
 	"github.com/pulumi-labs/pulumi-hcl/tests/testutil/tfcompat/providers"
 )
 
-func TestL2ImportForEach(t *testing.T) {
+func TestL2Import(t *testing.T) {
 	t.Parallel()
-	tfcompat.RunCase(t, "l2_import_for_each", tfcompat.Case{
+	tfcompat.RunCase(t, "l2_import", tfcompat.Case{
 		Providers: []tfcompat.Provider{
 			{Name: "importable", Factory: providers.ImportableProvider},
 		},
