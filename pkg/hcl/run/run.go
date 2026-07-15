@@ -946,7 +946,7 @@ func (e *Engine) registerProvider(
 		return e.registerProviderInContext(ctx, node, provider, evalCtx, parentURN, modInst, nil)
 	}
 
-	forEach, unknown, diags := eval.NewEvaluator(evalCtx).EvaluateForEach(provider.ForEach)
+	forEach, unknown, _, diags := eval.NewEvaluator(evalCtx).EvaluateForEach(provider.ForEach)
 	if diags.HasErrors() {
 		return fmt.Errorf("evaluating for_each for provider %s: %s", node.Key, diags.Error())
 	}
@@ -1315,12 +1315,17 @@ func (e *Engine) processResourceInContext(
 
 	expander := graph.NewResourceExpander()
 
+	// A reference in count/for_each establishes a dependency (as in TF) that
+	// governs destroy ordering, even when nothing in the body references the
+	// target. Collect those references so every instance depends on them.
+	var metaArgDeps []string
 	unknownArg := ""
 	if res.Count != nil {
-		count, isBool, unknown, diags := tempEvaluator.EvaluateCount(res.Count)
+		count, isBool, unknown, deps, diags := tempEvaluator.EvaluateCount(res.Count)
 		if diags.HasErrors() {
 			return fmt.Errorf("evaluating count: %s", diags.Error())
 		}
+		metaArgDeps = append(metaArgDeps, deps...)
 		switch {
 		case unknown:
 			unknownArg = "count"
@@ -1332,10 +1337,11 @@ func (e *Engine) processResourceInContext(
 	}
 
 	if res.ForEach != nil {
-		forEach, unknown, diags := tempEvaluator.EvaluateForEach(res.ForEach)
+		forEach, unknown, deps, diags := tempEvaluator.EvaluateForEach(res.ForEach)
 		if diags.HasErrors() {
 			return fmt.Errorf("evaluating for_each: %s", diags.Error())
 		}
+		metaArgDeps = append(metaArgDeps, deps...)
 		if unknown {
 			unknownArg = "for_each"
 		} else {
@@ -1367,7 +1373,7 @@ func (e *Engine) processResourceInContext(
 			continue
 		}
 		if err := e.registerResourceInstanceInContext(
-			ctx, node, res, resSchema, instance, evalCtx, parentURN, modInst,
+			ctx, node, res, resSchema, instance, evalCtx, parentURN, modInst, metaArgDeps,
 		); err != nil {
 			return fmt.Errorf("registering %s: %w", instance.Key, err)
 		}
@@ -1403,6 +1409,7 @@ func (e *Engine) registerResourceInstanceInContext(
 	evalCtx *eval.Context,
 	parentURN urn.URN,
 	modInst *moduleInstance,
+	metaArgDeps []string,
 ) error {
 	evalCtx = evalCtx.WithIteration(instance.Index, instance.EachKey, instance.EachValue)
 
@@ -1471,6 +1478,13 @@ func (e *Engine) registerResourceInstanceInContext(
 			if !slices.Contains(opts.DependsOn, dep) {
 				opts.DependsOn = append(opts.DependsOn, dep)
 			}
+		}
+	}
+	// count/for_each references are not tied to any body property, so they stay
+	// out of PropertyDependencies but still gate ordering through DependsOn.
+	for _, dep := range metaArgDeps {
+		if !slices.Contains(opts.DependsOn, dep) {
+			opts.DependsOn = append(opts.DependsOn, dep)
 		}
 	}
 	slices.Sort(opts.DependsOn)
@@ -2742,7 +2756,7 @@ func (e *Engine) processRangedDataSource(
 
 	unknownArg := ""
 	if ds.Count != nil {
-		count, isBool, unknown, diags := tempEvaluator.EvaluateCount(ds.Count)
+		count, isBool, unknown, _, diags := tempEvaluator.EvaluateCount(ds.Count)
 		if diags.HasErrors() {
 			return fmt.Errorf("evaluating count: %s", diags.Error())
 		}
@@ -2757,7 +2771,7 @@ func (e *Engine) processRangedDataSource(
 	}
 
 	if ds.ForEach != nil {
-		forEach, unknown, diags := tempEvaluator.EvaluateForEach(ds.ForEach)
+		forEach, unknown, _, diags := tempEvaluator.EvaluateForEach(ds.ForEach)
 		if diags.HasErrors() {
 			return fmt.Errorf("evaluating for_each: %s", diags.Error())
 		}
@@ -3537,7 +3551,7 @@ func (e *Engine) processModuleInit(ctx context.Context, node *graph.Node) error 
 	}
 
 	if mod.Count != nil {
-		count, _, unknown, diags := eval.NewEvaluator(parentEvalCtx).EvaluateCount(mod.Count)
+		count, _, unknown, _, diags := eval.NewEvaluator(parentEvalCtx).EvaluateCount(mod.Count)
 		if diags.HasErrors() {
 			return fmt.Errorf("evaluating module count: %s", diags.Error())
 		}
@@ -3576,7 +3590,7 @@ func (e *Engine) processModuleInit(ctx context.Context, node *graph.Node) error 
 		return nil
 	}
 
-	forEach, unknown, diags := eval.NewEvaluator(parentEvalCtx).EvaluateForEach(mod.ForEach)
+	forEach, unknown, _, diags := eval.NewEvaluator(parentEvalCtx).EvaluateForEach(mod.ForEach)
 	if diags.HasErrors() {
 		return fmt.Errorf("evaluating module for_each: %s", diags.Error())
 	}
