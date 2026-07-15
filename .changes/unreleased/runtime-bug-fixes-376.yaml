@@ -1,0 +1,6 @@
+kind: bug-fixes
+body: Materialize an omitted `MaxItems=1` nested block as `[]` rather than `[null]`
+time: 2026-07-15T12:00:00Z
+custom:
+    Component: runtime
+    PR: "376"

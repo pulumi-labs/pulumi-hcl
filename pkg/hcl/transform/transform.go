@@ -1210,7 +1210,13 @@ func propertyObjectToCtyMap(path string, m property.Map, properties []*schema.Pr
 			return nil, err
 		}
 		if singularBlock && !convertedV.Type().IsListType() && !convertedV.Type().IsTupleType() {
-			convertedV = cty.TupleVal([]cty.Value{convertedV})
+			if convertedV.IsNull() {
+				// An omitted MaxItems=1 block is an empty list of blocks, not a
+				// single-element list holding null, so `length(r.block)` is 0.
+				convertedV = cty.ListValEmpty(convertedV.Type())
+			} else {
+				convertedV = cty.TupleVal([]cty.Value{convertedV})
+			}
 		}
 		result[hclName] = convertedV
 	}
