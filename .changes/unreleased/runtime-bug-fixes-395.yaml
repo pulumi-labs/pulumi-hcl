@@ -1,0 +1,6 @@
+kind: bug-fixes
+body: Record a dependency for a resource referenced only through a `provisioner` or `connection` block, so destroy order is honored
+time: 2026-07-16T00:00:00Z
+custom:
+    Component: runtime
+    PR: "395"
