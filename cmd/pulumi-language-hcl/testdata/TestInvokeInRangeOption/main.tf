@@ -12,6 +12,9 @@ data "test_info" "invoke_0" {
 
 resource "test_sink" "targets" {
   count = length(data.test_info.invoke_0.items)
+  pulumi {
+    name ="targets-${count.index}"
+  }
   lifecycle {
     create_before_destroy = true
   }
