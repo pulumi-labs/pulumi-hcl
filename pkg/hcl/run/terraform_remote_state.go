@@ -17,6 +17,7 @@ package run
 import (
 	"fmt"
 	"maps"
+	"path/filepath"
 	"slices"
 	"strings"
 
@@ -37,12 +38,14 @@ const (
 // serves no other backend, so any other backend is rejected; support can be added
 // as the package gains backends.
 //
-// On the remote backend the top-level `workspace` is resolved like OpenTofu's
-// remote backend: with config.workspaces.prefix the read workspace is
-// `<prefix><workspace>` (combined into the invoke's `workspaces.name`); with
-// config.workspaces.name only the implicit "default" workspace exists, so
-// `workspace` must be "default". It is unsupported on the local backend
-// (getLocalReference has no workspace input).
+// The top-level `workspace` is resolved the way OpenTofu's backends do, since
+// neither invoke takes a workspace name. On the local backend a non-default
+// workspace's state lives at `<workspace_dir>/<workspace>/terraform.tfstate`
+// (`path` applies only to the default workspace), so it is resolved into the
+// invoke's `path`. On the remote backend, config.workspaces.prefix makes the
+// read workspace `<prefix><workspace>` (combined into the invoke's
+// `workspaces.name`); with config.workspaces.name only the implicit "default"
+// workspace exists, so `workspace` must be "default".
 //
 // `defaults` is returned for applyRemoteStateDefaults to overlay on the invoke
 // result; it is the zero Map when absent.
@@ -73,9 +76,6 @@ func lowerRemoteStateInvoke(tfType string, req InvokeRequest) (InvokeRequest, pr
 	var fields map[string]string // recognized config keys -> invoke argument names
 	switch backend {
 	case "local":
-		if hasWorkspace {
-			return req, property.Map{}, fmt.Errorf("terraform_remote_state: the local backend does not support the workspace attribute")
-		}
 		token = packages.LocalReferenceToken
 		desc = "the local backend"
 		fields = map[string]string{"path": "path", "workspace_dir": "workspaceDir"}
@@ -113,26 +113,41 @@ func lowerRemoteStateInvoke(tfType string, req InvokeRequest) (InvokeRequest, pr
 		)
 	}
 
-	// Resolve the top-level `workspace` the way OpenTofu's remote backend does:
-	//   - config.workspaces.prefix + workspace -> read `<prefix><workspace>`
-	//   - config.workspaces.name exposes only the implicit "default" workspace,
+	// Resolve the top-level `workspace` the way OpenTofu's backends do:
+	//   - local: a non-default workspace's state is at
+	//     `<workspace_dir>/<workspace>/terraform.tfstate` and `path` applies only
+	//     to the default workspace; "default" (or "") reads as if it were absent
+	//   - remote: config.workspaces.prefix + workspace -> read `<prefix><workspace>`;
+	//     config.workspaces.name exposes only the implicit "default" workspace,
 	//     so workspace must be "default" (or absent); anything else is an error
 	if hasWorkspace {
-		ws, ok := args["workspaces"]
-		if !ok || !ws.IsMap() {
-			return req, property.Map{}, fmt.Errorf("terraform_remote_state: workspace requires config.workspaces.prefix")
-		}
-		switch wsMap := ws.AsMap(); {
-		case wsMap.Get("name").IsString():
-			if workspace != "default" {
-				return req, property.Map{}, fmt.Errorf(
-					"terraform_remote_state: workspace %q is invalid with config.workspaces.name (only \"default\" is)", workspace,
-				)
+		switch backend {
+		case "local":
+			if workspace != "default" && workspace != "" {
+				dir := "terraform.tfstate.d"
+				if d, ok := args["workspaceDir"]; ok && d.IsString() {
+					dir = d.AsString()
+				}
+				delete(args, "workspaceDir")
+				args["path"] = property.New(filepath.Join(dir, workspace, "terraform.tfstate"))
 			}
-		case wsMap.Get("prefix").IsString():
-			args["workspaces"] = property.New(map[string]property.Value{"name": property.New(wsMap.Get("prefix").AsString() + workspace)})
-		default:
-			return req, property.Map{}, fmt.Errorf("terraform_remote_state: workspace requires config.workspaces.prefix")
+		case "remote":
+			ws, ok := args["workspaces"]
+			if !ok || !ws.IsMap() {
+				return req, property.Map{}, fmt.Errorf("terraform_remote_state: workspace requires config.workspaces.prefix")
+			}
+			switch wsMap := ws.AsMap(); {
+			case wsMap.Get("name").IsString():
+				if workspace != "default" {
+					return req, property.Map{}, fmt.Errorf(
+						"terraform_remote_state: workspace %q is invalid with config.workspaces.name (only \"default\" is)", workspace,
+					)
+				}
+			case wsMap.Get("prefix").IsString():
+				args["workspaces"] = property.New(map[string]property.Value{"name": property.New(wsMap.Get("prefix").AsString() + workspace)})
+			default:
+				return req, property.Map{}, fmt.Errorf("terraform_remote_state: workspace requires config.workspaces.prefix")
+			}
 		}
 	}
 
