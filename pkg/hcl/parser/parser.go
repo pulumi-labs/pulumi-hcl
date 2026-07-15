@@ -623,6 +623,22 @@ func (p *Parser) parseLocalsBlock(config *ast.Config, block *hcl.Block) hcl.Diag
 	return diags
 }
 
+// countForEachConflict returns a diagnostic when a block sets both count and
+// for_each, which are mutually exclusive; it returns nil when at most one is
+// set. The diagnostic is anchored at the for_each expression.
+func countForEachConflict(count, forEach hcl.Expression) *hcl.Diagnostic {
+	if count == nil || forEach == nil {
+		return nil
+	}
+	return &hcl.Diagnostic{
+		Severity: hcl.DiagError,
+		Summary:  `Invalid combination of "count" and "for_each"`,
+		Detail: `The "count" and "for_each" meta-arguments are mutually-exclusive. ` +
+			`Only one may be used to be explicit about the number of resources to be created.`,
+		Subject: forEach.Range().Ptr(),
+	}
+}
+
 // parseResourceBlock parses a resource or data block and records it in the
 // config's Resources or DataSources map.
 func (p *Parser) parseResourceBlock(config *ast.Config, block *hcl.Block, isDataSource bool) hcl.Diagnostics {
@@ -679,6 +695,10 @@ func (p *Parser) decodeResourceBlock(block *hcl.Block, isDataSource bool) (*ast.
 
 	if attr, ok := content.Attributes["for_each"]; ok {
 		resource.ForEach = attr.Expr
+	}
+
+	if d := countForEachConflict(resource.Count, resource.ForEach); d != nil {
+		diags = append(diags, d)
 	}
 
 	if attr, ok := content.Attributes["depends_on"]; ok {
@@ -1250,6 +1270,10 @@ func (p *Parser) parseModuleBlock(config *ast.Config, block *hcl.Block) hcl.Diag
 
 	if attr, ok := content.Attributes["for_each"]; ok {
 		module.ForEach = attr.Expr
+	}
+
+	if d := countForEachConflict(module.Count, module.ForEach); d != nil {
+		diags = append(diags, d)
 	}
 
 	if attr, ok := content.Attributes["depends_on"]; ok {
