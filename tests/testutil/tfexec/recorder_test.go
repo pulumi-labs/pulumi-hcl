@@ -99,6 +99,40 @@ func TestRecorder_EqualWhenSameOps(t *testing.T) {
 	assert.Equal(t, a.Ops(), b.Ops())
 }
 
+// TestRecorder_OrderedOpsDifferWhenOrderDiffers proves the failure
+// Case.OrderDeterministic exists to cause: two recorders fed the same calls
+// in different orders compare equal under the default sorted comparison
+// (Ops), so an ordering divergence between the runtimes passes silently —
+// while the arrival-order comparison (OrderedOps) sees the divergence and
+// fails. Each recorder's sequence is asserted in full to pin that OrderedOps
+// reports true arrival order.
+func TestRecorder_OrderedOpsDifferWhenOrderDiffers(t *testing.T) {
+	t.Parallel()
+	a, b := &tfexec.Recorder{}, &tfexec.Recorder{}
+	pA := tfexec.Wrap(trivialProvider("v"), a)
+	pB := tfexec.Wrap(trivialProvider("v"), b)
+
+	require.False(t, invokeCreate(t, pA, "t_resource", map[string]any{"input": "1"}).HasError())
+	require.False(t, invokeCreate(t, pA, "t_resource", map[string]any{"input": "2"}).HasError())
+	// Reverse order in B.
+	require.False(t, invokeCreate(t, pB, "t_resource", map[string]any{"input": "2"}).HasError())
+	require.False(t, invokeCreate(t, pB, "t_resource", map[string]any{"input": "1"}).HasError())
+
+	op := func(input string) tfexec.Op {
+		return tfexec.Op{
+			Kind:    tfexec.OpCreate,
+			Type:    "t_resource",
+			Inputs:  map[string]any{"input": input, "result": ""},
+			Outputs: map[string]any{"input": input, "result": "v"},
+		}
+	}
+	assert.Equal(t, []tfexec.Op{op("1"), op("2")}, a.OrderedOps())
+	assert.Equal(t, []tfexec.Op{op("2"), op("1")}, b.OrderedOps())
+
+	assert.Equal(t, a.Ops(), b.Ops(), "sorted comparison must tolerate the order divergence")
+	assert.NotEqual(t, a.OrderedOps(), b.OrderedOps(), "ordered comparison must fail on the order divergence")
+}
+
 // TestRecorder_DifferentWhenInputsDiffer confirms inputs are part of the
 // comparison surface: same operation kind + type but different inputs must
 // produce unequal recordings.

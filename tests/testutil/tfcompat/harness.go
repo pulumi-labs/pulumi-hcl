@@ -114,6 +114,23 @@ type Case struct {
 	// resource fields that aren't reachable via stack outputs (e.g. Protect).
 	AssertState func(t *testing.T, resources []apitype.ResourceV3)
 
+	// OrderDeterministic, if true, compares provider operations in arrival
+	// order instead of sorted, so the op sequence itself asserts ordering
+	// (e.g. that a dependency edge serializes creates or destroys).
+	//
+	// Use only when the program's dependency graph forces a total order over
+	// every recorded op: both runtimes execute independent ops concurrently,
+	// so any two ops not ordered by a dependency chain record in a racy order
+	// and the comparison flakes. That includes data-source reads and
+	// provider-function calls — each must sit on the same chain.
+	//
+	// An ordering focused test should also delay the op that must complete
+	// *first* (see providers.OrderProvider): if the edge under test goes
+	// missing, the ops run concurrently and the undelayed op reliably records
+	// ahead of the delayed one, so the regression fails deterministically
+	// instead of racing.
+	OrderDeterministic bool
+
 	// Stages attaches per-stage behavior to the stages loaded from disk,
 	// matched positionally. For a case directory with numbered stage subdirs
 	// its length must equal the subdir count. For a flat directory each entry
@@ -284,8 +301,13 @@ func runCaseFromDir(t *testing.T, caseDir string, c Case) {
 			scrubTmpDir(lastOKTfOutputs, tfDriver.Dir()),
 			scrubTmpDir(lastOK.Outputs, pulDriver.Dir()),
 			"stack outputs differ between tofu apply and pulumi up")
-		require.Equal(t, recA.Ops(), recB.Ops(),
-			"provider operations differ between tofu apply and pulumi up")
+		if c.OrderDeterministic {
+			require.NoError(t, tfexec.Subsumes(recA.OrderedOps(), recB.OrderedOps()),
+				"provider operation order differs between tofu apply and pulumi up")
+		} else {
+			require.NoError(t, tfexec.Subsumes(recA.Ops(), recB.Ops()),
+				"provider operations differ between tofu apply and pulumi up")
+		}
 		if c.AssertState != nil {
 			c.AssertState(t, lastOK.Resources)
 		}

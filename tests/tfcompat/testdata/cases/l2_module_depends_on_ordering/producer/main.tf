@@ -1,3 +1,4 @@
-resource "ordering_resource" "producer" {
-  name = "producer"
+resource "order_resource" "producer" {
+  name         = "producer"
+  delay_create = true
 }

@@ -23,20 +23,21 @@ import (
 
 // TestL2CountRefDestroyOrder proves that a reference expressed only through a
 // resource's `count` meta-argument establishes a dependency that governs
-// destroy ordering. `b`'s `count` references `a.result`; nothing in `b`'s body
-// references `a`. On apply both runtimes create `a` before `b` (the count needs
-// `a.result`). On destroy, OpenTofu honors the count-derived dependency and
-// destroys `b` before `a`; pulumi-hcl derives dependencies only from input
-// values and misses the edge, destroying `a` first and failing `b`'s Delete.
+// destroy ordering. `b`'s `count` references `a`; nothing in `b`'s body
+// references `a`. Terraform derives the dependency, so the recorded sequence
+// is [create a, create b, delete b, delete a]; OrderDeterministic asserts it,
+// with the op that must complete first in each phase delayed so a missing
+// edge flips the recorded order deterministically.
 func TestL2CountRefDestroyOrder(t *testing.T) {
 	t.Parallel()
 	tfcompat.RunCase(t, "l2_count_ref_destroy_order", tfcompat.Case{
 		Providers: []tfcompat.Provider{
-			{Name: "orderdep", Factory: providers.OrderDepProvider},
+			{Name: "order", Factory: providers.OrderProvider},
 		},
 		Stages: []tfcompat.Stage{
 			{Mode: tfcompat.StageApply},
 			{Mode: tfcompat.StageDestroy},
 		},
+		OrderDeterministic: true,
 	})
 }

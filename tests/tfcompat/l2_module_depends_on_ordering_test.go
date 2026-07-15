@@ -22,15 +22,16 @@ import (
 )
 
 // A module referenced only through depends_on (no data flow) must be created
-// before the module that depends on it. ordering_resource fails if a second
-// create starts while the first is still in flight, so honoring the ordering
-// serializes the two creates and both succeed, while ignoring it overlaps them
-// and errors. Terraform serializes on module depends_on.
+// before the module that depends on it. Terraform serializes on module
+// depends_on, so the recorded op sequence is [create producer, create
+// consumer]; OrderDeterministic asserts it. The producer's create is delayed,
+// so a missing edge flips the recorded order deterministically.
 func TestL2Module_DependsOnOrdering(t *testing.T) {
 	t.Parallel()
 	tfcompat.RunCase(t, "l2_module_depends_on_ordering", tfcompat.Case{
 		Providers: []tfcompat.Provider{
-			{Name: "ordering", Factory: providers.OrderingProvider},
+			{Name: "order", Factory: providers.OrderProvider},
 		},
+		OrderDeterministic: true,
 	})
 }
