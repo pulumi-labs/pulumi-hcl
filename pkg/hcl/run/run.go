@@ -3907,6 +3907,9 @@ func (e *Engine) publishModuleValue(modInfo *graph.ModuleInfo, instances []*modu
 				inst.mu.Lock()
 				outs := maps.Clone(inst.Outputs)
 				inst.mu.Unlock()
+				if len(outs) == 0 {
+					parentCtx.SetModule(name, cty.EmptyObjectVal)
+				}
 				for k, v := range outs {
 					parentCtx.SetModuleOutput(name, k, v)
 				}

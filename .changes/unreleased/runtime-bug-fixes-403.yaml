@@ -1,0 +1,6 @@
+kind: bug-fixes
+body: Evaluate a whole reference to a module with no outputs as `{}`
+time: 2026-07-16T00:45:00Z
+custom:
+    Component: runtime
+    PR: "403"
