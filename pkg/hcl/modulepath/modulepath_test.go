@@ -43,10 +43,12 @@ func TestStep_LogicalName(t *testing.T) {
 	}{
 		{"bare", modulepath.NewStep("vpc"), "vpc"},
 		{"bare-with-dot", modulepath.NewStep("vpc.primary"), "vpc.primary"},
-		{"index-zero", modulepath.NewIndexedStep("vpc", 0), "vpc-0"},
-		{"index-large", modulepath.NewIndexedStep("vpc", 17), "vpc-17"},
-		{"each-string", modulepath.NewKeyedStep("vpc", "prod"), "vpc-prod"},
-		{"each-empty", modulepath.NewKeyedStep("vpc", ""), "vpc-"},
+		{"index-zero", modulepath.NewIndexedStep("vpc", 0), "vpc[0]"},
+		{"index-large", modulepath.NewIndexedStep("vpc", 17), "vpc[17]"},
+		{"each-string", modulepath.NewKeyedStep("vpc", "prod"), `vpc["prod"]`},
+		{"each-empty", modulepath.NewKeyedStep("vpc", ""), `vpc[""]`},
+		{"each-with-dash", modulepath.NewKeyedStep("vpc", "a-b"), `vpc["a-b"]`},
+		{"each-with-quote", modulepath.NewKeyedStep("vpc", `a"b`), `vpc["a\"b"]`},
 	}
 	for _, tt := range cases {
 		t.Run(tt.name, func(t *testing.T) {
@@ -118,7 +120,7 @@ func TestPath_LogicalName_MixedExpansions(t *testing.T) {
 	p := modulepath.Root().
 		Append(modulepath.NewIndexedStep("outer", 2)).
 		Append(modulepath.NewKeyedStep("inner", "prod"))
-	assert.Equal(t, "outer-2-inner-prod", p.LogicalName())
+	assert.Equal(t, `outer[2]-inner["prod"]`, p.LogicalName())
 }
 
 func TestPath_Parent(t *testing.T) {
@@ -155,7 +157,7 @@ func TestPath_Steps(t *testing.T) {
 	for s := range p.Steps {
 		got = append(got, s.LogicalName())
 	}
-	assert.Equal(t, []string{"a", "b-7", "c-k"}, got)
+	assert.Equal(t, []string{"a", "b[7]", `c["k"]`}, got)
 }
 
 func TestPath_Steps_EarlyExit(t *testing.T) {
@@ -217,6 +219,18 @@ func TestPath_NoCollisionAcrossDottedLabels(t *testing.T) {
 	assert.False(t, p1 == p2)
 	assert.Equal(t, "a.b-c", p1.LogicalName())
 	assert.Equal(t, "a-b.c", p2.LogicalName())
+}
+
+func TestPath_LogicalName_NoCollisionAcrossDashedKeys(t *testing.T) {
+	t.Parallel()
+
+	// "-" is legal both in HCL labels and in for_each keys, so bracket
+	// quoting must keep a dash in a key from colliding with a dash in a
+	// label.
+	byKey := modulepath.Root().Append(modulepath.NewKeyedStep("m", "a-b"))
+	byLabel := modulepath.Root().Append(modulepath.NewKeyedStep("m-a", "b"))
+	assert.Equal(t, `m["a-b"]`, byKey.LogicalName())
+	assert.Equal(t, `m-a["b"]`, byLabel.LogicalName())
 }
 
 func TestPath_NodeKey_DistinguishesPaths(t *testing.T) {

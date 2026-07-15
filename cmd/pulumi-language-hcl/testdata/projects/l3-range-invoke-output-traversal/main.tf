@@ -24,6 +24,9 @@ resource "nestedobject_container" "source" {
 # https://github.com/pulumi/pulumi/issues/12507.
 resource "nestedobject_target" "routes" {
   count = length(data.nestedobject_values.values.results)
+  pulumi {
+    name ="routes-${count.index}"
+  }
   lifecycle {
     create_before_destroy = true
   }

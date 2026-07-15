@@ -25,6 +25,9 @@ resource "nestedobject_map_container" "mapContainer" {
 # A resource that ranges over a computed list
 resource "nestedobject_target" "listOutput" {
   for_each = {  for  __key,  __value  in  nestedobject_container.container.details  :  tostring(__key)  =>  __value  }
+  pulumi {
+    name ="listOutput-${each.key}"
+  }
   lifecycle {
     create_before_destroy = true
   }
@@ -33,6 +36,9 @@ resource "nestedobject_target" "listOutput" {
 # A resource that ranges over a computed map
 resource "nestedobject_target" "mapOutput" {
   for_each = nestedobject_map_container.mapContainer.tags
+  pulumi {
+    name ="mapOutput-${each.key}"
+  }
   lifecycle {
     create_before_destroy = true
   }

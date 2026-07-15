@@ -9,6 +9,9 @@ terraform {
 
 resource "nestedobject_target" "mapResource" {
   for_each = var.itemMap
+  pulumi {
+    name ="mapResource-${each.key}"
+  }
   lifecycle {
     create_before_destroy = true
   }

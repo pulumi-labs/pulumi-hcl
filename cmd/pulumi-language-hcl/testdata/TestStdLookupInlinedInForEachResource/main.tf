@@ -20,6 +20,9 @@ resource "test_item" "inbound" {
       "thing" = "bravo"
     }
   }
+  pulumi {
+    name ="inbound-${each.key}"
+  }
   lifecycle {
     create_before_destroy = true
   }

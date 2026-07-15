@@ -1169,11 +1169,10 @@ func (e *Engine) registerProviderInContext(
 		logicalName = provider.Name
 	}
 	if inst != nil {
-		logicalName = logicalName + "-" + inst.key
+		logicalName = buildResourceName(logicalName, nil, &inst.key)
 	}
 	if modInst != nil {
-		modInstanceName := modInst.Path.LogicalName()
-		logicalName = modInstanceName + "-" + logicalName
+		logicalName = prefixWithModulePath(modInst.Path, logicalName)
 	}
 
 	// Version comes from an explicit attribute, else required_providers.
@@ -1532,7 +1531,10 @@ func (e *Engine) registerResourceInstanceInContext(
 
 	opts.PackageRef = e.packageRefForResource(res.Type, resSchema)
 
-	resourceName := e.extractModuleResourceName(res.Name, instance.Index, instance.EachKeyString(), modInst)
+	resourceName, err := e.resourceInstanceName(res, instance, hclCtx, modInst)
+	if err != nil {
+		return err
+	}
 
 	if len(res.Preconditions) > 0 {
 		if err := e.bindPreconditionHooks(ctx, res, instance, evalCtx, opts, resourceName); err != nil {
@@ -2132,10 +2134,7 @@ func (e *Engine) resolveMovedAliases(
 
 			// The prior name is the resource's own name under its prior module
 			// path; the prior parent is described relative to where it is now.
-			name := buildResourceName(from.Name, priorIdx, priorEach)
-			if !fromPath.IsRoot() {
-				name = fromPath.LogicalName() + "-" + name
-			}
+			name := prefixWithModulePath(fromPath, buildResourceName(from.Name, priorIdx, priorEach))
 			parentURN, noParent, ok := e.priorParentSpec(fromPath, resPath, modInst)
 			if !ok {
 				continue
@@ -2167,10 +2166,7 @@ func (e *Engine) resolveMovedAliases(
 	// aliased to the name it had under the prior module path; Pulumi combines
 	// that with the renamed component's own alias to recover the old URN.
 	if oldPath := e.oldModulePath(resPath); oldPath != resPath {
-		name := buildResourceName(res.Name, index, eachKey)
-		if !oldPath.IsRoot() {
-			name = oldPath.LogicalName() + "-" + name
-		}
+		name := prefixWithModulePath(oldPath, buildResourceName(res.Name, index, eachKey))
 		aliases = append(aliases, Alias{Spec: &AliasSpec{Name: name}})
 	}
 
@@ -2462,32 +2458,54 @@ func (e *Engine) hasFailedDependency(res *ast.Resource) bool {
 }
 
 // buildResourceName builds the Pulumi resource name from the logical name and
-// instance key. Single instances use the logical name as-is. Count instances get
-// a "-N" suffix. ForEach instances get a "-key" suffix.
+// instance key, using Terraform-style instance addressing: single instances
+// use the logical name as-is, count instances get a "[N]" suffix, and ForEach
+// instances get a `["key"]` suffix (see [modulepath.Step.LogicalName]).
 func buildResourceName(logicalName string, index *int, eachKey *string) string {
 	switch {
 	case index != nil:
-		return fmt.Sprintf("%s-%d", logicalName, *index)
+		return modulepath.NewIndexedStep(logicalName, *index).LogicalName()
 	case eachKey != nil:
-		return fmt.Sprintf("%s-%s", logicalName, *eachKey)
+		return modulepath.NewKeyedStep(logicalName, *eachKey).LogicalName()
 	default:
 		return logicalName
 	}
 }
 
-// extractModuleResourceName computes the Pulumi resource name for a resource inside a module.
-// Resources inside a component are prefixed with the component instance name.
-// For example, resource "res" inside component "comp" becomes "comp-res",
-// and inside "comp[0]" becomes "comp[0]-res".
-func (*Engine) extractModuleResourceName(
-	logicalName string, index *int, eachKey *string, modInst *moduleInstance,
-) string {
-	bareResourceName := buildResourceName(logicalName, index, eachKey)
-	if modInst == nil {
-		return bareResourceName
+// prefixWithModulePath prefixes name with the logical name of the module
+// instance path it lives in, joined with "-" (the cross-language Pulumi
+// convention for component-child names).
+func prefixWithModulePath(path modulepath.Path, name string) string {
+	if path.IsRoot() {
+		return name
 	}
-	// Prefix with the module instance name (e.g., "many" or "many[0]").
-	return modInst.Path.LogicalName() + "-" + bareResourceName
+	return path.LogicalName() + "-" + name
+}
+
+// resourceInstanceName computes the Pulumi resource name for one resource
+// instance. A `pulumi { name = ... }` override is evaluated per instance
+// (count.index/each.key are in scope) and replaces the derived instance name.
+// Either way the name is prefixed with the module instance name (e.g. "many"
+// or "many[0]") when the resource lives inside a module.
+func (*Engine) resourceInstanceName(
+	res *ast.Resource, instance *graph.ExpandedResource, hclCtx *hcl.EvalContext, modInst *moduleInstance,
+) (string, error) {
+	name := buildResourceName(res.Name, instance.Index, instance.EachKeyString())
+	if res.PulumiName != nil {
+		val, diags := res.PulumiName.Value(hclCtx)
+		if diags.HasErrors() {
+			return "", fmt.Errorf("evaluating pulumi name for %s.%s: %s", res.Type, res.Name, diags.Error())
+		}
+		val, _ = val.Unmark()
+		if !val.IsKnown() || val.IsNull() || val.Type() != cty.String {
+			return "", fmt.Errorf("pulumi name for %s.%s must be a known string", res.Type, res.Name)
+		}
+		name = val.AsString()
+	}
+	if modInst == nil {
+		return name, nil
+	}
+	return prefixWithModulePath(modInst.Path, name), nil
 }
 
 // translateAttrPathTraversal formats an attribute-path traversal (e.g. an

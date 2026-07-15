@@ -766,6 +766,10 @@ func (p *Parser) decodeResourceBlock(block *hcl.Block, isDataSource bool) (*ast.
 func (p *Parser) parsePulumiResourceOptions(block *hcl.Block, resource *ast.Resource) hcl.Diagnostics {
 	content, diags := block.Body.Content(pulumiResourceOptionsSchema)
 
+	if attr, ok := content.Attributes["name"]; ok {
+		resource.PulumiName = attr.Expr
+	}
+
 	if attr, ok := content.Attributes["parent"]; ok {
 		traversal, travDiags := hcl.AbsTraversalForExpr(attr.Expr)
 		diags = append(diags, travDiags...)

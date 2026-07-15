@@ -85,6 +85,11 @@ type Resource struct {
 	// Unlike Terraform, Pulumi supports explicit parent resources.
 	ResourceParent hcl.Traversal
 
+	// PulumiName, if present, overrides the derived Pulumi logical name for
+	// each instance of this resource. It is evaluated per instance, with
+	// count.index/each.key in scope.
+	PulumiName hcl.Expression
+
 	// AdditionalSecretOutputs lists output properties that should be treated as
 	// secret. Each entry names a single top-level property.
 	AdditionalSecretOutputs []hcl.Traversal

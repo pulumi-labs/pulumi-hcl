@@ -317,11 +317,90 @@ output "each_name" {
 
 	countName, ok := mock.StackOutputs.GetOk("count_name")
 	require.True(t, ok, "expected count_name output")
-	require.Equal(t, "counted-1", countName.AsString())
+	require.Equal(t, "counted[1]", countName.AsString())
 
 	eachName, ok := mock.StackOutputs.GetOk("each_name")
 	require.True(t, ok, "expected each_name output")
-	require.Equal(t, "mapped-a", eachName.AsString())
+	require.Equal(t, `mapped["a"]`, eachName.AsString())
+}
+
+// A `pulumi { name = ... }` option overrides the derived instance name; the
+// expression is evaluated per instance with count.index/each.key in scope.
+func TestEngine_PulumiNameOverride(t *testing.T) {
+	t.Parallel()
+
+	src := []byte(`
+resource "aws_instance" "counted" {
+  count = 2
+  ami   = "ami-${count.index}"
+
+  pulumi {
+    name = "counted-${count.index}"
+  }
+}
+
+resource "aws_instance" "mapped" {
+  for_each = toset(["a", "b"])
+  ami      = "ami-${each.key}"
+
+  pulumi {
+    name = "mapped-${each.key}"
+  }
+}
+
+resource "aws_instance" "single" {
+  ami = "ami-single"
+
+  pulumi {
+    name = "renamed"
+  }
+}
+`)
+
+	p := parser.NewParser()
+	config, diags := p.ParseSource("test.hcl", src)
+	require.Empty(t, diags)
+
+	mock := &testutil.MockResourceMonitor{}
+	engine := newTestEngine(t, config, &run.EngineOptions{
+		ModuleLoader:    testModuleLoader(t),
+		ProjectName:     "test-project",
+		StackName:       "dev",
+		ResourceMonitor: mock,
+		WorkDir:         t.TempDir(),
+		RootDir:         t.TempDir(),
+		SchemaLoader: schemaloader.New(t, schema.PackageSpec{
+			Name: "aws",
+			Resources: map[string]schema.ResourceSpec{
+				"aws:index:Instance": {
+					InputProperties: map[string]schema.PropertySpec{
+						"ami": {TypeSpec: schema.TypeSpec{Type: "string"}},
+					},
+					ObjectTypeSpec: schema.ObjectTypeSpec{
+						Properties: map[string]schema.PropertySpec{
+							"ami": {TypeSpec: schema.TypeSpec{Type: "string"}},
+						},
+					},
+				},
+			},
+		}),
+	})
+
+	require.NoError(t, engine.Run(t.Context()))
+
+	names := make(map[string]string)
+	for _, req := range mock.RegisteredResources {
+		if req.Type == "aws:index:Instance" {
+			names[req.Name] = req.Inputs.Get("ami").AsString()
+		}
+	}
+	assert.Equal(t, map[string]string{
+		"counted-0": "ami-0",
+		"counted-1": "ami-1",
+		"mapped-a":  "ami-a",
+		"mapped-b":  "ami-b",
+		"renamed":   "ami-single",
+	}, names)
 }
 
 func TestEngine_PulumiResourceNamePreviewUnknown(t *testing.T) {
@@ -3226,8 +3305,8 @@ import {
 }
 `)
 		assert.Equal(t, map[string]string{
-			"web-a": "id-a",
-			"web-b": "id-b",
+			`web["a"]`: "id-a",
+			`web["b"]`: "id-b",
 		}, importIdsByName(t, tmpDir))
 	})
 
@@ -3246,8 +3325,8 @@ import {
 }
 `)
 		assert.Equal(t, map[string]string{
-			"web-a": "",
-			"web-b": "",
+			`web["a"]`: "",
+			`web["b"]`: "",
 		}, importIdsByName(t, tmpDir))
 	})
 }
@@ -4154,7 +4233,7 @@ module "child" {
 	}
 
 	upstream := find("upstream")
-	first := find("child-first-0")
+	first := find("child-first[0]")
 	second := find("child-second")
 	require.NotNil(t, upstream, "upstream resource should be registered")
 	require.NotNil(t, first, "child-first resource should be registered")
@@ -4259,14 +4338,14 @@ resource "simple_resource" "r" {
 	assert.Equal(t, []run.RegisterResourceRequest{
 		{
 			Type:   "pulumi:providers:simple",
-			Name:   "by_key-a",
+			Name:   `by_key["a"]`,
 			Inputs: property.NewMap(map[string]property.Value{"prefix": property.New("alpha")}),
 			Custom: true,
 			Parent: stackURN,
 		},
 		{
 			Type:   "pulumi:providers:simple",
-			Name:   "by_key-b",
+			Name:   `by_key["b"]`,
 			Inputs: property.NewMap(map[string]property.Value{"prefix": property.New("beta")}),
 			Custom: true,
 			Parent: stackURN,
@@ -4275,7 +4354,7 @@ resource "simple_resource" "r" {
 
 	require.NotNil(t, resourceReg, "resource should register")
 	assert.Equal(t,
-		"urn:pulumi:test::project::pulumi:providers:simple::by_key-a::by_key-a-id",
+		`urn:pulumi:test::project::pulumi:providers:simple::by_key["a"]::by_key["a"]-id`,
 		resourceReg.Provider,
 		"the resource must bind to the provider instance selected by its key")
 }
@@ -4606,8 +4685,8 @@ output "amis" {
 		mock := runExpansion(t, src, true)
 
 		assert.Equal(t, map[string]string{
-			"base-0": "ami-0",
-			"base-1": "ami-1",
+			"base[0]": "ami-0",
+			"base[1]": "ami-1",
 		}, instanceInputs(mock))
 
 		requireComputedOutput(t, mock, "amis")
@@ -4618,15 +4697,15 @@ output "amis" {
 		mock := runExpansion(t, src, false)
 
 		assert.Equal(t, map[string]string{
-			"base-0":              "ami-0",
-			"base-1":              "ami-1",
-			"dependent-base-0-id": "base-0-id",
-			"dependent-base-1-id": "base-1-id",
+			"base[0]":                 "ami-0",
+			"base[1]":                 "ami-1",
+			`dependent["base[0]-id"]`: "base[0]-id",
+			`dependent["base[1]-id"]`: "base[1]-id",
 		}, instanceInputs(mock))
 
 		assert.Equal(t, property.New([]property.Value{
-			property.New("base-0-id"),
-			property.New("base-1-id"),
+			property.New("base[0]-id"),
+			property.New("base[1]-id"),
 		}), mock.StackOutputs.Get("amis"))
 	})
 }
@@ -4667,9 +4746,9 @@ output "amis" {
 		mock := runExpansion(t, src, false)
 
 		assert.Equal(t, map[string]string{
-			"base":        "ami-base",
-			"dependent-0": "ami-0",
-			"dependent-1": "ami-1",
+			"base":         "ami-base",
+			"dependent[0]": "ami-0",
+			"dependent[1]": "ami-1",
 		}, instanceInputs(mock))
 
 		assert.Equal(t, property.New([]property.Value{
@@ -4712,8 +4791,8 @@ output "amis" {
 		mock := runExpansion(t, src, true)
 
 		assert.Equal(t, map[string]string{
-			"first-a": "ami-a",
-			"first-b": "ami-b",
+			`first["a"]`: "ami-a",
+			`first["b"]`: "ami-b",
 		}, instanceInputs(mock))
 
 		requireComputedOutput(t, mock, "amis")
@@ -4724,17 +4803,17 @@ output "amis" {
 		mock := runExpansion(t, src, false)
 
 		assert.Equal(t, map[string]string{
-			"first-a":           "ami-a",
-			"first-b":           "ami-b",
-			"second-0":          "first-a-id",
-			"second-1":          "first-a-id",
-			"third-second-0-id": "second-0-id",
-			"third-second-1-id": "second-1-id",
+			`first["a"]`:            "ami-a",
+			`first["b"]`:            "ami-b",
+			"second[0]":             `first["a"]-id`,
+			"second[1]":             `first["a"]-id`,
+			`third["second[0]-id"]`: "second[0]-id",
+			`third["second[1]-id"]`: "second[1]-id",
 		}, instanceInputs(mock))
 
 		assert.Equal(t, property.New([]property.Value{
-			property.New("second-0-id"),
-			property.New("second-1-id"),
+			property.New("second[0]-id"),
+			property.New("second[1]-id"),
 		}), mock.StackOutputs.Get("amis"))
 	})
 }

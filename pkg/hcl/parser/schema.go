@@ -168,6 +168,7 @@ var resourceSchema = &hcl.BodySchema{
 // inside a resource or data block's nested `pulumi` block.
 var pulumiResourceOptionsSchema = &hcl.BodySchema{
 	Attributes: []hcl.AttributeSchema{
+		{Name: "name"},
 		{Name: "additional_secret_outputs"},
 		{Name: "parent"},
 		{Name: "retain_on_delete"},

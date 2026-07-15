@@ -100,17 +100,21 @@ func (s Step) Key() (key string, ok bool) {
 }
 
 // LogicalName returns the Pulumi logical name component for this single
-// step:
+// step, using Terraform-style instance addressing:
 //
-//   - "<name>"          if the step has no count/for_each.
-//   - "<name>-<index>"  for count instances.
-//   - "<name>-<key>"    for for_each instances.
+//   - `<name>`          if the step has no count/for_each.
+//   - `<name>[<index>]` for count instances.
+//   - `<name>["<key>"]` for for_each instances, with the key quoted via
+//     [strconv.Quote] so keys containing `"` or `\` stay unambiguous.
+//
+// Because `[` and `"` cannot appear in an HCL block label, distinct
+// (name, key) pairs always produce distinct logical names.
 func (s Step) LogicalName() string {
 	switch s.kind {
 	case stepKindIndex:
-		return s.name + "-" + strconv.FormatUint(s.idx, 10)
+		return s.name + "[" + strconv.FormatUint(s.idx, 10) + "]"
 	case stepKindForEach:
-		return s.name + "-" + s.key
+		return s.name + "[" + strconv.Quote(s.key) + "]"
 	default:
 		return s.name
 	}
@@ -208,12 +212,15 @@ func (p Path) Steps(yield func(Step) bool) {
 //	Root                              -> ""
 //	["outer"]                         -> "outer"
 //	["outer", "inner"]                -> "outer-inner"
-//	["outer"[0], "inner"]             -> "outer-0-inner"
-//	["outer"["a"], "inner"]           -> "outer-a-inner"
+//	["outer"[0], "inner"]             -> "outer[0]-inner"
+//	["outer"["a"], "inner"]           -> `outer["a"]-inner`
 //
-// Note that names containing "-" are not escaped: a logical name produced
-// by this function is a one-way derivation, not a round-trippable encoding
-// of the path.
+// Instance keys are bracket-quoted and "[" cannot appear in an HCL label, so
+// distinct instance keys always produce distinct logical names. The "-"
+// joiner itself is legal in labels, however, so a logical name produced by
+// this function is a one-way derivation, not a round-trippable encoding of
+// the path: ["a", "b-c"] and ["a-b", "c"] collide. Use the path itself
+// ([Path] equality / map-key) when collision safety is required.
 func (p Path) LogicalName() string {
 	var b strings.Builder
 	first := true
