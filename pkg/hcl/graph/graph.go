@@ -537,13 +537,10 @@ type moduleScope struct {
 	parentPrefix string
 }
 
-// inheritedProviderDeps returns an edge to the nearest ancestor module's
-// default `<pkg>` configuration — its own un-aliased `provider "<pkg>" {}`
-// block or the pass-through entry of its module call (whose shadow node
-// stands in) — for an in-module resource/data source with no `provider`, no
-// own-module block, and no pass-through. parent is the enclosing module's
-// scope; the walk runs from there toward the root. The edge forces that
-// configuration to register and orders it before the resource.
+// inheritedProviderDeps returns an edge to the nearest ancestor's default
+// `<pkg>` configuration (see defaultProviderNode) for an in-module
+// resource/data source with no `provider`, no own-module block, and no
+// pass-through, forcing that configuration to register before the resource.
 func (g *Graph) inheritedProviderDeps(resource *ast.Resource, parent *moduleScope) []pdag.Node {
 	if resource.Provider != nil {
 		return nil

@@ -4657,10 +4657,9 @@ resource "simple_resource" "r" {
 		"the resource must bind to the provider instance selected by its key")
 }
 
-// An aliased provider passed into a module via `providers = { simple =
-// simple.special }` must survive a second hop into a nested module, whether
-// the middle module re-passes it explicitly (`providers = { simple = simple }`)
-// or the nested call inherits the middle module's default implicitly.
+// An aliased provider passed into a module via `providers` must survive a
+// second hop into a nested module, whether re-passed explicitly or inherited
+// implicitly as the nested call's default.
 func TestEngine_ProviderResolution_AliasedPassThroughSecondHop(t *testing.T) {
 	t.Parallel()
 

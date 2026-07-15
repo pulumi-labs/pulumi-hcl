@@ -10,8 +10,7 @@ variable "tag" {
   type = string
 }
 
-# No `providers` block: `inner` inherits this module's default `simple`, which
-# was itself passed in from the parent.
+# No `providers` block: `inner` inherits this module's default `simple`.
 module "inner" {
   source = "./inner"
   tag    = var.tag

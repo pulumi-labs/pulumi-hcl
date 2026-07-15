@@ -15,9 +15,7 @@ module "outer" {
   }
 }
 
-# Same aliased pass into the middle module, but the innermost module inherits
-# the middle module's default `simple` implicitly (no `providers` block on the
-# inner call).
+# Like `outer`, but the nested call inherits the passed-in default implicitly.
 module "outer_implicit" {
   source = "./outer_implicit"
   tag    = "b"

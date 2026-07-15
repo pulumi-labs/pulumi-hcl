@@ -21,12 +21,10 @@ import (
 	"github.com/pulumi-labs/pulumi-hcl/tests/testutil/tfcompat/providers"
 )
 
-// Root passes an aliased provider (simple.special, prefix "special") into a
-// middle module via a providers map, and the configuration must survive the
-// second hop into a nested module: "outer" re-passes its inherited simple
-// explicitly (providers = { simple = simple }), while "outer_implicit"'s
-// nested call inherits the passed-in default implicitly. Both nested
-// resources must see prefix "special".
+// An aliased provider (prefix "special") passed into a middle module must
+// survive the second hop into a nested module: "outer" re-passes it
+// explicitly, "outer_implicit"'s nested call inherits it implicitly. Both
+// nested resources must see prefix "special".
 func TestL2NestedModuleAliasedProviderPassthrough(t *testing.T) {
 	t.Parallel()
 	tfcompat.RunCase(t, "l2_nested_module_aliased_provider_passthrough", tfcompat.Case{

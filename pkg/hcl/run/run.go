@@ -1046,10 +1046,9 @@ func (e *Engine) registerProvider(
 // resolvePassThroughProvider looks up a provider passed into a module via
 // `providers = { <localKey> = <parentExpr> }` and returns the resolved
 // URN::ID, or "" when the resource isn't in a module, there's no entry for
-// localKey, or the parent expression doesn't yield a provider reference. A
-// parent expression with no binding in the parent's own scope may name a
-// configuration the parent itself received through its own module call, so
-// the reference chases the parent's pass-through entries recursively.
+// localKey, or the parent expression doesn't yield a provider reference. An
+// expression the parent's scope doesn't bind is chased recursively through
+// the parent's own pass-through entries.
 func (e *Engine) resolvePassThroughProvider(modInfo *graph.ModuleInfo, localKey string) string {
 	if modInfo == nil || modInfo.Module == nil || localKey == "" {
 		return ""
@@ -1118,10 +1117,9 @@ func (e *Engine) resolveExplicitProvider(
 
 // inheritedDefaultProvider walks up the module tree from modInfo, returning
 // the nearest ancestor's un-aliased default provider config for pkg
-// (URN::ID), or "" if none. An ancestor's default is its own registered
-// `provider "<pkg>"` block or a configuration passed to it through its module
-// call's providers argument. The graph adds a matching edge so that block is
-// registered before this resolves.
+// (URN::ID), or "" if none. An ancestor's default is its own registered block
+// or one passed to it through its module call. The graph adds a matching edge
+// so that block is registered before this resolves.
 func (e *Engine) inheritedDefaultProvider(modInfo *graph.ModuleInfo, pkg string) string {
 	for path := modInfo.Path; ; {
 		parent, _, ok := path.Parent()
