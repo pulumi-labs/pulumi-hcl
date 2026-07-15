@@ -1,0 +1,7 @@
+kind: bug-fixes
+body: Carry a provider passed via `providers` through a second module hop, both
+    re-passed explicitly and inherited as the module default
+time: 2026-07-16T00:00:00Z
+custom:
+    Component: runtime
+    PR: "400"
