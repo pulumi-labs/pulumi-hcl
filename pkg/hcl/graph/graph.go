@@ -193,12 +193,6 @@ type Graph struct {
 	// dependency list. Read by HasDependents at Walk time.
 	dependents map[string]int
 
-	// dependencyKeys records, for each node key, the keys it directly depends
-	// on. pdag stores the edges but does not expose per-node predecessors, so
-	// we keep our own adjacency for graph queries like create_before_destroy
-	// propagation.
-	dependencyKeys map[string][]string
-
 	// moved holds the moved blocks of each module keyed by that module's path.
 	// A moved block's from/to addresses are relative to the module it is written
 	// in, so resolving a rename needs the blocks scoped to the resource's own
@@ -229,14 +223,13 @@ type internedNode struct {
 // NewGraph creates a new empty graph.
 func NewGraph() *Graph {
 	return &Graph{
-		seen:           make(map[string]internedNode),
-		dag:            pdag.New[dagNode](),
-		references:     make(map[string][]hcl.Range),
-		keyByDagNode:   make(map[pdag.Node]string),
-		dependents:     make(map[string]int),
-		dependencyKeys: make(map[string][]string),
-		moved:          make(map[modulepath.Path][]*ast.Moved),
-		scopes:         make(map[string]*moduleScope),
+		seen:         make(map[string]internedNode),
+		dag:          pdag.New[dagNode](),
+		references:   make(map[string][]hcl.Range),
+		keyByDagNode: make(map[pdag.Node]string),
+		dependents:   make(map[string]int),
+		moved:        make(map[modulepath.Path][]*ast.Moved),
+		scopes:       make(map[string]*moduleScope),
 
 		missingProviders: make(map[string]*hcl.Diagnostic),
 	}
@@ -340,7 +333,6 @@ func (g *Graph) AddNode(node *Node, deps []pdag.Node) error {
 		}
 		if key, ok := g.keyByDagNode[dep]; ok {
 			g.dependents[key]++
-			g.dependencyKeys[node.Key] = append(g.dependencyKeys[node.Key], key)
 		}
 	}
 	return nil
@@ -353,27 +345,29 @@ func (g *Graph) AddNode(node *Node, deps []pdag.Node) error {
 // that every create in a replacement chain runs before any delete.
 func (g *Graph) ForcedCreateBeforeDestroy() map[string]bool {
 	forced := make(map[string]bool)
-	visited := make(map[string]bool)
+	visited := make(map[pdag.Node]bool)
 
-	var mark func(key string)
-	mark = func(key string) {
-		if visited[key] {
+	var mark func(node pdag.Node)
+	mark = func(node pdag.Node) {
+		if visited[node] {
 			return
 		}
-		visited[key] = true
-		if n, ok := g.seen[key]; ok && n.n.Type == NodeTypeResource {
-			forced[key] = true
+		visited[node] = true
+		if key, ok := g.keyByDagNode[node]; ok {
+			if n, ok := g.seen[key]; ok && n.n.Type == NodeTypeResource {
+				forced[key] = true
+			}
 		}
 		// Recurse into dependencies through any node type, so a dependency
 		// reached via a local or other intermediary is still forced.
-		for _, dep := range g.dependencyKeys[key] {
+		for dep := range g.dag.Predecessors(node) {
 			mark(dep)
 		}
 	}
 
-	for key, n := range g.seen {
+	for _, n := range g.seen {
 		if declaresCreateBeforeDestroy(n.n) {
-			mark(key)
+			mark(n.i)
 		}
 	}
 	return forced
