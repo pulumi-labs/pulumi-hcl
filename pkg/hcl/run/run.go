@@ -1543,12 +1543,14 @@ func (e *Engine) registerResourceInstanceInContext(
 			}
 		}
 	}
-	// count/for_each and lifecycle precondition/postcondition references are
-	// not tied to any body property, so they stay out of PropertyDependencies
-	// but still gate ordering through DependsOn.
+	// count/for_each, lifecycle precondition/postcondition, and
+	// provisioner/connection references are not tied to any body property, so
+	// they stay out of PropertyDependencies but still gate ordering through
+	// DependsOn.
 	checkDeps := checkRuleDeps(res.Preconditions, hclCtx)
 	checkDeps = append(checkDeps, checkRuleDeps(res.Postconditions, hclCtx)...)
-	for _, dep := range slices.Concat(metaArgDeps, checkDeps) {
+	provDeps := provisionerDeps(res, hclCtx)
+	for _, dep := range slices.Concat(metaArgDeps, checkDeps, provDeps) {
 		if !slices.Contains(opts.DependsOn, dep) {
 			opts.DependsOn = append(opts.DependsOn, dep)
 		}
@@ -4115,6 +4117,44 @@ func checkRuleDeps(rules []*ast.CheckRule, hclCtx *hcl.EvalContext) []string {
 				deps = append(deps, eval.CollectDepURNs(val)...)
 			}
 		}
+	}
+	return deps
+}
+
+func provisionerDeps(res *ast.Resource, hclCtx *hcl.EvalContext) []string {
+	var deps []string
+	var collect func(body hcl.Body)
+	collect = func(body hcl.Body) {
+		if body == nil {
+			return
+		}
+		attrs, _ := body.JustAttributes()
+		for _, attr := range attrs {
+			for _, traversal := range attr.Expr.Variables() {
+				val, diags := traversal.TraverseAbs(hclCtx)
+				if diags.HasErrors() {
+					continue
+				}
+				deps = append(deps, eval.CollectDepURNs(val)...)
+			}
+		}
+		if syntaxBody, ok := body.(*hclsyntax.Body); ok {
+			for _, block := range syntaxBody.Blocks {
+				collect(block.Body)
+			}
+		}
+	}
+	if res.Connection != nil {
+		collect(res.Connection.Config)
+	}
+	for _, prov := range res.Provisioners {
+		if prov.When == "destroy" {
+			continue
+		}
+		if prov.Connection != nil {
+			collect(prov.Connection.Config)
+		}
+		collect(prov.Config)
 	}
 	return deps
 }

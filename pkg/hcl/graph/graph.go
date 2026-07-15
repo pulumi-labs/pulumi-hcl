@@ -778,6 +778,27 @@ func (g *Graph) resourceDeps(resource *ast.Resource, prefix string) []pdag.Node 
 			seen[dep] = true
 		}
 	}
+	// A reference in a connection block or a create-time provisioner
+	// establishes a dependency. Destroy-time provisioners may only reference
+	// the resource itself, so they contribute no edges.
+	if resource.Connection != nil {
+		for _, dep := range g.bodyDeps(resource.Connection.Config, prefix, nil) {
+			seen[dep] = true
+		}
+	}
+	for _, prov := range resource.Provisioners {
+		if prov.When == "destroy" {
+			continue
+		}
+		if prov.Connection != nil {
+			for _, dep := range g.bodyDeps(prov.Connection.Config, prefix, nil) {
+				seen[dep] = true
+			}
+		}
+		for _, dep := range g.bodyDeps(prov.Config, prefix, nil) {
+			seen[dep] = true
+		}
+	}
 	if resource.DeletedWith != nil {
 		if dep := formatTraversal(resource.DeletedWith); dep != "" {
 			g.recordRef(prefix+dep, resource.DeletedWith.SourceRange())

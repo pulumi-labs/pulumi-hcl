@@ -5390,3 +5390,81 @@ resource "aws_instance" "reader" {
 	assert.Equal(t, []string{firstURN}, reader.Dependencies)
 	assert.Equal(t, map[string][]string{"ami": {firstURN}}, reader.PropertyDependencies)
 }
+
+// TestEngine_ProvisionerRefDependencies: a resource referenced only from a
+// provisioner command, a resource-level connection block, or a provisioner's
+// connection override establishes a dependency — directly and through a local
+// — while staying out of PropertyDependencies (no body property carries it).
+// The referent is declared last so the edge, not source order, must sequence
+// its evaluation before the referencing resources register. `self` in a
+// create-time provisioner is not a reference and must not break dep
+// collection; a destroy-time provisioner may only reference the resource
+// itself and contributes no dependency.
+func TestEngine_ProvisionerRefDependencies(t *testing.T) {
+	t.Parallel()
+
+	mock, err := tryExpansion(t, `
+resource "aws_instance" "prov" {
+  ami = "ami-prov"
+  provisioner "local-exec" {
+    command = "echo ${aws_instance.first.ami} ${self.id}"
+  }
+}
+
+resource "aws_instance" "conn" {
+  ami = "ami-conn"
+  connection {
+    host = aws_instance.first.ami
+  }
+}
+
+resource "aws_instance" "provconn" {
+  ami = "ami-provconn"
+  provisioner "local-exec" {
+    command = "echo provconn"
+    connection {
+      host = local.first_ami
+    }
+  }
+}
+
+resource "aws_instance" "dprov" {
+  ami = "ami-dprov"
+  provisioner "local-exec" {
+    when    = destroy
+    command = "echo ${aws_instance.first.ami}"
+  }
+}
+
+locals {
+  first_ami = aws_instance.first.ami
+}
+
+resource "aws_instance" "first" {
+  ami = "ami-first"
+}
+`, false, false)
+	require.NoError(t, err)
+
+	find := func(name string) *run.RegisterResourceRequest {
+		for i := range mock.RegisteredResources {
+			r := &mock.RegisteredResources[i]
+			if r.Type == "aws:index:Instance" && r.Name == name {
+				return r
+			}
+		}
+		return nil
+	}
+	firstURN := "urn:pulumi:test::project::aws:index:Instance::first"
+
+	for _, name := range []string{"prov", "conn", "provconn"} {
+		r := find(name)
+		require.NotNilf(t, r, "%s resource should be registered", name)
+		assert.Equal(t, []string{firstURN}, r.Dependencies)
+		assert.Empty(t, r.PropertyDependencies)
+	}
+
+	dprov := find("dprov")
+	require.NotNil(t, dprov, "dprov resource should be registered")
+	assert.Empty(t, dprov.Dependencies)
+}
