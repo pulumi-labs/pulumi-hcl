@@ -1479,9 +1479,12 @@ func (e *Engine) registerResourceInstanceInContext(
 			}
 		}
 	}
-	// count/for_each references are not tied to any body property, so they stay
-	// out of PropertyDependencies but still gate ordering through DependsOn.
-	for _, dep := range metaArgDeps {
+	// count/for_each and lifecycle precondition/postcondition references are
+	// not tied to any body property, so they stay out of PropertyDependencies
+	// but still gate ordering through DependsOn.
+	checkDeps := checkRuleDeps(res.Preconditions, hclCtx)
+	checkDeps = append(checkDeps, checkRuleDeps(res.Postconditions, hclCtx)...)
+	for _, dep := range slices.Concat(metaArgDeps, checkDeps) {
 		if !slices.Contains(opts.DependsOn, dep) {
 			opts.DependsOn = append(opts.DependsOn, dep)
 		}
@@ -1829,6 +1832,7 @@ func (e *Engine) buildResourceOptionsInContext(
 	// ReplacementTrigger property value: any element flipping triggers a
 	// replacement. A single-element list is unwrapped to a scalar so the
 	// trigger value round-trips with Pulumi's scalar `replacementTrigger`.
+	// A reference in a trigger also establishes a dependency, as in TF.
 	if res.Lifecycle != nil && len(res.Lifecycle.ReplaceTriggeredBy) > 0 {
 		vals := make([]cty.Value, 0, len(res.Lifecycle.ReplaceTriggeredBy))
 		for _, expr := range res.Lifecycle.ReplaceTriggeredBy {
@@ -1836,6 +1840,11 @@ func (e *Engine) buildResourceOptionsInContext(
 			if diags.HasErrors() {
 				return nil, fmt.Errorf("evaluating replace_triggered_by on %q: %s",
 					res.Type+"."+res.Name, diags.Error())
+			}
+			for _, dep := range eval.CollectDepURNs(val) {
+				if !slices.Contains(opts.DependsOn, dep) {
+					opts.DependsOn = append(opts.DependsOn, dep)
+				}
 			}
 			vals = append(vals, val)
 		}
@@ -2873,6 +2882,16 @@ func (e *Engine) invokeDataSourceOnce(
 			return
 		}
 		depMarks[eval.DepMark(urn)] = struct{}{}
+	}
+
+	// Check-rule references establish dependencies, as in TF; carry them on
+	// the outputs alongside the input-derived deps so downstream readers
+	// inherit them.
+	for _, urn := range checkRuleDeps(ds.Preconditions, hclCtx) {
+		addURN(urn)
+	}
+	for _, urn := range checkRuleDeps(ds.Postconditions, hclCtx) {
+		addURN(urn)
 	}
 
 	dataSourceMapping := e.resolver.DataSourceBodyMapping(ctx, ds.Type)
@@ -3980,6 +3999,33 @@ func Validate(config *ast.Config) []error {
 	// TODO: Type checking, schema validation, etc.
 
 	return errs
+}
+
+// checkRuleDeps collects the URNs of the resources referenced by the condition
+// and error_message expressions of the given check rules. A reference in a
+// precondition/postcondition establishes a dependency, as in TF, even though
+// the rules themselves are only evaluated later by hooks. Each referenced
+// variable is resolved through the eval context instead of evaluating the
+// expression, so no function fires early while values reached through locals
+// still carry their DepMarks. Traversals that do not resolve are skipped —
+// notably self, which is only in scope once a postcondition hook fires.
+func checkRuleDeps(rules []*ast.CheckRule, hclCtx *hcl.EvalContext) []string {
+	var deps []string
+	for _, rule := range rules {
+		for _, expr := range []hcl.Expression{rule.Condition, rule.ErrorMessage} {
+			if expr == nil {
+				continue
+			}
+			for _, traversal := range expr.Variables() {
+				val, diags := traversal.TraverseAbs(hclCtx)
+				if diags.HasErrors() {
+					continue
+				}
+				deps = append(deps, eval.CollectDepURNs(val)...)
+			}
+		}
+	}
+	return deps
 }
 
 // bindPreconditionHooks registers a hook per precondition and binds it to
