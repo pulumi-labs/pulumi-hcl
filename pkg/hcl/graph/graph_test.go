@@ -26,8 +26,6 @@ import (
 	"github.com/zclconf/go-cty/cty"
 )
 
-func ptr[T any](v T) *T { return &v }
-
 func TestBuildFromConfig(t *testing.T) {
 	t.Parallel()
 	src := []byte(`
@@ -222,55 +220,4 @@ func TestResourceExpander(t *testing.T) {
 			}
 		}
 	})
-}
-
-func TestParseInstanceKey(t *testing.T) {
-	t.Parallel()
-	tests := []struct {
-		input       string
-		wantBase    string
-		wantIndex   *int
-		wantEachKey *string
-	}{
-		{
-			input:    "aws_instance.web",
-			wantBase: "aws_instance.web",
-		},
-		{
-			input:     "aws_instance.web[0]",
-			wantBase:  "aws_instance.web",
-			wantIndex: ptr(0),
-		},
-		{
-			input:     "aws_instance.web[42]",
-			wantBase:  "aws_instance.web",
-			wantIndex: ptr(42),
-		},
-		{
-			input:       `aws_instance.web["a"]`,
-			wantBase:    "aws_instance.web",
-			wantEachKey: ptr("a"),
-		},
-		{
-			input:       `aws_instance.web["my-key"]`,
-			wantBase:    "aws_instance.web",
-			wantEachKey: ptr("my-key"),
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.input, func(t *testing.T) {
-			t.Parallel()
-			base, idx, key := ParseInstanceKey(tt.input)
-			if base != tt.wantBase {
-				t.Errorf("base: got %q, want %q", base, tt.wantBase)
-			}
-			if (idx == nil) != (tt.wantIndex == nil) || (idx != nil && *idx != *tt.wantIndex) {
-				t.Errorf("index: got %v, want %v", idx, tt.wantIndex)
-			}
-			if (key == nil) != (tt.wantEachKey == nil) || (key != nil && *key != *tt.wantEachKey) {
-				t.Errorf("eachKey: got %v, want %v", key, tt.wantEachKey)
-			}
-		})
-	}
 }

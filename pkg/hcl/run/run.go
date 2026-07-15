@@ -25,7 +25,6 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -1490,7 +1489,7 @@ func (e *Engine) registerResourceInstanceInContext(
 
 	opts.PackageRef = e.packageRefForType(res.Type)
 
-	resourceName := e.extractModuleResourceName(res.Name, instance.Key, node.ModuleInfo, modInst)
+	resourceName := e.extractModuleResourceName(res.Name, instance.Index, instance.EachKeyString(), modInst)
 
 	if len(res.Preconditions) > 0 {
 		if err := e.bindPreconditionHooks(ctx, res, instance, evalCtx, opts, resourceName); err != nil {
@@ -1728,7 +1727,7 @@ func (e *Engine) buildResourceOptionsInContext(
 	}
 
 	// Handle moved blocks - resolve aliases from moved blocks that target this resource
-	movedAliases := e.resolveMovedAliases(ctx, res, instance.Key, modInfo, modInst)
+	movedAliases := e.resolveMovedAliases(ctx, res, instance.Index, instance.EachKeyString(), modInst)
 	opts.Aliases = append(opts.Aliases, movedAliases...)
 
 	// Handle aliases attribute
@@ -1900,11 +1899,15 @@ func (e *Engine) buildResourceOptionsInContext(
 // followed by an optional resource. A whole-module-call address (e.g.
 // `module.a`) has an empty Type.
 type movedAddr struct {
-	modules []modulepath.Step // module-call steps, outermost first
-	Type    string            // resource type, or "" for a whole-module-call address
-	Name    string            // resource name
-	key     string            // instance-key bracket content ("0" or `"k"`), or ""
+	modules  []modulepath.Step // module-call steps, outermost first
+	Type     string            // resource type, or "" for a whole-module-call address
+	Name     string            // resource name
+	keyIndex *int              // count instance key, if the address is keyed by count
+	keyEach  *string           // for_each instance key, if the address is keyed by for_each
 }
+
+// keyed reports whether the address names a specific count/for_each instance.
+func (a movedAddr) keyed() bool { return a.keyIndex != nil || a.keyEach != nil }
 
 // parseMovedAddr decodes a `moved` from/to traversal into its module-call steps
 // and (optional) resource. It returns false for a traversal it cannot model.
@@ -1967,11 +1970,28 @@ func parseMovedAddr(t hcl.Traversal) (movedAddr, bool) {
 	a.Type, a.Name = typ, name
 	if i < len(t) {
 		if idx, ok := t[i].(hcl.TraverseIndex); ok {
-			a.key = movedKeyToken(idx.Key)
+			a.keyIndex, a.keyEach = instanceKeyFromCty(idx.Key)
 			i++
 		}
 	}
 	return a, i == len(t)
+}
+
+// instanceKeyFromCty decodes an instance-key value into its typed components: a
+// count index for a number, a for_each key for a string. Both are nil for any
+// other type, which the caller treats as an unkeyed address.
+func instanceKeyFromCty(v cty.Value) (index *int, eachKey *string) {
+	switch v.Type() {
+	case cty.Number:
+		iv, _ := v.AsBigFloat().Int64()
+		n := int(iv)
+		return &n, nil
+	case cty.String:
+		s := v.AsString()
+		return nil, &s
+	default:
+		return nil, nil
+	}
 }
 
 // moduleStepFor builds a module-call path step for `module.<name>[<key>]`,
@@ -1992,20 +2012,6 @@ func moduleStepFor(name string, key cty.Value) (modulepath.Step, bool) {
 	}
 }
 
-// movedKeyToken renders an instance-key value as it appears in a node key's
-// `[...]` suffix: a bare integer for count, or a Go-quoted string for for_each.
-func movedKeyToken(v cty.Value) string {
-	switch v.Type() {
-	case cty.Number:
-		iv, _ := v.AsBigFloat().Int64()
-		return strconv.FormatInt(iv, 10)
-	case cty.String:
-		return strconv.Quote(v.AsString())
-	default:
-		return ""
-	}
-}
-
 // resolveMovedAliases finds the `moved` blocks that rename the resource instance
 // being registered and returns the aliases recording its prior addresses, so a
 // rename is treated as a move rather than a replacement.
@@ -2018,7 +2024,7 @@ func movedKeyToken(v cty.Value) string {
 // enclosing module call is renamed or re-keyed (the matching component alias is
 // attached in processModuleInit).
 func (e *Engine) resolveMovedAliases(
-	ctx context.Context, res *ast.Resource, instanceKey string, modInfo *graph.ModuleInfo, modInst *moduleInstance,
+	ctx context.Context, res *ast.Resource, index *int, eachKey *string, modInst *moduleInstance,
 ) []Alias {
 	var aliases []Alias
 
@@ -2028,7 +2034,6 @@ func (e *Engine) resolveMovedAliases(
 	if modInst != nil {
 		resPath = modInst.Path
 	}
-	_, instIdx, instEach := graph.ParseInstanceKey(instanceKey)
 
 	for _, scope := range ancestorPaths(resPath) {
 		for _, moved := range e.graph.MovedBlocks(scope) {
@@ -2049,28 +2054,20 @@ func (e *Engine) resolveMovedAliases(
 			// Determine the prior instance key. A keyed `to` targets one specific
 			// instance and takes the prior key from `from`; an unkeyed `to` is a
 			// whole-resource rename that maps every instance to the same key.
-			var priorKey string
-			if to.key != "" {
-				if !instanceKeyMatches(instIdx, instEach, to.key) {
+			var priorIdx *int
+			var priorEach *string
+			if to.keyed() {
+				if !instanceKeysEqual(index, eachKey, to.keyIndex, to.keyEach) {
 					continue
 				}
-				priorKey = from.key
+				priorIdx, priorEach = from.keyIndex, from.keyEach
 			} else {
-				switch {
-				case instIdx != nil:
-					priorKey = strconv.Itoa(*instIdx)
-				case instEach != nil:
-					priorKey = strconv.Quote(*instEach)
-				}
-			}
-			keyBracket := from.Name
-			if priorKey != "" {
-				keyBracket += "[" + priorKey + "]"
+				priorIdx, priorEach = index, eachKey
 			}
 
 			// The prior name is the resource's own name under its prior module
 			// path; the prior parent is described relative to where it is now.
-			name := buildResourceName(from.Name, keyBracket)
+			name := buildResourceName(from.Name, priorIdx, priorEach)
 			if !fromPath.IsRoot() {
 				name = fromPath.LogicalName() + "-" + name
 			}
@@ -2105,11 +2102,7 @@ func (e *Engine) resolveMovedAliases(
 	// aliased to the name it had under the prior module path; Pulumi combines
 	// that with the renamed component's own alias to recover the old URN.
 	if oldPath := e.oldModulePath(resPath); oldPath != resPath {
-		bareKey := instanceKey
-		if modInfo != nil {
-			bareKey = strings.TrimPrefix(instanceKey, modInfo.Prefix())
-		}
-		name := buildResourceName(res.Name, bareKey)
+		name := buildResourceName(res.Name, index, eachKey)
 		if !oldPath.IsRoot() {
 			name = oldPath.LogicalName() + "-" + name
 		}
@@ -2244,14 +2237,15 @@ func appendModuleSteps(base modulepath.Path, steps []modulepath.Step) modulepath
 	return base
 }
 
-// instanceKeyMatches reports whether the instance identified by idx/each is the
-// one named by a `[...]` key token (e.g. "0" or `"k"`).
-func instanceKeyMatches(idx *int, each *string, token string) bool {
+// instanceKeysEqual reports whether two resource instance keys name the same
+// instance. Keys of different kinds (count vs for_each) never match, and two
+// unkeyed (single-instance) addresses do not either.
+func instanceKeysEqual(aIdx *int, aEach *string, bIdx *int, bEach *string) bool {
 	switch {
-	case idx != nil:
-		return token == strconv.Itoa(*idx)
-	case each != nil:
-		return token == strconv.Quote(*each)
+	case aIdx != nil && bIdx != nil:
+		return *aIdx == *bIdx
+	case aEach != nil && bEach != nil:
+		return *aEach == *bEach
 	default:
 		return false
 	}
@@ -2372,19 +2366,18 @@ func (e *Engine) hasFailedDependency(res *ast.Resource) bool {
 	return false
 }
 
-// buildResourceName builds the Pulumi resource name from the logical name and instance key.
-// Single instances use the logical name as-is. Count instances get a "-N" suffix.
-// ForEach instances get a "-key" suffix.
-func buildResourceName(logicalName, instanceKey string) string {
-	_, index, eachKey := graph.ParseInstanceKey(instanceKey)
-
-	if index != nil {
+// buildResourceName builds the Pulumi resource name from the logical name and
+// instance key. Single instances use the logical name as-is. Count instances get
+// a "-N" suffix. ForEach instances get a "-key" suffix.
+func buildResourceName(logicalName string, index *int, eachKey *string) string {
+	switch {
+	case index != nil:
 		return fmt.Sprintf("%s-%d", logicalName, *index)
-	}
-	if eachKey != nil {
+	case eachKey != nil:
 		return fmt.Sprintf("%s-%s", logicalName, *eachKey)
+	default:
+		return logicalName
 	}
-	return logicalName
 }
 
 // extractModuleResourceName computes the Pulumi resource name for a resource inside a module.
@@ -2392,20 +2385,14 @@ func buildResourceName(logicalName, instanceKey string) string {
 // For example, resource "res" inside component "comp" becomes "comp-res",
 // and inside "comp[0]" becomes "comp[0]-res".
 func (*Engine) extractModuleResourceName(
-	logicalName, instanceKey string, modInfo *graph.ModuleInfo, modInst *moduleInstance,
+	logicalName string, index *int, eachKey *string, modInst *moduleInstance,
 ) string {
-	if modInfo == nil || modInst == nil {
-		return buildResourceName(logicalName, instanceKey)
+	bareResourceName := buildResourceName(logicalName, index, eachKey)
+	if modInst == nil {
+		return bareResourceName
 	}
-
-	// Strip the module prefix to get the bare instance key (e.g., "simple_resource.name").
-	bareKey := strings.TrimPrefix(instanceKey, modInfo.Prefix())
-	bareResourceName := buildResourceName(logicalName, bareKey)
-
-	// Extract the module instance name (e.g., "many" or "many[0]").
-	modInstanceName := modInst.Path.LogicalName()
-
-	return modInstanceName + "-" + bareResourceName
+	// Prefix with the module instance name (e.g., "many" or "many[0]").
+	return modInst.Path.LogicalName() + "-" + bareResourceName
 }
 
 // translateAttrPathTraversal formats an attribute-path traversal (e.g. an

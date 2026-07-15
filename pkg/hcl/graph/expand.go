@@ -167,47 +167,13 @@ func (e *ResourceExpander) Expand(node *Node) *ExpandResult {
 	}
 }
 
-// InstanceKey generates an instance key for a resource with count or for_each.
-func InstanceKey(resourceKey string, index *int, eachKey *cty.Value) string {
-	if index != nil {
-		return fmt.Sprintf("%s[%d]", resourceKey, *index)
+// EachKeyString returns the for_each instance key as a plain string, or nil for
+// count or single instances. for_each keys are always strings, so no ambiguous
+// re-parsing of the instance's Key is needed.
+func (r *ExpandedResource) EachKeyString() *string {
+	if r.EachKey == nil {
+		return nil
 	}
-	if eachKey != nil && eachKey.Type() == cty.String {
-		return fmt.Sprintf("%s[%q]", resourceKey, eachKey.AsString())
-	}
-	return resourceKey
-}
-
-// ParseInstanceKey parses an instance key back into its components.
-// Returns the base key, optional index, and optional each key.
-func ParseInstanceKey(instanceKey string) (baseKey string, index *int, eachKey *string) {
-	// Look for [...]
-	bracketStart := -1
-	for i := len(instanceKey) - 1; i >= 0; i-- {
-		if instanceKey[i] == '[' {
-			bracketStart = i
-			break
-		}
-	}
-
-	if bracketStart == -1 {
-		return instanceKey, nil, nil
-	}
-
-	baseKey = instanceKey[:bracketStart]
-	indexPart := instanceKey[bracketStart+1 : len(instanceKey)-1]
-
-	// Check if it's a number
-	var idx int
-	if _, err := fmt.Sscanf(indexPart, "%d", &idx); err == nil {
-		return baseKey, &idx, nil
-	}
-
-	// Must be a string key (with quotes)
-	if len(indexPart) >= 2 && indexPart[0] == '"' && indexPart[len(indexPart)-1] == '"' {
-		key := indexPart[1 : len(indexPart)-1]
-		return baseKey, nil, &key
-	}
-
-	return instanceKey, nil, nil
+	s := r.EachKey.AsString()
+	return &s
 }
