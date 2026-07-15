@@ -22,13 +22,24 @@ import (
 )
 
 // TestL2VarValidation_ResourceRef covers a variable validation whose condition
-// references the variable itself and a managed resource's computed output
-// (allowed by OpenTofu as long as the condition also refers to the variable).
-// OpenTofu orders the rule after the resource and applies cleanly; pulumi-hcl
-// fails the whole operation with "Cycle found".
+// references the variable itself and a managed resource's computed output.
+// The rule is ordered after the resource (deferred at preview, checked at
+// apply) and the program applies cleanly, matching OpenTofu.
 func TestL2VarValidation_ResourceRef(t *testing.T) {
 	t.Parallel()
 	tfcompat.RunCase(t, "l2_var_validation_resource_ref", tfcompat.Case{
+		Providers: []tfcompat.Provider{
+			{Name: "simple", Factory: providers.SimpleProvider},
+		},
+	})
+}
+
+// TestL2ModuleVarValidation_ResourceRef asserts the same for a variable
+// declared in a child module whose validation references a resource in that
+// module.
+func TestL2ModuleVarValidation_ResourceRef(t *testing.T) {
+	t.Parallel()
+	tfcompat.RunCase(t, "l2_module_var_validation_resource_ref", tfcompat.Case{
 		Providers: []tfcompat.Provider{
 			{Name: "simple", Factory: providers.SimpleProvider},
 		},

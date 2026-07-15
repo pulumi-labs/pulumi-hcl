@@ -86,6 +86,93 @@ output "instance_id" {
 	}
 }
 
+func TestVariableValidationResourceRefSplitsNode(t *testing.T) {
+	t.Parallel()
+	// gate's validation references a resource, so the rules move to a
+	// validation node that owns "var.gate" while an internal value node
+	// evaluates the value. An InjectAfter barrier on variable nodes (as the
+	// runtime adds before walking) must then order value -> barrier ->
+	// resource -> validation without a cycle.
+	src := []byte(`
+resource "simple_resource" "r" {
+  input_one = "a"
+}
+
+variable "gate" {
+  type    = string
+  default = "a"
+
+  validation {
+    condition     = simple_resource.r.result == "${var.gate}-false"
+    error_message = "failed"
+  }
+}
+
+output "gate" {
+  value = var.gate
+}
+`)
+
+	p := parser.NewParser()
+	config, diags := p.ParseSource("test.hcl", src)
+	require.Empty(t, diags)
+
+	g, err := BuildFromConfig(config, nil, "")
+	require.NoError(t, err)
+
+	assert.Equal(t, NodeTypeVariableValidation, g.seen["var.gate"].n.Type)
+	assert.Equal(t, NodeTypeVariable, g.seen["var.gate!value"].n.Type)
+
+	barrierKey := "barrier"
+	require.NoError(t, g.InjectAfter(func(context.Context) error { return nil }, func(n *Node) bool {
+		return n.Type == NodeTypeVariable
+	}))
+
+	var sorted []string
+	err = g.dag.Walk(t.Context(), func(_ context.Context, n dagNode) error {
+		key := n.key
+		if n.exec != nil {
+			key = barrierKey
+		}
+		sorted = append(sorted, key)
+		return nil
+	}, pdag.MaxProcs(1))
+	require.NoError(t, err)
+
+	positions := make(map[string]int)
+	for i, key := range sorted {
+		positions[key] = i
+	}
+	assert.Less(t, positions["var.gate!value"], positions[barrierKey])
+	assert.Less(t, positions[barrierKey], positions["simple_resource.r"])
+	assert.Less(t, positions["simple_resource.r"], positions["var.gate"])
+	assert.Less(t, positions["var.gate"], positions["output.gate"])
+}
+
+func TestVariableValidationSelfRefKeepsSingleNode(t *testing.T) {
+	t.Parallel()
+	src := []byte(`
+variable "name" {
+  type = string
+
+  validation {
+    condition     = length(var.name) > 0
+    error_message = "empty"
+  }
+}
+`)
+
+	p := parser.NewParser()
+	config, diags := p.ParseSource("test.hcl", src)
+	require.Empty(t, diags)
+
+	g, err := BuildFromConfig(config, nil, "")
+	require.NoError(t, err)
+
+	assert.Equal(t, NodeTypeVariable, g.seen["var.name"].n.Type)
+	assert.NotContains(t, g.seen, "var.name!value")
+}
+
 func TestForcedCreateBeforeDestroy(t *testing.T) {
 	t.Parallel()
 	// c declares create_before_destroy and depends on b, which depends on a, so

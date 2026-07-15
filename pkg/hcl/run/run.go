@@ -658,6 +658,8 @@ func (e *Engine) processNode(ctx context.Context, node *graph.Node) error {
 	switch node.Type {
 	case graph.NodeTypeVariable:
 		return e.processVariable(ctx, node)
+	case graph.NodeTypeVariableValidation:
+		return e.processVariableValidation(node)
 	case graph.NodeTypeLocal:
 		return e.processLocal(ctx, node)
 	case graph.NodeTypeResource:
@@ -707,7 +709,7 @@ func (e *Engine) processVariable(ctx context.Context, node *graph.Node) error {
 		return e.processModuleVariable(node)
 	}
 
-	varName := node.Key[4:] // Remove "var." prefix
+	varName := v.Name
 	var val cty.Value
 	var isSecret bool
 	var valueSource string
@@ -813,6 +815,24 @@ func (e *Engine) processVariable(ctx context.Context, node *graph.Node) error {
 	e.evaluator.Context().SetVariable(varName, val)
 
 	return runVariableValidations(e.evaluator, varName, v.Validations)
+}
+
+// processVariableValidation runs the validation rules of a variable whose
+// rules reference other objects (e.g. a resource's computed output). The rules
+// live on their own graph node, ordered after both the variable's value and
+// the referenced objects, so consumers of the variable only observe a
+// validated value.
+func (e *Engine) processVariableValidation(node *graph.Node) error {
+	v := node.Variable
+	if v == nil {
+		return fmt.Errorf("variable validation node missing Variable field")
+	}
+	if node.ModuleInfo != nil {
+		return e.forEachModuleInstance(node, func(inst *moduleInstance) error {
+			return runVariableValidations(eval.NewEvaluator(inst.EvalCtx), v.Name, v.Validations)
+		})
+	}
+	return runVariableValidations(e.evaluator, v.Name, v.Validations)
 }
 
 // runVariableValidations evaluates a variable's `validation` rules against ev
@@ -3408,7 +3428,7 @@ func (e *Engine) forEachModuleInstance(node *graph.Node, fn func(inst *moduleIns
 func (e *Engine) processModuleVariable(node *graph.Node) error {
 	v := node.Variable
 	modInfo := node.ModuleInfo
-	varName := strings.TrimPrefix(node.Key, modInfo.Prefix()+"var.")
+	varName := v.Name
 
 	moduleInputAttrs, _ := modInfo.Module.Config.JustAttributes()
 	inputAttr, hasInput := moduleInputAttrs[varName]
