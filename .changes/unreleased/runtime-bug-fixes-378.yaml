@@ -1,0 +1,6 @@
+kind: bug-fixes
+body: Reject setting both `count` and `for_each` on one resource, data source, or module
+time: 2026-07-15T14:30:00Z
+custom:
+    Component: runtime
+    PR: "378"
