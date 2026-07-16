@@ -288,6 +288,7 @@ func TestResourceBodyMapping_NestedObjectAttributes(t *testing.T) {
 	require.Equal(t, &bridge.FieldMapping{
 		TFName:     "attr",
 		PulumiName: "attrs",
+		TFComputed: true,
 		Nested:     attrFM.Nested, // verified next
 	}, attrFM)
 	require.NotNil(t, attrFM.Nested)
@@ -297,6 +298,7 @@ func TestResourceBodyMapping_NestedObjectAttributes(t *testing.T) {
 	require.Equal(t, &bridge.FieldMapping{
 		TFName:     "nested_attr",
 		PulumiName: "nestedAttrs",
+		TFComputed: true,
 		Nested:     nestedFM.Nested, // verified next
 	}, nestedFM)
 	require.NotNil(t, nestedFM.Nested)

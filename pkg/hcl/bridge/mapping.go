@@ -37,6 +37,10 @@ type FieldMapping struct {
 	// TFSet is true when the TF schema types this field as TypeSet — an
 	// unordered collection — whether a set of blocks or a set-typed attribute.
 	TFSet bool
+	// TFComputed is true when the TF schema marks this field Computed. An
+	// unset computed block materializes as null (the provider controls it),
+	// where an omitted purely-optional block is an empty list.
+	TFComputed bool
 	// Nested is the inner-body mapping for fields with named nested fields:
 	// blocks (TFBlock) and object-typed attributes (nested attributes).
 	Nested *BodyMapping
@@ -137,6 +141,7 @@ func bodyMappingFromSchema(sm shim.SchemaMap, overrides map[string]*tfbridge.Sch
 			TFName:     tfName,
 			PulumiName: tfbridge.TerraformToPulumiNameV2(tfName, sm, overrides),
 			TFSet:      sch.Type() == shim.TypeSet,
+			TFComputed: sch.Computed(),
 		}
 		if elemRes, isBlock := elemAsResource(sch); isBlock {
 			fm.TFBlock = true
