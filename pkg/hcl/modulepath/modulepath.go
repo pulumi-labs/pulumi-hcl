@@ -141,12 +141,12 @@ func (s Step) String() string {
 //
 // The zero value [Path] is the root (no enclosing module). Paths are
 // comparable in Go, hashable as map keys, and immutable.
-//
-// The internal representation is a length-prefixed binary string, an
-// implementation detail. Do not depend on it: there is no marshal API
-// because there is no stable on-disk format. Use [Path.String] for
-// human-readable diagnostics; use the typed methods for everything else.
 type Path struct {
+	// The internal representation is a length-prefixed binary string. There
+	// is no marshal API because there is no stable on-disk format. Use
+	// [Path.String] for human-readable diagnostics; use the typed methods
+	// for everything else.
+
 	repr string
 }
 
