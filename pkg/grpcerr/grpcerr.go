@@ -12,13 +12,20 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package server
+// Package grpcerr maps the errors pulumi-hcl produces onto gRPC status codes,
+// so callers like `pulumi package get-schema` can classify a failure by its
+// code instead of parsing message text.
+//
+// The codes are the machine-readable contract: Unavailable and
+// DeadlineExceeded are retriable, everything else is not.
+package grpcerr
 
 import (
 	"context"
 	"errors"
 	"fmt"
 
+	p "github.com/pulumi/pulumi-go-provider"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
@@ -38,18 +45,15 @@ func (e statusError) Error() string              { return e.err.Error() }
 func (e statusError) Unwrap() error              { return e.err }
 func (e statusError) GRPCStatus() *status.Status { return status.New(e.code, e.err.Error()) }
 
-func errorf(code codes.Code, format string, args ...any) error {
+// Errorf builds an error carrying the given gRPC status code.
+func Errorf(code codes.Code, format string, args ...any) error {
 	return statusError{code: code, err: fmt.Errorf(format, args...)}
 }
 
-// withStatus assigns err the gRPC status code implied by its chain, falling
+// Classify assigns err the gRPC status code implied by its chain, falling
 // back to fallback when nothing in the chain classifies it. An error already
 // carrying a status — including one returned by a downstream RPC — keeps it.
-//
-// The codes are the machine-readable contract for callers like
-// `pulumi package get-schema`: Unavailable and DeadlineExceeded are retriable,
-// everything else is not.
-func withStatus(err error, fallback codes.Code) error {
+func Classify(err error, fallback codes.Code) error {
 	var grpcStatus interface{ GRPCStatus() *status.Status }
 	switch {
 	case err == nil:
@@ -79,11 +83,53 @@ func withStatus(err error, fallback codes.Code) error {
 	}
 }
 
-// classifyErrors wraps a provider method so every error it returns leaves with
-// a gRPC status code.
-func classifyErrors[Req, Resp any](f func(context.Context, Req) (Resp, error)) func(context.Context, Req) (Resp, error) {
-	return func(ctx context.Context, req Req) (Resp, error) {
-		resp, err := f(ctx, req)
-		return resp, withStatus(err, codes.Unknown)
+// Wrap is a middleware that classifies every error provider returns with
+// [Classify] before it reaches the RPC layer. Methods provider does not
+// implement stay unimplemented.
+func Wrap(provider p.Provider) p.Provider {
+	provider.Handshake = delegateIO(provider.Handshake)
+	provider.GetSchema = delegateIO(provider.GetSchema)
+	provider.Parameterize = delegateIO(provider.Parameterize)
+	provider.Cancel = delegate(provider.Cancel)
+	provider.CheckConfig = delegateIO(provider.CheckConfig)
+	provider.DiffConfig = delegateIO(provider.DiffConfig)
+	provider.Configure = delegateI(provider.Configure)
+	provider.Invoke = delegateIO(provider.Invoke)
+	provider.Check = delegateIO(provider.Check)
+	provider.Diff = delegateIO(provider.Diff)
+	provider.Create = delegateIO(provider.Create)
+	provider.Read = delegateIO(provider.Read)
+	provider.Update = delegateIO(provider.Update)
+	provider.Delete = delegateI(provider.Delete)
+	provider.Construct = delegateIO(provider.Construct)
+	provider.Call = delegateIO(provider.Call)
+	return provider
+}
+
+func delegateIO[I, O any, F func(context.Context, I) (O, error)](method F) F {
+	if method == nil {
+		return nil
+	}
+	return func(ctx context.Context, req I) (O, error) {
+		resp, err := method(ctx, req)
+		return resp, Classify(err, codes.Unknown)
+	}
+}
+
+func delegateI[I any, F func(context.Context, I) error](method F) F {
+	if method == nil {
+		return nil
+	}
+	return func(ctx context.Context, req I) error {
+		return Classify(method(ctx, req), codes.Unknown)
+	}
+}
+
+func delegate[F func(context.Context) error](method F) F {
+	if method == nil {
+		return nil
+	}
+	return func(ctx context.Context) error {
+		return Classify(method(ctx), codes.Unknown)
 	}
 }

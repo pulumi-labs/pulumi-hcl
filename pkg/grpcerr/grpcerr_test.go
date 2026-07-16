@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package server
+package grpcerr
 
 import (
 	"context"
@@ -21,7 +21,6 @@ import (
 	"testing"
 
 	p "github.com/pulumi/pulumi-go-provider"
-	pulumirpc "github.com/pulumi/pulumi/sdk/v3/proto/go"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -30,7 +29,7 @@ import (
 	"github.com/pulumi-labs/pulumi-hcl/pkg/hcl/packages"
 )
 
-func TestWithStatus(t *testing.T) {
+func TestClassify(t *testing.T) {
 	t.Parallel()
 	cases := []struct {
 		name     string
@@ -88,7 +87,7 @@ func TestWithStatus(t *testing.T) {
 		},
 		{
 			name:     "existing status wins over fallback",
-			err:      fmt.Errorf("generating schema: %w", errorf(codes.InvalidArgument, "bad args")),
+			err:      fmt.Errorf("generating schema: %w", Errorf(codes.InvalidArgument, "bad args")),
 			fallback: codes.Unimplemented,
 			want:     codes.InvalidArgument,
 		},
@@ -108,13 +107,13 @@ func TestWithStatus(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			err := withStatus(tc.err, tc.fallback)
+			err := Classify(tc.err, tc.fallback)
 			require.Equal(t, tc.want, status.Code(err))
 			require.Equal(t, tc.err.Error(), err.Error(), "classification must not alter the message")
 		})
 	}
 
-	require.NoError(t, withStatus(nil, codes.Unknown))
+	require.NoError(t, Classify(nil, codes.Unknown))
 }
 
 // TestStatusSurvivesWrapping guards the wire contract: grpc-go's
@@ -122,47 +121,31 @@ func TestWithStatus(t *testing.T) {
 // fmt.Errorf chain, and rebuild the message from the outermost error.
 func TestStatusSurvivesWrapping(t *testing.T) {
 	t.Parallel()
-	err := fmt.Errorf("generating schema: %w", errorf(codes.Unimplemented, "cannot type local"))
+	err := fmt.Errorf("generating schema: %w", Errorf(codes.Unimplemented, "cannot type local"))
 	s, ok := status.FromError(err)
 	require.True(t, ok)
 	require.Equal(t, codes.Unimplemented, s.Code())
 	require.Equal(t, "generating schema: cannot type local", s.Message())
 }
 
-// nopResolver is a non-nil PackageResolverClient so parameterize gets past its
-// handshake check without dialing anything.
-type nopResolver struct {
-	pulumirpc.PackageResolverClient
-}
-
-func TestParameterizeArgsStatusCodes(t *testing.T) {
+func TestWrap(t *testing.T) {
 	t.Parallel()
-	cases := []struct {
-		name string
-		args []string
-		want codes.Code
-	}{
-		{"missing module keyword", []string{"not-module"}, codes.InvalidArgument},
-		{"no args", nil, codes.InvalidArgument},
-		{"too many args", []string{"module", "a", "b", "c"}, codes.InvalidArgument},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
-			m := &moduleProvider{resolver: nopResolver{}}
-			_, err := m.parameterize(t.Context(), p.ParameterizeRequest{
-				Args: &p.ParameterizeRequestArgs{Args: tc.args},
-			})
-			require.Equal(t, tc.want, status.Code(err))
-		})
-	}
-}
-
-func TestParameterizeBeforeHandshakeIsFailedPrecondition(t *testing.T) {
-	t.Parallel()
-	m := &moduleProvider{}
-	_, err := m.parameterize(t.Context(), p.ParameterizeRequest{
-		Args: &p.ParameterizeRequestArgs{Args: []string{"module", "acme/thing/aws"}},
+	provider := Wrap(p.Provider{
+		Parameterize: func(context.Context, p.ParameterizeRequest) (p.ParameterizeResponse, error) {
+			return p.ParameterizeResponse{}, fmt.Errorf("loading module: %w", modules.ErrNotFound)
+		},
+		Configure: func(context.Context, p.ConfigureRequest) error {
+			return fmt.Errorf("dialing: %w", modules.ErrTransient)
+		},
+		Cancel: func(context.Context) error { return nil },
 	})
-	require.Equal(t, codes.FailedPrecondition, status.Code(err))
+
+	_, err := provider.Parameterize(t.Context(), p.ParameterizeRequest{})
+	require.Equal(t, codes.NotFound, status.Code(err))
+
+	err = provider.Configure(t.Context(), p.ConfigureRequest{})
+	require.Equal(t, codes.Unavailable, status.Code(err))
+
+	require.NoError(t, provider.Cancel(t.Context()))
+	require.Nil(t, provider.GetSchema, "unimplemented methods must stay unimplemented")
 }

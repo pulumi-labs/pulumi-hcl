@@ -37,6 +37,7 @@ import (
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/protobuf/types/known/structpb"
 
+	"github.com/pulumi-labs/pulumi-hcl/pkg/grpcerr"
 	"github.com/pulumi-labs/pulumi-hcl/pkg/hcl/ast"
 	"github.com/pulumi-labs/pulumi-hcl/pkg/hcl/bridge"
 	"github.com/pulumi-labs/pulumi-hcl/pkg/hcl/modules"
@@ -80,10 +81,10 @@ func NewModuleProvider(ctx context.Context, version string) p.Provider {
 		version:      version,
 		moduleLoader: modules.NewLoader(modules.LiveResolver(ctx)),
 	}
-	return p.Provider{
+	return grpcerr.Wrap(p.Provider{
 		Handshake:    m.handshake,
-		Parameterize: classifyErrors(m.parameterize),
-		GetSchema:    classifyErrors(m.getSchema),
+		Parameterize: m.parameterize,
+		GetSchema:    m.getSchema,
 		Configure:    func(context.Context, p.ConfigureRequest) error { return nil },
 		CheckConfig: func(_ context.Context, req p.CheckRequest) (p.CheckResponse, error) {
 			return p.CheckResponse{Inputs: req.Inputs}, nil
@@ -93,7 +94,7 @@ func NewModuleProvider(ctx context.Context, version string) p.Provider {
 		},
 		Construct: m.construct,
 		Cancel:    m.cancel,
-	}
+	})
 }
 
 // handshake captures the schema loader, bridge mapper, and package resolver the
