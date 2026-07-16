@@ -44,7 +44,6 @@ func (e *Engine) bindProvisionerHooks(
 	evalCtx *eval.Context,
 	opts *ResourceOptions,
 	resourceName string,
-	tdataEvaluated map[string]cty.Value,
 ) error {
 	if len(res.Provisioners) == 0 {
 		return nil
@@ -72,17 +71,15 @@ func (e *Engine) bindProvisionerHooks(
 
 		callback := func(hookCtx context.Context, args *ResourceHookArgs) error {
 			outputs := args.NewOutputs
-			evaluated := tdataEvaluated
 			if useOldOutputs {
-				// Old outputs predate this run's evaluated values, so a
-				// destroy-time self keeps the state-stored shape untouched.
-				outputs, evaluated = args.OldOutputs, nil
-			} else {
-				// Hooks receive raw engine outputs, so terraform_data's
-				// surface is adapted the same way as on the registration path.
-				outputs = lowerTerraformDataOutputs(res.Type, outputs, opts)
+				outputs = args.OldOutputs
 			}
-			selfCtx, err := selfBoundEvalCtx(hclSnapshot, outputs, args.ID, args.URN, res.Type, evaluated, resSchema, mapping, dryRun)
+			// Hooks receive raw engine outputs, so terraform_data's surface
+			// is adapted the same way as on the registration path. This holds
+			// for old outputs too: their {type, value} wrappers carry the
+			// state-stored types, so a destroy-time self keeps them.
+			outputs = lowerTerraformDataOutputs(res.Type, outputs, opts)
+			selfCtx, err := selfBoundEvalCtx(hclSnapshot, outputs, args.ID, args.URN, res.Type, resSchema, mapping, dryRun)
 			if err != nil {
 				return fmt.Errorf("provisioner %d for %s: %w", index, instance.Key, err)
 			}
@@ -125,8 +122,7 @@ func effectiveConnectionBody(prov *ast.Provisioner, res *ast.Resource) hcl.Body 
 // selfBoundEvalCtx binds `self` to resource outputs + the synthetic id/urn
 // the engine injects elsewhere (see registerResourceInstanceInContext).
 func selfBoundEvalCtx(
-	parent *hcl.EvalContext, outputs property.Map, id, urn string,
-	tfType string, tdataEvaluated map[string]cty.Value,
+	parent *hcl.EvalContext, outputs property.Map, id, urn string, tfType string,
 	resSchema *schema.Resource, mapping *bridge.BodyMapping, dryRun bool,
 ) (*hcl.EvalContext, error) {
 	if outputs.Len() == 0 && id == "" && urn == "" {
@@ -136,7 +132,7 @@ func selfBoundEvalCtx(
 	if err != nil {
 		return nil, fmt.Errorf("converting outputs: %w", err)
 	}
-	restoreTerraformDataOutputTypes(tfType, outputObj, tdataEvaluated)
+	unwrapTerraformDataOutputs(tfType, outputObj, outputs)
 	if id != "" {
 		outputObj["id"] = cty.StringVal(id)
 	}

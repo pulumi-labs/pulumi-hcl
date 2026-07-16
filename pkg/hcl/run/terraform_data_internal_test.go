@@ -139,91 +139,49 @@ func TestLowerTerraformDataOutputs(t *testing.T) {
 	})
 }
 
-func TestRestoreTerraformDataOutputTypes(t *testing.T) {
+func TestWrapTerraformDataInputs(t *testing.T) {
 	t.Parallel()
 
-	strTuple := cty.TupleVal([]cty.Value{cty.StringVal("a"), cty.StringVal("b")})
 	strSet := cty.SetVal([]cty.Value{cty.StringVal("a"), cty.StringVal("b")})
+	arr := property.New([]property.Value{property.New("a"), property.New("b")})
+	wrapped := property.New(map[string]property.Value{
+		"type":  property.New(`["set","string"]`),
+		"value": arr,
+	})
 
 	tests := []struct {
 		name      string
 		resType   string
-		outputs   map[string]cty.Value
+		inputs    property.Map
 		evaluated map[string]cty.Value
-		want      map[string]cty.Value
+		want      property.Map
 	}{
 		{
-			name:    "set types restored on input, output, and triggers_replace",
+			name:    "input and triggers_replace are wrapped",
 			resType: packages.TerraformDataType,
-			outputs: map[string]cty.Value{
-				"input":            strTuple,
-				"output":           strTuple,
-				"triggers_replace": cty.TupleVal([]cty.Value{cty.NumberIntVal(1)}),
-			},
-			evaluated: map[string]cty.Value{
-				"input":            strSet,
-				"triggers_replace": cty.SetVal([]cty.Value{cty.NumberIntVal(1)}),
-			},
-			want: map[string]cty.Value{
-				"input":            strSet,
-				"output":           strSet,
-				"triggers_replace": cty.SetVal([]cty.Value{cty.NumberIntVal(1)}),
-			},
+			inputs: property.NewMap(map[string]property.Value{
+				"input":            arr,
+				"triggers_replace": arr,
+			}),
+			evaluated: map[string]cty.Value{"input": strSet, "triggers_replace": strSet},
+			want: property.NewMap(map[string]property.Value{
+				"input":            wrapped,
+				"triggers_replace": wrapped,
+			}),
 		},
 		{
-			name:    "unknown output takes the evaluated type",
-			resType: packages.TerraformDataType,
-			outputs: map[string]cty.Value{
-				"output": cty.UnknownVal(cty.DynamicPseudoType),
-			},
-			evaluated: map[string]cty.Value{"input": strSet},
-			want: map[string]cty.Value{
-				"output": cty.UnknownVal(cty.Set(cty.String)),
-			},
-		},
-		{
-			name:    "evaluation without a known type is skipped",
-			resType: packages.TerraformDataType,
-			outputs: map[string]cty.Value{
-				"input":  strTuple,
-				"output": strTuple,
-			},
-			evaluated: map[string]cty.Value{"input": cty.DynamicVal},
-			want: map[string]cty.Value{
-				"input":  strTuple,
-				"output": strTuple,
-			},
-		},
-		{
-			name:    "unconvertible value is left as re-expanded",
-			resType: packages.TerraformDataType,
-			outputs: map[string]cty.Value{
-				"output": cty.ObjectVal(map[string]cty.Value{"k": cty.True}),
-			},
-			evaluated: map[string]cty.Value{"input": strSet},
-			want: map[string]cty.Value{
-				"output": cty.ObjectVal(map[string]cty.Value{"k": cty.True}),
-			},
-		},
-		{
-			name:    "element marks lift to the restored set",
-			resType: packages.TerraformDataType,
-			outputs: map[string]cty.Value{
-				"output": cty.TupleVal([]cty.Value{
-					cty.StringVal("a").Mark(eval.SensitiveMark), cty.StringVal("b"),
-				}),
-			},
-			evaluated: map[string]cty.Value{"input": strSet},
-			want: map[string]cty.Value{
-				"output": strSet.Mark(eval.SensitiveMark),
-			},
+			name:      "unevaluated inputs are untouched",
+			resType:   packages.TerraformDataType,
+			inputs:    property.NewMap(map[string]property.Value{"input": arr}),
+			evaluated: map[string]cty.Value{},
+			want:      property.NewMap(map[string]property.Value{"input": arr}),
 		},
 		{
 			name:      "other types are untouched",
 			resType:   "random_pet",
-			outputs:   map[string]cty.Value{"output": strTuple},
+			inputs:    property.NewMap(map[string]property.Value{"input": arr}),
 			evaluated: map[string]cty.Value{"input": strSet},
-			want:      map[string]cty.Value{"output": strTuple},
+			want:      property.NewMap(map[string]property.Value{"input": arr}),
 		},
 	}
 
@@ -231,7 +189,144 @@ func TestRestoreTerraformDataOutputTypes(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			restoreTerraformDataOutputTypes(tt.resType, tt.outputs, tt.evaluated)
+			got := wrapTerraformDataInputs(tt.resType, tt.inputs, tt.evaluated)
+			assert.Equal(t, tt.want, got)
+		})
+	}
+}
+
+func TestUnwrapTerraformDataOutputs(t *testing.T) {
+	t.Parallel()
+
+	strSet := cty.SetVal([]cty.Value{cty.StringVal("a"), cty.StringVal("b")})
+	arr := property.New([]property.Value{property.New("a"), property.New("b")})
+	wrap := func(typeJSON string, v property.Value) property.Value {
+		return property.New(map[string]property.Value{
+			"type":  property.New(typeJSON),
+			"value": v,
+		})
+	}
+	// The generically re-expanded stand-in the unwrap must replace; its exact
+	// shape is irrelevant to the property-level wrapper detection.
+	reexpanded := cty.ObjectVal(map[string]cty.Value{"any": cty.True})
+
+	tests := []struct {
+		name    string
+		resType string
+		outputs map[string]cty.Value
+		props   property.Map
+		want    map[string]cty.Value
+	}{
+		{
+			name:    "wrappers unbox on input, output, and triggers_replace",
+			resType: packages.TerraformDataType,
+			outputs: map[string]cty.Value{
+				"input":            reexpanded,
+				"output":           reexpanded,
+				"triggers_replace": reexpanded,
+			},
+			props: property.NewMap(map[string]property.Value{
+				"input":            wrap(`["set","string"]`, arr),
+				"output":           wrap(`["set","string"]`, arr),
+				"triggers_replace": wrap(`["set","bool"]`, property.New([]property.Value{property.New(true)})),
+			}),
+			want: map[string]cty.Value{
+				"input":            strSet,
+				"output":           strSet,
+				"triggers_replace": cty.SetVal([]cty.Value{cty.True}),
+			},
+		},
+		{
+			name:    "wrapped scalar unboxes (its re-expanded shape is a cty map)",
+			resType: packages.TerraformDataType,
+			outputs: map[string]cty.Value{
+				"output": cty.MapVal(map[string]cty.Value{
+					"type":  cty.StringVal(`"string"`),
+					"value": cty.StringVal("hello"),
+				}),
+			},
+			props: property.NewMap(map[string]property.Value{
+				"output": wrap(`"string"`, property.New("hello")),
+			}),
+			want: map[string]cty.Value{
+				"output": cty.StringVal("hello"),
+			},
+		},
+		{
+			name:    "unknown wrapped value takes the recorded type",
+			resType: packages.TerraformDataType,
+			outputs: map[string]cty.Value{"output": cty.UnknownVal(cty.DynamicPseudoType)},
+			props: property.NewMap(map[string]property.Value{
+				"output": wrap(`["set","string"]`, property.New(property.Computed)),
+			}),
+			want: map[string]cty.Value{
+				"output": cty.UnknownVal(cty.Set(cty.String)),
+			},
+		},
+		{
+			name:    "null and unknown placeholders re-expand without help",
+			resType: packages.TerraformDataType,
+			outputs: map[string]cty.Value{
+				"input":            cty.NullVal(cty.DynamicPseudoType),
+				"output":           cty.NullVal(cty.DynamicPseudoType),
+				"triggers_replace": cty.UnknownVal(cty.DynamicPseudoType),
+			},
+			props: property.NewMap(map[string]property.Value{
+				"input":            property.New(property.Null),
+				"output":           property.New(property.Null),
+				"triggers_replace": property.New(property.Computed),
+			}),
+			want: map[string]cty.Value{
+				"input":            cty.NullVal(cty.DynamicPseudoType),
+				"output":           cty.NullVal(cty.DynamicPseudoType),
+				"triggers_replace": cty.UnknownVal(cty.DynamicPseudoType),
+			},
+		},
+		{
+			name:    "unconvertible value is kept at its own type",
+			resType: packages.TerraformDataType,
+			outputs: map[string]cty.Value{"output": reexpanded},
+			props: property.NewMap(map[string]property.Value{
+				"output": wrap(`["set","string"]`, property.New(true)),
+			}),
+			want: map[string]cty.Value{
+				"output": cty.True,
+			},
+		},
+		{
+			name:    "wrapper secrecy and element secrets mark the result",
+			resType: packages.TerraformDataType,
+			outputs: map[string]cty.Value{
+				"input":  reexpanded,
+				"output": reexpanded,
+			},
+			props: property.NewMap(map[string]property.Value{
+				"input": wrap(`["set","string"]`, arr).WithSecret(true),
+				"output": wrap(`["set","string"]`, property.New([]property.Value{
+					property.New("a").WithSecret(true), property.New("b"),
+				})),
+			}),
+			want: map[string]cty.Value{
+				"input":  strSet.Mark(eval.SensitiveMark),
+				"output": strSet.Mark(eval.SensitiveMark),
+			},
+		},
+		{
+			name:    "other types are untouched",
+			resType: "random_pet",
+			outputs: map[string]cty.Value{"output": reexpanded},
+			props: property.NewMap(map[string]property.Value{
+				"output": wrap(`["set","string"]`, arr),
+			}),
+			want: map[string]cty.Value{"output": reexpanded},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			unwrapTerraformDataOutputs(tt.resType, tt.outputs, tt.props)
 			assert.Equal(t, tt.want, tt.outputs)
 		})
 	}

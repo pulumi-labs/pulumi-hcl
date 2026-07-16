@@ -1495,7 +1495,7 @@ func (e *Engine) registerResourceInstanceInContext(
 	resourceMapping := e.resolver.ResourceBodyMapping(ctx, res.Type)
 	// terraform_data's attributes are dynamically typed, so their cty types
 	// (e.g. set-ness) survive the Pulumi property round-trip only via the
-	// evaluated values captured here; see restoreTerraformDataOutputTypes.
+	// evaluated values captured here; see wrapTerraformDataInputs.
 	var tdataEvaluated map[string]cty.Value
 	if res.Type == packages.TerraformDataType {
 		tdataEvaluated = map[string]cty.Value{}
@@ -1532,6 +1532,7 @@ func (e *Engine) registerResourceInstanceInContext(
 	if diags.HasErrors() {
 		return diags
 	}
+	resourceInputs = wrapTerraformDataInputs(res.Type, resourceInputs, tdataEvaluated)
 
 	if strings.HasPrefix(res.Type, "pulumi_providers_") && res.PluginDownloadURL != nil {
 		val, valDiags := res.PluginDownloadURL.Value(hclCtx)
@@ -1593,13 +1594,13 @@ func (e *Engine) registerResourceInstanceInContext(
 	}
 
 	if len(res.Postconditions) > 0 {
-		if err := e.bindPostconditionHooks(ctx, res, resSchema, resourceMapping, instance, evalCtx, opts, resourceName, tdataEvaluated); err != nil {
+		if err := e.bindPostconditionHooks(ctx, res, resSchema, resourceMapping, instance, evalCtx, opts, resourceName); err != nil {
 			return err
 		}
 	}
 
 	if len(res.Provisioners) > 0 {
-		if err := e.bindProvisionerHooks(ctx, res, resSchema, resourceMapping, instance, evalCtx, opts, resourceName, tdataEvaluated); err != nil {
+		if err := e.bindProvisionerHooks(ctx, res, resSchema, resourceMapping, instance, evalCtx, opts, resourceName); err != nil {
 			return err
 		}
 	}
@@ -1621,7 +1622,7 @@ func (e *Engine) registerResourceInstanceInContext(
 	if err != nil {
 		return fmt.Errorf("converting resource outputs to HCL types: %w", err)
 	}
-	restoreTerraformDataOutputTypes(res.Type, outputObj, tdataEvaluated)
+	unwrapTerraformDataOutputs(res.Type, outputObj, outputs)
 	if e.dryRun && id == "" {
 		outputObj["id"] = cty.UnknownVal(cty.String)
 	} else {
@@ -4183,7 +4184,6 @@ func (e *Engine) bindPostconditionHooks(
 	evalCtx *eval.Context,
 	opts *ResourceOptions,
 	resourceName string,
-	tdataEvaluated map[string]cty.Value,
 ) error {
 	if opts.Hooks == nil {
 		opts.Hooks = &ResourceHookBinding{}
@@ -4196,9 +4196,9 @@ func (e *Engine) bindPostconditionHooks(
 		callback := func(_ context.Context, args *ResourceHookArgs) error {
 			// Hooks receive raw engine outputs, so terraform_data's surface is
 			// adapted the same way as on the registration path: property-level
-			// lowering here, cty type restore after re-expansion.
+			// lowering here, wrapper unboxing after re-expansion.
 			outputs := lowerTerraformDataOutputs(res.Type, args.NewOutputs, opts)
-			return evaluatePostcondition(rule, hclSnapshot, outputs, res.Type, tdataEvaluated, resSchema, mapping, dryRun, index, instance.Key)
+			return evaluatePostcondition(rule, hclSnapshot, outputs, res.Type, resSchema, mapping, dryRun, index, instance.Key)
 		}
 		if err := e.resmon.RegisterResourceHook(ctx, hookName, callback, ResourceHookOptions{
 			OnDryRun: true,
@@ -4215,14 +4215,13 @@ func (e *Engine) bindPostconditionHooks(
 // engine-supplied NewOutputs.
 func evaluatePostcondition(
 	rule *ast.CheckRule, hclCtx *hcl.EvalContext, newOutputs property.Map, tfType string,
-	tdataEvaluated map[string]cty.Value,
 	resSchema *schema.Resource, mapping *bridge.BodyMapping, dryRun bool, index int, resourceName string,
 ) error {
 	outputObj, err := transform.ResourceOutputToCty(newOutputs, resSchema, mapping, dryRun)
 	if err != nil {
 		return fmt.Errorf("converting outputs for postcondition %d on %s: %w", index, resourceName, err)
 	}
-	restoreTerraformDataOutputTypes(tfType, outputObj, tdataEvaluated)
+	unwrapTerraformDataOutputs(tfType, outputObj, newOutputs)
 	return evaluatePostconditionValue(rule, hclCtx, cty.ObjectVal(outputObj), index, resourceName)
 }
 

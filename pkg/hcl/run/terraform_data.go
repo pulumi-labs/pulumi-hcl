@@ -15,10 +15,13 @@
 package run
 
 import (
+	"github.com/pulumi-labs/pulumi-hcl/pkg/hcl/eval"
 	"github.com/pulumi-labs/pulumi-hcl/pkg/hcl/packages"
+	"github.com/pulumi-labs/pulumi-hcl/pkg/hcl/transform"
 	"github.com/pulumi/pulumi/sdk/v3/go/property"
 	"github.com/zclconf/go-cty/cty"
 	"github.com/zclconf/go-cty/cty/convert"
+	ctyjson "github.com/zclconf/go-cty/cty/json"
 )
 
 // lowerTerraformDataInputs adapts evaluated terraform_data inputs to Stash's
@@ -68,32 +71,94 @@ func lowerTerraformDataOutputs(resType string, outputs property.Map, opts *Resou
 	return outputs.Set("triggers_replace", opts.ReplacementTrigger.AsArray().Get(0))
 }
 
-// restoreTerraformDataOutputTypes restores the cty types of terraform_data's
-// dynamically typed attributes after the Pulumi property round-trip, which
-// flattens a cty set to an ordered array that would otherwise re-expand as a
-// tuple. `input` and `triggers_replace` echo the program's evaluated values
-// and `output` mirrors `input`, so each re-expanded value converts back to the
-// corresponding evaluated type. A value that no longer converts, or an
-// evaluation with no known type, is left as re-expanded.
-func restoreTerraformDataOutputTypes(resType string, outputs, evaluated map[string]cty.Value) {
+// terraform_data's attributes are dynamically typed, and the Pulumi property
+// encoding cannot represent every cty type: a set flattens to an ordered array
+// that would re-expand as a tuple. Each evaluated input is therefore boxed as
+// a {type, value} wrapper object before registration — persisting the cty type
+// through the engine and its state alongside the value, the way OpenTofu
+// stores dynamic attributes — and unboxed wherever outputs re-expand to cty,
+// including from prior state (e.g. a destroy-time provisioner's self).
+const (
+	tdataTypeKey  = "type"
+	tdataValueKey = "value"
+)
+
+// wrapTerraformDataInputs boxes terraform_data's evaluated inputs as
+// {type, value} wrappers. It is a no-op for every other type.
+func wrapTerraformDataInputs(resType string, inputs property.Map, evaluated map[string]cty.Value) property.Map {
 	if resType != packages.TerraformDataType {
-		return
+		return inputs
 	}
-	for outName, inName := range map[string]string{
-		"input":            "input",
-		"output":           "input",
-		"triggers_replace": "triggers_replace",
-	} {
-		src, ok := evaluated[inName]
-		if !ok || src.Type() == cty.DynamicPseudoType {
-			continue
-		}
-		v, ok := outputs[outName]
+	for _, name := range []string{"input", "triggers_replace"} {
+		v, ok := inputs.GetOk(name)
 		if !ok {
 			continue
 		}
-		if converted, err := convert.Convert(v, src.Type()); err == nil {
-			outputs[outName] = converted
+		src, ok := evaluated[name]
+		if !ok {
+			continue
+		}
+		typeJSON, err := ctyjson.MarshalType(src.Type())
+		if err != nil {
+			continue
+		}
+		inputs = inputs.Set(name, property.New(map[string]property.Value{
+			tdataTypeKey:  property.New(string(typeJSON)),
+			tdataValueKey: v,
+		}))
+	}
+	return inputs
+}
+
+// unwrapTerraformDataOutputs replaces the re-expanded cty values of
+// terraform_data's dynamically typed attributes with their wrapper contents,
+// read from the pre-expansion property outputs — where the wrapper's shape is
+// exact, unlike its re-expanded form (whose cty shape depends on whether the
+// two fields' types unify). It is a no-op for every other type.
+func unwrapTerraformDataOutputs(resType string, outputs map[string]cty.Value, props property.Map) {
+	if resType != packages.TerraformDataType {
+		return
+	}
+	for _, name := range []string{"input", "output", "triggers_replace"} {
+		if _, ok := outputs[name]; !ok {
+			continue
+		}
+		if v, ok := unwrapTerraformDataValue(props.Get(name)); ok {
+			outputs[name] = v
 		}
 	}
+}
+
+// unwrapTerraformDataValue unboxes one property-encoded {type, value} wrapper
+// into the cty value of its recorded type. It reports false for the values at
+// these positions that are legitimately not wrappers — the null and unknown
+// placeholders of an absent or not-yet-known attribute — which re-expand
+// correctly without help.
+func unwrapTerraformDataValue(pv property.Value) (cty.Value, bool) {
+	secret := pv.Secret()
+	pv = pv.WithSecret(false)
+	if !pv.IsMap() {
+		return cty.Value{}, false
+	}
+	m := pv.AsMap()
+	typeJSON, ok := m.GetOk(tdataTypeKey)
+	if !ok || m.Len() != 2 || !typeJSON.IsString() {
+		return cty.Value{}, false
+	}
+	value, ok := m.GetOk(tdataValueKey)
+	if !ok {
+		return cty.Value{}, false
+	}
+	recorded, err := ctyjson.UnmarshalType([]byte(typeJSON.AsString()))
+	if err != nil {
+		return cty.Value{}, false
+	}
+	inner := transform.PropertyValueToCty(value)
+	if converted, err := convert.Convert(inner, recorded); err == nil {
+		inner = converted
+	}
+	if secret {
+		inner = inner.Mark(eval.SensitiveMark)
+	}
+	return inner, true
 }
