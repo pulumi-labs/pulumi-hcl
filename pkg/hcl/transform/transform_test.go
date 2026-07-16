@@ -2006,3 +2006,33 @@ func TestConformCtyToType_UnknownAndNull(t *testing.T) {
 		assert.Equal(t, val, conformCtyToType(val, cty.Map(cty.String)))
 	}
 }
+
+// TestUnifyPreservesNestedElementTypes pins that a heterogeneous collection
+// whose unification would coerce primitive leaves — at any depth — keeps its
+// per-element types instead of collapsing to a common type. cty unifies
+// list(number) and list(string) to list(string), which would stringify the
+// numbers (observable via jsonencode); OpenTofu keeps each element's own type.
+func TestUnifyPreservesNestedElementTypes(t *testing.T) {
+	t.Parallel()
+
+	nums := cty.ListVal([]cty.Value{cty.NumberIntVal(1), cty.NumberIntVal(2)})
+	strs := cty.ListVal([]cty.Value{cty.StringVal("a"), cty.StringVal("b")})
+
+	assert.Equal(t,
+		cty.ObjectVal(map[string]cty.Value{"nums": nums, "strs": strs}),
+		unifyOrObject(map[string]cty.Value{"nums": nums, "strs": strs}))
+	assert.Equal(t,
+		cty.TupleVal([]cty.Value{nums, strs}),
+		unifyOrTuple([]cty.Value{nums, strs}))
+
+	// A structural unification whose primitive leaves are untouched still
+	// collapses: object{a:string} and map(string) unify to map(string).
+	obj := cty.ObjectVal(map[string]cty.Value{"a": cty.StringVal("x")})
+	mp := cty.MapVal(map[string]cty.Value{"b": cty.StringVal("y")})
+	assert.Equal(t,
+		cty.MapVal(map[string]cty.Value{
+			"o": cty.MapVal(map[string]cty.Value{"a": cty.StringVal("x")}),
+			"m": mp,
+		}),
+		unifyOrObject(map[string]cty.Value{"o": obj, "m": mp}))
+}

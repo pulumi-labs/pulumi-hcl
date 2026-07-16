@@ -1529,18 +1529,65 @@ func unifyOrObject(m map[string]cty.Value) cty.Value {
 }
 
 // isLossyPrimitiveUnification reports whether unifying to unified would coerce
-// elements between primitive types — e.g. collapsing [number, string, bool] to
-// string. Such a unification erases each element's own type, so a heterogeneous
-// value must stay a tuple/object rather than be flattened to a list/map. A
-// structural unification (e.g. object -> map) keeps a non-primitive target and
-// is left to proceed.
+// elements between primitive types at any depth — e.g. collapsing [number,
+// string, bool] to string, or [list(number), list(string)] to list(string).
+// Such a unification erases an element's own type, so a heterogeneous value
+// must stay a tuple/object rather than be flattened to a list/map. A
+// structural unification (e.g. object -> map) whose primitive leaves are
+// untouched is left to proceed.
 func isLossyPrimitiveUnification(unified cty.Type, types []cty.Type) bool {
-	if !unified.IsPrimitiveType() {
+	for _, t := range types {
+		if isLossyConversion(t, unified) {
+			return true
+		}
+	}
+	return false
+}
+
+// isLossyConversion reports whether converting from to to would coerce a
+// primitive leaf to a different primitive type.
+func isLossyConversion(from, to cty.Type) bool {
+	if from.Equals(to) || from == cty.DynamicPseudoType || to == cty.DynamicPseudoType {
 		return false
 	}
-	for _, t := range types {
-		if !t.Equals(unified) {
-			return true
+	switch {
+	case to.IsPrimitiveType():
+		return true
+	case to.IsListType(), to.IsSetType():
+		elem := to.ElementType()
+		switch {
+		case from.IsListType(), from.IsSetType():
+			return isLossyConversion(from.ElementType(), elem)
+		case from.IsTupleType():
+			return slices.ContainsFunc(from.TupleElementTypes(), func(t cty.Type) bool {
+				return isLossyConversion(t, elem)
+			})
+		}
+	case to.IsMapType():
+		elem := to.ElementType()
+		switch {
+		case from.IsMapType():
+			return isLossyConversion(from.ElementType(), elem)
+		case from.IsObjectType():
+			return slices.ContainsFunc(slices.Collect(maps.Values(from.AttributeTypes())), func(t cty.Type) bool {
+				return isLossyConversion(t, elem)
+			})
+		}
+	case to.IsObjectType() && from.IsObjectType():
+		for name, at := range from.AttributeTypes() {
+			if ot, ok := to.AttributeTypes()[name]; ok && isLossyConversion(at, ot) {
+				return true
+			}
+		}
+	case to.IsTupleType() && from.IsTupleType():
+		fromElems, toElems := from.TupleElementTypes(), to.TupleElementTypes()
+		if len(fromElems) != len(toElems) {
+			return false
+		}
+		for i, ft := range fromElems {
+			if isLossyConversion(ft, toElems[i]) {
+				return true
+			}
 		}
 	}
 	return false
