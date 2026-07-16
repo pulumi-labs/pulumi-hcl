@@ -844,21 +844,11 @@ func (p *Parser) parseLifecycleBlock(block *hcl.Block) (*lifecycleResult, hcl.Di
 	}
 
 	if attr, ok := content.Attributes["create_before_destroy"]; ok {
-		var b bool
-		valDiags := gohcl.DecodeExpression(attr.Expr, nil, &b)
-		diags = append(diags, valDiags...)
-		if !valDiags.HasErrors() {
-			lifecycle.CreateBeforeDestroy = &b
-		}
+		diags = append(diags, gohcl.DecodeExpression(attr.Expr, nil, &lifecycle.CreateBeforeDestroy)...)
 	}
 
 	if attr, ok := content.Attributes["prevent_destroy"]; ok {
-		var b bool
-		valDiags := gohcl.DecodeExpression(attr.Expr, nil, &b)
-		diags = append(diags, valDiags...)
-		if !valDiags.HasErrors() {
-			lifecycle.PreventDestroy = &b
-		}
+		diags = append(diags, gohcl.DecodeExpression(attr.Expr, nil, &lifecycle.PreventDestroy)...)
 	}
 
 	if attr, ok := content.Attributes["ignore_changes"]; ok {
