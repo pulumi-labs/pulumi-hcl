@@ -74,8 +74,7 @@ func (r *Recorder) OrderedOps() []Op {
 func (r *Recorder) Ops() []Op {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	out := make([]Op, len(r.ops))
-	copy(out, r.ops)
+	out := slices.Clone(r.ops)
 	sort.SliceStable(out, func(i, j int) bool {
 		if out[i].Kind != out[j].Kind {
 			return out[i].Kind < out[j].Kind

@@ -31,7 +31,6 @@ type MockResourceMonitor struct {
 	RegisteredResources []run.RegisterResourceRequest
 	ReadResources       []run.ReadResourceRequest
 	InvokedFunctions    []run.InvokeRequest
-	Warnings            []string
 	StackOutputs        property.Map
 	stackURN            urn.URN
 	hooks               map[string]registeredHook
@@ -44,9 +43,6 @@ type MockResourceMonitor struct {
 
 	// RegisterResourceHandler, if  set, is  called for each  RegisterResource instead of the default behavior.
 	RegisterResourceHandler func(ctx context.Context, req run.RegisterResourceRequest) (*run.RegisterResourceResponse, error)
-
-	// ReadResourceHandler, if set, is called for each ReadResource instead of the default behavior.
-	ReadResourceHandler func(ctx context.Context, req run.ReadResourceRequest) (*run.ReadResourceResponse, error)
 }
 
 type registeredHook struct {
@@ -109,12 +105,7 @@ func (m *MockResourceMonitor) RegisterResource(ctx context.Context, req run.Regi
 func (m *MockResourceMonitor) ReadResource(ctx context.Context, req run.ReadResourceRequest) (*run.ReadResourceResponse, error) {
 	m.mu.Lock()
 	m.ReadResources = append(m.ReadResources, req)
-	handler := m.ReadResourceHandler
 	m.mu.Unlock()
-
-	if handler != nil {
-		return handler(ctx, req)
-	}
 
 	resURN := urn.URN("urn:pulumi:test::project::" + req.Type + "::" + req.Name)
 	return &run.ReadResourceResponse{
@@ -186,11 +177,7 @@ func (m *MockResourceMonitor) CheckPulumiVersion(ctx context.Context, versionRan
 	return nil
 }
 
-// LogWarning records emitted warning diagnostics for assertion in tests.
 func (m *MockResourceMonitor) LogWarning(ctx context.Context, message string) error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.Warnings = append(m.Warnings, message)
 	return nil
 }
 

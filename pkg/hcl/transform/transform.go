@@ -1912,16 +1912,6 @@ func CtyToPropertyMap(val cty.Value) (property.Map, error) {
 	return property.NewMap(pm), nil
 }
 
-// MakeSecret wraps a PropertyValue as a secret.
-func MakeSecret(pv resource.PropertyValue) resource.PropertyValue {
-	return resource.MakeSecret(pv)
-}
-
-// MakeComputed wraps a PropertyValue as computed/unknown.
-func MakeComputed(pv resource.PropertyValue) resource.PropertyValue {
-	return resource.MakeComputed(pv)
-}
-
 // missingDiscriminatorError: the value lacks the discriminator property.
 type missingDiscriminatorError struct {
 	Discriminator string   // snake_case name for HCL display

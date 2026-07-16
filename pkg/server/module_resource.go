@@ -21,7 +21,6 @@ import (
 	"os"
 	"sort"
 	"strings"
-	"time"
 
 	p "github.com/pulumi/pulumi-go-provider"
 	"github.com/pulumi/pulumi/pkg/v3/codegen/convert"
@@ -506,15 +505,9 @@ func customTimeoutsToProto(ct *resource.CustomTimeouts) *pulumirpc.ConstructRequ
 	if ct == nil {
 		return nil
 	}
-	dur := func(seconds float64) string {
-		if seconds == 0 {
-			return ""
-		}
-		return (time.Duration(seconds) * time.Second).String()
-	}
 	return &pulumirpc.ConstructRequest_CustomTimeouts{
-		Create: dur(ct.Create),
-		Update: dur(ct.Update),
-		Delete: dur(ct.Delete),
+		Create: formatTimeoutSeconds(ct.Create),
+		Update: formatTimeoutSeconds(ct.Update),
+		Delete: formatTimeoutSeconds(ct.Delete),
 	}
 }

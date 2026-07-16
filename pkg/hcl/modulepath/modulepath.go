@@ -81,15 +81,6 @@ func NewKeyedStep(name string, key string) Step {
 // Name returns the block label of this step (e.g. "vpc", "vpc.primary").
 func (s Step) Name() string { return s.name }
 
-// Index returns the count index of this step. ok is false if the step is
-// not from a count expansion.
-func (s Step) Index() (index int, ok bool) {
-	if s.kind != stepKindIndex {
-		return 0, false
-	}
-	return int(s.idx), true //nolint:gosec // constructed via NewIndexedStep, fits int
-}
-
 // Key returns the for_each key of this step. ok is false if the step is not
 // from a for_each expansion.
 func (s Step) Key() (key string, ok bool) {
@@ -283,21 +274,6 @@ func (p Path) PrefixString() string {
 		}
 		b.WriteByte('.')
 	}
-	return b.String()
-}
-
-// NodeKey returns an opaque, collision-free string formed by combining p
-// with localID. It is suitable as a unique identifier for an element
-// (resource, local, output, ...) inside the module instance described by p.
-//
-// The returned bytes are not human-readable and not stable across process
-// boundaries. Use this only as an in-memory map key.
-func (p Path) NodeKey(localID string) string {
-	var b strings.Builder
-	b.Grow(len(p.repr) + 2 + len(localID))
-	b.WriteString(p.repr)
-	writeUint16(&b, len(localID))
-	b.WriteString(localID)
 	return b.String()
 }
 

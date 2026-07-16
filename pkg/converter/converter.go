@@ -436,31 +436,28 @@ func (ft *fileTransformer) scanProviderFunctions(ctx context.Context, body *hcls
 	return diags
 }
 
+// blockLogicalName returns the referenceable name label of a resource,
+// variable, output, or module block, or "" for other block types.
+func blockLogicalName(block *hclsyntax.Block) string {
+	switch block.Type {
+	case "resource":
+		if len(block.Labels) >= 2 {
+			return block.Labels[1]
+		}
+	case "variable", "output", "module":
+		if len(block.Labels) >= 1 {
+			return block.Labels[0]
+		}
+	}
+	return ""
+}
+
 func (ft *fileTransformer) computeNameRewrites(bodies []*hclsyntax.Body) {
 	usedNames := make(map[string]bool)
 	// First pass: collect all names that are already valid identifiers.
 	for _, body := range bodies {
 		for _, block := range body.Blocks {
-			var name string
-			switch block.Type {
-			case "resource":
-				if len(block.Labels) >= 2 {
-					name = block.Labels[1]
-				}
-			case "variable":
-				if len(block.Labels) >= 1 {
-					name = block.Labels[0]
-				}
-			case "output":
-				if len(block.Labels) >= 1 {
-					name = block.Labels[0]
-				}
-			case "module":
-				if len(block.Labels) >= 1 {
-					name = block.Labels[0]
-				}
-			}
-			if name != "" && hclsyntax.ValidIdentifier(name) {
+			if name := blockLogicalName(block); name != "" && hclsyntax.ValidIdentifier(name) {
 				usedNames[name] = true
 			}
 		}
@@ -468,26 +465,11 @@ func (ft *fileTransformer) computeNameRewrites(bodies []*hclsyntax.Body) {
 	// Second pass: generate sanitized names for invalid identifiers.
 	for _, body := range bodies {
 		for _, block := range body.Blocks {
-			var name string
-			switch block.Type {
-			case "resource":
-				if len(block.Labels) >= 2 {
-					name = block.Labels[1]
-				}
-			case "variable":
-				if len(block.Labels) >= 1 {
-					name = block.Labels[0]
-				}
-			case "output":
-				// Outputs are never referenced in expressions, so they don't need rewriting.
-				continue
-			case "module":
-				if len(block.Labels) >= 1 {
-					name = block.Labels[0]
-				}
-			default:
+			// Outputs are never referenced in expressions, so they don't need rewriting.
+			if block.Type == "output" {
 				continue
 			}
+			name := blockLogicalName(block)
 			if name == "" || hclsyntax.ValidIdentifier(name) {
 				continue
 			}
@@ -592,7 +574,7 @@ func (ft *fileTransformer) emitFile(
 
 	var resultDiags hcl.Diagnostics
 
-	for _, alias := range sortedKeys(paramInfos) {
+	for _, alias := range slices.Sorted(maps.Keys(paramInfos)) {
 		emitPackageBlock(out, alias, paramInfos[alias])
 	}
 
@@ -2277,16 +2259,6 @@ func invertTokens(tokens hclwrite.Tokens) hclwrite.Tokens {
 		return rest
 	}
 	return append(hclwrite.Tokens{{Type: hclsyntax.TokenBang, Bytes: []byte("!")}}, tokens...)
-}
-
-// sortedKeys returns the keys of a map in sorted order.
-func sortedKeys[V any](m map[string]V) []string {
-	keys := make([]string, 0, len(m))
-	for k := range m {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
-	return keys
 }
 
 // emitPackageBlock writes a PCL "package" block from a workspace.PackageDescriptor.

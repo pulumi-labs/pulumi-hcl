@@ -17,6 +17,7 @@ package server
 import (
 	"archive/tar"
 	"bytes"
+	"cmp"
 	"compress/gzip"
 	"context"
 	"encoding/json"
@@ -26,7 +27,6 @@ import (
 	"path"
 	"path/filepath"
 	"slices"
-	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -412,18 +412,13 @@ func dedupeEdges(edges []resolvedEdge) []resolvedEdge {
 		seen[e] = struct{}{}
 		out = append(out, e)
 	}
-	sort.Slice(out, func(i, j int) bool {
-		a, b := out[i], out[j]
-		if a.Caller != b.Caller {
-			return a.Caller < b.Caller
-		}
-		if a.Source != b.Source {
-			return a.Source < b.Source
-		}
-		if a.Version != b.Version {
-			return a.Version < b.Version
-		}
-		return a.Target < b.Target
+	slices.SortFunc(out, func(a, b resolvedEdge) int {
+		return cmp.Or(
+			cmp.Compare(a.Caller, b.Caller),
+			cmp.Compare(a.Source, b.Source),
+			cmp.Compare(a.Version, b.Version),
+			cmp.Compare(a.Target, b.Target),
+		)
 	})
 	return out
 }
@@ -533,9 +528,8 @@ func excludedFromBundle(rel string) (skip, skipDeep bool) {
 func packArchive(dirs map[string]string) ([]byte, error) {
 	type entry struct {
 		name    string
-		absPath string      // set for files copied from disk
-		data    []byte      // set for in-memory files
-		info    os.FileInfo // nil for in-memory files
+		absPath string
+		info    os.FileInfo
 	}
 	var files []entry
 	for relPath, absDir := range dirs {
@@ -560,7 +554,7 @@ func packArchive(dirs map[string]string) ([]byte, error) {
 			return nil, err
 		}
 	}
-	sort.Slice(files, func(i, j int) bool { return files[i].name < files[j].name })
+	slices.SortFunc(files, func(a, b entry) int { return cmp.Compare(a.name, b.name) })
 
 	var buf bytes.Buffer
 	gz := gzip.NewWriter(&buf)
@@ -569,23 +563,20 @@ func packArchive(dirs map[string]string) ([]byte, error) {
 		hdr := &tar.Header{Name: f.name, ModTime: bundleEpoch}
 		var data []byte
 		switch {
-		case f.info != nil && f.info.IsDir():
+		case f.info.IsDir():
 			hdr.Typeflag = tar.TypeDir
 			hdr.Mode = 0o755
 			hdr.Name += "/"
-		case f.info != nil && !f.info.Mode().IsRegular():
+		case !f.info.Mode().IsRegular():
 			continue // skip symlinks, devices, and other irregular entries
 		default:
 			hdr.Typeflag = tar.TypeReg
 			hdr.Mode = 0o644
-			data = f.data
-			if f.absPath != "" {
-				b, err := os.ReadFile(f.absPath)
-				if err != nil {
-					return nil, err
-				}
-				data = b
+			b, err := os.ReadFile(f.absPath)
+			if err != nil {
+				return nil, err
 			}
+			data = b
 			hdr.Size = int64(len(data))
 		}
 		if err := tw.WriteHeader(hdr); err != nil {
