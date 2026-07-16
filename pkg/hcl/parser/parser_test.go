@@ -785,6 +785,31 @@ variable "subnets" {
 	}
 }
 
+func TestParseEphemeralAsSensitive(t *testing.T) {
+	t.Parallel()
+	src := []byte(`
+variable "token" {
+  type      = string
+  ephemeral = true
+}
+
+variable "plain" {
+  type      = string
+  ephemeral = false
+}
+
+output "token_out" {
+  value     = var.token
+  ephemeral = true
+}
+`)
+	config, diags := NewParser().ParseSource("test.tf", src)
+	require.False(t, diags.HasErrors(), "unexpected errors: %v", diags.Errs())
+	assert.True(t, config.Variables["token"].Sensitive)
+	assert.False(t, config.Variables["plain"].Sensitive)
+	assert.True(t, config.Outputs["token_out"].Sensitive)
+}
+
 func TestParseProviderForEach(t *testing.T) {
 	t.Parallel()
 	src := []byte(`

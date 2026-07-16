@@ -554,6 +554,16 @@ func (p *Parser) parseVariableBlock(config *ast.Config, block *hcl.Block) hcl.Di
 		}
 	}
 
+	// Ephemeral values are treated as secrets: encrypted state addresses the
+	// persistence concern that ephemerality exists to solve.
+	if attr, ok := content.Attributes["ephemeral"]; ok {
+		val, valDiags := attr.Expr.Value(nil)
+		diags = append(diags, valDiags...)
+		if val.Type() == cty.Bool && val.True() {
+			variable.Sensitive = true
+		}
+	}
+
 	if attr, ok := content.Attributes["nullable"]; ok {
 		val, valDiags := attr.Expr.Value(nil)
 		diags = append(diags, valDiags...)
@@ -1113,6 +1123,15 @@ func (p *Parser) parseOutputBlock(config *ast.Config, block *hcl.Block) hcl.Diag
 		diags = append(diags, valDiags...)
 		if val.Type() == cty.Bool {
 			output.Sensitive = val.True()
+		}
+	}
+
+	// Ephemeral outputs are treated as secrets, mirroring ephemeral variables.
+	if attr, ok := content.Attributes["ephemeral"]; ok {
+		val, valDiags := attr.Expr.Value(nil)
+		diags = append(diags, valDiags...)
+		if val.Type() == cty.Bool && val.True() {
+			output.Sensitive = true
 		}
 	}
 
