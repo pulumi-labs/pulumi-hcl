@@ -34,3 +34,16 @@ func TestL2MovedChained(t *testing.T) {
 		},
 	})
 }
+
+// TestL2MovedModuleChained covers two `moved` blocks that chain on a module
+// call: the call created as `module.a` is renamed to `module.b` and then
+// `module.b` is renamed to `module.c`. OpenTofu follows the chain and moves
+// the existing objects to `module.c` with no create/delete.
+func TestL2MovedModuleChained(t *testing.T) {
+	t.Parallel()
+	tfcompat.RunCase(t, "l2_moved_module_chained", tfcompat.Case{
+		Providers: []tfcompat.Provider{
+			{Name: "simple", Factory: providers.SimpleProvider},
+		},
+	})
+}

@@ -2129,6 +2129,10 @@ func moduleStepFor(name string, key cty.Value) (modulepath.Step, bool) {
 // root and a module or between two modules, and resources carried along when an
 // enclosing module call is renamed or re-keyed (the matching component alias is
 // attached in processModuleInit).
+//
+// Moved blocks chain: a prior address may itself be the `to` of another moved
+// block (a -> b, then b -> c). Every address along the chain is aliased, so the
+// engine matches whichever of them the state holds.
 func (e *Engine) resolveMovedAliases(
 	ctx context.Context, res *ast.Resource, index *int, eachKey *string, modInst *moduleInstance,
 ) []Alias {
@@ -2141,70 +2145,100 @@ func (e *Engine) resolveMovedAliases(
 		resPath = modInst.Path
 	}
 
-	for _, scope := range ancestorPaths(resPath) {
-		for _, moved := range e.graph.MovedBlocks(scope) {
-			to, ok := parseTargetAddr(moved.To)
-			if !ok || to.Type == "" { // skip whole-module-call moves
-				continue
-			}
-			toPath := appendModuleSteps(scope, to.modules)
-			if toPath != resPath || to.Type != res.Type || to.Name != res.Name {
-				continue
-			}
-			from, ok := parseTargetAddr(moved.From)
-			if !ok || from.Type == "" {
-				continue
-			}
-			fromPath := appendModuleSteps(scope, from.modules)
+	// A resource address at some point along the chain of moves.
+	type address struct {
+		path    modulepath.Path
+		typ     string
+		name    string
+		index   *int
+		eachKey *string
+	}
+	type addrKey struct {
+		typ    string
+		prefix string
+	}
+	mkAddrKey := func(a address) addrKey {
+		return addrKey{a.typ, prefixWithModulePath(a.path, buildResourceName(a.name, a.index, a.eachKey))}
+	}
 
-			// Determine the prior instance key. A keyed `to` targets one specific
-			// instance and takes the prior key from `from`; an unkeyed `to` is a
-			// whole-resource rename that maps every instance to the same key.
-			var priorIdx *int
-			var priorEach *string
-			if to.keyed() {
-				if !instanceKeysEqual(index, eachKey, to.keyIndex, to.keyEach) {
+	work := []address{{path: resPath, typ: res.Type, name: res.Name, index: index, eachKey: eachKey}}
+	seen := map[addrKey]bool{mkAddrKey(work[0]): true}
+
+	for len(work) > 0 {
+		cur := work[0]
+		work = work[1:]
+		for _, scope := range ancestorPaths(cur.path) {
+			for _, moved := range e.graph.MovedBlocks(scope) {
+				to, ok := parseTargetAddr(moved.To)
+				if !ok || to.Type == "" { // skip whole-module-call moves
 					continue
 				}
-				priorIdx, priorEach = from.keyIndex, from.keyEach
-			} else {
-				priorIdx, priorEach = index, eachKey
-			}
-
-			// The prior name is the resource's own name under its prior module
-			// path; the prior parent is described relative to where it is now.
-			name := prefixWithModulePath(fromPath, buildResourceName(from.Name, priorIdx, priorEach))
-			parentURN, noParent, ok := e.priorParentSpec(fromPath, resPath, modInst)
-			if !ok {
-				continue
-			}
-
-			// A `moved` may also change the resource's type; the alias then
-			// carries the prior type's token so the engine matches the old URN.
-			var priorType string
-			if from.Type != res.Type {
-				prior, err := e.resolver.ResolveResource(ctx, from.Type)
-				if err != nil {
-					logging.V(5).Infof("moved: cannot resolve prior type %q: %v", from.Type, err)
+				toPath := appendModuleSteps(scope, to.modules)
+				if toPath != cur.path || to.Type != cur.typ || to.Name != cur.name {
 					continue
 				}
-				priorType = prior.Token
-			}
+				from, ok := parseTargetAddr(moved.From)
+				if !ok || from.Type == "" {
+					continue
+				}
+				fromPath := appendModuleSteps(scope, from.modules)
 
-			aliases = append(aliases, Alias{Spec: &AliasSpec{
-				Name:      name,
-				Type:      priorType,
-				ParentURN: parentURN,
-				NoParent:  noParent,
-			}})
+				// Determine the prior instance key. A keyed `to` targets one specific
+				// instance and takes the prior key from `from`; an unkeyed `to` is a
+				// whole-resource rename that maps every instance to the same key.
+				var priorIdx *int
+				var priorEach *string
+				if to.keyed() {
+					if !instanceKeysEqual(cur.index, cur.eachKey, to.keyIndex, to.keyEach) {
+						continue
+					}
+					priorIdx, priorEach = from.keyIndex, from.keyEach
+				} else {
+					priorIdx, priorEach = cur.index, cur.eachKey
+				}
+
+				prior := address{path: fromPath, typ: from.Type, name: from.Name, index: priorIdx, eachKey: priorEach}
+				if seen[mkAddrKey(prior)] {
+					continue
+				}
+				seen[mkAddrKey(prior)] = true
+				work = append(work, prior)
+
+				// The prior name is the resource's own name under its prior module
+				// path; the prior parent is described relative to where it is now.
+				name := prefixWithModulePath(fromPath, buildResourceName(from.Name, priorIdx, priorEach))
+				parentURN, noParent, ok := e.priorParentSpec(fromPath, resPath, modInst)
+				if !ok {
+					continue
+				}
+
+				// A `moved` may also change the resource's type; the alias then
+				// carries the prior type's token so the engine matches the old URN.
+				var priorType string
+				if from.Type != res.Type {
+					priorRes, err := e.resolver.ResolveResource(ctx, from.Type)
+					if err != nil {
+						logging.V(5).Infof("moved: cannot resolve prior type %q: %v", from.Type, err)
+						continue
+					}
+					priorType = priorRes.Token
+				}
+
+				aliases = append(aliases, Alias{Spec: &AliasSpec{
+					Name:      name,
+					Type:      priorType,
+					ParentURN: parentURN,
+					NoParent:  noParent,
+				}})
+			}
 		}
 	}
 
 	// A `moved` block that renames an enclosing module call moves this resource
 	// with it. The resource keeps its own name within the module, so it is
-	// aliased to the name it had under the prior module path; Pulumi combines
+	// aliased to the name it had under each prior module path; Pulumi combines
 	// that with the renamed component's own alias to recover the old URN.
-	if oldPath := e.oldModulePath(resPath); oldPath != resPath {
+	for _, oldPath := range e.oldModulePaths(resPath) {
 		name := prefixWithModulePath(oldPath, buildResourceName(res.Name, index, eachKey))
 		aliases = append(aliases, Alias{Spec: &AliasSpec{Name: name}})
 	}
@@ -2212,10 +2246,28 @@ func (e *Engine) resolveMovedAliases(
 	return aliases
 }
 
-// oldModulePath applies any whole-module-call `moved` blocks that rename a
-// module enclosing (or equal to) path, returning the module path the object
-// lived at before the rename. It returns path unchanged when none applies.
-func (e *Engine) oldModulePath(path modulepath.Path) modulepath.Path {
+// oldModulePaths applies the whole-module-call `moved` blocks that rename a
+// module enclosing (or equal to) path, following chained renames, and returns
+// every prior module path the object lived at, nearest rename first. It
+// returns nil when none applies.
+func (e *Engine) oldModulePaths(path modulepath.Path) []modulepath.Path {
+	var prior []modulepath.Path
+	seen := map[modulepath.Path]bool{path: true}
+	for {
+		next, ok := e.priorModulePath(path)
+		if !ok || seen[next] {
+			return prior
+		}
+		seen[next] = true
+		prior = append(prior, next)
+		path = next
+	}
+}
+
+// priorModulePath applies the first whole-module-call `moved` block that
+// renames a module enclosing (or equal to) path, returning the module path the
+// object lived at before that rename. ok is false when none applies.
+func (e *Engine) priorModulePath(path modulepath.Path) (_ modulepath.Path, ok bool) {
 	for _, scope := range ancestorPaths(path) {
 		for _, moved := range e.graph.MovedBlocks(scope) {
 			to, ok := parseTargetAddr(moved.To)
@@ -2235,21 +2287,21 @@ func (e *Engine) oldModulePath(path modulepath.Path) modulepath.Path {
 			for _, s := range suffix {
 				fromPath = fromPath.Append(s)
 			}
-			return fromPath
+			return fromPath, true
 		}
 	}
-	return path
+	return path, false
 }
 
-// moduleComponentAliases returns the alias for a module instance's component
-// resource when a `moved` block renames its call, so the component (and its
+// moduleComponentAliases returns the aliases for a module instance's component
+// resource when `moved` blocks rename its call, so the component (and its
 // children) are recognized as moved rather than replaced.
 func (e *Engine) moduleComponentAliases(instPath modulepath.Path) []Alias {
-	oldPath := e.oldModulePath(instPath)
-	if oldPath == instPath {
-		return nil
+	var aliases []Alias
+	for _, oldPath := range e.oldModulePaths(instPath) {
+		aliases = append(aliases, Alias{Spec: &AliasSpec{Name: oldPath.LogicalName()}})
 	}
-	return []Alias{{Spec: &AliasSpec{Name: oldPath.LogicalName()}}}
+	return aliases
 }
 
 // priorParentSpec describes the parent of a resource at its prior moved address,
