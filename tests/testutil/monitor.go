@@ -177,8 +177,11 @@ func (m *MockResourceMonitor) CheckPulumiVersion(ctx context.Context, versionRan
 	return nil
 }
 
+// LogWarning panics: nothing asserts on warnings through this mock, so a
+// warning reaching it means a test exercises a path it doesn't expect. Record
+// the message in a field instead if a test needs to assert on warnings.
 func (m *MockResourceMonitor) LogWarning(ctx context.Context, message string) error {
-	return nil
+	panic("MockResourceMonitor.LogWarning: unexpected warning: " + message)
 }
 
 func (m *MockResourceMonitor) RegisterPackage(ctx context.Context, pkg workspace.PackageDescriptor) (run.PackageRef, error) {
