@@ -15,12 +15,15 @@
 package parser
 
 import (
+	"maps"
+	"slices"
 	"testing"
 
 	"github.com/hashicorp/hcl/v2"
 	"github.com/pulumi-labs/pulumi-hcl/pkg/hcl/ast"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/zclconf/go-cty/cty"
 )
 
 func TestParseBasicConfig(t *testing.T) {
@@ -543,6 +546,131 @@ resource "aws_instance" "web" {
 	_, diags := p.ParseSource("test.hcl", src)
 	require.True(t, diags.HasErrors())
 	require.Equal(t, "Invalid \"on_failure\" value", diags[0].Summary)
+}
+
+// justAttrNames returns the sorted attribute names visible via JustAttributes.
+func justAttrNames(t *testing.T, body hcl.Body) []string {
+	t.Helper()
+	attrs, _ := body.JustAttributes()
+	return slices.Sorted(maps.Keys(attrs))
+}
+
+func TestParseEscapingBlocks(t *testing.T) {
+	t.Parallel()
+	src := []byte(`
+provider "aws" {
+  region = "us-west-2"
+  _ {
+    alias = "not-an-alias"
+  }
+}
+
+resource "aws_instance" "web" {
+  count = 2
+  ami   = "ami-123"
+
+  lifecycle {
+    prevent_destroy = true
+  }
+
+  _ {
+    # Set both as a meta-argument above and as a resource-type-specific
+    # argument here; both must be populated.
+    count = "not-a-count"
+
+    # A literal block, not the lifecycle meta-argument block.
+    lifecycle {
+      prevent_destroy = "not-a-bool"
+    }
+  }
+
+  provisioner "local-exec" {
+    when = destroy
+    _ {
+      command = "true"
+      when    = "not-a-when"
+    }
+  }
+}
+
+data "aws_ami" "ubuntu" {
+  _ {
+    provider = "not-a-provider"
+  }
+}
+
+module "vpc" {
+  source = "./modules/vpc"
+  _ {
+    version = "not-a-version"
+  }
+}
+`)
+	p := NewParser()
+	config, diags := p.ParseSource("test.hcl", src)
+	require.False(t, diags.HasErrors(), "%v", diags)
+
+	provider := config.Providers["aws"]
+	require.NotNil(t, provider)
+	assert.Equal(t, "", provider.Alias)
+	assert.Equal(t, []string{"alias", "region"}, justAttrNames(t, provider.Config))
+
+	res := config.Resources["aws_instance.web"]
+	require.NotNil(t, res)
+	// The meta-argument and the escaped argument of the same name are both
+	// populated: count = 2 drives expansion, the escaped count is config.
+	require.NotNil(t, res.Count)
+	countVal, valDiags := res.Count.Value(nil)
+	require.False(t, valDiags.HasErrors())
+	assert.True(t, cty.NumberIntVal(2).RawEquals(countVal))
+	require.NotNil(t, res.Lifecycle)
+	require.NotNil(t, res.Lifecycle.PreventDestroy)
+	assert.True(t, *res.Lifecycle.PreventDestroy)
+
+	content, _, contentDiags := res.Config.PartialContent(&hcl.BodySchema{
+		Attributes: []hcl.AttributeSchema{{Name: "ami"}, {Name: "count"}},
+		Blocks:     []hcl.BlockHeaderSchema{{Type: "lifecycle"}},
+	})
+	require.False(t, contentDiags.HasErrors(), "%v", contentDiags)
+	escapedCount, valDiags := content.Attributes["count"].Expr.Value(nil)
+	require.False(t, valDiags.HasErrors())
+	assert.Equal(t, cty.StringVal("not-a-count"), escapedCount)
+	// The lifecycle block written inside `_` is literal resource config, not
+	// the meta-argument block.
+	require.Len(t, content.Blocks, 1)
+
+	require.Len(t, res.Provisioners, 1)
+	prov := res.Provisioners[0]
+	assert.Equal(t, "destroy", prov.When)
+	assert.Equal(t, []string{"command", "when"}, justAttrNames(t, prov.Config))
+
+	ds := config.DataSources["aws_ami.ubuntu"]
+	require.NotNil(t, ds)
+	assert.Nil(t, ds.Provider)
+	assert.Equal(t, []string{"provider"}, justAttrNames(t, ds.Config))
+
+	mod := config.Modules["vpc"]
+	require.NotNil(t, mod)
+	assert.Equal(t, "", mod.Version)
+	assert.Equal(t, []string{"version"}, justAttrNames(t, mod.Config))
+}
+
+func TestParseDuplicateEscapingBlock(t *testing.T) {
+	t.Parallel()
+	src := []byte(`
+resource "aws_instance" "web" {
+  _ {
+    count = "a"
+  }
+  _ {
+    provider = "b"
+  }
+}
+`)
+	p := NewParser()
+	_, diags := p.ParseSource("test.hcl", src)
+	require.True(t, diags.HasErrors())
+	require.Equal(t, "Duplicate escaping block", diags[0].Summary)
 }
 
 func TestParseMetaArguments(t *testing.T) {

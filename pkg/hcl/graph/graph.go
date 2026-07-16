@@ -819,6 +819,12 @@ func (g *Graph) providerDeps(provider *ast.Provider, key, prefix string) []pdag.
 
 // bodyDeps extracts dependencies from an HCL body, applying prefix to resolved keys.
 func (g *Graph) bodyDeps(body hcl.Body, prefix string, exclude map[string]bool) []pdag.Node {
+	if eb, ok := body.(*ast.EscapedBody); ok {
+		// Scan the underlying bodies so the native-syntax walk below still
+		// sees dynamic and lifecycle blocks; the merged body hides them.
+		return append(g.bodyDeps(eb.Base, prefix, exclude), g.bodyDeps(eb.Escape, prefix, exclude)...)
+	}
+
 	seen := make(map[pdag.Node]bool)
 
 	attrs, _ := body.JustAttributes()

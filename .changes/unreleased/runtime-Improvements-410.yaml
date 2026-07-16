@@ -1,0 +1,6 @@
+kind: Improvements
+body: Support the `_` meta-argument escaping block in `resource`, `data`, `provider`, `module`, and `provisioner` blocks
+time: 2026-07-16T15:30:00Z
+custom:
+    Component: runtime
+    PR: "410"
