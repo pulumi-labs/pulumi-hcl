@@ -21,9 +21,8 @@ import (
 	"github.com/pulumi-labs/pulumi-hcl/tests/testutil/tfcompat/providers"
 )
 
-// Two static `settings` blocks for a TypeList MaxItems=1 attribute. tofu
-// rejects the config at plan time; pulumi-hcl silently keeps the last block,
-// so the apply succeeds where tofu errors.
+// tofu rejects repeated blocks for a MaxItems=1 attribute at plan time;
+// pulumi-hcl keeps the last block and succeeds.
 func TestL2RepeatedMaxItemsOneBlock(t *testing.T) {
 	t.Parallel()
 	tfcompat.RunCase(t, "l2_repeated_max_items_one_block", tfcompat.Case{
