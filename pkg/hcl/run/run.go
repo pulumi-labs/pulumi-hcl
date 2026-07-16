@@ -1593,13 +1593,13 @@ func (e *Engine) registerResourceInstanceInContext(
 	}
 
 	if len(res.Postconditions) > 0 {
-		if err := e.bindPostconditionHooks(ctx, res, resSchema, resourceMapping, instance, evalCtx, opts, resourceName); err != nil {
+		if err := e.bindPostconditionHooks(ctx, res, resSchema, resourceMapping, instance, evalCtx, opts, resourceName, tdataEvaluated); err != nil {
 			return err
 		}
 	}
 
 	if len(res.Provisioners) > 0 {
-		if err := e.bindProvisionerHooks(ctx, res, resSchema, resourceMapping, instance, evalCtx, opts, resourceName); err != nil {
+		if err := e.bindProvisionerHooks(ctx, res, resSchema, resourceMapping, instance, evalCtx, opts, resourceName, tdataEvaluated); err != nil {
 			return err
 		}
 	}
@@ -4183,6 +4183,7 @@ func (e *Engine) bindPostconditionHooks(
 	evalCtx *eval.Context,
 	opts *ResourceOptions,
 	resourceName string,
+	tdataEvaluated map[string]cty.Value,
 ) error {
 	if opts.Hooks == nil {
 		opts.Hooks = &ResourceHookBinding{}
@@ -4193,7 +4194,11 @@ func (e *Engine) bindPostconditionHooks(
 		rule, index := rule, i+1
 		hookName := fmt.Sprintf("%s.%s:postcondition:%d", res.Type, resourceName, i)
 		callback := func(_ context.Context, args *ResourceHookArgs) error {
-			return evaluatePostcondition(rule, hclSnapshot, args.NewOutputs, resSchema, mapping, dryRun, index, instance.Key)
+			// Hooks receive raw engine outputs, so terraform_data's surface is
+			// adapted the same way as on the registration path: property-level
+			// lowering here, cty type restore after re-expansion.
+			outputs := lowerTerraformDataOutputs(res.Type, args.NewOutputs, opts)
+			return evaluatePostcondition(rule, hclSnapshot, outputs, res.Type, tdataEvaluated, resSchema, mapping, dryRun, index, instance.Key)
 		}
 		if err := e.resmon.RegisterResourceHook(ctx, hookName, callback, ResourceHookOptions{
 			OnDryRun: true,
@@ -4209,13 +4214,15 @@ func (e *Engine) bindPostconditionHooks(
 // evaluatePostcondition evaluates a postcondition with `self` bound to the
 // engine-supplied NewOutputs.
 func evaluatePostcondition(
-	rule *ast.CheckRule, hclCtx *hcl.EvalContext, newOutputs property.Map,
+	rule *ast.CheckRule, hclCtx *hcl.EvalContext, newOutputs property.Map, tfType string,
+	tdataEvaluated map[string]cty.Value,
 	resSchema *schema.Resource, mapping *bridge.BodyMapping, dryRun bool, index int, resourceName string,
 ) error {
 	outputObj, err := transform.ResourceOutputToCty(newOutputs, resSchema, mapping, dryRun)
 	if err != nil {
 		return fmt.Errorf("converting outputs for postcondition %d on %s: %w", index, resourceName, err)
 	}
+	restoreTerraformDataOutputTypes(tfType, outputObj, tdataEvaluated)
 	return evaluatePostconditionValue(rule, hclCtx, cty.ObjectVal(outputObj), index, resourceName)
 }
 
