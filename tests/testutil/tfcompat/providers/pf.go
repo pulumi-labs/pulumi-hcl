@@ -63,12 +63,14 @@ func (p *pfxProvider) Resources(context.Context) []func() resource.Resource {
 		func() resource.Resource { return &pfxThing{} },
 		func() resource.Resource { return &pfxWidget{} },
 		func() resource.Resource { return &pfxRes{} },
+		func() resource.Resource { return &pfxObj{} },
 	}
 }
 
 func (p *pfxProvider) DataSources(context.Context) []func() datasource.DataSource {
 	return []func() datasource.DataSource{
 		func() datasource.DataSource { return &pfxLookup{} },
+		func() datasource.DataSource { return &pfxObjLookup{} },
 	}
 }
 
@@ -350,6 +352,108 @@ func (r *pfxRes) Update(ctx context.Context, req resource.UpdateRequest, resp *r
 }
 
 func (r *pfxRes) Delete(_ context.Context, _ resource.DeleteRequest, _ *resource.DeleteResponse) {
+}
+
+// pfxObj carries an optional object-typed attribute whose `item` field is a
+// list of strings — the bridge pluralizes the nested name to `items`.
+type pfxObj struct{}
+
+var _ resource.Resource = (*pfxObj)(nil)
+
+type pfxObjModel struct {
+	ID      types.String `tfsdk:"id"`
+	ObjAttr types.Object `tfsdk:"obj_attr"`
+}
+
+func (r *pfxObj) Metadata(_ context.Context, req resource.MetadataRequest, resp *resource.MetadataResponse) {
+	resp.TypeName = req.ProviderTypeName + "_obj"
+}
+
+func (r *pfxObj) Schema(_ context.Context, _ resource.SchemaRequest, resp *resource.SchemaResponse) {
+	resp.Schema = rschema.Schema{
+		Attributes: map[string]rschema.Attribute{
+			"id": rschema.StringAttribute{
+				Computed:      true,
+				PlanModifiers: []planmodifier.String{stringplanmodifier.UseStateForUnknown()},
+			},
+			"obj_attr": rschema.SingleNestedAttribute{
+				Optional: true,
+				Attributes: map[string]rschema.Attribute{
+					"item": rschema.ListAttribute{ElementType: types.StringType, Optional: true},
+				},
+			},
+		},
+	}
+}
+
+func (r *pfxObj) Create(ctx context.Context, req resource.CreateRequest, resp *resource.CreateResponse) {
+	var plan pfxObjModel
+	resp.Diagnostics.Append(req.Plan.Get(ctx, &plan)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+	plan.ID = types.StringValue("pfx-obj-id")
+	resp.Diagnostics.Append(resp.State.Set(ctx, &plan)...)
+}
+
+func (r *pfxObj) Read(_ context.Context, _ resource.ReadRequest, _ *resource.ReadResponse) {}
+
+func (r *pfxObj) Update(ctx context.Context, req resource.UpdateRequest, resp *resource.UpdateResponse) {
+	var plan pfxObjModel
+	resp.Diagnostics.Append(req.Plan.Get(ctx, &plan)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+	resp.Diagnostics.Append(resp.State.Set(ctx, &plan)...)
+}
+
+func (r *pfxObj) Delete(_ context.Context, _ resource.DeleteRequest, _ *resource.DeleteResponse) {}
+
+// pfxObjLookup is the data-source counterpart of pfxObj: an object-typed
+// input attribute whose `item` field is a list of strings (bridged as
+// `items`), echoed back through the computed `value`.
+type pfxObjLookup struct{}
+
+var _ datasource.DataSource = (*pfxObjLookup)(nil)
+
+type pfxObjLookupModel struct {
+	ObjAttr types.Object `tfsdk:"obj_attr"`
+	Value   types.String `tfsdk:"value"`
+}
+
+func (d *pfxObjLookup) Metadata(_ context.Context, req datasource.MetadataRequest, resp *datasource.MetadataResponse) {
+	resp.TypeName = req.ProviderTypeName + "_obj_lookup"
+}
+
+func (d *pfxObjLookup) Schema(_ context.Context, _ datasource.SchemaRequest, resp *datasource.SchemaResponse) {
+	resp.Schema = dschema.Schema{
+		Attributes: map[string]dschema.Attribute{
+			"obj_attr": dschema.SingleNestedAttribute{
+				Optional: true,
+				Attributes: map[string]dschema.Attribute{
+					"item": dschema.ListAttribute{ElementType: types.StringType, Optional: true},
+				},
+			},
+			"value": dschema.StringAttribute{Computed: true},
+		},
+	}
+}
+
+func (d *pfxObjLookup) Read(ctx context.Context, req datasource.ReadRequest, resp *datasource.ReadResponse) {
+	var state pfxObjLookupModel
+	resp.Diagnostics.Append(req.Config.Get(ctx, &state)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+	var items []string
+	if !state.ObjAttr.IsNull() {
+		resp.Diagnostics.Append(state.ObjAttr.Attributes()["item"].(types.List).ElementsAs(ctx, &items, false)...)
+		if resp.Diagnostics.HasError() {
+			return
+		}
+	}
+	state.Value = types.StringValue(strings.Join(items, ","))
+	resp.Diagnostics.Append(resp.State.Set(ctx, &state)...)
 }
 
 type pfxLookup struct{}

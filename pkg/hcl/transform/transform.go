@@ -62,7 +62,7 @@ func EvalFunctionWithSchema(config hcl.Body, r *schema.Function, mapping *bridge
 		return property.Map{}, diags
 	}
 
-	m, err := ctyToFunctionInputs(functionInputs, r, attrExprs)
+	m, err := ctyToFunctionInputs(functionInputs, r, attrExprs, mapping)
 	if err != nil {
 		return property.Map{}, append(diags,
 			conversionDiagnostic(err, "failed to convert HCL function inputs to Pulumi inputs"))
@@ -81,7 +81,7 @@ func EvalResourceWithSchema(config hcl.Body, r *schema.Resource, mapping *bridge
 		return property.Map{}, nil, diags
 	}
 
-	m, err := ctyToResourceInputs(resourceInputs, r, attrExprs)
+	m, err := ctyToResourceInputs(resourceInputs, r, attrExprs, mapping)
 	if err != nil {
 		return property.Map{}, nil, append(diags,
 			conversionDiagnostic(err, "failed to convert HCL resource inputs to Pulumi inputs"))
@@ -153,22 +153,6 @@ func evalBlockWithSchema(config hcl.Body, props []*schema.Property, mapping *bri
 		return cty.EmptyObjectVal, nil, diags
 	}
 
-	// resolveProp picks the Pulumi property for a TF (snake_case) name, going
-	// through the mapping when available (for explicit renames), falling back
-	// to the snake↔camel convention otherwise.
-	resolveProp := func(tfName string) (string, *schema.Property) {
-		if mapping != nil {
-			if fm := mapping.Lookup(tfName); fm != nil {
-				for _, p := range props {
-					if p.Name == fm.PulumiName {
-						return p.Name, p
-					}
-				}
-			}
-		}
-		return camelCaseFromSnakeCase(tfName, props)
-	}
-
 	// storageKey is the cty/attrExprs key for a TF attribute; using the
 	// snake-form of the Pulumi name lets the downstream ctyToObject pipeline
 	// match the property via its existing camelCaseFromSnakeCase lookup, even
@@ -183,7 +167,7 @@ func evalBlockWithSchema(config hcl.Body, props []*schema.Property, mapping *bri
 	attrExprs := make(map[string]hcl.Expression, len(body.Attributes))
 	resourceInputs := make(map[string]cty.Value, len(body.Attributes)+len(body.Blocks))
 	for name, attr := range body.Attributes {
-		_, prop := resolveProp(name)
+		_, prop := resolvePulumiProperty(name, props, mapping)
 		contract.Assertf(prop != nil, "unable to find schema for validated property")
 
 		out, attrDiag := eval(resource.PropertyKey(prop.Name), attr.Expr, nil)
@@ -210,7 +194,7 @@ func evalBlockWithSchema(config hcl.Body, props []*schema.Property, mapping *bri
 			continue
 		}
 
-		_, prop := resolveProp(name)
+		_, prop := resolvePulumiProperty(name, props, mapping)
 		contract.Assertf(prop != nil, "unable to find schema for validated property")
 
 		blockProps, isList := blockPropertiesOf(prop.Type)
@@ -631,28 +615,43 @@ func inputBodyFromProperties(r []*schema.Property, mapping *bridge.BodyMapping) 
 	return body
 }
 
-func ctyToResourceInputs(val cty.Value, r *schema.Resource, attrExprs map[string]hcl.Expression) (property.Map, error) {
-	return ctyToObject(r.Token, val, r.InputProperties, attrExprs, false /* already in a secret */)
+func ctyToResourceInputs(val cty.Value, r *schema.Resource, attrExprs map[string]hcl.Expression, mapping *bridge.BodyMapping) (property.Map, error) {
+	return ctyToObject(r.Token, val, r.InputProperties, attrExprs, false /* already in a secret */, mapping)
 }
 
-func ctyToFunctionInputs(val cty.Value, r *schema.Function, attrExprs map[string]hcl.Expression) (property.Map, error) {
+func ctyToFunctionInputs(val cty.Value, r *schema.Function, attrExprs map[string]hcl.Expression, mapping *bridge.BodyMapping) (property.Map, error) {
 	var inputs []*schema.Property
 	if r.Inputs != nil {
 		inputs = r.Inputs.Properties
 	}
-	return ctyToObject(r.Token, val, inputs, attrExprs, false /* already in a secret */)
+	return ctyToObject(r.Token, val, inputs, attrExprs, false /* already in a secret */, mapping)
+}
+
+// resolvePulumiProperty picks the Pulumi property for a TF (snake_case) name,
+// going through the mapping when available (for renames the snake↔camel
+// convention cannot recover, e.g. pluralized list fields), falling back to
+// the convention otherwise.
+func resolvePulumiProperty(tfName string, props []*schema.Property, mapping *bridge.BodyMapping) (string, *schema.Property) {
+	if fm := mapping.Lookup(tfName); fm != nil {
+		for _, p := range props {
+			if p.Name == fm.PulumiName {
+				return p.Name, p
+			}
+		}
+	}
+	return camelCaseFromSnakeCase(tfName, props)
 }
 
 // ctyToObject's attrExprs maps each attribute's HCL (snake_case) name to
 // its source expression; passing nil disables source-range error
 // reporting for this object's children.
-func ctyToObject(path string, val cty.Value, properties []*schema.Property, attrExprs map[string]hcl.Expression, alreadyInSecret bool) (property.Map, error) {
+func ctyToObject(path string, val cty.Value, properties []*schema.Property, attrExprs map[string]hcl.Expression, alreadyInSecret bool, mapping *bridge.BodyMapping) (property.Map, error) {
 	seen := make(map[string]struct{})
 	result := map[string]property.Value{}
 	for it := val.ElementIterator(); it.Next(); {
 		k, v := it.Element()
 		keyStr := k.AsString()
-		puField, prop := camelCaseFromSnakeCase(keyStr, properties)
+		puField, prop := resolvePulumiProperty(keyStr, properties, mapping)
 		if prop == nil {
 			// We have not found the correct field in the property list, so we should put together an error
 			// message.
@@ -665,7 +664,8 @@ func ctyToObject(path string, val cty.Value, properties []*schema.Property, attr
 		}
 		seen[puField] = struct{}{}
 		var err error
-		result[puField], err = ctyToResourceProperty(keyStr, v, prop.Type, attrExprs[keyStr], prop.Secret || alreadyInSecret)
+		result[puField], err = ctyToResourceProperty(keyStr, v, prop.Type, attrExprs[keyStr],
+			prop.Secret || alreadyInSecret, nestedMappingFor(prop.Name, mapping))
 		if err != nil {
 			return property.Map{}, err
 		}
@@ -739,7 +739,7 @@ func getDefault(path string, d *schema.DefaultValue, typ schema.Type) (property.
 
 // ctyToResourceProperty's expr, when non-nil, lets union-discrimination
 // failures attach an HCL source range to the returned error.
-func ctyToResourceProperty(path string, val cty.Value, prop schema.Type, expr hcl.Expression, alreadyInSecret bool) (property.Value, error) {
+func ctyToResourceProperty(path string, val cty.Value, prop schema.Type, expr hcl.Expression, alreadyInSecret bool, mapping *bridge.BodyMapping) (property.Value, error) {
 	// A whole-resource reference (e.g. `handler = aws_lambda_function.fn`) is
 	// identified by its resourceMark; capture the URN before the unmark below
 	// strips it, so the *schema.ResourceType case can build a reference from it.
@@ -753,7 +753,7 @@ func ctyToResourceProperty(path string, val cty.Value, prop schema.Type, expr hc
 		// the persistence concern that ephemerality exists to solve.
 		_, isEphemeral := marks[eval.EphemeralMark]
 		if (isSensitive || isEphemeral) && !alreadyInSecret {
-			v, err := ctyToResourceProperty(path, val, prop, expr, true)
+			v, err := ctyToResourceProperty(path, val, prop, expr, true, mapping)
 			return v.WithSecret(true), err
 		}
 	}
@@ -826,7 +826,7 @@ func ctyToResourceProperty(path string, val cty.Value, prop schema.Type, expr hc
 		if !val.Type().IsObjectType() {
 			return property.Value{}, fmt.Errorf("expected object at %q, found %#v", path, val.Type())
 		}
-		m, err := ctyToObject(path, val, prop.Properties, attrExprsByKey(expr), alreadyInSecret)
+		m, err := ctyToObject(path, val, prop.Properties, attrExprsByKey(expr), alreadyInSecret, mapping)
 		return property.New(m), err
 	case *schema.ArrayType:
 		if !val.Type().IsListType() && !val.Type().IsSetType() && !val.Type().IsTupleType() {
@@ -841,7 +841,7 @@ func ctyToResourceProperty(path string, val cty.Value, prop schema.Type, expr hc
 			if i < len(elemExprs) {
 				sub = elemExprs[i]
 			}
-			convertedElem, err := ctyToResourceProperty(fmt.Sprintf("%s[%d]", path, i), elem, prop.ElementType, sub, alreadyInSecret)
+			convertedElem, err := ctyToResourceProperty(fmt.Sprintf("%s[%d]", path, i), elem, prop.ElementType, sub, alreadyInSecret, mapping)
 			if err != nil {
 				return property.Value{}, err
 			}
@@ -857,7 +857,7 @@ func ctyToResourceProperty(path string, val cty.Value, prop schema.Type, expr hc
 		for it := val.ElementIterator(); it.Next(); {
 			k, elem := it.Element()
 			key := k.AsString()
-			convertedElem, err := ctyToResourceProperty(fmt.Sprintf("%s[%q]", path, key), elem, prop.ElementType, elemExprs[key], alreadyInSecret)
+			convertedElem, err := ctyToResourceProperty(fmt.Sprintf("%s[%q]", path, key), elem, prop.ElementType, elemExprs[key], alreadyInSecret, mapping)
 			if err != nil {
 				return property.Value{}, err
 			}
@@ -876,7 +876,7 @@ func ctyToResourceProperty(path string, val cty.Value, prop schema.Type, expr hc
 			}
 			return property.Value{}, fmt.Errorf("%s: %w", summary, err)
 		} else if chosen != nil {
-			return ctyToResourceProperty(path, val, chosen, expr, alreadyInSecret)
+			return ctyToResourceProperty(path, val, chosen, expr, alreadyInSecret, mapping)
 		}
 		return ctyToPropertyValue(val)
 	default:
