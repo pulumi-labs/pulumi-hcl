@@ -38,7 +38,9 @@ import (
 	"github.com/pulumi/pulumi/sdk/v3/go/common/tokens"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/util/contract"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/workspace"
+	"google.golang.org/grpc/codes"
 
+	"github.com/pulumi-labs/pulumi-hcl/pkg/grpcerr"
 	"github.com/pulumi-labs/pulumi-hcl/pkg/hcl/ast"
 	"github.com/pulumi-labs/pulumi-hcl/pkg/hcl/modules"
 	"github.com/pulumi-labs/pulumi-hcl/pkg/hcl/packages"
@@ -140,7 +142,8 @@ func (m *moduleProvider) parameterize(ctx context.Context, req p.ParameterizeReq
 	case req.Value != nil:
 		return m.parameterizeValue(ctx, req.Value.Value)
 	default:
-		return p.ParameterizeResponse{}, fmt.Errorf("parameterize requires either arguments or a value")
+		return p.ParameterizeResponse{}, grpcerr.Errorf(codes.InvalidArgument,
+			"parameterize requires either arguments or a value")
 	}
 }
 
@@ -150,13 +153,14 @@ func (m *moduleProvider) parameterize(ctx context.Context, req p.ParameterizeReq
 // parameterization Value.
 func (m *moduleProvider) parameterizeArgs(ctx context.Context, args []string) (p.ParameterizeResponse, error) {
 	if m.resolver == nil {
-		return p.ParameterizeResponse{}, fmt.Errorf("parameterize called before a successful handshake")
+		return p.ParameterizeResponse{}, grpcerr.Errorf(codes.FailedPrecondition,
+			"parameterize called before a successful handshake")
 	}
 
 	// The fixed "module" keyword leaves room for the provider to grow other
 	// parameterization kinds; today a module source is the only one.
 	if len(args) == 0 || args[0] != "module" {
-		return p.ParameterizeResponse{}, fmt.Errorf(
+		return p.ParameterizeResponse{}, grpcerr.Errorf(codes.InvalidArgument,
 			`the hcl provider is parameterized by a module: expected "module" as the first argument`)
 	}
 
@@ -167,7 +171,7 @@ func (m *moduleProvider) parameterizeArgs(ctx context.Context, args []string) (p
 	case 2:
 		source, version = rest[0], rest[1]
 	default:
-		return p.ParameterizeResponse{}, fmt.Errorf(
+		return p.ParameterizeResponse{}, grpcerr.Errorf(codes.InvalidArgument,
 			`the hcl provider is parameterized as "module <source> [version]": `+
 				"expected a source and an optional version constraint, got %d arguments after \"module\"", len(rest))
 	}
@@ -207,7 +211,8 @@ func (m *moduleProvider) parameterizeArgs(ctx context.Context, args []string) (p
 // provider descriptors rather than re-resolving them through the engine.
 func (m *moduleProvider) parameterizeValue(ctx context.Context, value []byte) (p.ParameterizeResponse, error) {
 	if m.resolver == nil {
-		return p.ParameterizeResponse{}, fmt.Errorf("parameterize called before a successful handshake")
+		return p.ParameterizeResponse{}, grpcerr.Errorf(codes.FailedPrecondition,
+			"parameterize called before a successful handshake")
 	}
 
 	b, err := decodeBundle(value)
@@ -260,7 +265,10 @@ func (m *moduleProvider) finishParameterize(
 
 	sch, err := m.generateModuleSchema(ctx, loader, loaded, resolved, token, pkgVer)
 	if err != nil {
-		return p.ParameterizeResponse{}, fmt.Errorf("generating schema: %w", err)
+		// A module that loaded but cannot be typed uses something the
+		// conversion does not support, unless the chain pins a more specific
+		// cause (a registry or network failure resolving a child module).
+		return p.ParameterizeResponse{}, grpcerr.Classify(fmt.Errorf("generating schema: %w", err), codes.Unimplemented)
 	}
 
 	value, err := makeValue()

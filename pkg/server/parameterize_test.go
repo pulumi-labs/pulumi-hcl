@@ -27,7 +27,10 @@ import (
 	pulumiSchema "github.com/pulumi/pulumi/pkg/v3/codegen/schema"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/apitype"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/workspace"
+	pulumirpc "github.com/pulumi/pulumi/sdk/v3/proto/go"
 	"github.com/stretchr/testify/require"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 
 	"github.com/pulumi-labs/pulumi-hcl/pkg/hcl/modules"
 )
@@ -413,4 +416,42 @@ func TestDedupeEdges(t *testing.T) {
 		{Caller: "0", Source: "a/m/aws", Target: "1"},
 		{Caller: "0", Source: "b/m/aws", Target: "2"},
 	}, got)
+}
+
+// nopResolver is a non-nil PackageResolverClient so parameterize gets past its
+// handshake check without dialing anything.
+type nopResolver struct {
+	pulumirpc.PackageResolverClient
+}
+
+func TestParameterizeArgsStatusCodes(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name string
+		args []string
+		want codes.Code
+	}{
+		{"missing module keyword", []string{"not-module"}, codes.InvalidArgument},
+		{"no args", nil, codes.InvalidArgument},
+		{"too many args", []string{"module", "a", "b", "c"}, codes.InvalidArgument},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			m := &moduleProvider{resolver: nopResolver{}}
+			_, err := m.parameterize(t.Context(), p.ParameterizeRequest{
+				Args: &p.ParameterizeRequestArgs{Args: tc.args},
+			})
+			require.Equal(t, tc.want, status.Code(err))
+		})
+	}
+}
+
+func TestParameterizeBeforeHandshakeIsFailedPrecondition(t *testing.T) {
+	t.Parallel()
+	m := &moduleProvider{}
+	_, err := m.parameterize(t.Context(), p.ParameterizeRequest{
+		Args: &p.ParameterizeRequestArgs{Args: []string{"module", "acme/thing/aws"}},
+	})
+	require.Equal(t, codes.FailedPrecondition, status.Code(err))
 }

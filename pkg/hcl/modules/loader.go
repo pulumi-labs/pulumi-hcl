@@ -23,6 +23,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -191,7 +192,7 @@ func (l *Loader) resolveSource(source, versionConstraint, callerDir string) (str
 	if subdir != "" {
 		resolved := filepath.Join(packageDir, subdir)
 		if info, statErr := os.Stat(resolved); statErr != nil || !info.IsDir() {
-			return "", fmt.Errorf("subdir %q does not exist in module", subdir)
+			return "", classified(ErrNotFound, fmt.Errorf("subdir %q does not exist in module", subdir))
 		}
 		return resolved, nil
 	}
@@ -202,7 +203,7 @@ func statDir(p string) (string, error) {
 	info, err := os.Stat(p)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return "", fmt.Errorf("module directory does not exist: %s", p)
+			return "", classified(ErrNotFound, fmt.Errorf("module directory does not exist: %s", p))
 		}
 		return "", fmt.Errorf("accessing module directory: %w", err)
 	}
@@ -282,7 +283,7 @@ func (l *networkResolver) resolveRegistrySource(source, versionConstraint string
 
 	mod, err := regaddr.ParseModuleSource(baseSource)
 	if err != nil {
-		return "", fmt.Errorf("invalid registry source format %q: %w", source, err)
+		return "", classified(ErrInvalid, fmt.Errorf("invalid registry source format %q: %w", source, err))
 	}
 	pkg := mod.Package
 
@@ -305,7 +306,15 @@ func (l *networkResolver) resolveRegistrySource(source, versionConstraint string
 func (l *networkResolver) registryBaseURLForHost(host svchost.Hostname) (string, error) {
 	u, err := l.disco.DiscoverServiceURL(context.Background(), host, "modules.v1")
 	if err != nil {
-		return "", fmt.Errorf("discovering registry %q: %w", host, err)
+		err = fmt.Errorf("discovering registry %q: %w", host, err)
+		var notProvided *disco.ErrServiceNotProvided
+		switch {
+		case errors.As(err, &notProvided):
+			return "", classified(ErrNotFound, err)
+		case errors.As(err, &disco.ErrServiceDiscoveryNetworkRequest{}):
+			return "", classified(ErrTransient, err)
+		}
+		return "", err
 	}
 	return strings.TrimSuffix(u.String(), "/"), nil
 }
@@ -346,7 +355,7 @@ func (l *networkResolver) getRegistryDownloadURL(host svchost.Hostname, baseURL,
 	downloadURL := fmt.Sprintf("%s/%s/%s/%s/%s/download", baseURL, namespace, name, provider, chosen)
 	resp, err := l.registryGet(host, downloadURL)
 	if err != nil {
-		return "", fmt.Errorf("getting download URL: %w", err)
+		return "", classified(ErrTransient, fmt.Errorf("getting download URL: %w", err))
 	}
 	defer contract.IgnoreClose(resp.Body)
 
@@ -362,7 +371,7 @@ func (l *networkResolver) getRegistryDownloadURL(host svchost.Hostname, baseURL,
 	}
 
 	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("getting download URL: HTTP %d", resp.StatusCode)
+		return "", classifiedHTTP(resp.StatusCode, fmt.Errorf("getting download URL: HTTP %d", resp.StatusCode))
 	}
 
 	if hdr := resp.Header.Get("X-Terraform-Get"); hdr != "" {
@@ -395,15 +404,16 @@ func (l *networkResolver) selectRegistryVersion(host svchost.Hostname, baseURL, 
 	versionsURL := fmt.Sprintf("%s/%s/%s/%s/versions", baseURL, namespace, name, provider)
 	resp, err := l.registryGet(host, versionsURL)
 	if err != nil {
-		return "", fmt.Errorf("querying registry versions: %w", err)
+		return "", classified(ErrTransient, fmt.Errorf("querying registry versions: %w", err))
 	}
 	defer contract.IgnoreClose(resp.Body)
 
 	if resp.StatusCode == http.StatusNotFound {
-		return "", fmt.Errorf("module %s/%s/%s not found in registry", namespace, name, provider)
+		return "", classified(ErrNotFound,
+			fmt.Errorf("module %s/%s/%s not found in registry", namespace, name, provider))
 	}
 	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("querying registry versions: HTTP %d", resp.StatusCode)
+		return "", classifiedHTTP(resp.StatusCode, fmt.Errorf("querying registry versions: HTTP %d", resp.StatusCode))
 	}
 
 	var versions registryModuleVersions
@@ -411,14 +421,16 @@ func (l *networkResolver) selectRegistryVersion(host svchost.Hostname, baseURL, 
 		return "", fmt.Errorf("parsing registry response: %w", err)
 	}
 	if len(versions.Modules) == 0 || len(versions.Modules[0].Versions) == 0 {
-		return "", fmt.Errorf("no versions available for module %s/%s/%s", namespace, name, provider)
+		return "", classified(ErrNotFound,
+			fmt.Errorf("no versions available for module %s/%s/%s", namespace, name, provider))
 	}
 
 	var constraints version.Constraints
 	if versionConstraint != "" {
 		constraints, err = version.NewConstraint(versionConstraint)
 		if err != nil {
-			return "", fmt.Errorf("parsing version constraint %q: %w", versionConstraint, err)
+			return "", classified(ErrInvalid,
+				fmt.Errorf("parsing version constraint %q: %w", versionConstraint, err))
 		}
 	}
 
@@ -435,11 +447,12 @@ func (l *networkResolver) selectRegistryVersion(host svchost.Hostname, baseURL, 
 	}
 	if len(candidates) == 0 {
 		if versionConstraint != "" {
-			return "", fmt.Errorf(
+			return "", classified(ErrNotFound, fmt.Errorf(
 				"no published version of module %s/%s/%s satisfies constraint %q",
-				namespace, name, provider, versionConstraint)
+				namespace, name, provider, versionConstraint))
 		}
-		return "", fmt.Errorf("no valid versions for module %s/%s/%s", namespace, name, provider)
+		return "", classified(ErrNotFound,
+			fmt.Errorf("no valid versions for module %s/%s/%s", namespace, name, provider))
 	}
 	slices.SortFunc(candidates, func(a, b *version.Version) int { return b.Compare(a) })
 	return candidates[0].Original(), nil
