@@ -1111,7 +1111,7 @@ func (e *Engine) resolveExplicitProvider(
 		}
 		return "", nil
 	}
-	if ref, ok := e.defaultProviders.Get(name); ok {
+	if ref, ok := e.defaultProviders.Get(e.providerPackageName(name)); ok {
 		return ref, nil
 	}
 	return "", nil
@@ -1186,7 +1186,8 @@ func (e *Engine) registerProviderInContext(
 	evalCtx *eval.Context, parentURN urn.URN, modInst *moduleInstance,
 	inst *providerInstance,
 ) error {
-	typeToken := "pulumi:providers:" + provider.Name
+	pkgName := e.providerPackageName(provider.Name)
+	typeToken := "pulumi:providers:" + pkgName
 
 	if inst != nil {
 		key := cty.StringVal(inst.key)
@@ -1196,7 +1197,7 @@ func (e *Engine) registerProviderInContext(
 	hclCtx := evalCtx.HCLContext()
 
 	// Schema-aware eval is needed so schema.Property.Secret marks survive.
-	pkg, perr := packages.ResolvePackage(ctx, e.pkgLoader, knownProviders(e.config.Terraform), "pulumi_providers_"+provider.Name)
+	pkg, perr := packages.ResolvePackage(ctx, e.pkgLoader, knownProviders(e.config.Terraform), "pulumi_providers_"+pkgName)
 	if perr != nil {
 		return fmt.Errorf("resolving provider package %s: %w", provider.Name, perr)
 	}
@@ -1205,7 +1206,7 @@ func (e *Engine) registerProviderInContext(
 		return fmt.Errorf("resolving provider schema for %s: %w", provider.Name, perr)
 	}
 
-	providerMapping := e.resolver.ProviderConfigBodyMapping(ctx, provider.Name)
+	providerMapping := e.resolver.ProviderConfigBodyMapping(ctx, pkgName)
 	inputsMap, _, diags := transform.EvalResourceWithSchema(provider.Config, resSchema, providerMapping,
 		func(_ resource.PropertyKey, expr hcl.Expression, extraVars map[string]cty.Value) (cty.Value, hcl.Diagnostics) {
 			c := hclCtx
@@ -1259,7 +1260,7 @@ func (e *Engine) registerProviderInContext(
 		Custom:     true,
 		Parent:     parentURN,
 		Version:    version,
-		PackageRef: e.packageRefs[provider.Name],
+		PackageRef: e.packageRefs[pkgName],
 	}
 	if resSchema.PackageReference != nil {
 		req.PluginDownloadURL = resSchema.PackageReference.PluginDownloadURL()
@@ -1348,7 +1349,7 @@ func (e *Engine) registerProviderInContext(
 	// Top-level un-aliased provider blocks become the default provider for
 	// resources of the same package that don't set `provider` explicitly.
 	if provider.Alias == "" && node.ModuleInfo == nil && providerID != "" {
-		e.defaultProviders.Set(provider.Name, string(resp.URN)+"::"+providerID)
+		e.defaultProviders.Set(pkgName, string(resp.URN)+"::"+providerID)
 	}
 
 	markedProviderOutputs := cty.ObjectVal(outputObj).Mark(eval.DepMark(resp.URN))
@@ -2616,6 +2617,23 @@ func (e *Engine) packageRefForResource(hclToken string, resSchema *schema.Resour
 	return e.packageRefForType(hclToken)
 }
 
+// providerPackageName maps a provider's required_providers local name to its
+// Pulumi package name: the basename of the entry's source ("hashicorp/simple"
+// → "simple"), or the local name itself when no entry renames it.
+func providerPackageName(tfBlock *ast.Terraform, local string) string {
+	if tfBlock != nil {
+		if req, ok := tfBlock.RequiredProviders[local]; ok && req.Source != "" {
+			parts := strings.Split(req.Source, "/")
+			return parts[len(parts)-1]
+		}
+	}
+	return local
+}
+
+func (e *Engine) providerPackageName(local string) string {
+	return providerPackageName(e.config.Terraform, local)
+}
+
 func knownProviders(tfBlock *ast.Terraform) []string {
 	if tfBlock == nil {
 		return nil
@@ -3361,7 +3379,7 @@ func (e *Engine) processCall(ctx context.Context, node *graph.Node) error {
 		}
 		if matched != nil {
 			resKey = matched.Key()
-			providerToken := "pulumi_providers_" + matched.Name
+			providerToken := "pulumi_providers_" + e.providerPackageName(matched.Name)
 			resType = providerToken
 			pkg, err := packages.ResolvePackage(ctx, e.pkgLoader, knownProviders(e.config.Terraform), providerToken)
 			if err != nil {
@@ -3523,7 +3541,7 @@ func (e *Engine) providerFunctionTable(
 
 	table := map[string]function.Function{}
 	for providerName := range referenced {
-		fns, err := e.resolver.ProviderFunctions(ctx, providerName)
+		fns, err := e.resolver.ProviderFunctions(ctx, providerPackageName(config.Terraform, providerName))
 		if err != nil {
 			if lenient {
 				logging.V(5).Infof("provider functions for %q unavailable: %v", providerName, err)
@@ -3560,7 +3578,7 @@ func (e *Engine) providerFunctionImpl(
 		req := InvokeRequest{
 			Token:      fnSchema.Token,
 			Args:       args,
-			PackageRef: e.packageRefs[providerName],
+			PackageRef: e.packageRefs[e.providerPackageName(providerName)],
 		}
 		if modInfo != nil {
 			if ref := e.resolvePassThroughProvider(modInfo, providerName); ref != "" {
@@ -3572,7 +3590,7 @@ func (e *Engine) providerFunctionImpl(
 			} else if ref := e.inheritedDefaultProvider(modInfo, providerName); ref != "" {
 				req.Provider = ref
 			}
-		} else if ref, ok := e.defaultProviders.Get(providerName); ok {
+		} else if ref, ok := e.defaultProviders.Get(e.providerPackageName(providerName)); ok {
 			req.Provider = ref
 		}
 

@@ -339,6 +339,101 @@ terraform {
 	assert.Empty(t, resp.Specs)
 }
 
+// A provider whose required_providers local name differs from its package
+// name (the source basename) still resolves against the SDK directory
+// `pulumi install` wrote under the package name, and the alias plus the
+// resource-type-prefix alias share that one descriptor.
+func TestGetRequiredPackages_RenamedLocalName(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "main.tf"), []byte(`
+terraform {
+  required_providers {
+    myp = {
+      source = "hashicorp/simple"
+    }
+  }
+}
+
+provider "myp" {}
+
+resource "simple_resource" "r" {
+  provider = myp
+}
+`), 0o600))
+
+	host := &LanguageHost{}
+	sdkDir := filepath.Join(dir, "sdks", "simple")
+	require.NoError(t, os.MkdirAll(sdkDir, 0o755))
+	_, err := host.GeneratePackage(t.Context(), &pulumirpc.GeneratePackageRequest{
+		Directory: sdkDir,
+		Schema: `{
+			"name": "simple",
+			"version": "1.0.0",
+			"parameterization": {
+				"baseProvider": {"name": "terraform-provider", "version": "0.0.1"},
+				"parameter": "aGVsbG8="
+			}
+		}`,
+	})
+	require.NoError(t, err)
+
+	resp, err := host.GetRequiredPackages(t.Context(), &pulumirpc.GetRequiredPackagesRequest{
+		Info: &pulumirpc.ProgramInfo{
+			ProgramDirectory: dir,
+			RootDirectory:    dir,
+			EntryPoint:       ".",
+		},
+	})
+	require.NoError(t, err)
+
+	assert.Equal(t, []*pulumirpc.PackageDependency{{
+		Name:    "terraform-provider",
+		Version: "0.0.1",
+		Kind:    "resource",
+		Parameterization: &pulumirpc.PackageParameterization{
+			Name:    "simple",
+			Version: "1.0.0",
+			Value:   []byte("hello"),
+		},
+	}}, resp.Packages)
+	assert.Empty(t, resp.Specs)
+}
+
+// missingNonPulumiSDKs must find the SDK directory under the resolved package
+// name when the required_providers local name renames the provider.
+func TestMissingNonPulumiSDKs_RenamedLocalName(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "main.tf"), []byte(`
+terraform {
+  required_providers {
+    myp = {
+      source = "hashicorp/simple"
+    }
+  }
+}
+
+provider "myp" {}
+
+resource "simple_resource" "r" {
+  provider = myp
+}
+`), 0o600))
+
+	config, diags := parser.NewParser().ParseDirectory(dir)
+	require.False(t, diags.HasErrors(), diags.Error())
+
+	sdks := map[string]workspace.PackageDescriptor{
+		"simple": {PluginDescriptor: workspace.PluginDescriptor{Name: "simple"}},
+	}
+	assert.Empty(t, missingNonPulumiSDKs(t.Context(), config, sdks, dir))
+	assert.Equal(t, []string{"myp", "simple"},
+		missingNonPulumiSDKs(t.Context(), config, nil, dir))
+}
+
 // TestGetRequiredPackages_SameSourceVersionIntersection mirrors tofu: two
 // modules requiring the same provider source are installed once, with their
 // version constraints unioned into one ", "-joined constraint. The
