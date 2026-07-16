@@ -19,6 +19,7 @@ import (
 
 	"github.com/pulumi/pulumi/sdk/v3/go/property"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"github.com/zclconf/go-cty/cty"
 
 	"github.com/pulumi-labs/pulumi-hcl/pkg/hcl/eval"
@@ -102,6 +103,23 @@ func TestLowerTerraformDataInputs(t *testing.T) {
 		got := lowerTerraformDataInputs("random_pet", inputs, &opts)
 		assert.Equal(t, inputs, got)
 		assert.Equal(t, ResourceOptions{}, opts)
+	})
+
+	t.Run("ignore_changes paths into input collapse to the whole attribute", func(t *testing.T) {
+		t.Parallel()
+
+		glob := func(s string) property.Glob {
+			var g property.Glob
+			require.NoError(t, g.UnmarshalText([]byte(s)))
+			return g
+		}
+		opts := ResourceOptions{IgnoreChanges: []property.Glob{
+			glob("input.k"), glob("input[0]"), glob("input"), glob("triggers_replace.k"),
+		}}
+		lowerTerraformDataInputs(packages.TerraformDataType, property.Map{}, &opts)
+		assert.Equal(t, []property.Glob{
+			glob("input"), glob("input"), glob("input"), glob("triggers_replace.k"),
+		}, opts.IgnoreChanges)
 	})
 }
 
@@ -216,6 +234,7 @@ func TestUnwrapTerraformDataOutputs(t *testing.T) {
 		outputs map[string]cty.Value
 		props   property.Map
 		want    map[string]cty.Value
+		wantErr string
 	}{
 		{
 			name:    "wrappers unbox on input, output, and triggers_replace",
@@ -312,6 +331,26 @@ func TestUnwrapTerraformDataOutputs(t *testing.T) {
 			},
 		},
 		{
+			name:    "unparsable recorded type is rejected",
+			resType: packages.TerraformDataType,
+			outputs: map[string]cty.Value{"output": reexpanded},
+			props: property.NewMap(map[string]property.Value{
+				"output": wrap(`not a type`, arr),
+			}),
+			wantErr: `output: invalid recorded cty type "not a type": invalid character 'o' in literal null (expecting 'u')`,
+		},
+		{
+			name:    "malformed wrapper is rejected",
+			resType: packages.TerraformDataType,
+			outputs: map[string]cty.Value{"input": reexpanded},
+			props: property.NewMap(map[string]property.Value{
+				"input": property.New(map[string]property.Value{
+					"type": property.New(`"string"`),
+				}),
+			}),
+			wantErr: "input: malformed {type, value} wrapper",
+		},
+		{
 			name:    "other types are untouched",
 			resType: "random_pet",
 			outputs: map[string]cty.Value{"output": reexpanded},
@@ -326,7 +365,12 @@ func TestUnwrapTerraformDataOutputs(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			unwrapTerraformDataOutputs(tt.resType, tt.outputs, tt.props)
+			err := unwrapTerraformDataOutputs(tt.resType, tt.outputs, tt.props)
+			if tt.wantErr != "" {
+				assert.EqualError(t, err, tt.wantErr)
+				return
+			}
+			assert.NoError(t, err)
 			assert.Equal(t, tt.want, tt.outputs)
 		})
 	}

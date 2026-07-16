@@ -15,6 +15,9 @@
 package run
 
 import (
+	"fmt"
+	"strings"
+
 	"github.com/pulumi-labs/pulumi-hcl/pkg/hcl/eval"
 	"github.com/pulumi-labs/pulumi-hcl/pkg/hcl/packages"
 	"github.com/pulumi-labs/pulumi-hcl/pkg/hcl/transform"
@@ -46,6 +49,19 @@ import (
 func lowerTerraformDataInputs(resType string, inputs property.Map, opts *ResourceOptions) property.Map {
 	if resType != packages.TerraformDataType {
 		return inputs
+	}
+	// An ignore_changes path into input (input["k"], input[0]) ignores the
+	// whole attribute: input is a single dynamic attribute, and its keys live
+	// under the {type, value} wrapper in the engine's encoding, where a nested
+	// glob would match nothing.
+	for i, g := range opts.IgnoreChanges {
+		text, err := g.MarshalText()
+		if err != nil {
+			continue
+		}
+		if s := string(text); strings.HasPrefix(s, "input.") || strings.HasPrefix(s, "input[") {
+			opts.IgnoreChanges[i] = property.GlobFromSegments(property.NewSegment("input"))
+		}
 	}
 	triggers := inputs.Get("triggers_replace")
 	inputs = inputs.Delete("triggers_replace")
@@ -115,47 +131,48 @@ func wrapTerraformDataInputs(resType string, inputs property.Map, evaluated map[
 // read from the pre-expansion property outputs — where the wrapper's shape is
 // exact, unlike its re-expanded form (whose cty shape depends on whether the
 // two fields' types unify). It is a no-op for every other type.
-func unwrapTerraformDataOutputs(resType string, outputs map[string]cty.Value, props property.Map) {
+func unwrapTerraformDataOutputs(resType string, outputs map[string]cty.Value, props property.Map) error {
 	if resType != packages.TerraformDataType {
-		return
+		return nil
 	}
 	for _, name := range []string{"input", "output", "triggers_replace"} {
-		if v, ok := unwrapTerraformDataValue(props.Get(name)); ok {
+		v, ok, err := unwrapTerraformDataValue(props.Get(name))
+		if err != nil {
+			return fmt.Errorf("%s: %w", name, err)
+		}
+		if ok {
 			outputs[name] = v
 		}
 	}
+	return nil
 }
 
 // unwrapTerraformDataValue unboxes one property-encoded {type, value} wrapper
 // into the cty value of its recorded type. It reports false for the values at
 // these positions that are legitimately not wrappers — the null and unknown
 // placeholders of an absent or not-yet-known attribute — which re-expand
-// correctly without help.
-func unwrapTerraformDataValue(pv property.Value) (cty.Value, bool) {
-	secret := pv.Secret()
-	pv = pv.WithSecret(false)
+// correctly without help. Any map here is a wrapper (evaluated inputs are
+// always wrapped), so one that fails to decode is corrupt state and an error.
+func unwrapTerraformDataValue(pv property.Value) (cty.Value, bool, error) {
 	if !pv.IsMap() {
-		return cty.Value{}, false
+		return cty.Value{}, false, nil
 	}
 	m := pv.AsMap()
-	typeJSON, ok := m.GetOk(tdataTypeKey)
-	if !ok || m.Len() != 2 || !typeJSON.IsString() {
-		return cty.Value{}, false
-	}
-	value, ok := m.GetOk(tdataValueKey)
-	if !ok {
-		return cty.Value{}, false
+	typeJSON, typeOk := m.GetOk(tdataTypeKey)
+	value, valueOk := m.GetOk(tdataValueKey)
+	if !typeOk || !valueOk || m.Len() != 2 || !typeJSON.IsString() {
+		return cty.Value{}, false, fmt.Errorf("malformed {%s, %s} wrapper", tdataTypeKey, tdataValueKey)
 	}
 	recorded, err := ctyjson.UnmarshalType([]byte(typeJSON.AsString()))
 	if err != nil {
-		return cty.Value{}, false
+		return cty.Value{}, false, fmt.Errorf("invalid recorded cty type %q: %w", typeJSON.AsString(), err)
 	}
 	inner := transform.PropertyValueToCty(value)
 	if converted, err := convert.Convert(inner, recorded); err == nil {
 		inner = converted
 	}
-	if secret {
+	if pv.Secret() {
 		inner = inner.Mark(eval.SensitiveMark)
 	}
-	return inner, true
+	return inner, true, nil
 }

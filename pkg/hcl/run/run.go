@@ -1622,7 +1622,9 @@ func (e *Engine) registerResourceInstanceInContext(
 	if err != nil {
 		return fmt.Errorf("converting resource outputs to HCL types: %w", err)
 	}
-	unwrapTerraformDataOutputs(res.Type, outputObj, outputs)
+	if err := unwrapTerraformDataOutputs(res.Type, outputObj, outputs); err != nil {
+		return fmt.Errorf("converting resource outputs to HCL types: %w", err)
+	}
 	if e.dryRun && id == "" {
 		outputObj["id"] = cty.UnknownVal(cty.String)
 	} else {
@@ -4221,7 +4223,9 @@ func evaluatePostcondition(
 	if err != nil {
 		return fmt.Errorf("converting outputs for postcondition %d on %s: %w", index, resourceName, err)
 	}
-	unwrapTerraformDataOutputs(tfType, outputObj, newOutputs)
+	if err := unwrapTerraformDataOutputs(tfType, outputObj, newOutputs); err != nil {
+		return fmt.Errorf("converting outputs for postcondition %d on %s: %w", index, resourceName, err)
+	}
 	return evaluatePostconditionValue(rule, hclCtx, cty.ObjectVal(outputObj), index, resourceName)
 }
 

@@ -132,7 +132,9 @@ func selfBoundEvalCtx(
 	if err != nil {
 		return nil, fmt.Errorf("converting outputs: %w", err)
 	}
-	unwrapTerraformDataOutputs(tfType, outputObj, outputs)
+	if err := unwrapTerraformDataOutputs(tfType, outputObj, outputs); err != nil {
+		return nil, fmt.Errorf("converting outputs: %w", err)
+	}
 	if id != "" {
 		outputObj["id"] = cty.StringVal(id)
 	}
