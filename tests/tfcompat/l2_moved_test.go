@@ -45,8 +45,9 @@ func TestL2Moved(t *testing.T) {
 
 		// Changing a resource's instance key (enabling/disabling count/for_each,
 		// or rekeying a for_each instance).
-		{name: "enable_count", dir: "l2_moved_enable_count"}, // whole resource -> a[0]
-		{name: "rekey_for_each", dir: "l2_moved_rekey"},      // a["small"] -> a["tiny"]
+		{name: "enable_count", dir: "l2_moved_enable_count"},           // whole resource -> a[0]
+		{name: "rekey_for_each", dir: "l2_moved_rekey"},                // a["small"] -> a["tiny"]
+		{name: "count_to_for_each", dir: "l2_moved_count_to_for_each"}, // a[0] -> a["x"]
 
 		// Moving a resource across a module boundary.
 		{name: "split_module", dir: "l2_moved_split"}, // root resource -> module.x

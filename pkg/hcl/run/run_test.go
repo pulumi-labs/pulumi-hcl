@@ -3456,6 +3456,72 @@ resource "aws_instance" "web" {
 	}
 }
 
+// TestEngine_MovedBlockDisableCount moves a counted instance back to a bare
+// resource (`aws_instance.web[0]` -> `aws_instance.web`), so the alias must
+// carry the prior instance key from the keyed `from` address.
+func TestEngine_MovedBlockDisableCount(t *testing.T) {
+	t.Parallel()
+
+	src := []byte(`
+moved {
+  from = aws_instance.web[0]
+  to   = aws_instance.web
+}
+
+resource "aws_instance" "web" {
+  ami           = "ami-12345"
+  instance_type = "t3.micro"
+}
+`)
+
+	p := parser.NewParser()
+	config, diags := p.ParseSource("test.hcl", src)
+	require.False(t, diags.HasErrors(), "parse error: %s", diags.Error())
+
+	mock := &testutil.MockResourceMonitor{}
+	engine := newTestEngine(t, config, &run.EngineOptions{
+		ModuleLoader:    testModuleLoader(t),
+		ProjectName:     "test-project",
+		StackName:       "dev",
+		ResourceMonitor: mock,
+		WorkDir:         t.TempDir(),
+		RootDir:         t.TempDir(),
+		SchemaLoader: schemaloader.New(t, schema.PackageSpec{
+			Name: "aws",
+			Resources: map[string]schema.ResourceSpec{
+				"aws:index:Instance": {
+					InputProperties: map[string]schema.PropertySpec{
+						"ami":          {TypeSpec: schema.TypeSpec{Type: "string"}},
+						"instanceType": {TypeSpec: schema.TypeSpec{Type: "string"}},
+					},
+					ObjectTypeSpec: schema.ObjectTypeSpec{
+						Properties: map[string]schema.PropertySpec{
+							"ami":          {TypeSpec: schema.TypeSpec{Type: "string"}},
+							"instanceType": {TypeSpec: schema.TypeSpec{Type: "string"}},
+						},
+					},
+				},
+			},
+		}),
+	})
+
+	require.NoError(t, engine.Run(t.Context()))
+
+	var instanceReq *run.RegisterResourceRequest
+	for i := range mock.RegisteredResources {
+		if mock.RegisteredResources[i].Type == "aws:index:Instance" {
+			instanceReq = &mock.RegisteredResources[i]
+			break
+		}
+	}
+	require.NotNil(t, instanceReq, "expected aws:index:Instance resource to be registered")
+
+	assert.Equal(t, []run.Alias{{Spec: &run.AliasSpec{
+		Name:     "web[0]",
+		NoParent: false,
+	}}}, instanceReq.Aliases)
+}
+
 func TestEngine_ImportBlock(t *testing.T) {
 	t.Parallel()
 
