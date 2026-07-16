@@ -1433,11 +1433,7 @@ func (p *Parser) parseImportBlock(config *ast.Config, block *hcl.Block) hcl.Diag
 	}
 
 	if attr, ok := content.Attributes["id"]; ok {
-		val, valDiags := attr.Expr.Value(nil)
-		diags = append(diags, valDiags...)
-		if val.Type() == cty.String {
-			imp.Id = val.AsString()
-		}
+		imp.Id = attr.Expr
 	}
 
 	if attr, ok := content.Attributes["provider"]; ok {

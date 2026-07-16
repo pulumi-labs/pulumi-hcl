@@ -32,8 +32,10 @@ type Import struct {
 	// To is the target resource address.
 	To hcl.Traversal
 
-	// Id is the external resource ID to import.
-	Id string
+	// Id is the expression for the external resource ID to import. It is
+	// evaluated at runtime and must produce a known, non-null, non-sensitive
+	// string.
+	Id hcl.Expression
 
 	// Provider is the raw expression from the optional `provider` attribute.
 	// It is evaluated at runtime; the resulting value supplies the provider URN/ID.
