@@ -1852,7 +1852,11 @@ func (e *Engine) buildResourceOptionsInContext(
 	}
 
 	// Handle import blocks - resolve import ID from import blocks that target this resource
-	opts.ImportId = e.resolveImportId(res, instance.Index, instance.EachKeyString(), modInst)
+	importId, err := e.resolveImportId(res, instance.Index, instance.EachKeyString(), modInst)
+	if err != nil {
+		return nil, err
+	}
+	opts.ImportId = importId
 
 	hclCtx := evalCtx.HCLContext()
 
@@ -2380,7 +2384,7 @@ func instanceKeysEqual(aIdx *int, aEach *string, bIdx *int, bEach *string) bool 
 // keyed with its own instance key.
 func (e *Engine) resolveImportId(
 	res *ast.Resource, index *int, eachKey *string, modInst *moduleInstance,
-) string {
+) (string, error) {
 	resPath := modulepath.Root()
 	if modInst != nil {
 		resPath = modInst.Path
@@ -2399,10 +2403,53 @@ func (e *Engine) resolveImportId(
 				continue
 			}
 		}
-		return imp.Id
+		return e.evaluateImportId(imp)
 	}
 
-	return ""
+	return "", nil
+}
+
+// evaluateImportId evaluates an import block's id expression, which must
+// produce a known, non-null, non-sensitive string at plan time.
+func (e *Engine) evaluateImportId(imp *ast.Import) (string, error) {
+	errf := func(detail string) error {
+		var subject *hcl.Range
+		if imp.Id != nil {
+			subject = imp.Id.Range().Ptr()
+		} else {
+			subject = imp.DeclRange.Ptr()
+		}
+		return hcl.Diagnostics{{
+			Severity: hcl.DiagError,
+			Summary:  "Invalid import id argument",
+			Detail:   detail,
+			Subject:  subject,
+		}}
+	}
+
+	if imp.Id == nil {
+		return "", errf("The import ID cannot be null.")
+	}
+	val, diags := e.evaluator.EvaluateExpression(imp.Id)
+	if diags.HasErrors() {
+		return "", diags
+	}
+	sensitive := val.HasMark(eval.SensitiveMark)
+	val, _ = val.Unmark()
+	if val.IsNull() {
+		return "", errf("The import ID cannot be null.")
+	}
+	if !val.IsKnown() {
+		return "", errf(`The import block "id" argument depends on resource attributes that cannot be determined until apply.`)
+	}
+	if sensitive {
+		return "", errf("The import ID cannot be sensitive.")
+	}
+	converted, err := ctyconvert.Convert(val, cty.String)
+	if err != nil {
+		return "", errf(fmt.Sprintf("The import ID value is unsuitable: %s.", err))
+	}
+	return converted.AsString(), nil
 }
 
 // evaluateAliases evaluates the aliases expression and returns a list of Alias values.
