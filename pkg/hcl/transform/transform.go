@@ -139,20 +139,6 @@ func (e *rangedDiagError) Error() string {
 	return e.summary + "; " + e.detail
 }
 
-func evalBlocksWithSchema(config hcl.Blocks, props []*schema.Property, mapping *bridge.BodyMapping, eval EvalFunc) ([]cty.Value, hcl.Diagnostics) {
-	out := make([]cty.Value, len(config))
-	var diags hcl.Diagnostics
-	for i, v := range config {
-		evaluated, _, diag := evalBlockWithSchema(v.Body, props, mapping, eval)
-		diags = diags.Extend(diag)
-		if diag.HasErrors() {
-			return nil, diags
-		}
-		out[i] = evaluated
-	}
-	return out, diags
-}
-
 // evalBlockWithSchema also returns each top-level attribute's source
 // expression so the conversion path can anchor error diagnostics. The
 // optional mapping overrides which TF names are blocks vs attributes and
@@ -210,9 +196,13 @@ func evalBlockWithSchema(config hcl.Body, props []*schema.Property, mapping *bri
 		resourceInputs[key] = conformCtyToType(out, ctyTypeFromType(prop.Type, nil))
 	}
 
-	for name, blocks := range body.Blocks.ByType() {
+	// Blocks are walked in source order so that static and dynamic blocks
+	// targeting the same order-significant list interleave the way the
+	// author wrote them.
+	for _, block := range body.Blocks {
+		name := block.Type
 		if name == "dynamic" {
-			d := evalDynamicBlocks(blocks, props, resourceInputs, mapping, eval)
+			d := evalDynamicBlock(block, props, resourceInputs, mapping, eval)
 			diags = diags.Extend(d)
 			if d.HasErrors() {
 				return cty.Value{}, nil, diags
@@ -230,23 +220,19 @@ func evalBlockWithSchema(config hcl.Body, props []*schema.Property, mapping *bri
 				nestedMapping = fm.Nested
 			}
 		}
-		values, d := evalBlocksWithSchema(blocks, blockProps, nestedMapping, eval)
+		evaluated, _, d := evalBlockWithSchema(block.Body, blockProps, nestedMapping, eval)
+		diags = diags.Extend(d)
 		if d.HasErrors() {
-			diags = diags.Extend(d)
 			return cty.Value{}, nil, diags
 		}
 		key := storageKey(name, prop)
-		switch {
-		case isList:
-			resourceInputs[key] = blockListValue(values)
-		case len(values) == 1:
+		if isList {
+			appendBlockListValues(resourceInputs, key, []cty.Value{evaluated})
+		} else {
 			// TF block flattened to a single Pulumi object (MaxItemsOne).
-			resourceInputs[key] = values[0]
-		default:
-			// Multiple blocks for a non-list field: keep the last (TF SDKv2
-			// behaviour for repeated MaxItems=1 blocks is an error, but we
-			// surface that via the provider's later validation).
-			resourceInputs[key] = values[len(values)-1]
+			// Repeated blocks keep the last; the provider's later validation
+			// surfaces the user error.
+			resourceInputs[key] = evaluated
 		}
 	}
 
@@ -278,7 +264,7 @@ var dynamicBlockSchema = &hcl.BodySchema{
 	},
 }
 
-// evalDynamicBlocks expands dynamic blocks and merges results into resourceInputs.
+// evalDynamicBlock expands a dynamic block and merges its results into resourceInputs.
 //
 // A dynamic block has the form:
 //
@@ -288,220 +274,221 @@ var dynamicBlockSchema = &hcl.BodySchema{
 //	    <attrs evaluated with iterator bound>
 //	  }
 //	}
-func evalDynamicBlocks(
-	blocks hcl.Blocks, props []*schema.Property,
+func evalDynamicBlock(
+	block *hcl.Block, props []*schema.Property,
 	resourceInputs map[string]cty.Value, mapping *bridge.BodyMapping, eval EvalFunc,
 ) hcl.Diagnostics {
 	var diags hcl.Diagnostics
-	for _, block := range blocks {
-		propName := block.Labels[0]
+	propName := block.Labels[0]
 
-		var prop *schema.Property
-		if mapping != nil {
-			if fm := mapping.Lookup(propName); fm != nil {
-				for _, p := range props {
-					if p.Name == fm.PulumiName {
-						prop = p
-						break
-					}
-				}
-			}
-		}
-		if prop == nil {
+	var prop *schema.Property
+	if mapping != nil {
+		if fm := mapping.Lookup(propName); fm != nil {
 			for _, p := range props {
-				if snakeCaseFromCamelCase(p.Name) == propName {
+				if p.Name == fm.PulumiName {
 					prop = p
 					break
 				}
 			}
 		}
-		if prop == nil {
-			diags = append(diags, &hcl.Diagnostic{
-				Severity: hcl.DiagError,
-				Summary:  "invalid dynamic block type",
-				Detail:   fmt.Sprintf("no property %q found in schema", propName),
-				Subject:  block.DefRange.Ptr(),
-			})
-			return diags
-		}
-
-		blockProps, isList := blockPropertiesOf(prop.Type)
-		if blockProps == nil {
-			diags = append(diags, &hcl.Diagnostic{
-				Severity: hcl.DiagError,
-				Summary:  "invalid dynamic block type",
-				Detail:   fmt.Sprintf("property %q is not a block type", propName),
-				Subject:  block.DefRange.Ptr(),
-			})
-			return diags
-		}
-
-		content, d := block.Body.Content(dynamicBlockSchema)
-		diags = diags.Extend(d)
-		if d.HasErrors() {
-			return diags
-		}
-
-		forEachVal, d := eval("", content.Attributes["for_each"].Expr, nil)
-		diags = diags.Extend(d)
-		if d.HasErrors() {
-			return diags
-		}
-		// ElementIterator panics on marked containers; per-element marks are
-		// re-applied below so collection-level sensitivity / DepMarks reach
-		// every attribute derived from each.value.
-		var forEachMarks cty.ValueMarks
-		forEachVal, forEachMarks = forEachVal.Unmark()
-
-		if !forEachVal.CanIterateElements() && forEachVal.Type() != cty.DynamicPseudoType {
-			diags = append(diags, &hcl.Diagnostic{
-				Severity: hcl.DiagError,
-				Summary:  "Invalid dynamic for_each value",
-				Detail: fmt.Sprintf("Cannot use a %s value in for_each. An iterable collection is required.",
-					forEachVal.Type().FriendlyName()),
-				Subject: content.Attributes["for_each"].Expr.Range().Ptr(),
-			})
-			return diags
-		}
-		if forEachVal.IsNull() {
-			diags = append(diags, &hcl.Diagnostic{
-				Severity: hcl.DiagError,
-				Summary:  "Invalid dynamic for_each value",
-				Detail:   "Cannot use a null value in for_each.",
-				Subject:  content.Attributes["for_each"].Expr.Range().Ptr(),
-			})
-			return diags
-		}
-
-		// Determine the iterator variable name (defaults to block label).
-		// `iterator = <ident>` takes a bare identifier as the new iterator
-		// name, not an expression to evaluate — extract it directly from
-		// the traversal instead of running it through eval.
-		iteratorName := propName
-		if iterAttr, ok := content.Attributes["iterator"]; ok {
-			traversals := iterAttr.Expr.Variables()
-			if len(traversals) == 1 && len(traversals[0]) == 1 {
-				iteratorName = traversals[0].RootName()
-			} else {
-				diags = append(diags, &hcl.Diagnostic{
-					Severity: hcl.DiagError,
-					Summary:  "Invalid iterator value",
-					Detail:   "The iterator argument must be a single identifier.",
-					Subject:  iterAttr.Range.Ptr(),
-				})
-				return diags
-			}
-		}
-
-		// Find the content block.
-		var contentBody hcl.Body
-		for _, b := range content.Blocks {
-			if b.Type == "content" {
-				contentBody = b.Body
+	}
+	if prop == nil {
+		for _, p := range props {
+			if snakeCaseFromCamelCase(p.Name) == propName {
+				prop = p
 				break
 			}
 		}
-		if contentBody == nil {
+	}
+	if prop == nil {
+		diags = append(diags, &hcl.Diagnostic{
+			Severity: hcl.DiagError,
+			Summary:  "invalid dynamic block type",
+			Detail:   fmt.Sprintf("no property %q found in schema", propName),
+			Subject:  block.DefRange.Ptr(),
+		})
+		return diags
+	}
+
+	blockProps, isList := blockPropertiesOf(prop.Type)
+	if blockProps == nil {
+		diags = append(diags, &hcl.Diagnostic{
+			Severity: hcl.DiagError,
+			Summary:  "invalid dynamic block type",
+			Detail:   fmt.Sprintf("property %q is not a block type", propName),
+			Subject:  block.DefRange.Ptr(),
+		})
+		return diags
+	}
+
+	content, d := block.Body.Content(dynamicBlockSchema)
+	diags = diags.Extend(d)
+	if d.HasErrors() {
+		return diags
+	}
+
+	forEachVal, d := eval("", content.Attributes["for_each"].Expr, nil)
+	diags = diags.Extend(d)
+	if d.HasErrors() {
+		return diags
+	}
+	// ElementIterator panics on marked containers; per-element marks are
+	// re-applied below so collection-level sensitivity / DepMarks reach
+	// every attribute derived from each.value.
+	var forEachMarks cty.ValueMarks
+	forEachVal, forEachMarks = forEachVal.Unmark()
+
+	if !forEachVal.CanIterateElements() && forEachVal.Type() != cty.DynamicPseudoType {
+		diags = append(diags, &hcl.Diagnostic{
+			Severity: hcl.DiagError,
+			Summary:  "Invalid dynamic for_each value",
+			Detail: fmt.Sprintf("Cannot use a %s value in for_each. An iterable collection is required.",
+				forEachVal.Type().FriendlyName()),
+			Subject: content.Attributes["for_each"].Expr.Range().Ptr(),
+		})
+		return diags
+	}
+	if forEachVal.IsNull() {
+		diags = append(diags, &hcl.Diagnostic{
+			Severity: hcl.DiagError,
+			Summary:  "Invalid dynamic for_each value",
+			Detail:   "Cannot use a null value in for_each.",
+			Subject:  content.Attributes["for_each"].Expr.Range().Ptr(),
+		})
+		return diags
+	}
+
+	// Determine the iterator variable name (defaults to block label).
+	// `iterator = <ident>` takes a bare identifier as the new iterator
+	// name, not an expression to evaluate — extract it directly from
+	// the traversal instead of running it through eval.
+	iteratorName := propName
+	if iterAttr, ok := content.Attributes["iterator"]; ok {
+		traversals := iterAttr.Expr.Variables()
+		if len(traversals) == 1 && len(traversals[0]) == 1 {
+			iteratorName = traversals[0].RootName()
+		} else {
 			diags = append(diags, &hcl.Diagnostic{
 				Severity: hcl.DiagError,
-				Summary:  "missing content block",
-				Detail:   "dynamic block requires a content block",
-				Subject:  block.DefRange.Ptr(),
+				Summary:  "Invalid iterator value",
+				Detail:   "The iterator argument must be a single identifier.",
+				Subject:  iterAttr.Range.Ptr(),
 			})
 			return diags
 		}
+	}
 
-		var nestedMapping *bridge.BodyMapping
-		if mapping != nil {
-			if fm := mapping.Lookup(propName); fm != nil {
-				nestedMapping = fm.Nested
-			}
+	// Find the content block.
+	var contentBody hcl.Body
+	for _, b := range content.Blocks {
+		if b.Type == "content" {
+			contentBody = b.Body
+			break
+		}
+	}
+	if contentBody == nil {
+		diags = append(diags, &hcl.Diagnostic{
+			Severity: hcl.DiagError,
+			Summary:  "missing content block",
+			Detail:   "dynamic block requires a content block",
+			Subject:  block.DefRange.Ptr(),
+		})
+		return diags
+	}
+
+	var nestedMapping *bridge.BodyMapping
+	if mapping != nil {
+		if fm := mapping.Lookup(propName); fm != nil {
+			nestedMapping = fm.Nested
+		}
+	}
+
+	key := snakeCaseFromCamelCase(prop.Name)
+
+	// An unknown for_each means the set of expanded blocks cannot be
+	// enumerated yet, so the whole property becomes unknown. Content
+	// expressions are not evaluated; the content body is still checked
+	// against the schema, with every attribute standing in as unknown.
+	if !forEachVal.IsKnown() {
+		unknownEval := func(resource.PropertyKey, hcl.Expression, map[string]cty.Value) (cty.Value, hcl.Diagnostics) {
+			return cty.DynamicVal.WithMarks(forEachMarks), nil
+		}
+		_, _, d := evalBlockWithSchema(contentBody, blockProps, nestedMapping, unknownEval)
+		diags = diags.Extend(d)
+		if d.HasErrors() {
+			return diags
+		}
+		resourceInputs[key] = cty.DynamicVal.WithMarks(forEachMarks)
+		return diags
+	}
+
+	// Evaluate the content block for each element.
+	var values []cty.Value
+	it := forEachVal.ElementIterator()
+	for it.Next() {
+		key, value := it.Element()
+		if len(forEachMarks) > 0 {
+			key = key.WithMarks(forEachMarks)
+			value = value.WithMarks(forEachMarks)
 		}
 
-		key := snakeCaseFromCamelCase(prop.Name)
-
-		// An unknown for_each means the set of expanded blocks cannot be
-		// enumerated yet, so the whole property becomes unknown. Content
-		// expressions are not evaluated; the content body is still checked
-		// against the schema, with every attribute standing in as unknown.
-		if !forEachVal.IsKnown() {
-			unknownEval := func(resource.PropertyKey, hcl.Expression, map[string]cty.Value) (cty.Value, hcl.Diagnostics) {
-				return cty.DynamicVal.WithMarks(forEachMarks), nil
-			}
-			_, _, d := evalBlockWithSchema(contentBody, blockProps, nestedMapping, unknownEval)
-			diags = diags.Extend(d)
-			if d.HasErrors() {
-				return diags
-			}
-			resourceInputs[key] = cty.DynamicVal.WithMarks(forEachMarks)
-			continue
+		iterVars := map[string]cty.Value{
+			iteratorName: cty.ObjectVal(map[string]cty.Value{
+				"key":   key,
+				"value": value,
+			}),
 		}
 
-		// Evaluate the content block for each element.
-		var values []cty.Value
-		it := forEachVal.ElementIterator()
-		for it.Next() {
-			key, value := it.Element()
-			if len(forEachMarks) > 0 {
-				key = key.WithMarks(forEachMarks)
-				value = value.WithMarks(forEachMarks)
-			}
-
-			iterVars := map[string]cty.Value{
-				iteratorName: cty.ObjectVal(map[string]cty.Value{
-					"key":   key,
-					"value": value,
-				}),
-			}
-
-			dynamicEval := func(propKey resource.PropertyKey, expr hcl.Expression, extraVars map[string]cty.Value) (cty.Value, hcl.Diagnostics) {
-				merged := make(map[string]cty.Value, len(iterVars)+len(extraVars))
-				maps.Copy(merged, iterVars)
-				maps.Copy(merged, extraVars)
-				return eval(propKey, expr, merged)
-			}
-
-			evaluated, _, d := evalBlockWithSchema(contentBody, blockProps, nestedMapping, dynamicEval)
-			diags = diags.Extend(d)
-			if d.HasErrors() {
-				return diags
-			}
-			values = append(values, evaluated)
+		dynamicEval := func(propKey resource.PropertyKey, expr hcl.Expression, extraVars map[string]cty.Value) (cty.Value, hcl.Diagnostics) {
+			merged := make(map[string]cty.Value, len(iterVars)+len(extraVars))
+			maps.Copy(merged, iterVars)
+			maps.Copy(merged, extraVars)
+			return eval(propKey, expr, merged)
 		}
 
-		if len(values) > 0 {
-			switch {
-			case isList:
-				if existing, ok := resourceInputs[key]; ok {
-					// A previous dynamic block with an unknown for_each already
-					// made the whole property unknown; the expanded set of
-					// blocks cannot be enumerated, so keep it unknown.
-					if unmarked, _ := existing.Unmark(); !unmarked.IsKnown() {
-						continue
-					}
-					// Prepend blocks already accumulated for this property
-					// (earlier static or dynamic blocks) so the expanded groups
-					// keep their source order in the order-significant list.
-					prior := make([]cty.Value, 0, len(values))
-					for it := existing.ElementIterator(); it.Next(); {
-						_, v := it.Element()
-						prior = append(prior, v)
-					}
-					values = append(prior, values...)
-				}
-				// Per-element object types can diverge when content sets
-				// disjoint subsets of optional fields (e.g. `lookup(v, "k",
-				// null)` produces null-of-Dynamic for absent keys), so fall
-				// back to a tuple rather than cty.ListVal, which would panic.
-				resourceInputs[key] = blockListValue(values)
-			default:
-				// Singular block (MaxItemsOne): a dynamic expansion of length 1
-				// fills it; >1 is a user error the provider will validate.
-				resourceInputs[key] = values[len(values)-1]
-			}
+		evaluated, _, d := evalBlockWithSchema(contentBody, blockProps, nestedMapping, dynamicEval)
+		diags = diags.Extend(d)
+		if d.HasErrors() {
+			return diags
+		}
+		values = append(values, evaluated)
+	}
+
+	if len(values) > 0 {
+		switch {
+		case isList:
+			appendBlockListValues(resourceInputs, key, values)
+		default:
+			// Singular block (MaxItemsOne): a dynamic expansion of length 1
+			// fills it; >1 is a user error the provider will validate.
+			resourceInputs[key] = values[len(values)-1]
 		}
 	}
 	return diags
+}
+
+// appendBlockListValues appends values to the block list already accumulated
+// at resourceInputs[key] (earlier static or dynamic blocks), preserving the
+// source order of an order-significant list. If an earlier dynamic block with
+// an unknown for_each already made the whole property unknown, it stays
+// unknown, since the expanded set of blocks cannot be enumerated.
+func appendBlockListValues(resourceInputs map[string]cty.Value, key string, values []cty.Value) {
+	if existing, ok := resourceInputs[key]; ok {
+		if unmarked, _ := existing.Unmark(); !unmarked.IsKnown() {
+			return
+		}
+		prior := make([]cty.Value, 0, len(values))
+		for it := existing.ElementIterator(); it.Next(); {
+			_, v := it.Element()
+			prior = append(prior, v)
+		}
+		values = append(prior, values...)
+	}
+	// Per-element object types can diverge when content sets disjoint subsets
+	// of optional fields (e.g. `lookup(v, "k", null)` produces null-of-Dynamic
+	// for absent keys), so blockListValue falls back to a tuple rather than
+	// cty.ListVal, which would panic.
+	resourceInputs[key] = blockListValue(values)
 }
 
 // schemaToCtyPrimitive returns the cty primitive type corresponding to a
