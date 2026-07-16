@@ -71,19 +71,56 @@ func EvalFunctionWithSchema(config hcl.Body, r *schema.Function, mapping *bridge
 }
 
 // EvalResourceWithSchema evaluates a resource body against the Pulumi resource
-// schema. See EvalFunctionWithSchema for the role of mapping.
-func EvalResourceWithSchema(config hcl.Body, r *schema.Resource, mapping *bridge.BodyMapping, eval EvalFunc) (property.Map, hcl.Diagnostics) {
+// schema. See EvalFunctionWithSchema for the role of mapping. The second
+// result lists the paths within the evaluated inputs that carry an ephemeral
+// mark. Paths are in the assembled inputs' namespace — snake-cased Pulumi
+// names with MaxItemsOne blocks already flattened — and sorted.
+func EvalResourceWithSchema(config hcl.Body, r *schema.Resource, mapping *bridge.BodyMapping, eval EvalFunc) (property.Map, []cty.Path, hcl.Diagnostics) {
 	resourceInputs, attrExprs, diags := evalBlockWithSchema(config, r.InputProperties, mapping, eval)
 	if diags.HasErrors() {
-		return property.Map{}, diags
+		return property.Map{}, nil, diags
 	}
 
 	m, err := ctyToResourceInputs(resourceInputs, r, attrExprs)
 	if err != nil {
-		return property.Map{}, append(diags,
+		return property.Map{}, nil, append(diags,
 			conversionDiagnostic(err, "failed to convert HCL resource inputs to Pulumi inputs"))
 	}
-	return m, diags
+	return m, ephemeralInputPaths(resourceInputs), diags
+}
+
+// ephemeralInputPaths returns the paths within inputs whose value carries
+// eval.EphemeralMark, sorted for determinism.
+func ephemeralInputPaths(inputs cty.Value) []cty.Path {
+	if inputs == cty.NilVal || inputs.IsNull() {
+		return nil
+	}
+	_, pathMarks := inputs.UnmarkDeepWithPaths()
+	var out []cty.Path
+	for _, pm := range pathMarks {
+		if _, ok := pm.Marks[eval.EphemeralMark]; ok {
+			out = append(out, pm.Path)
+		}
+	}
+	slices.SortFunc(out, func(a, b cty.Path) int {
+		return strings.Compare(pathSortKey(a), pathSortKey(b))
+	})
+	return out
+}
+
+// pathSortKey renders a cty.Path as a string usable as a deterministic sort key.
+func pathSortKey(p cty.Path) string {
+	var b strings.Builder
+	for _, step := range p {
+		switch s := step.(type) {
+		case cty.GetAttrStep:
+			b.WriteByte('.')
+			b.WriteString(s.Name)
+		case cty.IndexStep:
+			fmt.Fprintf(&b, "[%v]", s.Key)
+		}
+	}
+	return b.String()
 }
 
 func conversionDiagnostic(err error, fallbackSummary string) *hcl.Diagnostic {
@@ -742,7 +779,11 @@ func ctyToResourceProperty(path string, val cty.Value, prop schema.Type, expr hc
 	if val.IsMarked() {
 		var marks cty.ValueMarks
 		val, marks = val.Unmark()
-		if _, isSensitive := marks[eval.SensitiveMark]; isSensitive && !alreadyInSecret {
+		_, isSensitive := marks[eval.SensitiveMark]
+		// Ephemeral values are persisted as secrets: encrypted state addresses
+		// the persistence concern that ephemerality exists to solve.
+		_, isEphemeral := marks[eval.EphemeralMark]
+		if (isSensitive || isEphemeral) && !alreadyInSecret {
 			v, err := ctyToResourceProperty(path, val, prop, expr, true)
 			return v.WithSecret(true), err
 		}
@@ -976,12 +1017,14 @@ func CtyToPropertyValue(val cty.Value) (property.Value, error) {
 }
 
 func ctyToPropertyValue(val cty.Value) (property.Value, error) {
-	// Handle sensitive-marked values by unwrapping, converting, and wrapping as secret.
+	// Handle sensitive- and ephemeral-marked values by unwrapping, converting,
+	// and wrapping as secret.
 	if val.IsMarked() {
 		unmarked, marks := val.Unmark()
 		_, isSensitive := marks[eval.SensitiveMark]
+		_, isEphemeral := marks[eval.EphemeralMark]
 		pv, err := ctyToPropertyValue(unmarked)
-		return pv.WithSecret(isSensitive), err
+		return pv.WithSecret(isSensitive || isEphemeral), err
 	}
 
 	if val.IsNull() {

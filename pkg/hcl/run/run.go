@@ -852,6 +852,9 @@ func (e *Engine) processVariable(ctx context.Context, node *graph.Node) error {
 	if v.Sensitive || isSecret {
 		val = val.Mark(eval.SensitiveMark)
 	}
+	if v.Ephemeral {
+		val = val.Mark(eval.EphemeralMark)
+	}
 
 	// Store in eval context (needed for validation which may reference var.<name>)
 	e.evaluator.Context().SetVariable(varName, val)
@@ -1204,7 +1207,7 @@ func (e *Engine) registerProviderInContext(
 	}
 
 	providerMapping := e.resolver.ProviderConfigBodyMapping(ctx, provider.Name)
-	inputsMap, diags := transform.EvalResourceWithSchema(provider.Config, resSchema, providerMapping,
+	inputsMap, _, diags := transform.EvalResourceWithSchema(provider.Config, resSchema, providerMapping,
 		func(_ resource.PropertyKey, expr hcl.Expression, extraVars map[string]cty.Value) (cty.Value, hcl.Diagnostics) {
 			c := hclCtx
 			if len(extraVars) > 0 {
@@ -1520,7 +1523,7 @@ func (e *Engine) registerResourceInstanceInContext(
 	if res.Type == packages.TerraformDataType {
 		tdataEvaluated = map[string]cty.Value{}
 	}
-	resourceInputs, diags := transform.EvalResourceWithSchema(res.Config, resSchema, resourceMapping,
+	resourceInputs, ephemeralPaths, diags := transform.EvalResourceWithSchema(res.Config, resSchema, resourceMapping,
 		func(propKey resource.PropertyKey, expr hcl.Expression, extraVars map[string]cty.Value) (cty.Value, hcl.Diagnostics) {
 			var val cty.Value
 			var diags hcl.Diagnostics
@@ -1568,6 +1571,25 @@ func (e *Engine) registerResourceInstanceInContext(
 	opts.Custom = !resSchema.IsComponent
 	opts.Remote = resSchema.IsComponent
 	opts.PropertyDependencies = dependsOn
+
+	// An ephemeral value is free to differ on every run, so a property it
+	// flows into should not display a diff. The path arrives in the assembled
+	// inputs' namespace (snake-cased Pulumi names, MaxItemsOne blocks already
+	// flattened), which translateAttrPathTraversal maps to engine form; a name
+	// it cannot resolve (a bridge rename) widens to the whole top-level
+	// property rather than leaking the diff.
+	for _, p := range ephemeralPaths {
+		glob, err := translateAttrPathTraversal(ctyPathTraversal(p), resourceMapping, resSchema.InputProperties)
+		if err != nil {
+			glob, err = translateAttrPathTraversal(ctyPathTraversal(p[:1]), resourceMapping, resSchema.InputProperties)
+			if err != nil {
+				return fmt.Errorf("translating ephemeral property path on %q: %w", res.Type+"."+res.Name, err)
+			}
+		}
+		if !slices.Contains(opts.HideDiffs, glob) {
+			opts.HideDiffs = append(opts.HideDiffs, glob)
+		}
+	}
 	for _, deps := range dependsOn {
 		for _, dep := range deps {
 			if !slices.Contains(opts.DependsOn, dep) {
@@ -2772,6 +2794,22 @@ func translateAttrPathTraversal(
 	return property.GlobFromSegments(segments...), nil
 }
 
+// ctyPathTraversal converts a cty.Path over an evaluated inputs object into an
+// attribute-path traversal, so it can be translated to engine form by
+// translateAttrPathTraversal like a hide_diffs entry.
+func ctyPathTraversal(p cty.Path) hcl.Traversal {
+	t := make(hcl.Traversal, 0, len(p))
+	for _, step := range p {
+		switch s := step.(type) {
+		case cty.GetAttrStep:
+			t = append(t, hcl.TraverseAttr{Name: s.Name})
+		case cty.IndexStep:
+			t = append(t, hcl.TraverseIndex{Key: s.Key})
+		}
+	}
+	return t
+}
+
 // translateSecretOutputName translates a single additional_secret_outputs entry
 // from its TF (snake_case) name to its Pulumi name. Unlike hide_diffs and
 // replace_on_changes, an additional_secret_outputs entry names a single
@@ -3760,7 +3798,10 @@ func (e *Engine) processModuleVariable(node *graph.Node) error {
 		}
 
 		if v.Sensitive {
-			val = val.Mark("sensitive")
+			val = val.Mark(eval.SensitiveMark)
+		}
+		if v.Ephemeral {
+			val = val.Mark(eval.EphemeralMark)
 		}
 
 		inst.EvalCtx.SetVariable(varName, val)
@@ -3963,9 +4004,12 @@ func (e *Engine) processModuleOutput(_ context.Context, node *graph.Node) error 
 			return fmt.Errorf("evaluating module output %s: %s", outputName, diags.Error())
 		}
 		// A `sensitive = true` output carries the mark into the calling module,
-		// so a reference to it stays sensitive.
+		// so a reference to it stays sensitive; likewise for `ephemeral = true`.
 		if output.Sensitive {
 			val = val.Mark(eval.SensitiveMark)
+		}
+		if output.Ephemeral {
+			val = val.Mark(eval.EphemeralMark)
 		}
 		inst.mu.Lock()
 		inst.Outputs[outputName] = val
@@ -4158,8 +4202,8 @@ func (e *Engine) processOutput(_ context.Context, name string, output *ast.Outpu
 		return fmt.Errorf("converting output value: %w", err)
 	}
 
-	// Mark as secret if sensitive
-	if output.Sensitive {
+	// Sensitive and ephemeral outputs are both persisted as secrets.
+	if output.Sensitive || output.Ephemeral {
 		pv = pv.WithSecret(true)
 	}
 
@@ -4647,7 +4691,7 @@ const sensitiveErrorMessageRef = "Error message refers to sensitive values"
 // carry. A null / unknown / non-string value yields "" so the caller can fall
 // back to its own default message.
 func renderErrorMessage(v cty.Value) string {
-	if v.HasMark(eval.SensitiveMark) {
+	if v.HasMark(eval.SensitiveMark) || v.HasMark(eval.EphemeralMark) {
 		return sensitiveErrorMessageRef
 	}
 	return ctyAsString(v)

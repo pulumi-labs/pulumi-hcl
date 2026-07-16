@@ -61,6 +61,11 @@ type Variable struct {
 	// Sensitive indicates whether the variable value should be hidden in logs.
 	Sensitive bool
 
+	// Ephemeral indicates whether the variable value is ephemeral. Ephemeral
+	// values are persisted as Pulumi secrets and their diffs are hidden on
+	// resources they flow into.
+	Ephemeral bool
+
 	// Nullable indicates whether the variable can be null (default true).
 	Nullable bool
 

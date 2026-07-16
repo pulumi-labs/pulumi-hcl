@@ -446,7 +446,7 @@ resource "fake" "f" {
 		return expr.Value(&hcl.EvalContext{Variables: extraVars})
 	}
 
-	_, diags = EvalResourceWithSchema(resourceBody, r, nil, evalFn)
+	_, _, diags = EvalResourceWithSchema(resourceBody, r, nil, evalFn)
 	require.False(t, diags.HasErrors(), "unexpected diags: %v", diags)
 }
 
@@ -500,7 +500,7 @@ resource "fake" "f" {
 		return expr.Value(&hcl.EvalContext{Variables: extraVars})
 	}
 
-	out, diags := EvalResourceWithSchema(resourceBody, r, nil, evalFn)
+	out, _, diags := EvalResourceWithSchema(resourceBody, r, nil, evalFn)
 	require.False(t, diags.HasErrors(), "unexpected diags: %v", diags)
 
 	expected := property.NewMap(map[string]property.Value{
@@ -1901,7 +1901,7 @@ resource "fake" "f" {
 				return expr.Value(&hcl.EvalContext{Variables: extraVars})
 			}
 
-			out, diags := EvalResourceWithSchema(resourceBody, r, nil, evalFn)
+			out, _, diags := EvalResourceWithSchema(resourceBody, r, nil, evalFn)
 			require.False(t, diags.HasErrors(), "unexpected diags: %v", diags)
 			assert.Equal(t, property.NewMap(map[string]property.Value{
 				"settings": tt.expected,
@@ -1942,7 +1942,7 @@ resource "fake" "f" {
 		return expr.Value(&hcl.EvalContext{Variables: extraVars})
 	}
 
-	out, diags := EvalResourceWithSchema(resourceBody, r, nil, evalFn)
+	out, _, diags := EvalResourceWithSchema(resourceBody, r, nil, evalFn)
 	require.False(t, diags.HasErrors(), "unexpected diags: %v", diags)
 	assert.Equal(t, property.NewMap(map[string]property.Value{
 		"settings": property.New(property.Computed),
@@ -1990,7 +1990,7 @@ resource "fake" "f" {
 				return expr.Value(&hcl.EvalContext{Variables: extraVars})
 			}
 
-			_, diags := EvalResourceWithSchema(resourceBody, r, nil, evalFn)
+			_, _, diags := EvalResourceWithSchema(resourceBody, r, nil, evalFn)
 			require.True(t, diags.HasErrors())
 			assert.Equal(t, "Invalid dynamic for_each value", diags[0].Summary)
 			assert.Equal(t, tt.detail, diags[0].Detail)

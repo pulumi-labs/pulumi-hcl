@@ -47,6 +47,10 @@ type Output struct {
 	// In Pulumi, this maps to marking the output as a secret.
 	Sensitive bool
 
+	// Ephemeral indicates whether the output value is ephemeral. Ephemeral
+	// values are persisted as Pulumi secrets.
+	Ephemeral bool
+
 	// DependsOn contains explicit dependencies for the output.
 	DependsOn []hcl.Traversal
 

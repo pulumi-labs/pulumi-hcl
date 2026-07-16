@@ -207,19 +207,20 @@ func Functions(baseDir string) map[string]function.Function {
 		"cidrsubnets":  cidrSubnetsFunc,
 
 		// Type conversion functions
-		"can":          canFunc,
-		"recover":      recoverFunc,
-		"issensitive":  issensitiveFunc,
-		"nonsensitive": nonsensitiveFunc,
-		"sensitive":    sensitiveFunc,
-		"tobool":       makeToFunc(cty.Bool),
-		"tolist":       makeToFunc(cty.List(cty.DynamicPseudoType)),
-		"tomap":        makeToFunc(cty.Map(cty.DynamicPseudoType)),
-		"tonumber":     makeToFunc(cty.Number),
-		"toset":        makeToFunc(cty.Set(cty.DynamicPseudoType)),
-		"tostring":     toStringFunc,
-		"try":          tryfunc.TryFunc,
-		"type":         typeFunc,
+		"can":             canFunc,
+		"recover":         recoverFunc,
+		"ephemeralasnull": ephemeralasnullFunc,
+		"issensitive":     issensitiveFunc,
+		"nonsensitive":    nonsensitiveFunc,
+		"sensitive":       sensitiveFunc,
+		"tobool":          makeToFunc(cty.Bool),
+		"tolist":          makeToFunc(cty.List(cty.DynamicPseudoType)),
+		"tomap":           makeToFunc(cty.Map(cty.DynamicPseudoType)),
+		"tonumber":        makeToFunc(cty.Number),
+		"toset":           makeToFunc(cty.Set(cty.DynamicPseudoType)),
+		"tostring":        toStringFunc,
+		"try":             tryfunc.TryFunc,
+		"type":            typeFunc,
 
 		// Pulumi-specific functions
 		"pulumiResourceName": pulumiResourceNameFunc,
@@ -2131,6 +2132,41 @@ var sensitiveFunc = function.New(&function.Spec{
 	},
 	Impl: func(args []cty.Value, retType cty.Type) (cty.Value, error) {
 		return args[0].Mark(SensitiveMark), nil
+	},
+})
+
+var ephemeralasnullFunc = function.New(&function.Spec{
+	Params: []function.Parameter{
+		{
+			Name:             "value",
+			Type:             cty.DynamicPseudoType,
+			AllowUnknown:     true,
+			AllowNull:        true,
+			AllowMarked:      true,
+			AllowDynamicType: true,
+		},
+	},
+	Type: func(args []cty.Value) (cty.Type, error) {
+		return args[0].Type(), nil
+	},
+	Impl: func(args []cty.Value, retType cty.Type) (cty.Value, error) {
+		return cty.Transform(args[0], func(_ cty.Path, val cty.Value) (cty.Value, error) {
+			nonEphemeralMarks := val.Marks()
+			delete(nonEphemeralMarks, EphemeralMark)
+			switch {
+			case val.IsNull():
+				return cty.NullVal(val.Type()).WithMarks(nonEphemeralMarks), nil
+			case !val.IsKnown():
+				// An unknown value's ephemerality is not yet finalized: an
+				// expression like `var.cond ? var.ephemeral : "b"` only
+				// resolves its mark once var.cond is known.
+				return cty.UnknownVal(val.Type()).WithMarks(nonEphemeralMarks), nil
+			case val.HasMark(EphemeralMark):
+				return cty.NullVal(val.Type()).WithMarks(nonEphemeralMarks), nil
+			default:
+				return val, nil
+			}
+		})
 	},
 })
 

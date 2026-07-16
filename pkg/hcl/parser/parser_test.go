@@ -785,7 +785,7 @@ variable "subnets" {
 	}
 }
 
-func TestParseEphemeralAsSensitive(t *testing.T) {
+func TestParseEphemeral(t *testing.T) {
 	t.Parallel()
 	src := []byte(`
 variable "token" {
@@ -805,9 +805,44 @@ output "token_out" {
 `)
 	config, diags := NewParser().ParseSource("test.tf", src)
 	require.False(t, diags.HasErrors(), "unexpected errors: %v", diags.Errs())
-	assert.True(t, config.Variables["token"].Sensitive)
-	assert.False(t, config.Variables["plain"].Sensitive)
-	assert.True(t, config.Outputs["token_out"].Sensitive)
+	assert.True(t, config.Variables["token"].Ephemeral)
+	assert.False(t, config.Variables["token"].Sensitive)
+	assert.False(t, config.Variables["plain"].Ephemeral)
+	assert.True(t, config.Outputs["token_out"].Ephemeral)
+	assert.False(t, config.Outputs["token_out"].Sensitive)
+}
+
+// A non-bool ephemeral value is a hard error; a string that converts to bool
+// ("true") is accepted. Both mirror OpenTofu's bool decoding.
+func TestParseEphemeralNonBool(t *testing.T) {
+	t.Parallel()
+
+	_, diags := NewParser().ParseSource("test.tf", []byte(`
+variable "token" {
+  type      = string
+  ephemeral = "yes"
+}
+`))
+	require.True(t, diags.HasErrors())
+	assert.Equal(t, "Unsuitable value type", diags[0].Summary)
+
+	_, diags = NewParser().ParseSource("test.tf", []byte(`
+output "token_out" {
+  value     = "v"
+  ephemeral = 1
+}
+`))
+	require.True(t, diags.HasErrors())
+	assert.Equal(t, "Unsuitable value type", diags[0].Summary)
+
+	config, diags := NewParser().ParseSource("test.tf", []byte(`
+variable "token" {
+  type      = string
+  ephemeral = "true"
+}
+`))
+	require.False(t, diags.HasErrors(), "unexpected errors: %v", diags.Errs())
+	assert.True(t, config.Variables["token"].Ephemeral)
 }
 
 func TestParseProviderForEach(t *testing.T) {
