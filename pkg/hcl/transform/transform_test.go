@@ -513,6 +513,81 @@ resource "fake" "f" {
 	assert.Equal(t, expected, out)
 }
 
+// More than one block (static, dynamically expanded, or a mix) for a
+// MaxItems=1 field is an error, not last-block-wins.
+func TestSingularBlockRepeated(t *testing.T) {
+	t.Parallel()
+
+	r := &schema.Resource{
+		Token: "fake:index:F",
+		InputProperties: []*schema.Property{{
+			Name: "settings",
+			Type: &schema.ObjectType{
+				Properties: []*schema.Property{{Name: "mode", Type: schema.StringType}},
+			},
+		}},
+	}
+	mapping := &bridge.BodyMapping{Fields: map[string]*bridge.FieldMapping{
+		"settings": {TFName: "settings", PulumiName: "settings", TFBlock: true, MaxItemsOne: true},
+	}}
+
+	tests := []struct {
+		name string
+		src  string
+	}{
+		{"two static blocks", `
+resource "fake" "f" {
+  settings { mode = "a" }
+  settings { mode = "b" }
+}`},
+		{"dynamic expansion of two", `
+resource "fake" "f" {
+  dynamic "settings" {
+    for_each = ["a", "b"]
+    content { mode = settings.value }
+  }
+}`},
+		{"static and dynamic", `
+resource "fake" "f" {
+  settings { mode = "a" }
+  dynamic "settings" {
+    for_each = ["b"]
+    content { mode = settings.value }
+  }
+}`},
+		{"two dynamic expansions", `
+resource "fake" "f" {
+  dynamic "settings" {
+    for_each = ["a"]
+    content { mode = settings.value }
+  }
+  dynamic "settings" {
+    for_each = ["b"]
+    content { mode = settings.value }
+  }
+}`},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			file, diags := hclsyntax.ParseConfig([]byte(tt.src), "test.hcl", hcl.Pos{Line: 1, Column: 1})
+			require.False(t, diags.HasErrors(), diags.Error())
+			resourceBody := file.Body.(*hclsyntax.Body).Blocks[0].Body
+
+			evalFn := func(_ resource.PropertyKey, expr hcl.Expression, extraVars map[string]cty.Value) (cty.Value, hcl.Diagnostics) {
+				return expr.Value(&hcl.EvalContext{Variables: extraVars})
+			}
+
+			_, _, diags = EvalResourceWithSchema(resourceBody, r, mapping, evalFn)
+			require.Len(t, diags, 1)
+			assert.Equal(t, "Too many settings blocks", diags[0].Summary)
+			assert.Equal(t, `No more than 1 "settings" blocks are allowed`, diags[0].Detail)
+		})
+	}
+}
+
 func TestCtyToPropertyValue_Primitives(t *testing.T) {
 	t.Parallel()
 
