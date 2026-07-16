@@ -402,7 +402,7 @@ func (m *moduleProvider) requirementSpecs(
 		}
 		req := aliases[alias]
 		if req.IsPulumi() {
-			name := pulumiPackageName(alias, req.Source)
+			name := packageName(alias, req.Source)
 			reqs = append(reqs, resolve.Request{
 				Alias: alias,
 				Spec:  &pulumirpc.PackageSpec{Source: name, Version: pulumi[name]},

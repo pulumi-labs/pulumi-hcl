@@ -190,6 +190,7 @@ func (host *LanguageHost) GetRequiredPackages(
 	tfSpecs, pulumiPkgs, aliases := collectRequirements(ctx, modules.NewLoader(modules.LiveResolver(ctx)),
 		config, req.Info.ProgramDirectory)
 
+	emitted := map[string]bool{}
 	for _, alias := range sortedKeys(aliases) {
 		// A local SDK descriptor (written by `pulumi package add`) is the most
 		// specific source of truth: it carries the base provider name and the
@@ -198,30 +199,44 @@ func (host *LanguageHost) GetRequiredPackages(
 		// to a base provider plus parameter rather than a plain dependency. The
 		// raw source it shadows must not also be installed. An extension package
 		// reports its base provider with the parameter in the extension slot.
-		info, ok := paramInfos[alias]
+
+		// The descriptor directory is named after the resolved package, which
+		// differs from the alias when required_providers renames the provider
+		// locally; the alias and the package-name aliases then share one
+		// descriptor, reported once.
+		req := aliases[alias]
+		key := alias
+		info, ok := paramInfos[key]
+		if !ok {
+			key = packageName(alias, tfProviderSource(alias, req))
+			info, ok = paramInfos[key]
+		}
 		if !ok {
 			continue
 		}
-		pkgs = append(pkgs, &pulumirpc.PackageDependency{
-			Name:             info.Name,
-			Version:          versionString(info.Version),
-			Kind:             "resource",
-			Parameterization: parameterizationProto(info.Parameterization),
-			Extension:        parameterizationProto(info.ExtensionParameterization),
-		})
-		req := aliases[alias]
+		if !emitted[key] {
+			emitted[key] = true
+			pkgs = append(pkgs, &pulumirpc.PackageDependency{
+				Name:             info.Name,
+				Version:          versionString(info.Version),
+				Kind:             "resource",
+				Parameterization: parameterizationProto(info.Parameterization),
+				Extension:        parameterizationProto(info.ExtensionParameterization),
+			})
+			// An extension's resource tokens live in the base provider's
+			// namespace, so a program that uses only extension resources infers
+			// a bare terraform-provider requirement for the base. That base is
+			// served by the extension reported above, so drop the inferred
+			// spec. A base that is separately declared in required_providers
+			// (used directly by a base resource) stays in pulumiPkgs and is
+			// still reported.
+			if info.ExtensionParameterization != nil {
+				delete(tfSpecs, tfProviderSource(info.Name, aliases[info.Name]))
+			}
+		}
 		delete(tfSpecs, tfProviderSource(alias, req))
 		if req.IsPulumi() {
-			delete(pulumiPkgs, pulumiPackageName(alias, req.Source))
-		}
-		// An extension's resource tokens live in the base provider's namespace,
-		// so a program that uses only extension resources infers a bare
-		// terraform-provider requirement for the base. That base is served by
-		// the extension reported above, so drop the inferred spec. A base that
-		// is separately declared in required_providers (used directly by a base
-		// resource) stays in pulumiPkgs and is still reported.
-		if info.ExtensionParameterization != nil {
-			delete(tfSpecs, tfProviderSource(info.Name, aliases[info.Name]))
+			delete(pulumiPkgs, packageName(alias, req.Source))
 		}
 	}
 
@@ -257,10 +272,10 @@ func tfProviderSource(alias string, req *ast.RequiredProvider) string {
 	return "hashicorp/" + alias
 }
 
-// pulumiPackageName returns the package name for a pulumi/-sourced
-// required_providers entry: the last segment of the source ("pulumi/aws" →
-// "aws"), or the alias when source is unset.
-func pulumiPackageName(alias, source string) string {
+// packageName returns the Pulumi package name for a required_providers
+// entry: the last segment of the source ("pulumi/aws" → "aws",
+// "hashicorp/simple" → "simple"), or the alias when source is unset.
+func packageName(alias, source string) string {
 	if source == "" {
 		return alias
 	}
@@ -327,10 +342,17 @@ func missingNonPulumiSDKs(
 	_, _, aliases := collectRequirements(ctx, modules.NewLoader(modules.LiveResolver(ctx)), config, workDir)
 	var missing []string
 	for _, alias := range sortedKeys(aliases) {
-		if isBuiltinProvider(alias) || aliases[alias].IsPulumi() {
+		req := aliases[alias]
+		if isBuiltinProvider(alias) || req.IsPulumi() {
 			continue
 		}
 		if _, ok := sdks[alias]; ok {
+			continue
+		}
+		// The SDK directory is named after the resolved package (the source
+		// basename), which differs from the alias when required_providers
+		// renames the provider locally.
+		if _, ok := sdks[packageName(alias, tfProviderSource(alias, req))]; ok {
 			continue
 		}
 		// An extension resource's type namespace is its base provider name; the
@@ -431,7 +453,7 @@ func collectRequirementsRec(
 			return
 		}
 		if req.IsPulumi() {
-			pulumi[pulumiPackageName(alias, req.Source)] = req.Version
+			pulumi[packageName(alias, req.Source)] = req.Version
 			return
 		}
 		source := tfProviderSource(alias, req)
