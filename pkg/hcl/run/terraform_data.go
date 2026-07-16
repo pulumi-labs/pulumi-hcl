@@ -120,9 +120,6 @@ func unwrapTerraformDataOutputs(resType string, outputs map[string]cty.Value, pr
 		return
 	}
 	for _, name := range []string{"input", "output", "triggers_replace"} {
-		if _, ok := outputs[name]; !ok {
-			continue
-		}
 		if v, ok := unwrapTerraformDataValue(props.Get(name)); ok {
 			outputs[name] = v
 		}

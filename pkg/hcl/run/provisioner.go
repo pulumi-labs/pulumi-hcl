@@ -122,7 +122,7 @@ func effectiveConnectionBody(prov *ast.Provisioner, res *ast.Resource) hcl.Body 
 // selfBoundEvalCtx binds `self` to resource outputs + the synthetic id/urn
 // the engine injects elsewhere (see registerResourceInstanceInContext).
 func selfBoundEvalCtx(
-	parent *hcl.EvalContext, outputs property.Map, id, urn string, tfType string,
+	parent *hcl.EvalContext, outputs property.Map, id, urn, tfType string,
 	resSchema *schema.Resource, mapping *bridge.BodyMapping, dryRun bool,
 ) (*hcl.EvalContext, error) {
 	if outputs.Len() == 0 && id == "" && urn == "" {
