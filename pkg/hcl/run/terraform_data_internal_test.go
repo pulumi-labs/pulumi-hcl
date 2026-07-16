@@ -19,7 +19,9 @@ import (
 
 	"github.com/pulumi/pulumi/sdk/v3/go/property"
 	"github.com/stretchr/testify/assert"
+	"github.com/zclconf/go-cty/cty"
 
+	"github.com/pulumi-labs/pulumi-hcl/pkg/hcl/eval"
 	"github.com/pulumi-labs/pulumi-hcl/pkg/hcl/packages"
 )
 
@@ -135,4 +137,102 @@ func TestLowerTerraformDataOutputs(t *testing.T) {
 			"triggers_replace": null,
 		}), got)
 	})
+}
+
+func TestRestoreTerraformDataOutputTypes(t *testing.T) {
+	t.Parallel()
+
+	strTuple := cty.TupleVal([]cty.Value{cty.StringVal("a"), cty.StringVal("b")})
+	strSet := cty.SetVal([]cty.Value{cty.StringVal("a"), cty.StringVal("b")})
+
+	tests := []struct {
+		name      string
+		resType   string
+		outputs   map[string]cty.Value
+		evaluated map[string]cty.Value
+		want      map[string]cty.Value
+	}{
+		{
+			name:    "set types restored on input, output, and triggers_replace",
+			resType: packages.TerraformDataType,
+			outputs: map[string]cty.Value{
+				"input":            strTuple,
+				"output":           strTuple,
+				"triggers_replace": cty.TupleVal([]cty.Value{cty.NumberIntVal(1)}),
+			},
+			evaluated: map[string]cty.Value{
+				"input":            strSet,
+				"triggers_replace": cty.SetVal([]cty.Value{cty.NumberIntVal(1)}),
+			},
+			want: map[string]cty.Value{
+				"input":            strSet,
+				"output":           strSet,
+				"triggers_replace": cty.SetVal([]cty.Value{cty.NumberIntVal(1)}),
+			},
+		},
+		{
+			name:    "unknown output takes the evaluated type",
+			resType: packages.TerraformDataType,
+			outputs: map[string]cty.Value{
+				"output": cty.UnknownVal(cty.DynamicPseudoType),
+			},
+			evaluated: map[string]cty.Value{"input": strSet},
+			want: map[string]cty.Value{
+				"output": cty.UnknownVal(cty.Set(cty.String)),
+			},
+		},
+		{
+			name:    "evaluation without a known type is skipped",
+			resType: packages.TerraformDataType,
+			outputs: map[string]cty.Value{
+				"input":  strTuple,
+				"output": strTuple,
+			},
+			evaluated: map[string]cty.Value{"input": cty.DynamicVal},
+			want: map[string]cty.Value{
+				"input":  strTuple,
+				"output": strTuple,
+			},
+		},
+		{
+			name:    "unconvertible value is left as re-expanded",
+			resType: packages.TerraformDataType,
+			outputs: map[string]cty.Value{
+				"output": cty.ObjectVal(map[string]cty.Value{"k": cty.True}),
+			},
+			evaluated: map[string]cty.Value{"input": strSet},
+			want: map[string]cty.Value{
+				"output": cty.ObjectVal(map[string]cty.Value{"k": cty.True}),
+			},
+		},
+		{
+			name:    "element marks lift to the restored set",
+			resType: packages.TerraformDataType,
+			outputs: map[string]cty.Value{
+				"output": cty.TupleVal([]cty.Value{
+					cty.StringVal("a").Mark(eval.SensitiveMark), cty.StringVal("b"),
+				}),
+			},
+			evaluated: map[string]cty.Value{"input": strSet},
+			want: map[string]cty.Value{
+				"output": strSet.Mark(eval.SensitiveMark),
+			},
+		},
+		{
+			name:      "other types are untouched",
+			resType:   "random_pet",
+			outputs:   map[string]cty.Value{"output": strTuple},
+			evaluated: map[string]cty.Value{"input": strSet},
+			want:      map[string]cty.Value{"output": strTuple},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			restoreTerraformDataOutputTypes(tt.resType, tt.outputs, tt.evaluated)
+			assert.Equal(t, tt.want, tt.outputs)
+		})
+	}
 }

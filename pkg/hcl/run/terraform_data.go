@@ -17,6 +17,8 @@ package run
 import (
 	"github.com/pulumi-labs/pulumi-hcl/pkg/hcl/packages"
 	"github.com/pulumi/pulumi/sdk/v3/go/property"
+	"github.com/zclconf/go-cty/cty"
+	"github.com/zclconf/go-cty/cty/convert"
 )
 
 // lowerTerraformDataInputs adapts evaluated terraform_data inputs to Stash's
@@ -64,4 +66,34 @@ func lowerTerraformDataOutputs(resType string, outputs property.Map, opts *Resou
 	}
 	outputs = outputs.Set("output", outputs.Get("input"))
 	return outputs.Set("triggers_replace", opts.ReplacementTrigger.AsArray().Get(0))
+}
+
+// restoreTerraformDataOutputTypes restores the cty types of terraform_data's
+// dynamically typed attributes after the Pulumi property round-trip, which
+// flattens a cty set to an ordered array that would otherwise re-expand as a
+// tuple. `input` and `triggers_replace` echo the program's evaluated values
+// and `output` mirrors `input`, so each re-expanded value converts back to the
+// corresponding evaluated type. A value that no longer converts, or an
+// evaluation with no known type, is left as re-expanded.
+func restoreTerraformDataOutputTypes(resType string, outputs, evaluated map[string]cty.Value) {
+	if resType != packages.TerraformDataType {
+		return
+	}
+	for outName, inName := range map[string]string{
+		"input":            "input",
+		"output":           "input",
+		"triggers_replace": "triggers_replace",
+	} {
+		src, ok := evaluated[inName]
+		if !ok || src.Type() == cty.DynamicPseudoType {
+			continue
+		}
+		v, ok := outputs[outName]
+		if !ok {
+			continue
+		}
+		if converted, err := convert.Convert(v, src.Type()); err == nil {
+			outputs[outName] = converted
+		}
+	}
 }

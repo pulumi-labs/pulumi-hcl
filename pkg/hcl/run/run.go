@@ -1493,6 +1493,13 @@ func (e *Engine) registerResourceInstanceInContext(
 	}
 
 	resourceMapping := e.resolver.ResourceBodyMapping(ctx, res.Type)
+	// terraform_data's attributes are dynamically typed, so their cty types
+	// (e.g. set-ness) survive the Pulumi property round-trip only via the
+	// evaluated values captured here; see restoreTerraformDataOutputTypes.
+	var tdataEvaluated map[string]cty.Value
+	if res.Type == packages.TerraformDataType {
+		tdataEvaluated = map[string]cty.Value{}
+	}
 	resourceInputs, diags := transform.EvalResourceWithSchema(res.Config, resSchema, resourceMapping,
 		func(propKey resource.PropertyKey, expr hcl.Expression, extraVars map[string]cty.Value) (cty.Value, hcl.Diagnostics) {
 			var val cty.Value
@@ -1506,6 +1513,10 @@ func (e *Engine) registerResourceInstanceInContext(
 			}
 			if diags.HasErrors() {
 				return val, diags
+			}
+
+			if tdataEvaluated != nil {
+				tdataEvaluated[string(propKey)] = val
 			}
 
 			if plainInputProps[string(propKey)] {
@@ -1610,6 +1621,7 @@ func (e *Engine) registerResourceInstanceInContext(
 	if err != nil {
 		return fmt.Errorf("converting resource outputs to HCL types: %w", err)
 	}
+	restoreTerraformDataOutputTypes(res.Type, outputObj, tdataEvaluated)
 	if e.dryRun && id == "" {
 		outputObj["id"] = cty.UnknownVal(cty.String)
 	} else {
