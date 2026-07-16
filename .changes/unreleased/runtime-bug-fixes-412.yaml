@@ -1,0 +1,6 @@
+kind: bug-fixes
+body: Convert unknown variable values to their declared type, so declared `optional()` attributes resolve at preview
+time: 2026-07-16T12:58:55Z
+custom:
+    Component: runtime
+    PR: "412"
