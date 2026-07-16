@@ -4305,6 +4305,11 @@ func provisionerDeps(res *ast.Resource, hclCtx *hcl.EvalContext) []string {
 		if body == nil {
 			return
 		}
+		if eb, ok := body.(*ast.EscapedBody); ok {
+			collect(eb.Base)
+			collect(eb.Escape)
+			return
+		}
 		attrs, _ := body.JustAttributes()
 		for _, attr := range attrs {
 			for _, traversal := range attr.Expr.Variables() {

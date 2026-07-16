@@ -64,7 +64,11 @@ func SimpleProvider() *schema.Provider {
 					// Kept here so tests can assert it survives the
 					// HCL→Pulumi translation and isn't stripped by any
 					// meta-attribute reservation.
-					"version":       {Type: schema.TypeString, Optional: true},
+					"version": {Type: schema.TypeString, Optional: true},
+					// Collides with the `for_each` meta-argument (one of the
+					// few meta-argument names SDKv2 does not reserve), so HCL
+					// can only set it through the `_` escaping block.
+					"for_each":      {Type: schema.TypeString, Optional: true},
 					"result":        {Type: schema.TypeString, Computed: true},
 					"prefix_result": {Type: schema.TypeString, Computed: true},
 				},

@@ -13,3 +13,18 @@ resource "simple_resource" "target" {
     }
   }
 }
+
+# Resource (and data/provider/module) blocks accept the same escaping block.
+# `input_one` written inside `_` must land in the resource's configuration, and
+# `for_each` — a resource attribute whose name collides with the meta-argument
+# — can only be set through the escaping block.
+resource "simple_resource" "escaped" {
+  lifecycle {
+    prevent_destroy = false
+  }
+
+  _ {
+    input_one = simple_resource.target.result
+    for_each  = "not-the-meta-argument"
+  }
+}

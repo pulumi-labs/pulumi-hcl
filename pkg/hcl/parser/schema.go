@@ -91,6 +91,7 @@ var providerSchema = &hcl.BodySchema{
 	},
 	Blocks: []hcl.BlockHeaderSchema{
 		{Type: "pulumi"},
+		{Type: "_"}, // meta-argument escaping block
 	},
 }
 
@@ -163,6 +164,7 @@ var resourceSchema = &hcl.BodySchema{
 		{Type: "connection"},
 		{Type: "provisioner", LabelNames: []string{"type"}},
 		{Type: "timeouts"},
+		{Type: "_"}, // meta-argument escaping block
 	},
 }
 
@@ -240,6 +242,7 @@ var provisionerSchema = &hcl.BodySchema{
 	},
 	Blocks: []hcl.BlockHeaderSchema{
 		{Type: "connection"},
+		{Type: "_"}, // meta-argument escaping block
 	},
 }
 
@@ -257,6 +260,7 @@ var moduleSchema = &hcl.BodySchema{
 	},
 	Blocks: []hcl.BlockHeaderSchema{
 		{Type: "pulumi"},
+		{Type: "_"}, // meta-argument escaping block
 	},
 }
 

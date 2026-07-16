@@ -411,9 +411,12 @@ func (p *Parser) parseProviderBlock(config *ast.Config, block *hcl.Block) hcl.Di
 	content, remain, contentDiags := block.Body.PartialContent(providerSchema)
 	diags = append(diags, contentDiags...)
 
+	providerConfig, escDiags := mergeEscapeBlock(remain, content.Blocks, "provider-specific", "provider")
+	diags = append(diags, escDiags...)
+
 	provider := &ast.Provider{
 		Name:      block.Labels[0],
-		Config:    remain,
+		Config:    providerConfig,
 		DeclRange: block.DefRange,
 	}
 
@@ -646,10 +649,17 @@ func (p *Parser) decodeResourceBlock(block *hcl.Block, isDataSource bool) (*ast.
 	content, remain, contentDiags := block.Body.PartialContent(resourceSchema)
 	diags = append(diags, contentDiags...)
 
+	blockKind := "resource"
+	if isDataSource {
+		blockKind = "data"
+	}
+	config, escDiags := mergeEscapeBlock(remain, content.Blocks, "resource-type-specific", blockKind)
+	diags = append(diags, escDiags...)
+
 	resource := &ast.Resource{
 		Type:         resourceType,
 		Name:         name,
-		Config:       remain,
+		Config:       config,
 		DeclRange:    block.DefRange,
 		TypeRange:    block.LabelRanges[0],
 		IsDataSource: isDataSource,
@@ -942,13 +952,50 @@ func exprAsKeywordOrString(expr hcl.Expression) string {
 	return val.AsString()
 }
 
+// mergeEscapeBlock merges the special `_` escaping block (if any in blocks)
+// into config, so arguments whose names collide with meta-arguments can still
+// be written unambiguously. what and blockKind fill the duplicate-block error
+// message: arguments in the escaping block are interpreted as <what>, and each
+// <blockKind> block allows only one escaping block.
+func mergeEscapeBlock(config hcl.Body, blocks hcl.Blocks, what, blockKind string) (hcl.Body, hcl.Diagnostics) {
+	var diags hcl.Diagnostics
+	var seen *hcl.Block
+	for _, block := range blocks {
+		if block.Type != "_" {
+			continue
+		}
+		if seen != nil {
+			diags = append(diags, &hcl.Diagnostic{
+				Severity: hcl.DiagError,
+				Summary:  "Duplicate escaping block",
+				Detail: fmt.Sprintf(
+					"The special block type \"_\" can be used to force particular arguments to be interpreted as %s rather than as meta-arguments, but each %s block can have only one such block. The first escaping block was at %s.",
+					what, blockKind, seen.DefRange,
+				),
+				Subject: &block.DefRange,
+			})
+			continue
+		}
+		seen = block
+		config = &ast.EscapedBody{
+			Body:   hcl.MergeBodies([]hcl.Body{config, block.Body}),
+			Base:   config,
+			Escape: block.Body,
+		}
+	}
+	return config, diags
+}
+
 // parseProvisionerBlock parses a provisioner block.
 func (p *Parser) parseProvisionerBlock(block *hcl.Block) (*ast.Provisioner, hcl.Diagnostics) {
 	content, remain, diags := block.Body.PartialContent(provisionerSchema)
 
+	config, escDiags := mergeEscapeBlock(remain, content.Blocks, "provisioner-type-specific", "provisioner")
+	diags = append(diags, escDiags...)
+
 	provisioner := &ast.Provisioner{
 		Type:      block.Labels[0],
-		Config:    remain,
+		Config:    config,
 		When:      "create", // Default
 		OnFailure: "fail",   // Default
 		DeclRange: block.DefRange,
@@ -1191,9 +1238,12 @@ func (p *Parser) parseModuleBlock(config *ast.Config, block *hcl.Block) hcl.Diag
 	content, remain, contentDiags := block.Body.PartialContent(moduleSchema)
 	diags = append(diags, contentDiags...)
 
+	moduleConfig, escDiags := mergeEscapeBlock(remain, content.Blocks, "module input variables", "module")
+	diags = append(diags, escDiags...)
+
 	module := &ast.Module{
 		Name:      name,
-		Config:    remain,
+		Config:    moduleConfig,
 		Providers: make(map[string]hcl.Expression),
 		DeclRange: block.DefRange,
 	}
