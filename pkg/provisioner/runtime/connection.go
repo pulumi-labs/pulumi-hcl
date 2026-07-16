@@ -75,6 +75,12 @@ func connectionDecodeSpec() hcldec.Spec {
 		"bastion_password":    {cty.String, false},
 		"bastion_private_key": {cty.String, false},
 		"bastion_certificate": {cty.String, false},
+		// WinRM-only attributes; the ssh communicator ignores them, but the
+		// superset schema accepts them on any connection type.
+		"https":    {cty.Bool, false},
+		"insecure": {cty.Bool, false},
+		"cacert":   {cty.String, false},
+		"use_ntlm": {cty.Bool, false},
 	}
 	specs := hcldec.ObjectSpec{}
 	for name, a := range attrs {

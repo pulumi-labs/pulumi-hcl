@@ -1,0 +1,6 @@
+kind: bug-fixes
+body: Accept WinRM-only `connection` attributes (`https`, `insecure`, `cacert`, `use_ntlm`)
+time: 2026-07-16T10:00:00Z
+custom:
+    Component: runtime
+    PR: "396"
