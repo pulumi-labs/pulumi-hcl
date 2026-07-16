@@ -500,6 +500,19 @@ terraform {
 	})
 }
 
+func TestParseUnknownBlockType(t *testing.T) {
+	t.Parallel()
+	src := []byte(`
+widget "x" {
+}
+`)
+	p := NewParser()
+	_, diags := p.ParseSource("test.hcl", src)
+	require.True(t, diags.HasErrors())
+	require.Equal(t, "Unsupported block type", diags[0].Summary)
+	require.Equal(t, `Blocks of type "widget" are not expected here.`, diags[0].Detail)
+}
+
 func TestParseProvisionerInvalidWhen(t *testing.T) {
 	t.Parallel()
 	src := []byte(`
