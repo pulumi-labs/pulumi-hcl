@@ -1242,46 +1242,41 @@ func propertyObjectToCtyMap(path string, m property.Map, properties []*schema.Pr
 	return result, nil
 }
 
+func fieldIsQuery[T any](mapping *bridge.BodyMapping, pulumiName string, query func(*bridge.FieldMapping) T) T {
+	if mapping != nil {
+		for _, fm := range mapping.Fields {
+			if fm.PulumiName == pulumiName {
+				return query(fm)
+			}
+		}
+	}
+
+	var t T
+	return t
+}
+
 // fieldIsSingularBlock reports whether the Pulumi property is a TF
 // MaxItemsOne block per the bridge mapping.
 func fieldIsSingularBlock(mapping *bridge.BodyMapping, pulumiName string) bool {
-	if mapping == nil {
-		return false
-	}
-	for _, fm := range mapping.Fields {
-		if fm.PulumiName == pulumiName {
-			return fm.TFBlock && fm.MaxItemsOne
-		}
-	}
-	return false
+	return fieldIsQuery(mapping, pulumiName, func(fm *bridge.FieldMapping) bool {
+		return fm.TFBlock && fm.MaxItemsOne
+	})
 }
 
 // fieldIsComputed reports whether the Pulumi property is Computed in the TF
 // schema per the bridge mapping.
 func fieldIsComputed(mapping *bridge.BodyMapping, pulumiName string) bool {
-	if mapping == nil {
-		return false
-	}
-	for _, fm := range mapping.Fields {
-		if fm.PulumiName == pulumiName {
-			return fm.TFComputed
-		}
-	}
-	return false
+	return fieldIsQuery(mapping, pulumiName, func(fm *bridge.FieldMapping) bool {
+		return fm.TFComputed
+	})
 }
 
 // fieldIsSet reports whether the Pulumi property is a TF TypeSet field per
 // the bridge mapping.
 func fieldIsSet(mapping *bridge.BodyMapping, pulumiName string) bool {
-	if mapping == nil {
-		return false
-	}
-	for _, fm := range mapping.Fields {
-		if fm.PulumiName == pulumiName {
-			return fm.TFSet
-		}
-	}
-	return false
+	return fieldIsQuery(mapping, pulumiName, func(fm *bridge.FieldMapping) bool {
+		return fm.TFSet
+	})
 }
 
 // ctySetFromSequence re-types a re-expanded TF TypeSet field from the ordered
