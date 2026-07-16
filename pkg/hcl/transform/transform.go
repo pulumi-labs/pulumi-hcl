@@ -92,9 +92,6 @@ func EvalResourceWithSchema(config hcl.Body, r *schema.Resource, mapping *bridge
 // ephemeralInputPaths returns the paths within inputs whose value carries
 // eval.EphemeralMark, sorted for determinism.
 func ephemeralInputPaths(inputs cty.Value) []cty.Path {
-	if inputs == cty.NilVal || inputs.IsNull() {
-		return nil
-	}
 	_, pathMarks := inputs.UnmarkDeepWithPaths()
 	var out []cty.Path
 	for _, pm := range pathMarks {
@@ -103,24 +100,9 @@ func ephemeralInputPaths(inputs cty.Value) []cty.Path {
 		}
 	}
 	slices.SortFunc(out, func(a, b cty.Path) int {
-		return strings.Compare(pathSortKey(a), pathSortKey(b))
+		return strings.Compare(fmt.Sprintf("%v", a), fmt.Sprintf("%v", b))
 	})
 	return out
-}
-
-// pathSortKey renders a cty.Path as a string usable as a deterministic sort key.
-func pathSortKey(p cty.Path) string {
-	var b strings.Builder
-	for _, step := range p {
-		switch s := step.(type) {
-		case cty.GetAttrStep:
-			b.WriteByte('.')
-			b.WriteString(s.Name)
-		case cty.IndexStep:
-			fmt.Fprintf(&b, "[%v]", s.Key)
-		}
-	}
-	return b.String()
 }
 
 func conversionDiagnostic(err error, fallbackSummary string) *hcl.Diagnostic {

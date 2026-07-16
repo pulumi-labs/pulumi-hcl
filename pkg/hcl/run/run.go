@@ -1575,16 +1575,11 @@ func (e *Engine) registerResourceInstanceInContext(
 	// An ephemeral value is free to differ on every run, so a property it
 	// flows into should not display a diff. The path arrives in the assembled
 	// inputs' namespace (snake-cased Pulumi names, MaxItemsOne blocks already
-	// flattened), which translateAttrPathTraversal maps to engine form; a name
-	// it cannot resolve (a bridge rename) widens to the whole top-level
-	// property rather than leaking the diff.
+	// flattened), which translateAttrPathTraversal maps to engine form.
 	for _, p := range ephemeralPaths {
 		glob, err := translateAttrPathTraversal(ctyPathTraversal(p), resourceMapping, resSchema.InputProperties)
 		if err != nil {
-			glob, err = translateAttrPathTraversal(ctyPathTraversal(p[:1]), resourceMapping, resSchema.InputProperties)
-			if err != nil {
-				return fmt.Errorf("translating ephemeral property path on %q: %w", res.Type+"."+res.Name, err)
-			}
+			return fmt.Errorf("translating ephemeral property path on %q: %w", res.Type+"."+res.Name, err)
 		}
 		if !slices.Contains(opts.HideDiffs, glob) {
 			opts.HideDiffs = append(opts.HideDiffs, glob)
