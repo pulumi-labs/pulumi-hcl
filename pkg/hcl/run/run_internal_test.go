@@ -277,14 +277,18 @@ func TestIgnoreChangesApplies(t *testing.T) {
 	mapping := &bridge.BodyMapping{Fields: map[string]*bridge.FieldMapping{
 		"note": {TFName: "note", PulumiName: "note"},
 		"tags": {TFName: "tags", PulumiName: "tags"},
-		"settings": {TFName: "settings", PulumiName: "settings", TFBlock: true, MaxItemsOne: true,
+		"settings": {
+			TFName: "settings", PulumiName: "settings", TFBlock: true, MaxItemsOne: true,
 			Nested: &bridge.BodyMapping{Fields: map[string]*bridge.FieldMapping{
 				"mode": {TFName: "mode", PulumiName: "mode"},
-			}}},
-		"rules": {TFName: "rules", PulumiName: "rules", TFBlock: true,
+			}},
+		},
+		"rules": {
+			TFName: "rules", PulumiName: "rules", TFBlock: true,
 			Nested: &bridge.BodyMapping{Fields: map[string]*bridge.FieldMapping{
 				"port": {TFName: "port", PulumiName: "port"},
-			}}},
+			}},
+		},
 	}}
 
 	tests := []struct {
