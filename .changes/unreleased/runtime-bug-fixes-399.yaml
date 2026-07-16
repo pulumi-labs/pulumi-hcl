@@ -1,0 +1,6 @@
+kind: bug-fixes
+body: Preserve the cty types of `terraform_data`'s dynamic `input`, `output`, and `triggers_replace`
+time: 2026-07-16T08:41:55Z
+custom:
+    Component: runtime
+    PR: "399"
