@@ -823,13 +823,12 @@ func (e *Engine) processVariable(ctx context.Context, node *graph.Node) error {
 	}
 
 	// Fill in optional()-attribute defaults before sensitive marking.
-	if v.TypeDefaults != nil && !val.IsNull() && val.IsKnown() {
+	if v.TypeDefaults != nil && !val.IsNull() {
 		val = v.TypeDefaults.Apply(val)
 	}
 
 	if valueSource != "environment" && valueSource != "config" &&
-		v.TypeConstraint != cty.NilType && v.TypeConstraint != cty.DynamicPseudoType &&
-		!val.IsNull() && val.IsKnown() {
+		v.TypeConstraint != cty.NilType && v.TypeConstraint != cty.DynamicPseudoType {
 		if converted, err := ctyconvert.Convert(val, v.TypeConstraint); err == nil {
 			val = converted
 		}
@@ -3789,12 +3788,12 @@ func (e *Engine) processModuleVariable(node *graph.Node) error {
 
 		// Fill in optional()-attribute defaults before type conversion so
 		// the result satisfies the declared object shape.
-		if v.TypeDefaults != nil && !val.IsNull() && val.IsKnown() {
+		if v.TypeDefaults != nil && !val.IsNull() {
 			val = v.TypeDefaults.Apply(val)
 		}
 
 		// Coerce the value to match the variable's type constraint.
-		if v.TypeConstraint != cty.NilType && !val.IsNull() && val.IsKnown() {
+		if v.TypeConstraint != cty.NilType {
 			if converted, err := ctyconvert.Convert(val, v.TypeConstraint); err == nil {
 				val = converted
 			}
