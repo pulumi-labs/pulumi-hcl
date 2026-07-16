@@ -1555,8 +1555,6 @@ func (e *Engine) registerResourceInstanceInContext(
 	if diags.HasErrors() {
 		return diags
 	}
-	resourceInputs = wrapTerraformDataInputs(res.Type, resourceInputs, tdataEvaluated)
-
 	if strings.HasPrefix(res.Type, "pulumi_providers_") && res.PluginDownloadURL != nil {
 		val, valDiags := res.PluginDownloadURL.Value(hclCtx)
 		if !valDiags.HasErrors() && val.Type() == cty.String {
@@ -1564,10 +1562,14 @@ func (e *Engine) registerResourceInstanceInContext(
 		}
 	}
 
-	opts, err := e.buildResourceOptionsInContext(ctx, res, instance, evalCtx, parentURN, node.ModuleInfo, modInst, resourceMapping, resSchema.InputProperties, resSchema.Properties)
+	opts, err := e.buildResourceOptionsInContext(ctx, res, instance, evalCtx, parentURN, node.ModuleInfo, modInst, resourceMapping, resSchema.InputProperties, resSchema.Properties, resourceInputs)
 	if err != nil {
 		return err
 	}
+	// The options are built from the unboxed inputs: terraform_data's
+	// {type, value} boxing would hide the value shapes that
+	// ignoreChangesApplies inspects.
+	resourceInputs = wrapTerraformDataInputs(res.Type, resourceInputs, tdataEvaluated)
 	opts.Custom = !resSchema.IsComponent
 	opts.Remote = resSchema.IsComponent
 	opts.PropertyDependencies = dependsOn
@@ -1709,7 +1711,7 @@ func (e *Engine) buildResourceOptionsInContext(
 	ctx context.Context, res *ast.Resource, instance *graph.ExpandedResource,
 	evalCtx *eval.Context, parentURN urn.URN,
 	modInfo *graph.ModuleInfo, modInst *moduleInstance, resourceMapping *bridge.BodyMapping,
-	inputProps, outputProps []*schema.Property,
+	inputProps, outputProps []*schema.Property, inputs property.Map,
 ) (*ResourceOptions, error) {
 	opts := &ResourceOptions{}
 	opts.Parent = parentURN
@@ -1744,6 +1746,9 @@ func (e *Engine) buildResourceOptionsInContext(
 			icStr, err := translateAttrPathTraversal(ic, resourceMapping, inputProps)
 			if err != nil {
 				return nil, fmt.Errorf("invalid property path: %w", err)
+			}
+			if !ignoreChangesApplies(ic, resourceMapping, inputProps, inputs) {
+				continue
 			}
 			opts.IgnoreChanges = append(opts.IgnoreChanges, icStr)
 		}
@@ -2812,6 +2817,79 @@ func translateAttrPathTraversal(
 	}
 
 	return property.GlobFromSegments(segments...), nil
+}
+
+// ignoreChangesApplies reports whether an ignore_changes path resolves inside
+// the evaluated inputs. OpenTofu silently skips an entry whose path does not
+// apply to the configuration — removing a whole block un-ignores the
+// attributes inside it, so e.g. a ForceNew change there is planned as a
+// replacement again. Passing such an entry to the engine anyway would keep
+// suppressing the diff, because the engine ignores by state paths too.
+//
+// Mirroring OpenTofu's check: a trailing map key is exempt (a key may be
+// ignored while being added or removed), a missing leaf attribute still
+// resolves (it decodes as null in OpenTofu's config), and an unknown value
+// cannot be disproven, so those keep the entry. OpenTofu also requires the
+// path to resolve in the prior state, which is not visible here.
+func ignoreChangesApplies(
+	traversal hcl.Traversal, mapping *bridge.BodyMapping, props []*schema.Property, inputs property.Map,
+) bool {
+	if len(traversal) > 1 {
+		if idx, ok := traversal[len(traversal)-1].(hcl.TraverseIndex); ok && idx.Key.Type() == cty.String {
+			traversal = traversal[:len(traversal)-1]
+		}
+	}
+	resolver := attrPathNameResolver{mapping: mapping, props: props}
+	v := property.New(inputs)
+	prevSingularBlock := false
+	for i, step := range traversal {
+		if v.IsComputed() {
+			return true
+		}
+		var tfName string
+		switch s := step.(type) {
+		case hcl.TraverseRoot:
+			tfName = s.Name
+		case hcl.TraverseAttr:
+			tfName = s.Name
+		case hcl.TraverseIndex:
+			if prevSingularBlock {
+				prevSingularBlock = false
+				continue
+			}
+			switch {
+			case s.Key.Type() == cty.Number && v.IsArray():
+				idx, acc := s.Key.AsBigFloat().Int64()
+				if acc != big.Exact || idx < 0 || idx >= int64(v.AsArray().Len()) {
+					return false
+				}
+				v = v.AsArray().Get(int(idx))
+			case s.Key.Type() == cty.String && v.IsMap():
+				el, ok := v.AsMap().GetOk(s.Key.AsString())
+				if !ok {
+					return false
+				}
+				v = el
+			default:
+				return false
+			}
+			continue
+		}
+		name, singularBlock, err := resolver.next(tfName)
+		if err != nil {
+			return false
+		}
+		if !v.IsMap() {
+			return false
+		}
+		el, ok := v.AsMap().GetOk(name)
+		if !ok {
+			return i == len(traversal)-1
+		}
+		v = el
+		prevSingularBlock = singularBlock
+	}
+	return true
 }
 
 // ctyPathTraversal converts a cty.Path over an evaluated inputs object into an

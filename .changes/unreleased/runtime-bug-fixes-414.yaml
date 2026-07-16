@@ -1,0 +1,6 @@
+kind: bug-fixes
+body: Drop `ignore_changes` entries whose path no longer resolves in the configuration, so removing a block no longer suppresses a ForceNew replacement
+time: 2026-07-16T16:10:00Z
+custom:
+    Component: runtime
+    PR: "414"
