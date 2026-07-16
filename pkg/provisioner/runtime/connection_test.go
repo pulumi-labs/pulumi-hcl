@@ -51,3 +51,19 @@ password = secret
 	assert.Equal(t, "10.0.0.2", connVal.GetAttr("host").AsString())
 	assert.Equal(t, "hunter2", connVal.GetAttr("password").AsString())
 }
+
+func TestEvalConnectionAcceptsWinRMAttrs(t *testing.T) {
+	t.Parallel()
+	body := parseBody(t, `
+host     = "10.0.0.2"
+type     = "ssh"
+use_ntlm = true
+https    = false
+insecure = true
+cacert   = "pem"
+`)
+
+	connVal, err := evalConnection(body, &hcl.EvalContext{})
+	require.NoError(t, err)
+	assert.Equal(t, cty.True, connVal.GetAttr("use_ntlm"))
+}

@@ -40,7 +40,7 @@ func (s *connectionSchema) CoerceValue(in cty.Value) (cty.Value, error) {
 	return out, nil
 }
 
-// Mirrors upstream's ConnectionBlockSupersetSchema minus WinRM attributes.
+// Mirrors upstream's ConnectionBlockSupersetSchema.
 var ConnectionBlockSupersetSchema = &connectionSchema{
 	objectType: cty.ObjectWithOptionalAttrs(
 		map[string]cty.Type{
@@ -69,6 +69,11 @@ var ConnectionBlockSupersetSchema = &connectionSchema{
 			"bastion_password":    cty.String,
 			"bastion_private_key": cty.String,
 			"bastion_certificate": cty.String,
+			// For type=winrm only (enforced in winrm communicator)
+			"https":    cty.Bool,
+			"insecure": cty.Bool,
+			"cacert":   cty.String,
+			"use_ntlm": cty.Bool,
 		},
 		// Every attribute except host is optional.
 		[]string{
@@ -78,6 +83,7 @@ var ConnectionBlockSupersetSchema = &connectionSchema{
 			"proxy_port", "proxy_user_name", "proxy_user_password",
 			"bastion_host", "bastion_host_key", "bastion_port", "bastion_user",
 			"bastion_password", "bastion_private_key", "bastion_certificate",
+			"https", "insecure", "cacert", "use_ntlm",
 		},
 	),
 }
