@@ -1,0 +1,6 @@
+kind: bug-fixes
+body: Depend on only the addressed instance for instance-addressed references (`a["x"]` in `depends_on` or expressions) instead of every instance, and run count/for_each instances concurrently
+time: 2026-07-16T18:40:00Z
+custom:
+    Component: runtime
+    PR: "416"

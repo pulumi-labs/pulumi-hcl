@@ -53,6 +53,7 @@ import (
 	"github.com/zclconf/go-cty/cty"
 	ctyconvert "github.com/zclconf/go-cty/cty/convert"
 	"github.com/zclconf/go-cty/cty/function"
+	"golang.org/x/sync/errgroup"
 )
 
 // PackageRef is an opaque reference returned by RegisterPackage that routes
@@ -1453,15 +1454,40 @@ func (e *Engine) processResourceInContext(
 
 	result := expander.Expand(node)
 
-	for _, instance := range result.Instances {
+	registerInstance := func(ctx context.Context, instance *graph.ExpandedResource) error {
 		if e.hasFailedDependency(res) {
 			e.failedNodes.Set(instance.Key, fmt.Errorf("skipped: dependency failed"))
-			continue
+			return nil
 		}
 		if err := e.registerResourceInstanceInContext(
 			ctx, node, res, resSchema, instance, evalCtx, parentURN, modInst, metaArgDeps,
 		); err != nil {
 			return fmt.Errorf("registering %s: %w", instance.Key, err)
+		}
+		return nil
+	}
+
+	// Expanded instances run as their own concurrent walk units, and this
+	// node's successors are re-gated on the instances they depend on: all of
+	// them, or — for a dependent that references a single instance
+	// (`type.name["x"]`) — only that instance, so it does not wait for the
+	// delayed siblings.
+	if !result.IsSingle && e.graph != nil {
+		insts := make([]graph.InstanceExec, len(result.Instances))
+		for i, instance := range result.Instances {
+			insts[i] = graph.InstanceExec{
+				Key:  instance.Key,
+				Exec: func(ctx context.Context) error { return registerInstance(ctx, instance) },
+			}
+		}
+		if err := e.graph.SpawnInstances(node.Key, insts); err != nil {
+			return fmt.Errorf("scheduling instances of %s: %w", node.Key, err)
+		}
+	} else {
+		for _, instance := range result.Instances {
+			if err := registerInstance(ctx, instance); err != nil {
+				return err
+			}
 		}
 	}
 
@@ -1706,6 +1732,41 @@ func (e *Engine) registerResourceInstanceInContext(
 	return nil
 }
 
+// dependsOnURNs resolves a depends_on traversal to the URNs it gates on: the
+// addressed instance's URN when the traversal names one, the whole resource's
+// URN otherwise — which for a count/for_each resource (no whole-resource
+// outputs entry) means every registered instance's URN.
+func (e *Engine) dependsOnURNs(traversal hcl.Traversal, resPrefix string) []string {
+	depKey, instKey := graph.InstanceTarget(traversal)
+	if depKey == "" {
+		return nil
+	}
+	lookup := resPrefix + depKey
+	if instKey != "" {
+		lookup = resPrefix + instKey
+	}
+	if outputs, ok := e.resourceOutputs.Get(lookup); ok {
+		if urn := ctyAsString(outputs.GetAttr("urn")); urn != "" {
+			return []string{urn}
+		}
+		return nil
+	}
+	if instKey != "" {
+		return nil
+	}
+	var urns []string
+	for key, outputs := range e.resourceOutputs.All() {
+		if !strings.HasPrefix(key, lookup+"[") {
+			continue
+		}
+		if urn := ctyAsString(outputs.GetAttr("urn")); urn != "" {
+			urns = append(urns, urn)
+		}
+	}
+	slices.Sort(urns)
+	return urns
+}
+
 // buildResourceOptionsInContext builds resource options using the provided eval context and parent URN.
 func (e *Engine) buildResourceOptionsInContext(
 	ctx context.Context, res *ast.Resource, instance *graph.ExpandedResource,
@@ -1722,15 +1783,7 @@ func (e *Engine) buildResourceOptionsInContext(
 	}
 
 	for _, dep := range res.DependsOn {
-		depKey := graph.FormatTraversal(dep)
-		if depKey == "" {
-			continue
-		}
-		if outputs, ok := e.resourceOutputs.Get(resPrefix + depKey); ok {
-			if urn := ctyAsString(outputs.GetAttr("urn")); urn != "" {
-				opts.DependsOn = append(opts.DependsOn, urn)
-			}
-		}
+		opts.DependsOn = append(opts.DependsOn, e.dependsOnURNs(dep, resPrefix)...)
 	}
 
 	// Handle lifecycle options
@@ -2654,11 +2707,25 @@ func knownProviders(tfBlock *ast.Terraform) []string {
 // When true, the resource should be skipped so that only genuinely independent
 // resources are registered with the engine.
 func (e *Engine) hasFailedDependency(res *ast.Resource) bool {
-	// Check explicit depends_on traversals.
+	// Check explicit depends_on traversals. failedNodes is keyed by instance
+	// key, so a whole-resource dependency on an expanded resource has to match
+	// any of its instances.
 	for _, dep := range res.DependsOn {
-		depKey := graph.FormatTraversal(dep)
-		if depKey != "" {
-			if _, failed := e.failedNodes.Get(depKey); failed {
+		depKey, instKey := graph.InstanceTarget(dep)
+		if depKey == "" {
+			continue
+		}
+		if instKey != "" {
+			if _, failed := e.failedNodes.Get(instKey); failed {
+				return true
+			}
+			continue
+		}
+		if _, failed := e.failedNodes.Get(depKey); failed {
+			return true
+		}
+		for key := range e.failedNodes.All() {
+			if strings.HasPrefix(key, depKey+"[") {
 				return true
 			}
 		}
@@ -3236,37 +3303,38 @@ func (e *Engine) processRangedDataSource(
 
 	result := expander.Expand(node)
 
-	var tupleOutputs []cty.Value
-	eachOutputs := make(map[string]cty.Value)
-	isForEach := ds.ForEach != nil
-
-	for _, instance := range result.Instances {
-		instCtx := evalCtx.WithIteration(instance.Index, instance.EachKey, instance.EachValue)
-
-		ctyOut, invokeErr := e.invokeDataSourceOnce(ctx, node, ds, funcSchema, instCtx)
-
-		if invokeErr != nil {
+	// Instance reads run concurrently, matching how the graph walk runs the
+	// instances of an expanded resource.
+	outputs := make([]cty.Value, len(result.Instances))
+	grp, grpCtx := errgroup.WithContext(ctx)
+	for i, instance := range result.Instances {
+		grp.Go(func() error {
+			instCtx := evalCtx.WithIteration(instance.Index, instance.EachKey, instance.EachValue)
+			ctyOut, invokeErr := e.invokeDataSourceOnce(grpCtx, node, ds, funcSchema, instCtx)
+			outputs[i] = ctyOut
 			return invokeErr
-		}
-		if isForEach {
-			eachOutputs[instance.EachKey.AsString()] = ctyOut
-		} else {
-			tupleOutputs = append(tupleOutputs, ctyOut)
-		}
+		})
+	}
+	if err := grp.Wait(); err != nil {
+		return err
 	}
 
 	var aggregated cty.Value
-	if isForEach {
-		if len(eachOutputs) == 0 {
+	if ds.ForEach != nil {
+		if len(result.Instances) == 0 {
 			aggregated = cty.EmptyObjectVal
 		} else {
+			eachOutputs := make(map[string]cty.Value, len(result.Instances))
+			for i, instance := range result.Instances {
+				eachOutputs[instance.EachKey.AsString()] = outputs[i]
+			}
 			aggregated = cty.ObjectVal(eachOutputs)
 		}
 	} else {
-		if len(tupleOutputs) == 0 {
+		if len(result.Instances) == 0 {
 			aggregated = cty.EmptyTupleVal
 		} else {
-			aggregated = cty.TupleVal(tupleOutputs)
+			aggregated = cty.TupleVal(outputs)
 		}
 	}
 
@@ -3375,17 +3443,13 @@ func (e *Engine) invokeDataSourceOnce(
 		}
 	}
 
+	dsPrefix := ""
+	if node.ModuleInfo != nil {
+		dsPrefix = node.ModuleInfo.Prefix()
+	}
 	for _, dep := range ds.DependsOn {
-		depKey := graph.FormatTraversal(dep)
-		if depKey == "" {
-			continue
-		}
-		fullDepKey := depKey
-		if node.ModuleInfo != nil {
-			fullDepKey = node.ModuleInfo.Prefix() + depKey
-		}
-		if outputs, ok := e.resourceOutputs.Get(fullDepKey); ok {
-			addURN(ctyAsString(outputs.GetAttr("urn")))
+		for _, urn := range e.dependsOnURNs(dep, dsPrefix) {
+			addURN(urn)
 		}
 	}
 

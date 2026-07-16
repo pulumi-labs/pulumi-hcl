@@ -50,6 +50,13 @@ func (s *SyncMap[K, V]) Get(key K) (V, bool) {
 	return v, ok
 }
 
+// All returns a point-in-time snapshot iterator over the map's entries.
+func (s *SyncMap[K, V]) All() iter.Seq2[K, V] {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return maps.All(maps.Clone(s.m))
+}
+
 func (s *SyncMap[K, V]) Values() iter.Seq[V] {
 	s.mu.RLock()
 	defer s.mu.RUnlock()

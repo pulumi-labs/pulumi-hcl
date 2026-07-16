@@ -16,9 +16,11 @@ package graph
 
 import (
 	"context"
+	"slices"
 	"testing"
 
 	"github.com/hashicorp/hcl/v2"
+	"github.com/hashicorp/hcl/v2/hclsyntax"
 	"github.com/pulumi-labs/pulumi-hcl/pkg/hcl/parser"
 	"github.com/pulumi/pulumi/pkg/v3/util/pdag"
 	"github.com/stretchr/testify/assert"
@@ -381,4 +383,109 @@ func TestResourceExpander(t *testing.T) {
 			}
 		}
 	})
+}
+
+func TestInstanceTarget(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		expr     string
+		dep      string
+		instance string
+	}{
+		{`aws_instance.web`, "aws_instance.web", ""},
+		{`aws_instance.web["x"]`, "aws_instance.web", `aws_instance.web["x"]`},
+		{`aws_instance.web[0]`, "aws_instance.web", "aws_instance.web[0]"},
+		{`data.aws_ami.ubuntu`, "data.aws_ami.ubuntu", ""},
+		{`data.aws_ami.ubuntu["x"]`, "data.aws_ami.ubuntu", `data.aws_ami.ubuntu["x"]`},
+		{`module.m`, "module.m", ""},
+	}
+	for _, c := range cases {
+		t.Run(c.expr, func(t *testing.T) {
+			t.Parallel()
+			traversal, diags := hclsyntax.ParseTraversalAbs([]byte(c.expr), "test.hcl", hcl.InitialPos)
+			require.False(t, diags.HasErrors(), diags.Error())
+			dep, instance := InstanceTarget(traversal)
+			assert.Equal(t, c.dep, dep)
+			assert.Equal(t, c.instance, instance)
+		})
+	}
+}
+
+func TestInstanceDeps(t *testing.T) {
+	t.Parallel()
+	src := []byte(`
+resource "aws_instance" "a" {
+  for_each = toset(["x", "y"])
+}
+
+# Instance-addressed depends_on and a literal-indexed body reference both
+# narrow, and their instance keys accumulate.
+resource "aws_instance" "b" {
+  depends_on = [aws_instance.a["x"]]
+  ami        = aws_instance.a["y"].id
+}
+
+# A whole-resource reference (dynamic index) widens the instance addresses.
+resource "aws_instance" "c" {
+  for_each   = toset(["x", "y"])
+  depends_on = [aws_instance.a["x"]]
+  ami        = aws_instance.a[each.key].id
+}
+`)
+
+	p := parser.NewParser()
+	config, diags := p.ParseSource("test.hcl", src)
+	require.Empty(t, diags)
+
+	g, err := BuildFromConfig(config, nil, "")
+	require.NoError(t, err)
+
+	slices.Sort(g.instanceDeps["aws_instance.b"]["aws_instance.a"])
+	assert.Equal(t, map[string]map[string][]string{
+		"aws_instance.b": {"aws_instance.a": {`aws_instance.a["x"]`, `aws_instance.a["y"]`}},
+	}, g.instanceDeps)
+}
+
+func TestSpawnInstances(t *testing.T) {
+	t.Parallel()
+	src := []byte(`
+resource "aws_instance" "a" {
+  for_each = toset(["x", "y"])
+}
+
+resource "aws_instance" "b" {
+  depends_on = [aws_instance.a["x"]]
+}
+
+resource "aws_instance" "c" {
+  depends_on = [aws_instance.a]
+}
+`)
+
+	p := parser.NewParser()
+	config, diags := p.ParseSource("test.hcl", src)
+	require.Empty(t, diags)
+
+	g, err := BuildFromConfig(config, nil, "")
+	require.NoError(t, err)
+
+	preds := func(key string) int {
+		n := 0
+		for range g.dag.Predecessors(g.seen[key].i) {
+			n++
+		}
+		return n
+	}
+	bBefore, cBefore := preds("aws_instance.b"), preds("aws_instance.c")
+
+	noop := func(context.Context) error { return nil }
+	require.NoError(t, g.SpawnInstances("aws_instance.a", []InstanceExec{
+		{Key: `aws_instance.a["x"]`, Exec: noop},
+		{Key: `aws_instance.a["y"]`, Exec: noop},
+	}))
+
+	// b narrows to a["x"]: one new edge. c depends on the whole resource:
+	// edges from both instances.
+	assert.Equal(t, bBefore+1, preds("aws_instance.b"))
+	assert.Equal(t, cBefore+2, preds("aws_instance.c"))
 }
