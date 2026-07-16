@@ -113,6 +113,7 @@ var variableSchema = &hcl.BodySchema{
 		{Name: "description"},
 		{Name: "sensitive"},
 		{Name: "nullable"},
+		{Name: "ephemeral"},
 	},
 	Blocks: []hcl.BlockHeaderSchema{
 		{Type: "validation"},
@@ -133,6 +134,7 @@ var outputSchema = &hcl.BodySchema{
 		{Name: "value", Required: true},
 		{Name: "description"},
 		{Name: "sensitive"},
+		{Name: "ephemeral"},
 		{Name: "depends_on"},
 	},
 	Blocks: []hcl.BlockHeaderSchema{

@@ -23,6 +23,7 @@ import (
 	"github.com/blang/semver"
 	"github.com/hashicorp/hcl/v2"
 	"github.com/hashicorp/hcl/v2/ext/typeexpr"
+	"github.com/hashicorp/hcl/v2/gohcl"
 	"github.com/pulumi-labs/pulumi-hcl/pkg/hcl/ast"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/tokens"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/util/contract"
@@ -552,6 +553,10 @@ func (p *Parser) parseVariableBlock(config *ast.Config, block *hcl.Block) hcl.Di
 		if val.Type() == cty.Bool {
 			variable.Sensitive = val.True()
 		}
+	}
+
+	if attr, ok := content.Attributes["ephemeral"]; ok {
+		diags = append(diags, gohcl.DecodeExpression(attr.Expr, nil, &variable.Ephemeral)...)
 	}
 
 	if attr, ok := content.Attributes["nullable"]; ok {
@@ -1114,6 +1119,10 @@ func (p *Parser) parseOutputBlock(config *ast.Config, block *hcl.Block) hcl.Diag
 		if val.Type() == cty.Bool {
 			output.Sensitive = val.True()
 		}
+	}
+
+	if attr, ok := content.Attributes["ephemeral"]; ok {
+		diags = append(diags, gohcl.DecodeExpression(attr.Expr, nil, &output.Ephemeral)...)
 	}
 
 	if attr, ok := content.Attributes["depends_on"]; ok {

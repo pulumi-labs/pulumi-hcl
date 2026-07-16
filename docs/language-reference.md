@@ -92,6 +92,7 @@ variable "name" {
 | `default`     | expression | No       | Default value when not configured                                                                  |
 | `description` | string     | No       | Human-readable description                                                                         |
 | `sensitive`   | bool       | No       | When `true`, the value becomes a Pulumi secret                                                     |
+| `ephemeral`   | bool       | No       | Ephemeral value; see [Ephemeral Values](#ephemeral-values)                                         |
 | `nullable`    | bool       | No       | When `false`, rejects null values (default: `true`)                                                |
 | `validation`  | block      | No       | One or more validation rules (see below)                                                           |
 
@@ -479,6 +480,7 @@ output "vpc_id" {
 | `value`        | expression | Yes      | The value to export                             |
 | `description`  | string     | No       | Human-readable description                      |
 | `sensitive`    | bool       | No       | When `true`, the output becomes a Pulumi secret |
+| `ephemeral`    | bool       | No       | Ephemeral value; see [Ephemeral Values](#ephemeral-values)  |
 | `depends_on`   | list       | No       | Explicit dependencies                           |
 | `precondition` | block      | No       | Validation checks before export                 |
 
@@ -802,7 +804,7 @@ Pulumi HCL supports nearly all Terraform built-in functions. Functions are group
 
 ### Type Conversion
 
-`can`, `issensitive`, `nonsensitive`, `sensitive`, `tobool`, `tolist`, `tomap`, `tonumber`, `toset`, `tostring`, `try`, `type`
+`can`, `ephemeralasnull`, `issensitive`, `nonsensitive`, `sensitive`, `tobool`, `tolist`, `tomap`, `tonumber`, `toset`, `tostring`, `try`, `type`
 
 ### Pulumi-Specific Functions
 
@@ -879,7 +881,33 @@ few unsupported features. If you find a case where `tofu` works and `pulumi` doe
 
 **Sensitive values** — Variables and outputs marked `sensitive = true` become Pulumi secrets, encrypted at rest in state.
 
+**Ephemeral values** — see [Ephemeral Values](#ephemeral-values).
+
 **Property names** — HCL uses `snake_case`. The plugin automatically converts to Pulumi's `camelCase` for the engine. Map keys are not translated.
+
+### Ephemeral Values
+
+Terraform's ephemeral values exist to keep a value out of state and plan files entirely. Pulumi's state model already
+encrypts secrets at rest, so Pulumi HCL interprets `ephemeral = true` through that lens instead of reproducing
+Terraform's persistence rules:
+
+- **Persisted as secrets.** A value from an ephemeral variable or output is stored in state, but encrypted, exactly
+  like `sensitive = true`. It is masked in CLI output and in the Pulumi Console.
+- **Diffs are hidden.** An ephemeral value is free to differ on every run, so the resource property it flows into is
+  registered with its diff hidden (the `hideDiffs` resource option), down to the exact property path — an ephemeral
+  value inside one block of a repeated block hides only that block's attribute.
+- **Not sensitive.** Ephemerality and sensitivity are tracked separately: `issensitive` returns `false` for a purely
+  ephemeral value, matching Terraform.
+- **`ephemeralasnull` is supported** and behaves as in Terraform: it replaces the ephemeral parts of a value with
+  typed nulls (preserving sensitivity marks), making the result usable anywhere.
+
+Differences from Terraform to be aware of:
+
+- Terraform rejects an ephemeral value used in a non-ephemeral context (a regular resource argument, a non-ephemeral
+  output). Pulumi HCL accepts it and persists the value encrypted; there is no flow validation.
+- Terraform re-prompts for a required ephemeral variable on every run. Pulumi HCL reads it from stack configuration
+  like any other variable, so set it once with `pulumi config set --secret`.
+- A root-level ephemeral output becomes a secret stack output rather than being omitted.
 
 ### Feature Mappings
 

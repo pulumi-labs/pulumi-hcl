@@ -2802,3 +2802,159 @@ func TestHideDiffsPathTranslated(t *testing.T) {
 	assert.Equal(t, []property.Glob{property.GlobFromSegments(property.NewSegment("inputOne"))},
 		mock.RegisteredResources[1].HideDiffs)
 }
+
+// TestEphemeralVariableHidesDiffs verifies the Pulumi-side behavior of
+// `ephemeral = true`, which has no OpenTofu mirror: an ephemeral value may
+// differ on every run, so a resource property it flows into is registered
+// with its diff hidden, and the value itself is persisted as a secret.
+func TestEphemeralVariableHidesDiffs(t *testing.T) {
+	t.Parallel()
+
+	src := `variable "session_token" {
+  type      = string
+  default   = "ephemeral-default"
+  ephemeral = true
+}
+
+resource "test_resource" "r" {
+  input_one = var.session_token
+  input_two = "plain"
+}`
+
+	testSchema := schema.PackageSpec{
+		Name:    "test",
+		Version: "1.0.0",
+		Resources: map[string]schema.ResourceSpec{
+			"test:index:Resource": {
+				InputProperties: map[string]schema.PropertySpec{
+					"inputOne": {TypeSpec: schema.TypeSpec{Type: "string"}},
+					"inputTwo": {TypeSpec: schema.TypeSpec{Type: "string"}},
+				},
+				ObjectTypeSpec: schema.ObjectTypeSpec{
+					Properties: map[string]schema.PropertySpec{
+						"inputOne": {TypeSpec: schema.TypeSpec{Type: "string"}},
+						"inputTwo": {TypeSpec: schema.TypeSpec{Type: "string"}},
+					},
+				},
+			},
+		},
+	}
+	loader := schemaloader.New(t, testSchema)
+
+	hclParser := parser.NewParser()
+	config, hclDiags := hclParser.ParseSource("main.tf", []byte(src))
+	require.False(t, hclDiags.HasErrors(), hclDiags.Error())
+
+	mock := &testutil.MockResourceMonitor{}
+	engine := newTestEngine(t, config, &hclrun.EngineOptions{
+		ProjectName:     "test-project",
+		StackName:       "dev",
+		ResourceMonitor: mock,
+		WorkDir:         t.TempDir(),
+		RootDir:         t.TempDir(),
+		ModuleLoader:    modules.NewLoader(modules.LiveResolver(t.Context())),
+		SchemaLoader:    loader,
+	})
+	require.NoError(t, engine.Run(t.Context()))
+
+	require.Len(t, mock.RegisteredResources, 2)
+	r := mock.RegisteredResources[1]
+	assert.Equal(t, "test:index:Resource", r.Type)
+	assert.Equal(t, []property.Glob{property.GlobFromSegments(property.NewSegment("inputOne"))},
+		r.HideDiffs)
+	assert.Equal(t, property.NewMap(map[string]property.Value{
+		"inputOne": property.New("ephemeral-default").WithSecret(true),
+		"inputTwo": property.New("plain"),
+	}), r.Inputs)
+}
+
+// TestEphemeralNestedBlockHidesDiffFineGrained verifies that an ephemeral
+// value reaching an attribute inside a repeated block hides the diff of that
+// attribute only — settings[0].token, not the whole settings property or the
+// sibling block.
+func TestEphemeralNestedBlockHidesDiffFineGrained(t *testing.T) {
+	t.Parallel()
+
+	src := `variable "session_token" {
+  type      = string
+  default   = "ephemeral-default"
+  ephemeral = true
+}
+
+resource "test_resource" "r" {
+  input_one = "plain"
+
+  settings {
+    name  = "a"
+    token = var.session_token
+  }
+
+  settings {
+    name = "b"
+  }
+}`
+
+	testSchema := schema.PackageSpec{
+		Name:    "test",
+		Version: "1.0.0",
+		Resources: map[string]schema.ResourceSpec{
+			"test:index:Resource": {
+				InputProperties: map[string]schema.PropertySpec{
+					"inputOne": {TypeSpec: schema.TypeSpec{Type: "string"}},
+					"settings": {
+						TypeSpec: schema.TypeSpec{
+							Type:  "array",
+							Items: &schema.TypeSpec{Ref: "#/types/test:index:Settings"},
+						},
+					},
+				},
+				ObjectTypeSpec: schema.ObjectTypeSpec{
+					Properties: map[string]schema.PropertySpec{
+						"inputOne": {TypeSpec: schema.TypeSpec{Type: "string"}},
+						"settings": {
+							TypeSpec: schema.TypeSpec{
+								Type:  "array",
+								Items: &schema.TypeSpec{Ref: "#/types/test:index:Settings"},
+							},
+						},
+					},
+				},
+			},
+		},
+		Types: map[string]schema.ComplexTypeSpec{
+			"test:index:Settings": {
+				ObjectTypeSpec: schema.ObjectTypeSpec{
+					Type: "object",
+					Properties: map[string]schema.PropertySpec{
+						"name":  {TypeSpec: schema.TypeSpec{Type: "string"}},
+						"token": {TypeSpec: schema.TypeSpec{Type: "string"}},
+					},
+				},
+			},
+		},
+	}
+	loader := schemaloader.New(t, testSchema)
+
+	hclParser := parser.NewParser()
+	config, hclDiags := hclParser.ParseSource("main.tf", []byte(src))
+	require.False(t, hclDiags.HasErrors(), hclDiags.Error())
+
+	mock := &testutil.MockResourceMonitor{}
+	engine := newTestEngine(t, config, &hclrun.EngineOptions{
+		ProjectName:     "test-project",
+		StackName:       "dev",
+		ResourceMonitor: mock,
+		WorkDir:         t.TempDir(),
+		RootDir:         t.TempDir(),
+		ModuleLoader:    modules.NewLoader(modules.LiveResolver(t.Context())),
+		SchemaLoader:    loader,
+	})
+	require.NoError(t, engine.Run(t.Context()))
+
+	require.Len(t, mock.RegisteredResources, 2)
+	r := mock.RegisteredResources[1]
+	assert.Equal(t, "test:index:Resource", r.Type)
+	assert.Equal(t, []property.Glob{property.GlobFromSegments(
+		property.NewSegment("settings"), property.NewSegment(0), property.NewSegment("token"),
+	)}, r.HideDiffs)
+}

@@ -452,7 +452,7 @@ func inferOutputType(evaluator *eval.Evaluator, o *ast.Output) (cty.Value, error
 func variableToPropertySpec(v *ast.Variable) (*PropertySpec, error) {
 	prop := &PropertySpec{
 		Description: v.Description,
-		Secret:      v.Sensitive,
+		Secret:      v.Sensitive || v.Ephemeral,
 	}
 
 	// Convert type constraint to schema type
@@ -518,7 +518,7 @@ func outputToPropertySpec(o *ast.Output, val cty.Value) (*PropertySpec, error) {
 		return nil, err
 	}
 	prop.Description = o.Description
-	prop.Secret = o.Sensitive
+	prop.Secret = o.Sensitive || o.Ephemeral
 	return prop, nil
 }
 

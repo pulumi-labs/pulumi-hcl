@@ -836,6 +836,37 @@ func TestIsSensitiveUnknown(t *testing.T) {
 	assert.Equal(t, cty.UnknownVal(cty.Bool), is)
 }
 
+// TestEphemeralAsNull is called directly because no HCL function constructs
+// ephemeral values; only variable/output declarations apply the mark.
+func TestEphemeralAsNull(t *testing.T) {
+	t.Parallel()
+
+	got, err := ephemeralasnullFunc.Call([]cty.Value{cty.StringVal("hunter2").Mark(EphemeralMark)})
+	require.NoError(t, err)
+	assert.Equal(t, cty.NullVal(cty.String), got)
+
+	// Nested ephemeral parts null out individually; non-ephemeral marks survive.
+	got, err = ephemeralasnullFunc.Call([]cty.Value{cty.ObjectVal(map[string]cty.Value{
+		"open":   cty.StringVal("visible"),
+		"secret": cty.StringVal("hunter2").Mark(EphemeralMark).Mark(SensitiveMark),
+	})})
+	require.NoError(t, err)
+	assert.Equal(t, cty.ObjectVal(map[string]cty.Value{
+		"open":   cty.StringVal("visible"),
+		"secret": cty.NullVal(cty.String).Mark(SensitiveMark),
+	}), got)
+
+	// An unknown value's ephemerality is not yet finalized, so it stays
+	// unknown rather than becoming null.
+	got, err = ephemeralasnullFunc.Call([]cty.Value{cty.UnknownVal(cty.String).Mark(EphemeralMark)})
+	require.NoError(t, err)
+	assert.Equal(t, cty.UnknownVal(cty.String), got)
+
+	got, err = ephemeralasnullFunc.Call([]cty.Value{cty.StringVal("plain")})
+	require.NoError(t, err)
+	assert.Equal(t, cty.StringVal("plain"), got)
+}
+
 // TestToNumber pins that `tonumber` parses the whole string as a decimal
 // number rather than truncating at the first non-digit character. A `%d`-style
 // parse would stop at the '.' in "3.14" or the 'e' in "1e2" and silently return

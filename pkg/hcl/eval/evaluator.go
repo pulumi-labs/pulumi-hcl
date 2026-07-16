@@ -48,6 +48,9 @@ func (e *Evaluator) Evaluate(expr hcl.Expression) (cty.Value, hcl.Diagnostics) {
 // SensitiveMark is the cty value mark applied to sensitive values.
 const SensitiveMark = "sensitive"
 
+// EphemeralMark is the cty value mark applied to ephemeral values.
+const EphemeralMark = "ephemeral"
+
 // SyntheticMark is the cty value mark applied to attributes that pulumi-hcl
 // injects onto a resource-reference object but that have no OpenTofu
 // equivalent.
