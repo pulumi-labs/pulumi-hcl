@@ -42,6 +42,19 @@ func OptCompBlockProvider() *schema.Provider {
 							},
 						},
 					},
+					// The TypeSet twin of `identity`: an unset computed *set*
+					// block materializes as an empty set, not null.
+					"identity_set": {
+						Type:     schema.TypeSet,
+						Optional: true,
+						Computed: true,
+						MaxItems: 1,
+						Elem: &schema.Resource{
+							Schema: map[string]*schema.Schema{
+								"issuer": {Type: schema.TypeString, Computed: true},
+							},
+						},
+					},
 				},
 				CreateContext: func(_ context.Context, d *schema.ResourceData, _ any) diag.Diagnostics {
 					d.SetId("optcomp-id")

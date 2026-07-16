@@ -15,3 +15,13 @@ output "identity_is_null" {
 output "identity_json" {
   value = jsonencode(optcomp_thing.t.identity)
 }
+
+# The TypeSet twin stays an empty set when unset: `== null` is false and
+# jsonencode yields "[]" in both OpenTofu and pulumi-hcl.
+output "identity_set_is_null" {
+  value = optcomp_thing.t.identity_set == null
+}
+
+output "identity_set_json" {
+  value = jsonencode(optcomp_thing.t.identity_set)
+}

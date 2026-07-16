@@ -1219,9 +1219,16 @@ func propertyObjectToCtyMap(path string, m property.Map, properties []*schema.Pr
 		}
 		if singularBlock && !convertedV.Type().IsListType() && !convertedV.Type().IsTupleType() {
 			if convertedV.IsNull() {
-				// An omitted MaxItems=1 block is an empty list of blocks, not a
-				// single-element list holding null, so `length(r.block)` is 0.
-				convertedV = cty.ListValEmpty(convertedV.Type())
+				if fieldIsComputed(mapping, p.Name) && !setField {
+					// An unset Computed list block is provider-controlled:
+					// absence means null, so `r.block == null` holds. Unset
+					// set blocks materialize as empty either way.
+					convertedV = cty.NullVal(cty.List(convertedV.Type()))
+				} else {
+					// An omitted MaxItems=1 block is an empty list of blocks, not a
+					// single-element list holding null, so `length(r.block)` is 0.
+					convertedV = cty.ListValEmpty(convertedV.Type())
+				}
 			} else {
 				convertedV = cty.TupleVal([]cty.Value{convertedV})
 			}
@@ -1244,6 +1251,20 @@ func fieldIsSingularBlock(mapping *bridge.BodyMapping, pulumiName string) bool {
 	for _, fm := range mapping.Fields {
 		if fm.PulumiName == pulumiName {
 			return fm.TFBlock && fm.MaxItemsOne
+		}
+	}
+	return false
+}
+
+// fieldIsComputed reports whether the Pulumi property is Computed in the TF
+// schema per the bridge mapping.
+func fieldIsComputed(mapping *bridge.BodyMapping, pulumiName string) bool {
+	if mapping == nil {
+		return false
+	}
+	for _, fm := range mapping.Fields {
+		if fm.PulumiName == pulumiName {
+			return fm.TFComputed
 		}
 	}
 	return false
