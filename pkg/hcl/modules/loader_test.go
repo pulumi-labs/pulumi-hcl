@@ -22,6 +22,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 
 	regaddr "github.com/opentofu/registry-address/v2"
@@ -35,10 +36,25 @@ import (
 // versions is returned for /versions; downloads maps version → URL returned
 // via the X-Terraform-Get header for /<v>/download (204 response).
 type fakeRegistry struct {
-	versions     []string
-	downloads    map[string]string
+	versions  []string
+	downloads map[string]string
+
+	// mu guards the hit counters, written from concurrent handler goroutines.
+	mu           sync.Mutex
 	versionsHits int
 	downloadHits map[string]int
+}
+
+func (r *fakeRegistry) versionsHitCount() int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.versionsHits
+}
+
+func (r *fakeRegistry) downloadHitCount(v string) int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.downloadHits[v]
 }
 
 func newFakeRegistry(t *testing.T, versions []string, downloads map[string]string) (*httptest.Server, *fakeRegistry) {
@@ -56,7 +72,9 @@ func newFakeRegistry(t *testing.T, versions []string, downloads map[string]strin
 		segs := strings.Split(trimmed, "/")
 		switch {
 		case len(segs) == 4 && segs[3] == "versions":
+			reg.mu.Lock()
 			reg.versionsHits++
+			reg.mu.Unlock()
 			payload := map[string]any{
 				"modules": []map[string]any{
 					{"versions": versionsPayload(reg.versions)},
@@ -65,7 +83,9 @@ func newFakeRegistry(t *testing.T, versions []string, downloads map[string]strin
 			_ = json.NewEncoder(w).Encode(payload)
 		case len(segs) == 5 && segs[4] == "download":
 			v := segs[3]
+			reg.mu.Lock()
 			reg.downloadHits[v]++
+			reg.mu.Unlock()
 			dl, ok := reg.downloads[v]
 			if !ok {
 				http.Error(w, "no such version", http.StatusNotFound)
@@ -149,8 +169,8 @@ func TestGetRegistryDownloadURL_NoConstraintPicksLatest(t *testing.T) {
 	got, err := n.getRegistryDownloadURL(regaddr.DefaultModuleRegistryHost, srv.URL, "acme", "thing", "aws", "")
 	require.NoError(t, err)
 	require.Equal(t, "https://example.com/v420.tar.gz", got)
-	require.Equal(t, 1, reg.versionsHits)
-	require.Equal(t, 1, reg.downloadHits["4.2.0"])
+	require.Equal(t, 1, reg.versionsHitCount())
+	require.Equal(t, 1, reg.downloadHitCount("4.2.0"))
 }
 
 func TestGetRegistryDownloadURL_ConstraintPicksHighestMatching(t *testing.T) {
@@ -163,7 +183,7 @@ func TestGetRegistryDownloadURL_ConstraintPicksHighestMatching(t *testing.T) {
 	got, err := n.getRegistryDownloadURL(regaddr.DefaultModuleRegistryHost, srv.URL, "acme", "thing", "aws", "~> 4.0")
 	require.NoError(t, err)
 	require.Equal(t, "https://example.com/v410.tar.gz", got)
-	require.Equal(t, 1, reg.downloadHits["4.1.0"])
+	require.Equal(t, 1, reg.downloadHitCount("4.1.0"))
 }
 
 func TestGetRegistryDownloadURL_ExactVersionPin(t *testing.T) {
@@ -265,7 +285,7 @@ func TestLoadModule_VersionConstraintPlumbedThroughToRegistry(t *testing.T) {
 	require.NotNil(t, loaded.Config)
 	require.Contains(t, loaded.Config.Outputs, "ok",
 		"the module body fetched should be the 4.0.1 fixture")
-	require.Equal(t, 1, reg.downloadHits["4.0.1"],
+	require.Equal(t, 1, reg.downloadHitCount("4.0.1"),
 		"constraint ~> 4.0 should resolve to 4.0.1 (highest 4.x), not 5.1.0 or 3.x")
 }
 
@@ -287,7 +307,7 @@ func TestLoadModule_VersionQueryStringStillSupported(t *testing.T) {
 
 	_, err := l.LoadModule(t.Context(), "acme/thing/aws?version=3.0.0", "", t.TempDir())
 	require.NoError(t, err)
-	require.Equal(t, 1, reg.downloadHits["3.0.0"])
+	require.Equal(t, 1, reg.downloadHitCount("3.0.0"))
 }
 
 // TestLoadModule_HostQualifiedRegistrySource verifies that a source carrying an

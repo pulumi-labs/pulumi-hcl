@@ -2241,17 +2241,25 @@ func (e *Engine) resolveMovedAliases(
 				}
 				fromPath := appendModuleSteps(scope, from.modules)
 
-				// Determine the prior instance key. A keyed `to` targets one specific
-				// instance and takes the prior key from `from`; an unkeyed `to` is a
-				// whole-resource rename that maps every instance to the same key.
+				// Determine the prior instance key. A keyed endpoint on either side
+				// makes this an instance move taking the prior key from `from` (an
+				// unkeyed endpoint paired with a keyed one names the no-key
+				// instance); with both endpoints unkeyed it is a whole-resource
+				// rename that maps every instance to the same key.
 				var priorIdx *int
 				var priorEach *string
-				if to.keyed() {
+				switch {
+				case to.keyed():
 					if !instanceKeysEqual(cur.index, cur.eachKey, to.keyIndex, to.keyEach) {
 						continue
 					}
 					priorIdx, priorEach = from.keyIndex, from.keyEach
-				} else {
+				case from.keyed():
+					if cur.index != nil || cur.eachKey != nil {
+						continue
+					}
+					priorIdx, priorEach = from.keyIndex, from.keyEach
+				default:
 					priorIdx, priorEach = cur.index, cur.eachKey
 				}
 
