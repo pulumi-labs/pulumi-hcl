@@ -23,13 +23,9 @@ import (
 
 // TestL2ModuleUnknownInputOptionalAttr drives a module input that is unknown at
 // preview and whose declared type adds an optional attribute the source object
-// lacks. OpenTofu always retypes a module argument to the variable's declared
-// type — even when the value is unknown — so the module body sees the declared
-// object type (with the optional `c`) and `var.cfg.c` is valid. pulumi-hcl
-// skips the type conversion for an unknown value, so the module body sees the
-// source object type (without `c`) and evaluating `var.cfg.c` fails preview
-// with "This object does not have an attribute named c". OpenTofu's plan
-// succeeds, so this is a real migration-breaking divergence.
+// lacks. A module argument must be retyped to the variable's declared type even
+// when the value is unknown, so the module body sees the declared object type
+// (with the optional `c`) and `var.cfg.c` is valid at preview.
 func TestL2ModuleUnknownInputOptionalAttr(t *testing.T) {
 	t.Parallel()
 	tfcompat.RunCase(t, "l2_module_unknown_input_optional_attr", tfcompat.Case{
