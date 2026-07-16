@@ -1381,4 +1381,3 @@ func (p *Parser) parseImportBlock(config *ast.Config, block *hcl.Block) hcl.Diag
 	config.Imports = append(config.Imports, imp)
 	return diags
 }
-
