@@ -82,8 +82,8 @@ func NewModuleProvider(ctx context.Context, version string) p.Provider {
 	}
 	return p.Provider{
 		Handshake:    m.handshake,
-		Parameterize: m.parameterize,
-		GetSchema:    m.getSchema,
+		Parameterize: classifyErrors(m.parameterize),
+		GetSchema:    classifyErrors(m.getSchema),
 		Configure:    func(context.Context, p.ConfigureRequest) error { return nil },
 		CheckConfig: func(_ context.Context, req p.CheckRequest) (p.CheckResponse, error) {
 			return p.CheckResponse{Inputs: req.Inputs}, nil
