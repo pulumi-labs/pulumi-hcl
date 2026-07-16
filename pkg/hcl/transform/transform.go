@@ -213,9 +213,16 @@ func evalBlockWithSchema(config hcl.Body, props []*schema.Property, mapping *bri
 		if isList {
 			appendBlockListValues(resourceInputs, key, []cty.Value{evaluated})
 		} else {
+			if existing, ok := resourceInputs[key]; ok {
+				// An earlier dynamic block with an unknown for_each owns the
+				// value; its expansion cannot be counted.
+				if unmarked, _ := existing.Unmark(); !unmarked.IsKnown() {
+					continue
+				}
+				diags = append(diags, tooManySingularBlocks(name, block.DefRange))
+				return cty.Value{}, nil, diags
+			}
 			// TF block flattened to a single Pulumi object (MaxItemsOne).
-			// Repeated blocks keep the last; the provider's later validation
-			// surfaces the user error.
 			resourceInputs[key] = evaluated
 		}
 	}
@@ -443,9 +450,22 @@ func evalDynamicBlock(
 		case isList:
 			appendBlockListValues(resourceInputs, key, values)
 		default:
-			// Singular block (MaxItemsOne): a dynamic expansion of length 1
-			// fills it; >1 is a user error the provider will validate.
-			resourceInputs[key] = values[len(values)-1]
+			// Singular block (MaxItemsOne): only an expansion of length 1
+			// fills it, and only if nothing else already has.
+			if len(values) > 1 {
+				diags = append(diags, tooManySingularBlocks(propName, block.DefRange))
+				return diags
+			}
+			if existing, ok := resourceInputs[key]; ok {
+				// An earlier unknown expansion owns the value; its element
+				// count cannot be checked.
+				if unmarked, _ := existing.Unmark(); !unmarked.IsKnown() {
+					return diags
+				}
+				diags = append(diags, tooManySingularBlocks(propName, block.DefRange))
+				return diags
+			}
+			resourceInputs[key] = values[0]
 		}
 	}
 	return diags
@@ -473,6 +493,17 @@ func appendBlockListValues(resourceInputs map[string]cty.Value, key string, valu
 	// for absent keys), so blockListValue falls back to a tuple rather than
 	// cty.ListVal, which would panic.
 	resourceInputs[key] = blockListValue(values)
+}
+
+// tooManySingularBlocks reports more than one block (static or dynamically
+// expanded) for a MaxItems=1 field.
+func tooManySingularBlocks(name string, rng hcl.Range) *hcl.Diagnostic {
+	return &hcl.Diagnostic{
+		Severity: hcl.DiagError,
+		Summary:  fmt.Sprintf("Too many %s blocks", name),
+		Detail:   fmt.Sprintf("No more than 1 %q blocks are allowed", name),
+		Subject:  rng.Ptr(),
+	}
 }
 
 // schemaToCtyPrimitive returns the cty primitive type corresponding to a
