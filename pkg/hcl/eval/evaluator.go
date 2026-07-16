@@ -269,11 +269,6 @@ func (e *Evaluator) EvaluateForEach(expr hcl.Expression) (result map[string]cty.
 	return result, false, deps, diags
 }
 
-// GetReferencedVariables returns all variables referenced by an expression.
-func (e *Evaluator) GetReferencedVariables(expr hcl.Expression) []hcl.Traversal {
-	return expr.Variables()
-}
-
 // ParseTraversal parses a traversal into its components.
 func ParseTraversal(traversal hcl.Traversal) (namespace string, parts []string) {
 	if len(traversal) == 0 {
@@ -404,10 +399,4 @@ func IsKnown(val cty.Value) bool {
 // EvaluateExpression evaluates an HCL expression.
 func (e *Evaluator) EvaluateExpression(expr hcl.Expression) (cty.Value, hcl.Diagnostics) {
 	return expr.Value(e.ctx.HCLContext())
-}
-
-// UnknownValue creates an unknown value of the given type.
-// This is used during planning when values are not yet known.
-func UnknownValue(ty cty.Type) cty.Value {
-	return cty.UnknownVal(ty)
 }

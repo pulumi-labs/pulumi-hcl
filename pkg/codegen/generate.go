@@ -852,26 +852,8 @@ func (g *generator) extractCallArgs(call *model.FunctionCallExpression) (resourc
 		resourceName = scopeTraversal.Traversal.RootName()
 	}
 	// Second arg: method name string literal
-	methodName, ok = extractStringLiteralFromCallArg(call.Args[1])
+	methodName, ok = extractStringLiteral(call.Args[1])
 	return resourceName, methodName, ok
-}
-
-// extractStringLiteralFromCallArg extracts a string value from a method name argument,
-// which can be a TemplateExpression or a LiteralValueExpression.
-func extractStringLiteralFromCallArg(expr model.Expression) (string, bool) {
-	switch e := expr.(type) {
-	case *model.LiteralValueExpression:
-		if e.Value.Type() == cty.String {
-			return e.Value.AsString(), true
-		}
-	case *model.TemplateExpression:
-		if len(e.Parts) == 1 {
-			if lit, ok := e.Parts[0].(*model.LiteralValueExpression); ok && lit.Value.Type() == cty.String {
-				return lit.Value.AsString(), true
-			}
-		}
-	}
-	return "", false
 }
 
 // genCallBlock generates a call block for a method invocation.

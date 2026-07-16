@@ -24,6 +24,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/hashicorp/go-hclog"
@@ -82,9 +83,6 @@ func PFProvider(name string, factory func() provider.Provider, rec *Recorder) Pr
 type Driver struct {
 	cwd             string
 	reattachConfigs map[string]*plugin.ReattachConfig
-	// Env is passed through to the terraform subprocess (and therefore to any
-	// provisioner shell commands) on top of os.Environ().
-	Env map[string]string
 }
 
 func init() {
@@ -160,25 +158,17 @@ func NewDriver(t *testing.T, providers []Provider) *Driver {
 // in (e.g. path.cwd) before cross-driver comparison.
 func (d *Driver) Dir() string { return d.cwd }
 
-// Apply writes the input files, runs terraform init + apply, and returns all outputs.
-// Config values are passed as -var flags to terraform apply.
+// TryApply writes the input files, runs terraform init + apply, and returns
+// all outputs, the apply's combined output (so callers can assert on
+// diagnostics, e.g. check-block warnings), and the error from `tofu apply`.
+// Config values are passed as -var flags to terraform apply. The outputs map
+// is still parsed from terraform.tfstate when the file exists, so callers can
+// inspect post-failure state.
 //
-// Apply may be called multiple times against the same Driver to drive a stack
-// across stages; previous program files are removed before the new ones are
-// written so a stage that drops a file doesn't leave the old one behind. State
-// files (terraform.tfstate*, .terraform*) are kept across applies.
-func (d *Driver) Apply(t *testing.T, input map[string]string, config map[string]string) map[string]string {
-	t.Helper()
-	outputs, _, err := d.TryApply(t, input, config)
-	require.NoError(t, err)
-	return outputs
-}
-
-// TryApply is like Apply but returns the error from `tofu apply` instead of
-// failing the test. It also returns the apply's combined output so callers can
-// assert on diagnostics (e.g. check-block warnings). The outputs map is still
-// parsed from terraform.tfstate when the file exists, so callers can inspect
-// post-failure state.
+// TryApply may be called multiple times against the same Driver to drive a
+// stack across stages; previous program files are removed before the new ones
+// are written so a stage that drops a file doesn't leave the old one behind.
+// State files (terraform.tfstate*, .terraform*) are kept across applies.
 func (d *Driver) TryApply(
 	t *testing.T, input map[string]string, config map[string]string,
 ) (map[string]string, string, error) {
@@ -250,13 +240,11 @@ func (d *Driver) Plan(t *testing.T, input map[string]string, config map[string]s
 	return err
 }
 
-// tryParseOutputs reads terraform.tfstate if it exists and returns its outputs.
-// Returns an empty map when the file is missing, so callers can use it on
-// failure paths without panicking.
-func (d *Driver) tryParseOutputs() map[string]string {
+// readStateOutputs reads terraform.tfstate and returns its outputs.
+func (d *Driver) readStateOutputs() (map[string]string, error) {
 	raw, err := os.ReadFile(filepath.Join(d.cwd, "terraform.tfstate"))
 	if err != nil {
-		return map[string]string{}
+		return nil, err
 	}
 	var state struct {
 		Outputs map[string]struct {
@@ -264,58 +252,31 @@ func (d *Driver) tryParseOutputs() map[string]string {
 		} `json:"outputs"`
 	}
 	if err := json.Unmarshal(raw, &state); err != nil {
-		return map[string]string{}
+		return nil, err
 	}
 	result := make(map[string]string, len(state.Outputs))
 	for k, v := range state.Outputs {
 		result[k] = normalizeStateOutput(v.Value)
 	}
-	return result
+	return result, nil
 }
 
-// StateResources reads terraform.tfstate and returns the list of resource
-// addresses present (e.g. "simple_resource.example"). Empty when the state
-// file is missing.
-func (d *Driver) StateResources(t *testing.T) []string {
-	t.Helper()
-	raw, err := os.ReadFile(filepath.Join(d.cwd, "terraform.tfstate"))
+// tryParseOutputs returns the state outputs, or an empty map when the state
+// file is missing or unreadable, so callers can use it on failure paths
+// without panicking.
+func (d *Driver) tryParseOutputs() map[string]string {
+	outputs, err := d.readStateOutputs()
 	if err != nil {
-		return nil
+		return map[string]string{}
 	}
-	var state struct {
-		Resources []struct {
-			Mode string `json:"mode"`
-			Type string `json:"type"`
-			Name string `json:"name"`
-		} `json:"resources"`
-	}
-	require.NoError(t, json.Unmarshal(raw, &state))
-	addrs := make([]string, 0, len(state.Resources))
-	for _, r := range state.Resources {
-		if r.Mode == "managed" {
-			addrs = append(addrs, r.Type+"."+r.Name)
-		}
-	}
-	return addrs
+	return outputs
 }
 
 func (d *Driver) parseOutputs(t *testing.T) map[string]string {
 	t.Helper()
-	raw, err := os.ReadFile(filepath.Join(d.cwd, "terraform.tfstate"))
+	outputs, err := d.readStateOutputs()
 	require.NoError(t, err)
-
-	var state struct {
-		Outputs map[string]struct {
-			Value json.RawMessage `json:"value"`
-		} `json:"outputs"`
-	}
-	require.NoError(t, json.Unmarshal(raw, &state))
-
-	result := make(map[string]string, len(state.Outputs))
-	for k, v := range state.Outputs {
-		result[k] = normalizeStateOutput(v.Value)
-	}
-	return result
+	return outputs
 }
 
 // normalizeStateOutput converts a value from terraform.tfstate to the same
@@ -396,7 +357,7 @@ func removeProgramFiles(dir string) error {
 		name := e.Name()
 		switch {
 		case name == ".terraform", name == ".terraform.lock.hcl":
-		case len(name) >= len("terraform.tfstate") && name[:len("terraform.tfstate")] == "terraform.tfstate":
+		case strings.HasPrefix(name, "terraform.tfstate"):
 		default:
 			if err := os.RemoveAll(filepath.Join(dir, name)); err != nil {
 				return err

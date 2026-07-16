@@ -71,9 +71,6 @@ type Context struct {
 	// moduleOutputs stores incremental per-output values: moduleName → outputName → value
 	moduleOutputs map[string]map[string]cty.Value
 
-	// providers contains provider references (provider.name)
-	providers map[string]cty.Value
-
 	// calls contains call results keyed as "resourceName.methodName"
 	calls map[string]cty.Value
 
@@ -88,9 +85,6 @@ type Context struct {
 
 	// each contains each context for for_each iteration
 	each *EachContext
-
-	// self contains the current resource for self references
-	self cty.Value
 
 	// typeInference makes HCLContext serve type-preserving function variants
 	// (see TypeInferenceFunctions). It is set only when the context is used to
@@ -230,7 +224,6 @@ func newContext(path PathContext, rootModuleDir, stack, project, organization st
 		dataSources:     make(map[string]cty.Value),
 		modules:         make(map[string]cty.Value),
 		moduleOutputs:   make(map[string]map[string]cty.Value),
-		providers:       make(map[string]cty.Value),
 		calls:           make(map[string]cty.Value),
 		path:            path,
 		pulumi: PulumiContext{
@@ -350,13 +343,6 @@ func (c *Context) SetCall(key string, value cty.Value) {
 	c.calls[key] = value
 }
 
-// SetProvider sets a provider reference.
-func (c *Context) SetProvider(name string, value cty.Value) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.providers[name] = value
-}
-
 // WithIteration returns a view of c that shares its evaluation state and lock
 // but carries its own count.index / each.key / each.value, so concurrent
 // registrations bind the iteration goroutine-locally instead of racing on the
@@ -381,25 +367,11 @@ func (c *Context) SetCount(index int) {
 	c.count = &CountContext{Index: index}
 }
 
-// ClearCount clears the count context.
-func (c *Context) ClearCount() {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.count = nil
-}
-
 // SetEach sets the each context for for_each iteration.
 func (c *Context) SetEach(key, value cty.Value) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.each = &EachContext{Key: key, Value: value}
-}
-
-// ClearEach clears the each context.
-func (c *Context) ClearEach() {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.each = nil
 }
 
 // SetModuleName records the resolved Pulumi logical name of the module
@@ -408,20 +380,6 @@ func (c *Context) SetModuleName(name string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.pulumi.ModuleName = &name
-}
-
-// SetSelf sets the self reference (for provisioner expressions).
-func (c *Context) SetSelf(value cty.Value) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.self = value
-}
-
-// ClearSelf clears the self reference.
-func (c *Context) ClearSelf() {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.self = cty.NilVal
 }
 
 // HCLContext returns an hcl.EvalContext for evaluating expressions.
@@ -604,11 +562,6 @@ func (c *Context) HCLContext() *hcl.EvalContext {
 		})
 	}
 
-	// Add self if set (for provisioners)
-	if c.self != cty.NilVal {
-		vars["self"] = c.self
-	}
-
 	functions := Functions(c.rootModuleDir)
 	if c.typeInference {
 		functions = TypeInferenceFunctions(c.rootModuleDir)
@@ -688,11 +641,9 @@ func (c *Context) Clone() *Context {
 		dataSources:       maps.Clone(c.dataSources),
 		modules:           maps.Clone(c.modules),
 		moduleOutputs:     clonedModuleOutputs,
-		providers:         maps.Clone(c.providers),
 		calls:             maps.Clone(c.calls),
 		path:              c.path,
 		pulumi:            c.pulumi,
-		self:              c.self,
 	}
 
 	if c.count != nil {

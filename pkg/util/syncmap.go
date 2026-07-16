@@ -50,28 +50,6 @@ func (s *SyncMap[K, V]) Get(key K) (V, bool) {
 	return v, ok
 }
 
-// Delete removes a value from the map.
-func (s *SyncMap[K, V]) Delete(key K) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	delete(s.m, key)
-}
-
-// Len returns the number of items in the map.
-func (s *SyncMap[K, V]) Len() int {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	return len(s.m)
-}
-
-func (s *SyncMap[K, V]) Keys() iter.Seq[K] {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-
-	// Copy the iterator so the iter is thread safe.
-	return slices.Values(slices.Collect(maps.Keys(s.m)))
-}
-
 func (s *SyncMap[K, V]) Values() iter.Seq[V] {
 	s.mu.RLock()
 	defer s.mu.RUnlock()

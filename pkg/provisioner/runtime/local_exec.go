@@ -54,7 +54,7 @@ func runLocalExec(ctx context.Context, spec *Spec, hclCtx *hcl.EvalContext) erro
 		return fmt.Errorf("local-exec: command must be non-empty")
 	}
 
-	workingDir, err := evalOptionalString(content, "working_dir", hclCtx)
+	workingDir, err := evalString(content, "working_dir", hclCtx)
 	if err != nil {
 		return err
 	}
@@ -167,10 +167,6 @@ func evalString(content *hcl.BodyContent, name string, hclCtx *hcl.EvalContext) 
 		return "", err
 	}
 	return val.AsString(), nil
-}
-
-func evalOptionalString(content *hcl.BodyContent, name string, hclCtx *hcl.EvalContext) (string, error) {
-	return evalString(content, name, hclCtx)
 }
 
 func evalOptionalBool(content *hcl.BodyContent, name string, hclCtx *hcl.EvalContext) (bool, error) {

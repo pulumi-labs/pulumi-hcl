@@ -162,42 +162,10 @@ backend:
 	return &Driver{pt: pt, dir: dir, providers: provNames}
 }
 
-// Apply writes programFiles into the project dir (replacing any prior .tf
-// program files) and runs `pulumi up`. Returns stack outputs and resource
-// state from the resulting deployment.
 // Dir returns the program directory where pulumi runs and program files are
 // written. Tests use this to scrub the temp path out of values that bake it
 // in (e.g. path.cwd) before cross-driver comparison.
 func (d *Driver) Dir() string { return d.dir }
-
-func (d *Driver) Apply(t *testing.T, programFiles map[string]string) Result {
-	t.Helper()
-
-	d.writeFiles(t, programFiles)
-
-	upResult := d.pt.Up(t)
-
-	outputs := make(map[string]string, len(upResult.Outputs))
-	for k, v := range upResult.Outputs {
-		if s, ok := v.Value.(string); ok {
-			outputs[k] = s
-		} else {
-			raw, err := json.Marshal(v.Value)
-			require.NoError(t, err)
-			outputs[k] = string(raw)
-		}
-	}
-
-	exported := d.pt.ExportStack(t)
-	var deployment apitype.DeploymentV3
-	require.NoError(t, json.Unmarshal(exported.Deployment, &deployment))
-
-	return Result{
-		Outputs:   outputs,
-		Resources: deployment.Resources,
-		Output:    upResult.StdOut + "\n" + upResult.StdErr,
-	}
-}
 
 // TryApply runs `pulumi up` and returns the error instead of fataling. State
 // is exported regardless of error so callers can inspect post-failure state.

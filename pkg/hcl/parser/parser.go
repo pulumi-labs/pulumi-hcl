@@ -25,6 +25,7 @@ import (
 	"github.com/hashicorp/hcl/v2/ext/typeexpr"
 	"github.com/pulumi-labs/pulumi-hcl/pkg/hcl/ast"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/tokens"
+	"github.com/pulumi/pulumi/sdk/v3/go/common/util/contract"
 	"github.com/zclconf/go-cty/cty"
 )
 
@@ -131,12 +132,11 @@ func (p *Parser) parseBlock(config *ast.Config, block *hcl.Block) hcl.Diagnostic
 	case "call":
 		return p.parseCallBlock(config, block)
 	default:
-		return hcl.Diagnostics{{
-			Severity: hcl.DiagError,
-			Summary:  "Unknown block type",
-			Detail:   fmt.Sprintf("Block type %q is not supported.", block.Type),
-			Subject:  &block.DefRange,
-		}}
+		// Body.Content(rootSchema) already rejected anything not listed in
+		// rootSchema, so reaching here means a type was added to rootSchema
+		// without a case in this switch.
+		contract.Failf("block type %q allowed by rootSchema but not handled", block.Type)
+		return nil
 	}
 }
 

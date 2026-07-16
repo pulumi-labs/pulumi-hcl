@@ -63,15 +63,8 @@ func TestStep_Accessors(t *testing.T) {
 
 	bare := modulepath.NewStep("a")
 	assert.Equal(t, "a", bare.Name())
-	_, ok := bare.Index()
+	_, ok := bare.Key()
 	assert.False(t, ok)
-	_, ok = bare.Key()
-	assert.False(t, ok)
-
-	idx := modulepath.NewIndexedStep("a", 3)
-	got, ok := idx.Index()
-	assert.True(t, ok)
-	assert.Equal(t, 3, got)
 
 	key := modulepath.NewKeyedStep("a", "k")
 	gotKey, ok := key.Key()
@@ -140,9 +133,7 @@ func TestPath_Parent(t *testing.T) {
 	parent, last, ok = ab.Parent()
 	assert.True(t, ok)
 	assert.Equal(t, "a", parent.LogicalName())
-	idx, hasIdx := last.Index()
-	assert.True(t, hasIdx)
-	assert.Equal(t, 5, idx)
+	assert.Equal(t, "b[5]", last.LogicalName())
 }
 
 func TestPath_Steps(t *testing.T) {
@@ -236,32 +227,6 @@ func TestPath_LogicalName_NoCollisionAcrossDashedKeys(t *testing.T) {
 	assert.Equal(t, `m-a["b"]`, byLabel.LogicalName())
 }
 
-func TestPath_NodeKey_DistinguishesPaths(t *testing.T) {
-	t.Parallel()
-
-	p1 := modulepath.Root().Append(modulepath.NewStep("a"))
-	p2 := modulepath.Root().Append(modulepath.NewStep("b"))
-	assert.NotEqual(t, p1.NodeKey("res"), p2.NodeKey("res"))
-}
-
-func TestPath_NodeKey_DistinguishesLocalIDs(t *testing.T) {
-	t.Parallel()
-
-	p := modulepath.Root().Append(modulepath.NewStep("a"))
-	assert.NotEqual(t, p.NodeKey("res1"), p.NodeKey("res2"))
-}
-
-func TestPath_NodeKey_NoBoundaryCollision(t *testing.T) {
-	t.Parallel()
-
-	// Without length prefixing, a label "ax" + local "b" would collide with
-	// label "a" + local "xb". With the length-prefixed encoding we use, they
-	// must differ.
-	p1 := modulepath.Root().Append(modulepath.NewStep("ax"))
-	p2 := modulepath.Root().Append(modulepath.NewStep("a"))
-	assert.NotEqual(t, p1.NodeKey("b"), p2.NodeKey("xb"))
-}
-
 func TestPath_PrefixString(t *testing.T) {
 	t.Parallel()
 
@@ -309,9 +274,7 @@ func TestPath_LargeIndex(t *testing.T) {
 
 	// Indices may exceed 64; the encoding allocates a full uint64 so this is fine.
 	p := modulepath.Root().Append(modulepath.NewIndexedStep("a", 1<<20))
-	idx, ok := first(p.Steps).Index()
-	assert.True(t, ok)
-	assert.Equal(t, 1<<20, idx)
+	assert.Equal(t, "a[1048576]", first(p.Steps).LogicalName())
 }
 
 // first returns the first value yielded by an iter.Seq[T]-like function.
