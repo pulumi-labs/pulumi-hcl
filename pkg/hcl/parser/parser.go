@@ -254,34 +254,28 @@ func (p *Parser) parseTerraformComponentBlock(block *hcl.Block) (*ast.ComponentB
 	}
 
 	if attr, ok := content.Attributes["name"]; ok {
-		val, valDiags := attr.Expr.Value(nil)
+		valDiags := gohcl.DecodeExpression(attr.Expr, nil, &comp.Name)
 		diags = append(diags, valDiags...)
-		if val.Type() == cty.String {
-			comp.Name = val.AsString()
-			if !tokens.IsName(comp.Name) {
-				diags = append(diags, &hcl.Diagnostic{
-					Severity: hcl.DiagError,
-					Summary:  "Invalid component name",
-					Detail:   fmt.Sprintf("%q is not a valid Pulumi name.", comp.Name),
-					Subject:  attr.Expr.Range().Ptr(),
-				})
-			}
+		if !valDiags.HasErrors() && !tokens.IsName(comp.Name) {
+			diags = append(diags, &hcl.Diagnostic{
+				Severity: hcl.DiagError,
+				Summary:  "Invalid component name",
+				Detail:   fmt.Sprintf("%q is not a valid Pulumi name.", comp.Name),
+				Subject:  attr.Expr.Range().Ptr(),
+			})
 		}
 	}
 
 	if attr, ok := content.Attributes["module"]; ok {
-		val, valDiags := attr.Expr.Value(nil)
+		valDiags := gohcl.DecodeExpression(attr.Expr, nil, &comp.Module)
 		diags = append(diags, valDiags...)
-		if val.Type() == cty.String {
-			comp.Module = val.AsString()
-			if !tokens.IsName(comp.Module) {
-				diags = append(diags, &hcl.Diagnostic{
-					Severity: hcl.DiagError,
-					Summary:  "Invalid component module",
-					Detail:   fmt.Sprintf("%q is not a valid Pulumi name.", comp.Module),
-					Subject:  attr.Expr.Range().Ptr(),
-				})
-			}
+		if !valDiags.HasErrors() && !tokens.IsName(comp.Module) {
+			diags = append(diags, &hcl.Diagnostic{
+				Severity: hcl.DiagError,
+				Summary:  "Invalid component module",
+				Detail:   fmt.Sprintf("%q is not a valid Pulumi name.", comp.Module),
+				Subject:  attr.Expr.Range().Ptr(),
+			})
 		}
 	}
 
@@ -298,26 +292,22 @@ func (p *Parser) parseTerraformPackageBlock(block *hcl.Block) (*ast.PackageBlock
 	}
 
 	if attr, ok := content.Attributes["name"]; ok {
-		val, valDiags := attr.Expr.Value(nil)
+		valDiags := gohcl.DecodeExpression(attr.Expr, nil, &pkg.Name)
 		diags = append(diags, valDiags...)
-		if val.Type() == cty.String {
-			pkg.Name = val.AsString()
-			if !tokens.IsName(pkg.Name) {
-				diags = append(diags, &hcl.Diagnostic{
-					Severity: hcl.DiagError,
-					Summary:  "Invalid package name",
-					Detail:   fmt.Sprintf("%q is not a valid Pulumi name.", pkg.Name),
-					Subject:  attr.Expr.Range().Ptr(),
-				})
-			}
+		if !valDiags.HasErrors() && !tokens.IsName(pkg.Name) {
+			diags = append(diags, &hcl.Diagnostic{
+				Severity: hcl.DiagError,
+				Summary:  "Invalid package name",
+				Detail:   fmt.Sprintf("%q is not a valid Pulumi name.", pkg.Name),
+				Subject:  attr.Expr.Range().Ptr(),
+			})
 		}
 	}
 
 	if attr, ok := content.Attributes["version"]; ok {
-		val, valDiags := attr.Expr.Value(nil)
+		valDiags := gohcl.DecodeExpression(attr.Expr, nil, &pkg.Version)
 		diags = append(diags, valDiags...)
-		if val.Type() == cty.String {
-			pkg.Version = val.AsString()
+		if !valDiags.HasErrors() {
 			if _, err := semver.Parse(pkg.Version); err != nil {
 				diags = append(diags, &hcl.Diagnostic{
 					Severity: hcl.DiagError,
@@ -370,27 +360,15 @@ func (p *Parser) parseRequiredProviders(tf *ast.Terraform, block *hcl.Block) hcl
 				kw := hcl.ExprAsKeyword(pair.Key)
 				switch kw {
 				case "source":
-					v, vd := pair.Value.Value(nil)
-					diags = append(diags, vd...)
-					if v.Type() == cty.String && !v.IsNull() {
-						provider.Source = v.AsString()
-					}
+					diags = append(diags, gohcl.DecodeExpression(pair.Value, nil, &provider.Source)...)
 				case "version":
-					v, vd := pair.Value.Value(nil)
-					diags = append(diags, vd...)
-					if v.Type() == cty.String && !v.IsNull() {
-						provider.Version = v.AsString()
-					}
+					diags = append(diags, gohcl.DecodeExpression(pair.Value, nil, &provider.Version)...)
 				case "configuration_aliases":
 					// Accept and ignore — see comment above.
 				}
 			}
 		} else {
-			val, valDiags := attr.Expr.Value(nil)
-			diags = append(diags, valDiags...)
-			if val.Type() == cty.String {
-				provider.Version = val.AsString()
-			}
+			diags = append(diags, gohcl.DecodeExpression(attr.Expr, nil, &provider.Version)...)
 		}
 
 		// Pulumi providers don't go through TF-style constraint resolution, so
@@ -440,11 +418,7 @@ func (p *Parser) parseProviderBlock(config *ast.Config, block *hcl.Block) hcl.Di
 	}
 
 	if attr, ok := content.Attributes["alias"]; ok {
-		val, valDiags := attr.Expr.Value(nil)
-		diags = append(diags, valDiags...)
-		if val.Type() == cty.String {
-			provider.Alias = val.AsString()
-		}
+		diags = append(diags, gohcl.DecodeExpression(attr.Expr, nil, &provider.Alias)...)
 	}
 	if attr, ok := content.Attributes["for_each"]; ok {
 		provider.ForEach = attr.Expr
@@ -540,19 +514,11 @@ func (p *Parser) parseVariableBlock(config *ast.Config, block *hcl.Block) hcl.Di
 	}
 
 	if attr, ok := content.Attributes["description"]; ok {
-		val, valDiags := attr.Expr.Value(nil)
-		diags = append(diags, valDiags...)
-		if val.Type() == cty.String {
-			variable.Description = val.AsString()
-		}
+		diags = append(diags, gohcl.DecodeExpression(attr.Expr, nil, &variable.Description)...)
 	}
 
 	if attr, ok := content.Attributes["sensitive"]; ok {
-		val, valDiags := attr.Expr.Value(nil)
-		diags = append(diags, valDiags...)
-		if val.Type() == cty.Bool {
-			variable.Sensitive = val.True()
-		}
+		diags = append(diags, gohcl.DecodeExpression(attr.Expr, nil, &variable.Sensitive)...)
 	}
 
 	if attr, ok := content.Attributes["ephemeral"]; ok {
@@ -560,11 +526,7 @@ func (p *Parser) parseVariableBlock(config *ast.Config, block *hcl.Block) hcl.Di
 	}
 
 	if attr, ok := content.Attributes["nullable"]; ok {
-		val, valDiags := attr.Expr.Value(nil)
-		diags = append(diags, valDiags...)
-		if val.Type() == cty.Bool {
-			variable.Nullable = val.True()
-		}
+		diags = append(diags, gohcl.DecodeExpression(attr.Expr, nil, &variable.Nullable)...)
 	}
 
 	for _, subBlock := range content.Blocks {
@@ -844,11 +806,7 @@ func (p *Parser) parsePulumiResourceOptions(block *hcl.Block, resource *ast.Reso
 	}
 
 	if attr, ok := content.Attributes["import_id"]; ok {
-		val, valDiags := attr.Expr.Value(nil)
-		diags = append(diags, valDiags...)
-		if val.Type() == cty.String {
-			resource.ImportID = val.AsString()
-		}
+		diags = append(diags, gohcl.DecodeExpression(attr.Expr, nil, &resource.ImportID)...)
 	}
 
 	if attr, ok := content.Attributes["env_var_mappings"]; ok {
@@ -886,19 +844,20 @@ func (p *Parser) parseLifecycleBlock(block *hcl.Block) (*lifecycleResult, hcl.Di
 	}
 
 	if attr, ok := content.Attributes["create_before_destroy"]; ok {
-		val, valDiags := attr.Expr.Value(nil)
+		var b bool
+		valDiags := gohcl.DecodeExpression(attr.Expr, nil, &b)
 		diags = append(diags, valDiags...)
-		if val.Type() == cty.Bool {
-			b := val.True()
+		if !valDiags.HasErrors() {
 			lifecycle.CreateBeforeDestroy = &b
 		}
 	}
 
 	if attr, ok := content.Attributes["prevent_destroy"]; ok {
-		val, valDiags := attr.Expr.Value(nil)
+		var b bool
+		valDiags := gohcl.DecodeExpression(attr.Expr, nil, &b)
 		diags = append(diags, valDiags...)
-		if val.Type() == cty.Bool {
-			lifecycle.PreventDestroy = ptr(val.True())
+		if !valDiags.HasErrors() {
+			lifecycle.PreventDestroy = &b
 		}
 	}
 
@@ -966,11 +925,7 @@ func (p *Parser) parseConnectionBlock(block *hcl.Block) (*ast.Connection, hcl.Di
 	}
 
 	if attr, ok := content.Attributes["type"]; ok {
-		val, valDiags := attr.Expr.Value(nil)
-		diags = append(diags, valDiags...)
-		if val.Type() == cty.String {
-			conn.Type = val.AsString()
-		}
+		diags = append(diags, gohcl.DecodeExpression(attr.Expr, nil, &conn.Type)...)
 	}
 
 	if conn.Type == "" {
@@ -1106,19 +1061,11 @@ func (p *Parser) parseOutputBlock(config *ast.Config, block *hcl.Block) hcl.Diag
 	}
 
 	if attr, ok := content.Attributes["description"]; ok {
-		val, valDiags := attr.Expr.Value(nil)
-		diags = append(diags, valDiags...)
-		if val.Type() == cty.String {
-			output.Description = val.AsString()
-		}
+		diags = append(diags, gohcl.DecodeExpression(attr.Expr, nil, &output.Description)...)
 	}
 
 	if attr, ok := content.Attributes["sensitive"]; ok {
-		val, valDiags := attr.Expr.Value(nil)
-		diags = append(diags, valDiags...)
-		if val.Type() == cty.Bool {
-			output.Sensitive = val.True()
-		}
+		diags = append(diags, gohcl.DecodeExpression(attr.Expr, nil, &output.Sensitive)...)
 	}
 
 	if attr, ok := content.Attributes["ephemeral"]; ok {
@@ -1262,19 +1209,11 @@ func (p *Parser) parseModuleBlock(config *ast.Config, block *hcl.Block) hcl.Diag
 	}
 
 	if attr, ok := content.Attributes["source"]; ok {
-		val, valDiags := attr.Expr.Value(nil)
-		diags = append(diags, valDiags...)
-		if val.Type() == cty.String {
-			module.Source = val.AsString()
-		}
+		diags = append(diags, gohcl.DecodeExpression(attr.Expr, nil, &module.Source)...)
 	}
 
 	if attr, ok := content.Attributes["version"]; ok {
-		val, valDiags := attr.Expr.Value(nil)
-		diags = append(diags, valDiags...)
-		if val.Type() == cty.String {
-			module.Version = val.AsString()
-		}
+		diags = append(diags, gohcl.DecodeExpression(attr.Expr, nil, &module.Version)...)
 	}
 
 	if attr, ok := content.Attributes["count"]; ok {
@@ -1453,4 +1392,3 @@ func (p *Parser) parseImportBlock(config *ast.Config, block *hcl.Block) hcl.Diag
 	return diags
 }
 
-func ptr[T any](v T) *T { return &v }

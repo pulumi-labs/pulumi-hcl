@@ -845,6 +845,61 @@ variable "token" {
 	assert.True(t, config.Variables["token"].Ephemeral)
 }
 
+// TestParseConstantAttributeTypes pins that constant-valued block attributes
+// are decoded strictly: a value of the wrong type is a hard error rather than
+// being silently ignored, and a value convertible to the target type (e.g.
+// "true" for a bool) is accepted.
+func TestParseConstantAttributeTypes(t *testing.T) {
+	t.Parallel()
+
+	errCases := map[string]string{
+		"variable sensitive":       `variable "v" { sensitive = "yes" }`,
+		"variable nullable":        `variable "v" { nullable = "yes" }`,
+		"variable description":     `variable "v" { description = ["x"] }`,
+		"output sensitive":         `output "o" { value = "v", sensitive = 3 }`,
+		"output description":       `output "o" { value = "v", description = {} }`,
+		"lifecycle cbd":            `resource "r" "r" { lifecycle { create_before_destroy = "x" } }`,
+		"lifecycle prevent":        `resource "r" "r" { lifecycle { prevent_destroy = [true] } }`,
+		"provider alias":           `provider "p" { alias = ["a"] }`,
+		"module source":            `module "m" { source = ["./m"] }`,
+		"required_providers src":   `terraform { required_providers { p = { source = ["x"] } } }`,
+		"connection type":          `resource "r" "r" { connection { type = ["ssh"] } }`,
+		"component name":           `terraform { component { name = ["C"] } }`,
+		"package version non-str":  `terraform { package { name = "p", version = ["1"] } }`,
+		"resource pulumi importId": `resource "r" "r" { pulumi { import_id = ["i"] } }`,
+	}
+	for name, src := range errCases {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			_, diags := NewParser().ParseSource("test.tf", []byte(src))
+			require.True(t, diags.HasErrors(), "expected a type error for: %s", src)
+		})
+	}
+
+	// Values convertible to the target type are accepted, and site-specific
+	// validation still runs on the decoded value.
+	config, diags := NewParser().ParseSource("test.tf", []byte(`
+variable "v" {
+  sensitive = "true"
+  nullable  = "false"
+}
+`))
+	require.False(t, diags.HasErrors(), "unexpected errors: %v", diags.Errs())
+	assert.True(t, config.Variables["v"].Sensitive)
+	assert.False(t, config.Variables["v"].Nullable)
+
+	_, diags = NewParser().ParseSource("test.tf", []byte(`
+terraform {
+  package {
+    name    = "pkg"
+    version = "not-semver"
+  }
+}
+`))
+	require.True(t, diags.HasErrors())
+	assert.Equal(t, "Invalid package version", diags[0].Summary)
+}
+
 func TestParseProviderForEach(t *testing.T) {
 	t.Parallel()
 	src := []byte(`
