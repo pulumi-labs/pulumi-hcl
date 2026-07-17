@@ -1,0 +1,6 @@
+kind: bug-fixes
+body: Resolve `path.module` file reads against the module directory during schema generation, typing missing files as `any`
+time: 2026-07-17T22:15:00Z
+custom:
+    Component: runtime
+    PR: "426"

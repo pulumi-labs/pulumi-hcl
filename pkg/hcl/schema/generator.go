@@ -207,7 +207,14 @@ func GenerateModuleSchema(
 func buildTypeScope(
 	ctx context.Context, config *ast.Config, binder *Binder, path map[string]bool,
 ) (*eval.Context, error) {
-	scope, err := eval.NewContext(".", ".", ".", "", "", "")
+	// Root the scope at the module's own directory so path.module-relative
+	// file reads resolve against the module's files rather than the
+	// provider's working directory.
+	dir := "."
+	if binder != nil && binder.ModuleDir != "" {
+		dir = binder.ModuleDir
+	}
+	scope, err := eval.NewContext(dir, dir, dir, "", "", "")
 	if err != nil {
 		return nil, err
 	}
