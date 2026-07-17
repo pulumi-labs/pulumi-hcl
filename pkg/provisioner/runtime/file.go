@@ -21,6 +21,7 @@ import (
 	"strings"
 
 	"github.com/hashicorp/hcl/v2"
+	"github.com/zclconf/go-cty/cty"
 
 	"github.com/pulumi-labs/pulumi-hcl/pkg/provisioner/provisioners"
 	"github.com/pulumi-labs/pulumi-hcl/vendored/communicator"
@@ -40,11 +41,11 @@ func runFile(ctx context.Context, spec *Spec, hclCtx *hcl.EvalContext) error {
 		return fmt.Errorf("file: %s", diags.Error())
 	}
 
-	source, err := evalString(content, "source", hclCtx)
+	source, err := evalAttr(content, "source", cty.String, hclCtx)
 	if err != nil {
 		return err
 	}
-	bodyContent, err := evalString(content, "content", hclCtx)
+	bodyContent, err := evalAttr(content, "content", cty.String, hclCtx)
 	if err != nil {
 		return err
 	}
@@ -55,7 +56,7 @@ func runFile(ctx context.Context, spec *Spec, hclCtx *hcl.EvalContext) error {
 	if destination == "" {
 		return fmt.Errorf("file: destination must be non-empty")
 	}
-	if exactlyOneSet(source != "", bodyContent != "") != 1 {
+	if exactlyOneSet(!source.IsNull(), !bodyContent.IsNull()) != 1 {
 		return fmt.Errorf("file: exactly one of source or content must be set")
 	}
 
@@ -78,18 +79,19 @@ func runFile(ctx context.Context, spec *Spec, hclCtx *hcl.EvalContext) error {
 	}
 	defer func() { _ = comm.Disconnect() }()
 
-	if bodyContent != "" {
-		return comm.Upload(destination, strings.NewReader(bodyContent))
+	if !bodyContent.IsNull() {
+		return comm.Upload(destination, strings.NewReader(bodyContent.AsString()))
 	}
 
-	info, err := os.Stat(source)
+	src := source.AsString()
+	info, err := os.Stat(src)
 	if err != nil {
 		return fmt.Errorf("file: stat source: %w", err)
 	}
 	if info.IsDir() {
-		return comm.UploadDir(destination, source)
+		return comm.UploadDir(destination, src)
 	}
-	f, err := os.Open(source)
+	f, err := os.Open(src)
 	if err != nil {
 		return fmt.Errorf("file: opening source: %w", err)
 	}
