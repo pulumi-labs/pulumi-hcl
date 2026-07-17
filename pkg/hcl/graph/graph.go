@@ -22,11 +22,13 @@ import (
 	"errors"
 	"fmt"
 	"maps"
+	"math/big"
 	"slices"
 	"strings"
 
 	"github.com/hashicorp/hcl/v2"
 	"github.com/hashicorp/hcl/v2/hclsyntax"
+	"github.com/zclconf/go-cty/cty"
 	"github.com/pulumi-labs/pulumi-hcl/pkg/hcl/ast"
 	"github.com/pulumi-labs/pulumi-hcl/pkg/hcl/eval"
 	"github.com/pulumi-labs/pulumi-hcl/pkg/hcl/modulepath"
@@ -128,6 +130,30 @@ type Node struct {
 
 	// ModuleInfo is set for nodes that belong to an inlined module.
 	ModuleInfo *ModuleInfo
+
+	// Deps is set for resource/data nodes: the same dependencies that back the
+	// node's graph edges, kept in classified form so the engine's expansion
+	// layer can wire them per module instance at instance granularity.
+	Deps *BlockDeps
+}
+
+// BlockDeps classifies a resource/data block's dependencies for the expansion
+// layer. Static deps are graph nodes outside the block's own scope's
+// resource/data blocks (variables, locals, providers, module init, …) and are
+// wired as-is. Whole and Narrow name same-scope resource/data blocks by node
+// key; the engine resolves them against the consumer's own module instance —
+// Whole binds to the target's completion, Narrow to the gate of one instance.
+type BlockDeps struct {
+	Static []pdag.Node
+	Whole  []string
+	Narrow []InstanceDep
+}
+
+// InstanceDep names one instance of a same-scope resource/data block: the
+// block's node key plus the instance's key suffix (`[0]`, `["x"]`).
+type InstanceDep struct {
+	Key    string
+	Suffix string
 }
 
 // NodeType indicates what type of configuration element a node represents.
@@ -451,12 +477,15 @@ func BuildFromConfig(config *ast.Config, moduleLoader ModuleLoader, workDir stri
 
 	// Add resource nodes
 	for key, resource := range config.Resources {
-		deps := g.resourceDeps(resource, "")
-		deps = append(deps, g.defaultProviderDeps(resource, config, "")...)
+		bd, deps := g.resourceDeps(resource, "")
+		provDeps := g.defaultProviderDeps(resource, config, "")
+		bd.Static = append(bd.Static, provDeps...)
+		deps = append(deps, provDeps...)
 		err := g.AddNode(&Node{
 			Key:      key,
 			Type:     NodeTypeResource,
 			Resource: resource,
+			Deps:     bd,
 		}, deps)
 		if err != nil {
 			return nil, err
@@ -465,12 +494,15 @@ func BuildFromConfig(config *ast.Config, moduleLoader ModuleLoader, workDir stri
 
 	// Add data source nodes
 	for key, dataSource := range config.DataSources {
-		deps := g.resourceDeps(dataSource, "")
-		deps = append(deps, g.defaultProviderDeps(dataSource, config, "")...)
+		bd, deps := g.resourceDeps(dataSource, "")
+		provDeps := g.defaultProviderDeps(dataSource, config, "")
+		bd.Static = append(bd.Static, provDeps...)
+		deps = append(deps, provDeps...)
 		err := g.AddNode(&Node{
 			Key:      "data." + key,
 			Type:     NodeTypeDataSource,
 			Resource: dataSource,
+			Deps:     bd,
 		}, deps)
 		if err != nil {
 			return nil, err
@@ -718,44 +750,86 @@ func packageNameFromResourceType(token string) string {
 	return strings.SplitN(token, "_", 2)[0]
 }
 
-// resourceDeps extracts all dependencies from a resource, applying prefix to resolved keys.
-func (g *Graph) resourceDeps(resource *ast.Resource, prefix string) []pdag.Node {
+// resourceDeps extracts all dependencies from a resource, applying prefix to
+// resolved keys. It returns the block-level edge set for the node (unchanged
+// coarse semantics: cycle detection, Validate, and completion ordering all
+// stay block-granular) alongside the same dependencies in classified form for
+// the engine's expansion layer. References in the body, count/for_each, and
+// depends_on classify as whole-block or single-instance; every other
+// dependency kind (provider refs, ResourceParent, DeletedWith, ReplaceWith,
+// replace_triggered_by, aliases) stays static (block-granular).
+func (g *Graph) resourceDeps(resource *ast.Resource, prefix string) (*BlockDeps, []pdag.Node) {
+	bd := &BlockDeps{}
 	seen := make(map[pdag.Node]bool)
+	staticSeen := make(map[pdag.Node]bool)
+	wholeSeen := make(map[string]bool)
+	narrowSeen := make(map[InstanceDep]bool)
 
-	for _, dep := range g.exprDeps(resource.Count, prefix) {
-		seen[dep] = true
+	addStatic := func(n pdag.Node) {
+		seen[n] = true
+		if !staticSeen[n] {
+			staticSeen[n] = true
+			bd.Static = append(bd.Static, n)
+		}
 	}
-	for _, dep := range g.exprDeps(resource.ForEach, prefix) {
-		seen[dep] = true
+	addStaticRefs := func(refs []depRef) {
+		for _, ref := range refs {
+			_, n := g.newNode(ref.key)
+			addStatic(n)
+		}
 	}
+	classify := func(refs []depRef) {
+		for _, ref := range refs {
+			_, n := g.newNode(ref.key)
+			id, sameScope := g.classifyDep(ref, prefix)
+			if !sameScope {
+				addStatic(n)
+				continue
+			}
+			seen[n] = true
+			if id.Suffix == "" {
+				if !wholeSeen[ref.key] {
+					wholeSeen[ref.key] = true
+					bd.Whole = append(bd.Whole, ref.key)
+				}
+			} else if !narrowSeen[id] {
+				narrowSeen[id] = true
+				bd.Narrow = append(bd.Narrow, id)
+			}
+		}
+	}
+
+	classify(g.exprDepRefs(resource.Count, prefix, nil))
+	classify(g.exprDepRefs(resource.ForEach, prefix, nil))
 	for _, traversal := range resource.DependsOn {
 		if dep := formatTraversal(traversal); dep != "" {
 			g.recordRef(prefix+dep, traversal.SourceRange())
-			_, idx := g.newNode(prefix + dep)
-			seen[idx] = true
+			classify([]depRef{{key: prefix + dep, traversal: traversal}})
 		}
 	}
+	if resource.Config != nil {
+		classify(g.bodyDepRefs(resource.Config, prefix, nil))
+	}
+
 	if resource.ResourceParent != nil {
 		if dep := formatTraversal(resource.ResourceParent); dep != "" {
 			g.recordRef(prefix+dep, resource.ResourceParent.SourceRange())
 			_, idx := g.newNode(prefix + dep)
-			seen[idx] = true
+			addStatic(idx)
 		}
 	}
-	for _, dep := range g.exprDeps(resource.Provider, prefix) {
-		seen[dep] = true
-	}
+	addStaticRefs(g.exprDepRefs(resource.Provider, prefix, nil))
 	// A bare `provider = name` reference (no alias) is a single-segment
-	// traversal, which exprDeps drops because it carries no attribute after the
-	// root. It names the default configuration, which resolves through
+	// traversal, which exprDepRefs drops because it carries no attribute after
+	// the root. It names the default configuration, which resolves through
 	// inheritance and may be implicit, so order the resource after whichever
 	// node registers it (if any). Aliased (`name.alias`) and call-based
 	// (`call.x.y`) provider expressions have further segments and are already
-	// resolved by exprDeps above.
+	// resolved by exprDepRefs above.
 	if resource.Provider != nil {
 		if vars := resource.Provider.Variables(); len(vars) == 1 && len(vars[0]) == 1 {
 			for _, dep := range g.defaultProviderNode(vars[0].RootName(), g.scopes[prefix]) {
-				seen[dep] = true
+				addStatic(dep)
 			}
 		}
 	}
@@ -763,40 +837,88 @@ func (g *Graph) resourceDeps(resource *ast.Resource, prefix string) []pdag.Node 
 		if dep := formatTraversal(traversal); dep != "" {
 			g.recordRef(prefix+dep, traversal.SourceRange())
 			_, idx := g.newNode(prefix + dep)
-			seen[idx] = true
-		}
-	}
-	if resource.Config != nil {
-		for _, dep := range g.bodyDeps(resource.Config, prefix, nil) {
-			seen[dep] = true
+			addStatic(idx)
 		}
 	}
 	if resource.DeletedWith != nil {
 		if dep := formatTraversal(resource.DeletedWith); dep != "" {
 			g.recordRef(prefix+dep, resource.DeletedWith.SourceRange())
 			_, idx := g.newNode(prefix + dep)
-			seen[idx] = true
+			addStatic(idx)
 		}
 	}
 	for _, traversal := range resource.ReplaceWith {
 		if dep := formatTraversal(traversal); dep != "" {
 			g.recordRef(prefix+dep, traversal.SourceRange())
 			_, idx := g.newNode(prefix + dep)
-			seen[idx] = true
+			addStatic(idx)
 		}
 	}
 	if resource.Lifecycle != nil {
 		for _, expr := range resource.Lifecycle.ReplaceTriggeredBy {
-			for _, dep := range g.exprDeps(expr, prefix) {
-				seen[dep] = true
-			}
+			addStaticRefs(g.exprDepRefs(expr, prefix, nil))
 		}
 	}
-	for _, dep := range g.exprDeps(resource.Aliases, prefix) {
-		seen[dep] = true
+	addStaticRefs(g.exprDepRefs(resource.Aliases, prefix, nil))
+
+	// A whole-block dependency already waits for every instance; drop narrow
+	// entries it subsumes.
+	bd.Narrow = slices.DeleteFunc(bd.Narrow, func(d InstanceDep) bool { return wholeSeen[d.Key] })
+	if len(bd.Narrow) == 0 {
+		bd.Narrow = nil
 	}
 
-	return slices.Collect(maps.Keys(seen))
+	return bd, slices.Collect(maps.Keys(seen))
+}
+
+// classifyDep reports whether ref names a resource/data block declared in the
+// scope at prefix (sameScope), and if so which instance it addresses: a
+// non-empty Suffix when the traversal indexes the block with a literal string
+// or whole-number key, "" for a whole-block reference.
+func (g *Graph) classifyDep(ref depRef, prefix string) (id InstanceDep, sameScope bool) {
+	scope := g.scopes[prefix]
+	if scope == nil || ref.traversal == nil {
+		return InstanceDep{}, false
+	}
+	base := strings.TrimPrefix(ref.key, prefix)
+	// The index step follows the two naming steps (type.name), or three for
+	// data sources (data.type.name).
+	idxPos := 2
+	blockKey, isData := strings.CutPrefix(base, "data.")
+	if isData {
+		idxPos = 3
+		if _, ok := scope.config.DataSources[blockKey]; !ok {
+			return InstanceDep{}, false
+		}
+	} else if _, ok := scope.config.Resources[base]; !ok {
+		return InstanceDep{}, false
+	}
+	return InstanceDep{Key: ref.key, Suffix: literalIndexSuffix(ref.traversal, idxPos)}, true
+}
+
+// literalIndexSuffix returns the instance-key suffix (`[0]`, `["x"]`) when the
+// traversal step at idxPos indexes by a literal string or whole non-negative
+// number, and "" otherwise — dynamic indexes, splats, and out-of-domain keys
+// all fall back to whole-block granularity.
+func literalIndexSuffix(t hcl.Traversal, idxPos int) string {
+	if idxPos >= len(t) {
+		return ""
+	}
+	idx, ok := t[idxPos].(hcl.TraverseIndex)
+	if !ok || idx.Key.IsNull() || !idx.Key.IsKnown() {
+		return ""
+	}
+	switch idx.Key.Type() {
+	case cty.String:
+		return fmt.Sprintf("[%q]", idx.Key.AsString())
+	case cty.Number:
+		i, acc := idx.Key.AsBigFloat().Int64()
+		if acc != big.Exact || i < 0 {
+			return ""
+		}
+		return fmt.Sprintf("[%d]", i)
+	}
+	return ""
 }
 
 // providerDeps extracts all dependencies from a provider block, applying prefix
@@ -819,19 +941,23 @@ func (g *Graph) providerDeps(provider *ast.Provider, key, prefix string) []pdag.
 
 // bodyDeps extracts dependencies from an HCL body, applying prefix to resolved keys.
 func (g *Graph) bodyDeps(body hcl.Body, prefix string, exclude map[string]bool) []pdag.Node {
+	return g.refsToNodes(g.bodyDepRefs(body, prefix, exclude))
+}
+
+// bodyDepRefs extracts one depRef per referencing traversal in an HCL body,
+// applying prefix to resolved keys.
+func (g *Graph) bodyDepRefs(body hcl.Body, prefix string, exclude map[string]bool) []depRef {
 	if eb, ok := body.(*ast.EscapedBody); ok {
 		// Scan the underlying bodies so the native-syntax walk below still
 		// sees dynamic and lifecycle blocks; the merged body hides them.
-		return append(g.bodyDeps(eb.Base, prefix, exclude), g.bodyDeps(eb.Escape, prefix, exclude)...)
+		return append(g.bodyDepRefs(eb.Base, prefix, exclude), g.bodyDepRefs(eb.Escape, prefix, exclude)...)
 	}
 
-	seen := make(map[pdag.Node]bool)
+	var refs []depRef
 
 	attrs, _ := body.JustAttributes()
 	for _, attr := range attrs {
-		for _, dep := range g.exprDepsExcluding(attr.Expr, prefix, exclude) {
-			seen[dep] = true
-		}
+		refs = append(refs, g.exprDepRefs(attr.Expr, prefix, exclude)...)
 	}
 
 	if syntaxBody, ok := body.(*hclsyntax.Body); ok {
@@ -846,9 +972,7 @@ func (g *Graph) bodyDeps(body hcl.Body, prefix string, exclude map[string]bool) 
 				childExclude := make(map[string]bool, len(exclude)+1)
 				maps.Copy(childExclude, exclude)
 				childExclude[iterName] = true
-				for _, dep := range g.bodyDeps(block.Body, prefix, childExclude) {
-					seen[dep] = true
-				}
+				refs = append(refs, g.bodyDepRefs(block.Body, prefix, childExclude)...)
 			} else if block.Type == "lifecycle" {
 				// lifecycle blocks contain ignore_changes which holds property
 				// paths (e.g. tags["env"]), not dependency references. We must
@@ -857,25 +981,19 @@ func (g *Graph) bodyDeps(body hcl.Body, prefix string, exclude map[string]bool) 
 					if attrName == "ignore_changes" {
 						continue
 					}
-					for _, dep := range g.exprDepsExcluding(attr.Expr, prefix, exclude) {
-						seen[dep] = true
-					}
+					refs = append(refs, g.exprDepRefs(attr.Expr, prefix, exclude)...)
 				}
 				// Still recurse into nested blocks (precondition, postcondition).
 				for _, nested := range block.Body.Blocks {
-					for _, dep := range g.bodyDeps(nested.Body, prefix, exclude) {
-						seen[dep] = true
-					}
+					refs = append(refs, g.bodyDepRefs(nested.Body, prefix, exclude)...)
 				}
 			} else {
-				for _, dep := range g.bodyDeps(block.Body, prefix, exclude) {
-					seen[dep] = true
-				}
+				refs = append(refs, g.bodyDepRefs(block.Body, prefix, exclude)...)
 			}
 		}
 	}
 
-	return slices.Collect(maps.Keys(seen))
+	return refs
 }
 
 // outputDeps gathers an output node's dependencies: its value expression plus
@@ -953,17 +1071,46 @@ func (g *Graph) addVariableNodes(key string, v *ast.Variable, modInfo *ModuleInf
 	}, append(validationDeps, valueIdx))
 }
 
+// depRef is one dependency occurrence extracted from an expression: the
+// resolved node key plus the raw traversal it came from (nil for
+// provider-function deps, which have no traversal).
+type depRef struct {
+	key       string
+	traversal hcl.Traversal
+}
+
 // exprDeps extracts all dependencies from an expression, applying prefix to resolved keys.
 func (g *Graph) exprDeps(expr hcl.Expression, prefix string) []pdag.Node {
 	return g.exprDepsExcluding(expr, prefix, nil)
 }
 
 func (g *Graph) exprDepsExcluding(expr hcl.Expression, prefix string, exclude map[string]bool) []pdag.Node {
+	return g.refsToNodes(g.exprDepRefs(expr, prefix, exclude))
+}
+
+// refsToNodes dedups refs by key and interns each as a graph node.
+func (g *Graph) refsToNodes(refs []depRef) []pdag.Node {
+	var deps []string
+	for _, ref := range refs {
+		addToSortedListAsSet(&deps, ref.key)
+	}
+	result := make([]pdag.Node, len(deps))
+	for i, dep := range deps {
+		_, n := g.newNode(dep)
+		result[i] = n
+	}
+	return result
+}
+
+// exprDepRefs extracts one depRef per referencing traversal (no dedup, so a
+// classifier can see each instance-keyed occurrence), applying prefix to
+// resolved keys.
+func (g *Graph) exprDepRefs(expr hcl.Expression, prefix string, exclude map[string]bool) []depRef {
 	if expr == nil {
 		return nil
 	}
 
-	var deps []string
+	var refs []depRef
 
 	for _, traversal := range expr.Variables() {
 		namespace, parts := eval.ParseTraversal(traversal)
@@ -1008,7 +1155,7 @@ func (g *Graph) exprDepsExcluding(expr hcl.Expression, prefix string, exclude ma
 
 		if dep != "" {
 			g.recordRef(dep, traversal.SourceRange())
-			addToSortedListAsSet(&deps, dep)
+			refs = append(refs, depRef{key: dep, traversal: traversal})
 		}
 	}
 
@@ -1017,16 +1164,11 @@ func (g *Graph) exprDepsExcluding(expr hcl.Expression, prefix string, exclude ma
 	// an implicit default-provider reference would.
 	for _, providerName := range ast.ProviderFunctionCallsInExpr(expr) {
 		if dep, ok := g.providerFunctionDep(prefix, providerName); ok {
-			addToSortedListAsSet(&deps, dep)
+			refs = append(refs, depRef{key: dep})
 		}
 	}
 
-	result := make([]pdag.Node, len(deps))
-	for i, dep := range deps {
-		_, n := g.newNode(dep)
-		result[i] = n
-	}
-	return result
+	return refs
 }
 
 // providerFunctionDep resolves the provider block a provider-defined function
@@ -1298,20 +1440,23 @@ func (g *Graph) inlineModule(
 
 	// Resources
 	for key, resource := range loaded.Config.Resources {
-		deps := g.resourceDeps(resource, prefix)
-		deps = append(deps, initIdx)
-		ownDeps := g.defaultProviderDeps(resource, loaded.Config, prefix)
+		bd, deps := g.resourceDeps(resource, prefix)
+		provDeps := g.defaultProviderDeps(resource, loaded.Config, prefix)
 		passDeps := g.passThroughProviderDeps(resource, scope)
-		deps = append(deps, ownDeps...)
-		deps = append(deps, passDeps...)
-		if len(ownDeps) == 0 && len(passDeps) == 0 {
-			deps = append(deps, g.inheritedProviderDeps(resource, parent)...)
+		provDeps = append(provDeps, passDeps...)
+		if len(provDeps) == 0 {
+			provDeps = g.inheritedProviderDeps(resource, parent)
 		}
+		bd.Static = append(bd.Static, initIdx)
+		bd.Static = append(bd.Static, provDeps...)
+		deps = append(deps, initIdx)
+		deps = append(deps, provDeps...)
 		if err := g.AddNode(&Node{
 			Key:        prefix + key,
 			Type:       NodeTypeResource,
 			Resource:   resource,
 			ModuleInfo: modInfo,
+			Deps:       bd,
 		}, deps); err != nil {
 			return err
 		}
@@ -1319,20 +1464,23 @@ func (g *Graph) inlineModule(
 
 	// Data sources
 	for key, ds := range loaded.Config.DataSources {
-		deps := g.resourceDeps(ds, prefix)
-		deps = append(deps, initIdx)
-		ownDeps := g.defaultProviderDeps(ds, loaded.Config, prefix)
+		bd, deps := g.resourceDeps(ds, prefix)
+		provDeps := g.defaultProviderDeps(ds, loaded.Config, prefix)
 		passDeps := g.passThroughProviderDeps(ds, scope)
-		deps = append(deps, ownDeps...)
-		deps = append(deps, passDeps...)
-		if len(ownDeps) == 0 && len(passDeps) == 0 {
-			deps = append(deps, g.inheritedProviderDeps(ds, parent)...)
+		provDeps = append(provDeps, passDeps...)
+		if len(provDeps) == 0 {
+			provDeps = g.inheritedProviderDeps(ds, parent)
 		}
+		bd.Static = append(bd.Static, initIdx)
+		bd.Static = append(bd.Static, provDeps...)
+		deps = append(deps, initIdx)
+		deps = append(deps, provDeps...)
 		if err := g.AddNode(&Node{
 			Key:        prefix + "data." + key,
 			Type:       NodeTypeDataSource,
 			Resource:   ds,
 			ModuleInfo: modInfo,
+			Deps:       bd,
 		}, deps); err != nil {
 			return err
 		}
