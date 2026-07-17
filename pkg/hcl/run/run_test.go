@@ -1521,6 +1521,75 @@ output "item_count" {
 	})
 }
 
+// TestEngine_RootNullableFalseNullConfig covers a `nullable = false` root
+// variable assigned the null literal via stack config. With a default, the
+// default is substituted; without one, it is an error.
+func TestEngine_RootNullableFalseNullConfig(t *testing.T) {
+	t.Parallel()
+
+	const withDefault = `
+variable "items" {
+  type     = list(string)
+  default  = ["a", "b"]
+  nullable = false
+}
+
+output "count" {
+  value = length(var.items)
+}
+`
+	const noDefault = `
+variable "items" {
+  type     = list(string)
+  nullable = false
+}
+
+output "count" {
+  value = length(var.items)
+}
+`
+
+	run := func(t *testing.T, src string) (*testutil.MockResourceMonitor, error) {
+		p := parser.NewParser()
+		config, diags := p.ParseSource("test.hcl", []byte(src))
+		require.False(t, diags.HasErrors(), "parse error: %s", diags.Error())
+
+		mock := &testutil.MockResourceMonitor{}
+		engine := newTestEngine(t, config, &run.EngineOptions{
+			ModuleLoader: testModuleLoader(t),
+			ProjectName:  "test-project",
+			StackName:    "dev",
+			Config: map[string]run.ConfigValue{
+				"test-project:items": run.UntypedConfigValue("null", false),
+			},
+			ResourceMonitor: mock,
+			WorkDir:         t.TempDir(),
+			RootDir:         t.TempDir(),
+			SchemaLoader:    schemaloader.New(t, schema.PackageSpec{Name: "empty"}),
+		})
+		return mock, engine.Run(t.Context())
+	}
+
+	t.Run("with_default", func(t *testing.T) {
+		t.Parallel()
+
+		mock, err := run(t, withDefault)
+		require.NoError(t, err)
+
+		output, ok := mock.StackOutputs.GetOk("count")
+		require.True(t, ok, "expected count output")
+		assert.Equal(t, float64(2), output.AsNumber())
+	})
+
+	t.Run("no_default", func(t *testing.T) {
+		t.Parallel()
+
+		_, err := run(t, noDefault)
+		assert.EqualError(t, err, `variable "items" must not be set to null: `+
+			`it is declared with nullable = false and has no default`)
+	})
+}
+
 func TestEngine_ModuleVariableValidation(t *testing.T) {
 	t.Parallel()
 
