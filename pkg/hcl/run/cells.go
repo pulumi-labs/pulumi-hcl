@@ -17,7 +17,9 @@ package run
 import (
 	"context"
 	"fmt"
+	"slices"
 	"strings"
+	"sync"
 
 	"github.com/pulumi-labs/pulumi-hcl/pkg/hcl/eval"
 	"github.com/pulumi-labs/pulumi-hcl/pkg/hcl/graph"
@@ -57,6 +59,58 @@ func (e *Engine) cell(block, mi string) (*graph.BlockExpansion, error) {
 		return nil, fmt.Errorf("no expansion cell for %q in module instance %q", block, mi)
 	}
 	return b, nil
+}
+
+// urnRegistry accumulates the URNs of the resource instances each cell has
+// registered so far, so dependency metadata can be recorded at resource
+// granularity: destroy ordering is resource-wide — an instance-keyed
+// reference or depends_on still makes every instance of the target wait for
+// the consumer — so a URN collected from one instance widens to every
+// registered sibling. Instances that register later cannot be recorded (their
+// URNs do not exist yet), so a consumer that raced ahead of a delayed sibling
+// leaves that sibling free to destroy independently.
+type urnRegistry struct {
+	mu   sync.Mutex
+	m    map[expansionCell][]string
+	cell map[string]expansionCell // URN → owning cell
+}
+
+func newURNRegistry() *urnRegistry {
+	return &urnRegistry{
+		m:    make(map[expansionCell][]string),
+		cell: make(map[string]expansionCell),
+	}
+}
+
+func (r *urnRegistry) add(c expansionCell, urn string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.m[c] = append(r.m[c], urn)
+	r.cell[urn] = c
+}
+
+func (r *urnRegistry) get(c expansionCell) []string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return slices.Clone(r.m[c])
+}
+
+// widen replaces each URN owned by a known cell with that cell's full
+// registered instance set, passing unknown URNs through, and returns the
+// deduplicated, sorted result.
+func (r *urnRegistry) widen(urns []string) []string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	var out []string
+	for _, u := range urns {
+		if c, ok := r.cell[u]; ok {
+			out = append(out, r.m[c]...)
+		} else {
+			out = append(out, u)
+		}
+	}
+	slices.Sort(out)
+	return slices.Compact(out)
 }
 
 // materializeRootCells creates, wires, and arms the cells for every top-level
@@ -415,7 +469,7 @@ func (e *Engine) expandDataCell(
 
 	if ds.Count == nil && ds.ForEach == nil {
 		return b.AddInstance("", func(ctx context.Context) error {
-			ctyOutputs, err := e.invokeDataSourceOnce(ctx, node, ds, funcSchema, evalCtx)
+			ctyOutputs, err := e.invokeDataSourceOnce(ctx, node, ds, funcSchema, evalCtx, cellKey(node, mi).mi)
 			if err != nil {
 				return err
 			}
@@ -466,7 +520,7 @@ func (e *Engine) expandDataCell(
 		inst := instance
 		err := b.AddInstance(strings.TrimPrefix(inst.Key, node.Key), func(ctx context.Context) error {
 			instCtx := evalCtx.WithIteration(inst.Index, inst.EachKey, inst.EachValue)
-			ctyOut, err := e.invokeDataSourceOnce(ctx, node, ds, funcSchema, instCtx)
+			ctyOut, err := e.invokeDataSourceOnce(ctx, node, ds, funcSchema, instCtx, cellKey(node, mi).mi)
 			if err != nil {
 				return err
 			}

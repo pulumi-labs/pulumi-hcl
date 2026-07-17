@@ -21,10 +21,10 @@ import (
 	"github.com/pulumi-labs/pulumi-hcl/tests/testutil/tfcompat/providers"
 )
 
-// The destroy sibling of TestL2RefForEachInstance: a body reference to
-// `a["x"]` must make only that instance's delete wait for `b` — `a["y"]`
-// deletes immediately, ahead of the delayed `b`. The recorded op order proves
-// the dependency is persisted per instance, not against the whole resource.
+// The destroy sibling of TestL2RefForEachInstance: destroy dependencies are
+// resource-wide in tofu, so a body reference to `a["x"]` makes BOTH
+// instances' deletes wait for `b`. The recorded op order proves the persisted
+// dependency covers every registered instance of the referenced resource.
 func TestL2RefForEachInstanceDestroy(t *testing.T) {
 	t.Parallel()
 	tfcompat.RunCase(t, "l2_ref_for_each_instance_destroy", tfcompat.Case{

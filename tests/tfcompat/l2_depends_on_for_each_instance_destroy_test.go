@@ -21,10 +21,12 @@ import (
 	"github.com/pulumi-labs/pulumi-hcl/tests/testutil/tfcompat/providers"
 )
 
-// The destroy sibling of TestL2DependsOnForEachInstance: an
-// instance-addressed depends_on (`a["x"]`) must make only that instance's
-// delete wait for `b` — `a["y"]` deletes immediately, ahead of the delayed
-// `b`. The recorded op order proves the persisted dependency is narrow.
+// The destroy sibling of TestL2DependsOnForEachInstance: destroy dependencies
+// are resource-wide in tofu, so an instance-addressed depends_on (`a["x"]`)
+// makes BOTH instances' deletes wait for `b`. The recorded op order proves
+// the persisted dependency covers every registered instance of the target,
+// including expanded targets whose instance outputs are not addressable by
+// the block key.
 func TestL2DependsOnForEachInstanceDestroy(t *testing.T) {
 	t.Parallel()
 	tfcompat.RunCase(t, "l2_depends_on_for_each_instance_destroy", tfcompat.Case{

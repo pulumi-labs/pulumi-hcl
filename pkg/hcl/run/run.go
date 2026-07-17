@@ -441,6 +441,10 @@ type Engine struct {
 	// materializeRootCells.
 	planBarrier pdag.Node
 
+	// cellURNs records each cell's registered instance URNs, consumed by
+	// dependency-metadata recording. See urnRegistry.
+	cellURNs *urnRegistry
+
 	// failedNodes tracks resource nodes that failed to register, keyed by instance key.
 	// Dependent nodes check this map and are skipped when a dependency failed.
 	failedNodes *util.SyncMap[string, error]
@@ -588,6 +592,7 @@ func NewEngine(ctx context.Context, config *ast.Config, opts *EngineOptions) (*E
 		moduleInstances:         util.NewSyncMap[modulepath.Path, []*moduleInstance](),
 		parallel:                opts.Parallel,
 		expansions:              util.NewSyncMap[expansionCell, *graph.BlockExpansion](),
+		cellURNs:                newURNRegistry(),
 		failedNodes:             util.NewSyncMap[string, error](),
 		alwaysRegisterProviders: opts.AlwaysRegisterProviders,
 		resolver: packages.NewResolver(
@@ -1466,7 +1471,7 @@ func (e *Engine) registerResourceInstanceInContext(
 		}
 	}
 
-	opts, err := e.buildResourceOptionsInContext(ctx, res, instance, evalCtx, parentURN, node.ModuleInfo, modInst, resourceMapping, resSchema.InputProperties, resSchema.Properties, resourceInputs)
+	opts, err := e.buildResourceOptionsInContext(ctx, node, res, instance, evalCtx, parentURN, modInst, resourceMapping, resSchema.InputProperties, resSchema.Properties, resourceInputs)
 	if err != nil {
 		return err
 	}
@@ -1510,7 +1515,12 @@ func (e *Engine) registerResourceInstanceInContext(
 			opts.DependsOn = append(opts.DependsOn, dep)
 		}
 	}
-	slices.Sort(opts.DependsOn)
+	// Widen every collected instance URN to its resource's registered
+	// instance set: destroy ordering is resource-wide, so a reference to one
+	// instance makes every sibling wait for this resource. Sources that
+	// contribute no dependency (a destroy-time provisioner's self-reference,
+	// say) stay excluded — widening only amplifies what was collected.
+	opts.DependsOn = e.cellURNs.widen(opts.DependsOn)
 
 	if opts.Version == "" {
 		pkgName := packageNameFromResourceType(res.Type)
@@ -1555,6 +1565,8 @@ func (e *Engine) registerResourceInstanceInContext(
 		e.failedNodes.Set(instance.Key, fmt.Errorf("registering resource: %w", err))
 		return nil
 	}
+
+	e.cellURNs.add(cellKey(node, modInst), string(urn))
 
 	outputs = outputs.Delete("id", "urn")
 
@@ -1612,11 +1624,12 @@ func (e *Engine) registerResourceInstanceInContext(
 
 // buildResourceOptionsInContext builds resource options using the provided eval context and parent URN.
 func (e *Engine) buildResourceOptionsInContext(
-	ctx context.Context, res *ast.Resource, instance *graph.ExpandedResource,
+	ctx context.Context, node *graph.Node, res *ast.Resource, instance *graph.ExpandedResource,
 	evalCtx *eval.Context, parentURN urn.URN,
-	modInfo *graph.ModuleInfo, modInst *moduleInstance, resourceMapping *bridge.BodyMapping,
+	modInst *moduleInstance, resourceMapping *bridge.BodyMapping,
 	inputProps, outputProps []*schema.Property, inputs property.Map,
 ) (*ResourceOptions, error) {
+	modInfo := node.ModuleInfo
 	opts := &ResourceOptions{}
 	opts.Parent = parentURN
 
@@ -1625,16 +1638,20 @@ func (e *Engine) buildResourceOptionsInContext(
 		resPrefix = modInfo.Prefix()
 	}
 
+	// depends_on records every registered instance of the target block,
+	// keyed or not — dependency metadata is resource-wide (see urnRegistry).
+	// The registry lookup also covers expanded targets, whose instance
+	// outputs are not addressable by the block key.
+	miPath := ""
+	if modInst != nil {
+		miPath = modInst.Path.String()
+	}
 	for _, dep := range res.DependsOn {
 		depKey := graph.FormatTraversal(dep)
 		if depKey == "" {
 			continue
 		}
-		if outputs, ok := e.resourceOutputs.Get(resPrefix + depKey); ok {
-			if urn := ctyAsString(outputs.GetAttr("urn")); urn != "" {
-				opts.DependsOn = append(opts.DependsOn, urn)
-			}
-		}
+		opts.DependsOn = append(opts.DependsOn, e.cellURNs.get(expansionCell{block: resPrefix + depKey, mi: miPath})...)
 	}
 
 	// Handle lifecycle options
@@ -3054,7 +3071,7 @@ func (e *Engine) readResource(
 // without a separate dependency map.
 func (e *Engine) invokeDataSourceOnce(
 	ctx context.Context, node *graph.Node, ds *ast.Resource, funcSchema *schema.Function,
-	evalCtx *eval.Context,
+	evalCtx *eval.Context, miPath string,
 ) (cty.Value, error) {
 	hclCtx := evalCtx.HCLContext()
 
@@ -3148,6 +3165,9 @@ func (e *Engine) invokeDataSourceOnce(
 		}
 	}
 
+	// depends_on marks the outputs with every registered instance URN of the
+	// target block, keyed or not — dependency metadata is resource-wide (see
+	// buildResourceOptionsInContext).
 	for _, dep := range ds.DependsOn {
 		depKey := graph.FormatTraversal(dep)
 		if depKey == "" {
@@ -3157,8 +3177,8 @@ func (e *Engine) invokeDataSourceOnce(
 		if node.ModuleInfo != nil {
 			fullDepKey = node.ModuleInfo.Prefix() + depKey
 		}
-		if outputs, ok := e.resourceOutputs.Get(fullDepKey); ok {
-			addURN(ctyAsString(outputs.GetAttr("urn")))
+		for _, urn := range e.cellURNs.get(expansionCell{block: fullDepKey, mi: miPath}) {
+			addURN(urn)
 		}
 	}
 
@@ -4458,7 +4478,7 @@ func (e *Engine) readScopedDataSource(ctx context.Context, ds *ast.Resource, eva
 		}
 		return fmt.Errorf("resolving data source type %s: %w", ds.Type, err)
 	}
-	ctyOutputs, err := e.invokeDataSourceOnce(ctx, node, ds, funcSchema, evalCtx)
+	ctyOutputs, err := e.invokeDataSourceOnce(ctx, node, ds, funcSchema, evalCtx, "")
 	if err != nil {
 		return err
 	}
