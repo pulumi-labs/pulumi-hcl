@@ -1543,7 +1543,9 @@ func TestInvokeInRangeOption(t *testing.T) {
 			sinkNames = append(sinkNames, r.Name)
 		}
 	}
-	assert.Equal(t, []string{"targets-0", "targets-1"}, sinkNames)
+	// The two instances register concurrently, so their arrival order is not
+	// fixed; assert the set of names, not the sequence.
+	assert.ElementsMatch(t, []string{"targets-0", "targets-1"}, sinkNames)
 }
 
 // TestInvokeReturnType covers the case where a function declares its outputs via

@@ -1392,8 +1392,6 @@ func (e *Engine) registerProviderInContext(
 	return nil
 }
 
-
-
 // registerResourceInstanceInContext registers a single resource instance with Pulumi.
 func (e *Engine) registerResourceInstanceInContext(
 	ctx context.Context,
@@ -3053,9 +3051,6 @@ func (e *Engine) readResource(
 
 	return resp.URN, resp.ID, resp.Outputs, nil
 }
-
-
-
 
 // invokeDataSourceOnce performs a single data-source invocation using the
 // current state of evalCtx (which may have each/count set by the caller).
