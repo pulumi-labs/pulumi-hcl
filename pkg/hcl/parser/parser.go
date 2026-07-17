@@ -859,7 +859,7 @@ func (p *Parser) parseLifecycleBlock(block *hcl.Block) (*lifecycleResult, hcl.Di
 	}
 
 	if attr, ok := content.Attributes["prevent_destroy"]; ok {
-		diags = append(diags, gohcl.DecodeExpression(attr.Expr, nil, &lifecycle.PreventDestroy)...)
+		lifecycle.PreventDestroy = attr.Expr
 	}
 
 	if attr, ok := content.Attributes["ignore_changes"]; ok {

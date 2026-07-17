@@ -164,8 +164,10 @@ type Lifecycle struct {
 
 	// PreventDestroy indicates whether destruction of the resource should be prevented.
 	// In Pulumi, this maps to the "protect" resource option.
-	// nil means not explicitly set (may inherit from parent), true/false means explicitly set.
-	PreventDestroy *bool
+	// The expression is evaluated at runtime, so it may reference variables,
+	// locals, or other resources. nil means not explicitly set (may inherit
+	// from parent).
+	PreventDestroy hcl.Expression
 
 	// IgnoreChanges lists the attributes whose changes should be ignored.
 	IgnoreChanges []hcl.Traversal
