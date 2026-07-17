@@ -305,13 +305,10 @@ func cellEvalState(e *Engine, mi *moduleInstance) (*eval.Context, urn.URN, *modu
 // metaArgs is the result of evaluating a block's count/for_each into an
 // expander: the meta-argument dependency keys (references there establish
 // dependencies that govern destroy ordering even when the body never uses the
-// target), which argument if any was unknown, and the count-mode details the
-// shape declarations need.
+// target) and which argument if any was unknown.
 type metaArgs struct {
 	deps       []string
 	unknownArg string
-	boolCount  bool
-	count      int
 }
 
 func evalMetaArgs(evalCtx *eval.Context, node *graph.Node, expander *graph.ResourceExpander) (metaArgs, error) {
@@ -328,10 +325,8 @@ func evalMetaArgs(evalCtx *eval.Context, node *graph.Node, expander *graph.Resou
 		case unknown:
 			m.unknownArg = "count"
 		case isBool:
-			m.boolCount = true
 			expander.SetBoolCount(node.Key, count)
 		default:
-			m.count = count
 			expander.SetCount(node.Key, count)
 		}
 	}
@@ -406,19 +401,6 @@ func (e *Engine) expandResourceCell(
 			evalCtx.SetResource(baseKey, "", empty)
 		}
 		return nil
-	}
-
-	// Declare the instance shape before any instance publishes, so a narrow
-	// consumer that runs between two publications still indexes correctly.
-	switch {
-	case res.ForEach != nil:
-		keys := make([]string, 0, len(result.Instances))
-		for _, instance := range result.Instances {
-			keys = append(keys, instance.EachKey.AsString())
-		}
-		evalCtx.DeclareEachInstances(baseKey, keys)
-	case res.Count != nil && !meta.boolCount:
-		evalCtx.DeclareCountInstances(baseKey, meta.count)
 	}
 
 	for _, instance := range result.Instances {
@@ -503,17 +485,6 @@ func (e *Engine) expandDataCell(
 		}
 		evalCtx.SetDataSource(dsKey, empty)
 		return nil
-	}
-
-	switch {
-	case ds.ForEach != nil:
-		keys := make([]string, 0, len(result.Instances))
-		for _, instance := range result.Instances {
-			keys = append(keys, instance.EachKey.AsString())
-		}
-		evalCtx.DeclareEachData(dsKey, keys)
-	case ds.Count != nil && !meta.boolCount:
-		evalCtx.DeclareCountData(dsKey, meta.count)
 	}
 
 	for _, instance := range result.Instances {
