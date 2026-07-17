@@ -395,6 +395,7 @@ func TestInstanceTarget(t *testing.T) {
 		{`aws_instance.web`, "aws_instance.web", ""},
 		{`aws_instance.web["x"]`, "aws_instance.web", `aws_instance.web["x"]`},
 		{`aws_instance.web[0]`, "aws_instance.web", "aws_instance.web[0]"},
+		{`aws_instance.web[1.5]`, "aws_instance.web", ""},
 		{`data.aws_ami.ubuntu`, "data.aws_ami.ubuntu", ""},
 		{`data.aws_ami.ubuntu["x"]`, "data.aws_ami.ubuntu", `data.aws_ami.ubuntu["x"]`},
 		{`module.m`, "module.m", ""},

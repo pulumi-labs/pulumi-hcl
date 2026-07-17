@@ -18,7 +18,6 @@ import (
 	"fmt"
 	"maps"
 	"path/filepath"
-	"sort"
 	"strings"
 	"sync"
 
@@ -434,12 +433,20 @@ func (c *Context) HCLContext() *hcl.EvalContext {
 			resourcesByType[typeName] = make(map[string]cty.Value)
 		}
 		if len(instances) > 0 && instances[0].isCount {
-			sort.Slice(instances, func(i, j int) bool {
-				return instances[i].index < instances[j].index
-			})
-			vals := make([]cty.Value, len(instances))
-			for i, inst := range instances {
-				vals[i] = inst.value
+			// Instances register concurrently, so lower indexes may not be in
+			// yet when a dependent narrowed to one index evaluates. Keep every
+			// index at its true position, holding unregistered gaps unknown —
+			// a correctly scheduled dependent never reads a gap.
+			maxIndex := 0
+			for _, inst := range instances {
+				maxIndex = max(maxIndex, inst.index)
+			}
+			vals := make([]cty.Value, maxIndex+1)
+			for i := range vals {
+				vals[i] = cty.DynamicVal
+			}
+			for _, inst := range instances {
+				vals[inst.index] = inst.value
 			}
 			resourcesByType[typeName][resName] = cty.TupleVal(vals)
 		} else {

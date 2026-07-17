@@ -111,3 +111,24 @@ func TestWithIterationIsolatesConcurrentForEach(t *testing.T) {
 	require.Equal(t, "a", aKey, "A observed B's each.key — the iteration binding is shared, not per-view")
 	require.Equal(t, "b", bKey)
 }
+
+// TestPartialCountAssemblySparse pins the property that lets a dependent
+// narrowed to one count index evaluate while sibling instances are still
+// registering: each registered index sits at its true tuple position, with
+// unregistered gaps held unknown.
+func TestPartialCountAssemblySparse(t *testing.T) {
+	t.Parallel()
+	c, err := NewContext("/tmp", "/tmp", "/tmp", "", "", "")
+	require.NoError(t, err)
+
+	c.SetCountResource("simple_resource.a", 1, "urn:a1", cty.ObjectVal(map[string]cty.Value{
+		"result": cty.StringVal("one"),
+	}))
+
+	tuple := c.HCLContext().Variables["simple_resource"].GetAttr("a")
+	require.Equal(t, 2, tuple.LengthInt())
+	require.False(t, tuple.Index(cty.NumberIntVal(0)).IsKnown())
+	one := tuple.Index(cty.NumberIntVal(1))
+	one, _ = one.Unmark()
+	require.Equal(t, cty.StringVal("one"), one.GetAttr("result"))
+}

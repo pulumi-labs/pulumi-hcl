@@ -22,6 +22,7 @@ import (
 	"errors"
 	"fmt"
 	"maps"
+	"math/big"
 	"slices"
 	"strings"
 
@@ -1153,8 +1154,9 @@ func InstanceTarget(traversal hcl.Traversal) (dep, instance string) {
 	case cty.String:
 		return dep, fmt.Sprintf("%s[%q]", dep, idx.Key.AsString())
 	case cty.Number:
-		n, _ := idx.Key.AsBigFloat().Int64()
-		return dep, fmt.Sprintf("%s[%d]", dep, n)
+		if n, acc := idx.Key.AsBigFloat().Int64(); acc == big.Exact {
+			return dep, fmt.Sprintf("%s[%d]", dep, n)
+		}
 	}
 	return dep, ""
 }
@@ -1182,8 +1184,17 @@ func (g *Graph) SpawnInstances(nodeKey string, instances []InstanceExec) error {
 		nodes[i], ready[i] = g.dag.NewNode(dagNode{key: inst.Key, exec: inst.Exec})
 	}
 	for _, succ := range succs {
-		// nil means the successor depends on the whole resource.
+		// nil means the successor depends on the whole resource. A narrow key
+		// that names no actual instance (a nonexistent instance, or a count
+		// index against for_each string keys) also falls back to the whole
+		// resource, as OpenTofu's reference resolution does.
 		narrow := g.instanceDeps[g.keyByDagNode[succ]][nodeKey]
+		for _, key := range narrow {
+			if !slices.ContainsFunc(instances, func(inst InstanceExec) bool { return inst.Key == key }) {
+				narrow = nil
+				break
+			}
+		}
 		for i, inst := range instances {
 			if narrow != nil && !slices.Contains(narrow, inst.Key) {
 				continue

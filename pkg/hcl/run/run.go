@@ -1735,28 +1735,30 @@ func (e *Engine) registerResourceInstanceInContext(
 // dependsOnURNs resolves a depends_on traversal to the URNs it gates on: the
 // addressed instance's URN when the traversal names one, the whole resource's
 // URN otherwise — which for a count/for_each resource (no whole-resource
-// outputs entry) means every registered instance's URN.
+// outputs entry) means every registered instance's URN. An instance address
+// that names no registered instance falls back to the whole resource.
 func (e *Engine) dependsOnURNs(traversal hcl.Traversal, resPrefix string) []string {
 	depKey, instKey := graph.InstanceTarget(traversal)
 	if depKey == "" {
 		return nil
 	}
-	lookup := resPrefix + depKey
 	if instKey != "" {
-		lookup = resPrefix + instKey
+		if outputs, ok := e.resourceOutputs.Get(resPrefix + instKey); ok {
+			if urn := ctyAsString(outputs.GetAttr("urn")); urn != "" {
+				return []string{urn}
+			}
+			return nil
+		}
 	}
-	if outputs, ok := e.resourceOutputs.Get(lookup); ok {
+	if outputs, ok := e.resourceOutputs.Get(resPrefix + depKey); ok {
 		if urn := ctyAsString(outputs.GetAttr("urn")); urn != "" {
 			return []string{urn}
 		}
 		return nil
 	}
-	if instKey != "" {
-		return nil
-	}
 	var urns []string
 	for key, outputs := range e.resourceOutputs.All() {
-		if !strings.HasPrefix(key, lookup+"[") {
+		if !strings.HasPrefix(key, resPrefix+depKey+"[") {
 			continue
 		}
 		if urn := ctyAsString(outputs.GetAttr("urn")); urn != "" {
