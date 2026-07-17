@@ -408,6 +408,20 @@ func TestConvertedPCLRange(t *testing.T) {
 		assert.Equal(t, "test:index:Item", mock.RegisteredResources[2].Type)
 	})
 
+	// Registration order between independent resources is not deterministic:
+	// target only waits on source[0], so it can register before source[1].
+	// Look the target up by name instead of position.
+	findResource := func(t *testing.T, mock *testutil.MockResourceMonitor, name string) hclrun.RegisterResourceRequest {
+		t.Helper()
+		for _, r := range mock.RegisteredResources {
+			if r.Name == name {
+				return r
+			}
+		}
+		t.Fatalf("no registered resource named %q", name)
+		return hclrun.RegisterResourceRequest{}
+	}
+
 	t.Run("range_count_ref", func(t *testing.T) {
 		t.Parallel()
 
@@ -428,7 +442,7 @@ resource target "test:index:Item" {
 		require.Len(t, mock.RegisteredResources, 4, "expected stack + 2 sources + 1 target")
 		assert.Equal(t, "pulumi:pulumi:Stack", mock.RegisteredResources[0].Type)
 
-		target := mock.RegisteredResources[3]
+		target := findResource(t, mock, "target")
 		assert.Equal(t, "test:index:Item", target.Type)
 		assert.Equal(t, property.New("src-0-ref"), target.Inputs.Get("name"))
 	})
@@ -455,7 +469,7 @@ resource target "test:index:Item" {
 		// stack + 2 source items + 1 target
 		require.Len(t, mock.RegisteredResources, 4, "expected stack + 2 sources + 1 target")
 
-		target := mock.RegisteredResources[3]
+		target := findResource(t, mock, "target")
 		assert.Equal(t, "test:index:Item", target.Type)
 		assert.Equal(t, property.New("alpha-ref"), target.Inputs.Get("name"))
 	})
