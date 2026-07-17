@@ -2390,7 +2390,8 @@ func instanceKeysEqual(aIdx *int, aEach *string, bIdx *int, bEach *string) bool 
 // and returns its import ID. An import address names a single instance: its
 // module-call steps must match the resource's module instance path, and on a
 // count/for_each resource each instance takes only the ID of the import block
-// keyed with its own instance key.
+// keyed with its own instance key. An import block with for_each expands into
+// one import per element, with each.key/each.value in scope for `to` and `id`.
 func (e *Engine) resolveImportId(
 	res *ast.Resource, index *int, eachKey *string, modInst *moduleInstance,
 ) (string, error) {
@@ -2400,27 +2401,135 @@ func (e *Engine) resolveImportId(
 	}
 
 	for _, imp := range e.config.Imports {
-		to, ok := parseTargetAddr(imp.To)
-		if !ok || to.Type != res.Type || to.Name != res.Name {
-			continue
-		}
-		if appendModuleSteps(modulepath.Root(), to.modules) != resPath {
-			continue
-		}
-		if to.keyed() || index != nil || eachKey != nil {
-			if !instanceKeysEqual(index, eachKey, to.keyIndex, to.keyEach) {
-				continue
+		evs := []*eval.Evaluator{e.evaluator}
+		if imp.ForEach != nil {
+			forEach, unknown, _, diags := e.evaluator.EvaluateForEach(imp.ForEach)
+			if diags.HasErrors() {
+				return "", diags
+			}
+			if unknown {
+				return "", hcl.Diagnostics{{
+					Severity: hcl.DiagError,
+					Summary:  "Invalid for_each argument",
+					Detail:   `The import block "for_each" argument depends on resource attributes that cannot be determined until apply.`,
+					Subject:  imp.ForEach.Range().Ptr(),
+				}}
+			}
+			evs = evs[:0]
+			for k, v := range forEach {
+				kVal := cty.StringVal(k)
+				evs = append(evs, eval.NewEvaluator(e.evaluator.Context().WithIteration(nil, &kVal, &v)))
 			}
 		}
-		return e.evaluateImportId(imp)
+		for _, ev := range evs {
+			id, matched, err := e.matchImport(imp, ev, res, index, eachKey, resPath)
+			if matched || err != nil {
+				return id, err
+			}
+		}
 	}
 
 	return "", nil
 }
 
+// matchImport reports whether imp targets the given resource instance and, if
+// so, returns its import ID. ev carries each.key/each.value when the import
+// block has for_each.
+func (e *Engine) matchImport(
+	imp *ast.Import, ev *eval.Evaluator,
+	res *ast.Resource, index *int, eachKey *string, resPath modulepath.Path,
+) (string, bool, error) {
+	traversal, diags := importToTraversal(ev, imp.To)
+	if diags.HasErrors() {
+		return "", false, diags
+	}
+	to, ok := parseTargetAddr(traversal)
+	if !ok || to.Type != res.Type || to.Name != res.Name {
+		return "", false, nil
+	}
+	if appendModuleSteps(modulepath.Root(), to.modules) != resPath {
+		return "", false, nil
+	}
+	if to.keyed() || index != nil || eachKey != nil {
+		if !instanceKeysEqual(index, eachKey, to.keyIndex, to.keyEach) {
+			return "", false, nil
+		}
+	}
+	id, err := e.evaluateImportId(imp, ev)
+	return id, true, err
+}
+
+// importToTraversal converts an import block's `to` expression into a static
+// traversal. Index keys may be arbitrary expressions (e.g. each.key); they are
+// evaluated with ev and must produce a known, non-null, non-sensitive string
+// or number.
+func importToTraversal(ev *eval.Evaluator, expr hcl.Expression) (hcl.Traversal, hcl.Diagnostics) {
+	if t, diags := hcl.AbsTraversalForExpr(expr); !diags.HasErrors() {
+		return t, nil
+	}
+	switch e := expr.(type) {
+	case *hclsyntax.IndexExpr:
+		t, diags := importToTraversal(ev, e.Collection)
+		if diags.HasErrors() {
+			return nil, diags
+		}
+		key, keyDiags := importIndexKey(ev, e.Key)
+		if keyDiags.HasErrors() {
+			return nil, keyDiags
+		}
+		return append(t, key), nil
+	case *hclsyntax.RelativeTraversalExpr:
+		t, diags := importToTraversal(ev, e.Source)
+		if diags.HasErrors() {
+			return nil, diags
+		}
+		return append(t, e.Traversal...), nil
+	default:
+		return nil, hcl.Diagnostics{{
+			Severity: hcl.DiagError,
+			Summary:  "Invalid import address expression",
+			Detail:   "Import address must be a reference to a resource's address, and only allows for indexing with dynamic keys.",
+			Subject:  expr.Range().Ptr(),
+		}}
+	}
+}
+
+// importIndexKey evaluates an index-key expression of an import address into a
+// TraverseIndex step.
+func importIndexKey(ev *eval.Evaluator, expr hcl.Expression) (hcl.TraverseIndex, hcl.Diagnostics) {
+	idx := hcl.TraverseIndex{SrcRange: expr.Range()}
+	errf := func(detail string) hcl.Diagnostics {
+		return hcl.Diagnostics{{
+			Severity: hcl.DiagError,
+			Summary:  "Import block 'to' address contains an invalid key",
+			Detail:   detail,
+			Subject:  expr.Range().Ptr(),
+		}}
+	}
+	val, diags := ev.EvaluateExpression(expr)
+	if diags.HasErrors() {
+		return idx, diags
+	}
+	sensitive := val.HasMark(eval.SensitiveMark)
+	val, _ = val.Unmark()
+	switch {
+	case !val.IsKnown():
+		return idx, errf("The index of an import target address must be known at plan time.")
+	case val.IsNull():
+		return idx, errf("The index of an import target address cannot be null.")
+	case val.Type() != cty.String && val.Type() != cty.Number:
+		return idx, errf("The index of an import target address must be a string or a number.")
+	case sensitive:
+		return idx, errf("The index of an import target address cannot be sensitive.")
+	}
+	idx.Key = val
+	return idx, nil
+}
+
 // evaluateImportId evaluates an import block's id expression, which must
-// produce a known, non-null, non-sensitive string at plan time.
-func (e *Engine) evaluateImportId(imp *ast.Import) (string, error) {
+// produce a known, non-null, non-sensitive string at plan time. ev carries
+// each.key/each.value when the import block has for_each.
+func (e *Engine) evaluateImportId(imp *ast.Import, ev *eval.Evaluator) (string, error) {
 	errf := func(detail string) error {
 		var subject *hcl.Range
 		if imp.Id != nil {
@@ -2439,7 +2548,7 @@ func (e *Engine) evaluateImportId(imp *ast.Import) (string, error) {
 	if imp.Id == nil {
 		return "", errf("The import ID cannot be null.")
 	}
-	val, diags := e.evaluator.EvaluateExpression(imp.Id)
+	val, diags := ev.EvaluateExpression(imp.Id)
 	if diags.HasErrors() {
 		return "", diags
 	}

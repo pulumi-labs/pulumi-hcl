@@ -29,8 +29,14 @@ import (
 //
 // This maps to Pulumi's ImportId resource option on the target resource.
 type Import struct {
-	// To is the target resource address.
-	To hcl.Traversal
+	// To is the target resource address expression. Its traversal parts are
+	// static, but index keys may be arbitrary expressions (e.g. each.key when
+	// the block has for_each), so they are evaluated at runtime.
+	To hcl.Expression
+
+	// ForEach expands the block into one import per element, with
+	// each.key/each.value in scope for To and Id.
+	ForEach hcl.Expression
 
 	// Id is the expression for the external resource ID to import. It is
 	// evaluated at runtime and must produce a known, non-null, non-sensitive

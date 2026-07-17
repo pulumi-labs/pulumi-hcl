@@ -24,6 +24,7 @@ import (
 	"github.com/hashicorp/hcl/v2"
 	"github.com/hashicorp/hcl/v2/ext/typeexpr"
 	"github.com/hashicorp/hcl/v2/gohcl"
+	"github.com/hashicorp/hcl/v2/hclsyntax"
 	"github.com/pulumi-labs/pulumi-hcl/pkg/hcl/ast"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/tokens"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/util/contract"
@@ -1413,11 +1414,8 @@ func (p *Parser) parseImportBlock(config *ast.Config, block *hcl.Block) hcl.Diag
 	}
 
 	if attr, ok := content.Attributes["to"]; ok {
-		traversal, travDiags := hcl.AbsTraversalForExpr(attr.Expr)
-		diags = append(diags, travDiags...)
-		if traversal != nil {
-			imp.To = traversal
-		}
+		diags = append(diags, validateImportToExpr(attr.Expr)...)
+		imp.To = attr.Expr
 	}
 
 	if attr, ok := content.Attributes["id"]; ok {
@@ -1428,6 +1426,33 @@ func (p *Parser) parseImportBlock(config *ast.Config, block *hcl.Block) hcl.Diag
 		imp.Provider = attr.Expr
 	}
 
+	if attr, ok := content.Attributes["for_each"]; ok {
+		imp.ForEach = attr.Expr
+	}
+
 	config.Imports = append(config.Imports, imp)
 	return diags
+}
+
+// validateImportToExpr checks that an import block's `to` expression has the
+// shape of a resource address. Traversal parts must be static, but index keys
+// may be arbitrary expressions (e.g. each.key), so they are not inspected
+// here; they are evaluated at runtime.
+func validateImportToExpr(expr hcl.Expression) hcl.Diagnostics {
+	if _, diags := hcl.AbsTraversalForExpr(expr); !diags.HasErrors() {
+		return nil
+	}
+	switch e := expr.(type) {
+	case *hclsyntax.IndexExpr:
+		return validateImportToExpr(e.Collection)
+	case *hclsyntax.RelativeTraversalExpr:
+		return validateImportToExpr(e.Source)
+	default:
+		return hcl.Diagnostics{{
+			Severity: hcl.DiagError,
+			Summary:  "Invalid import address expression",
+			Detail:   "Import address must be a reference to a resource's address, and only allows for indexing with dynamic keys.",
+			Subject:  expr.Range().Ptr(),
+		}}
+	}
 }

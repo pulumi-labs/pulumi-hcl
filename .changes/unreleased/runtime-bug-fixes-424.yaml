@@ -1,0 +1,6 @@
+kind: bug-fixes
+body: Support `for_each` and dynamic index keys on `import` blocks
+time: 2026-07-17T22:30:00Z
+custom:
+    Component: runtime
+    PR: "424"

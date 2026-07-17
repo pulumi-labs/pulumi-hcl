@@ -304,5 +304,6 @@ var importSchema = &hcl.BodySchema{
 		{Name: "to", Required: true},
 		{Name: "id", Required: true},
 		{Name: "provider"},
+		{Name: "for_each"},
 	},
 }
