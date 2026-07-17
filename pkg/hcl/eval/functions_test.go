@@ -1369,10 +1369,12 @@ func TestNestedTemplateFunctions(t *testing.T) {
 	write("loop.tpl", `${templatefile("loop.tpl", {})}`)
 
 	t.Run("templatestring inside templatefile", func(t *testing.T) {
+		t.Parallel()
 		assert.Equal(t, cty.StringVal("hi bob"), evalExpr(t, tmpDir, `templatefile("string.tpl", {})`))
 	})
 
 	t.Run("templatefile inside templatefile", func(t *testing.T) {
+		t.Parallel()
 		assert.Equal(t, cty.StringVal("hello eve"), evalExpr(t, tmpDir, `templatefile("chain.tpl", {})`))
 	})
 
