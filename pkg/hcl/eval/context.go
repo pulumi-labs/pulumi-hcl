@@ -16,9 +16,9 @@ package eval
 
 import (
 	"fmt"
+	"iter"
 	"maps"
 	"path/filepath"
-	"sort"
 	"strings"
 	"sync"
 
@@ -64,6 +64,10 @@ type Context struct {
 
 	// dataSources contains data source outputs (data.type.name.*)
 	dataSources map[string]cty.Value
+
+	// rangedData mirrors rangedResources for count/for_each data sources,
+	// keyed by the base data-source key.
+	rangedData map[string][]rangedInstance
 
 	// modules contains module outputs (module.name.*)
 	modules map[string]cty.Value
@@ -144,6 +148,50 @@ type rangedInstance struct {
 	isEach  bool
 }
 
+// forEachRangedValue yields each ranged block's collection value, keyed by the
+// block's base key.
+func forEachRangedValue(instances map[string][]rangedInstance) iter.Seq2[string, cty.Value] {
+	return func(yield func(string, cty.Value) bool) {
+		for baseKey, insts := range instances {
+			if !yield(baseKey, assembleRanged(insts)) {
+				return
+			}
+		}
+	}
+}
+
+// assembleRanged builds a ranged block's collection value from its published
+// instances. A consumer only ever reads instances it holds a dependency on,
+// and those have already published by the time it evaluates, so partial
+// assembly is safe: a count tuple is padded to the highest published index
+// (intermediate unpublished slots read as unknown but are never indexed), and
+// a for_each object carries exactly the published keys.
+func assembleRanged(instances []rangedInstance) cty.Value {
+	if len(instances) > 0 && instances[0].isCount {
+		n := 0
+		for _, inst := range instances {
+			n = max(n, inst.index+1)
+		}
+		vals := make([]cty.Value, n)
+		for i := range vals {
+			vals[i] = cty.UnknownVal(cty.DynamicPseudoType)
+		}
+		for _, inst := range instances {
+			vals[inst.index] = inst.value
+		}
+		return cty.TupleVal(vals)
+	}
+
+	objMap := make(map[string]cty.Value, len(instances))
+	for _, inst := range instances {
+		objMap[inst.eachKey] = inst.value
+	}
+	if len(objMap) == 0 {
+		return cty.EmptyObjectVal
+	}
+	return cty.ObjectVal(objMap)
+}
+
 // NewContext creates a new evaluation context from its three governing
 // directories:
 //
@@ -222,6 +270,7 @@ func newContext(path PathContext, rootModuleDir, stack, project, organization st
 		resources:       make(map[string]cty.Value),
 		rangedResources: make(map[string][]rangedInstance),
 		dataSources:     make(map[string]cty.Value),
+		rangedData:      make(map[string][]rangedInstance),
 		modules:         make(map[string]cty.Value),
 		moduleOutputs:   make(map[string]map[string]cty.Value),
 		calls:           make(map[string]cty.Value),
@@ -315,6 +364,24 @@ func (c *Context) SetDataSource(key string, value cty.Value) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.dataSources[key] = value
+}
+
+// SetCountData stores one count instance of a data source's outputs.
+func (c *Context) SetCountData(baseKey string, index int, value cty.Value) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.rangedData[baseKey] = append(c.rangedData[baseKey], rangedInstance{
+		value: value, index: index, isCount: true,
+	})
+}
+
+// SetEachData stores one for_each instance of a data source's outputs.
+func (c *Context) SetEachData(baseKey string, eachKey string, value cty.Value) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.rangedData[baseKey] = append(c.rangedData[baseKey], rangedInstance{
+		value: value, eachKey: eachKey, isEach: true,
+	})
 }
 
 // SetModule sets a module's output values.
@@ -423,8 +490,9 @@ func (c *Context) HCLContext() *hcl.EvalContext {
 		}
 	}
 
-	// Assemble ranged resource instances into tuples (count) or objects (for_each).
-	for baseKey, instances := range c.rangedResources {
+	// Assemble ranged resource instances into tuples (count) or objects
+	// (for_each), padded to the declared shape.
+	for baseKey, val := range forEachRangedValue(c.rangedResources) {
 		parts := splitResourceKey(baseKey)
 		if len(parts) != 2 {
 			continue
@@ -433,22 +501,7 @@ func (c *Context) HCLContext() *hcl.EvalContext {
 		if resourcesByType[typeName] == nil {
 			resourcesByType[typeName] = make(map[string]cty.Value)
 		}
-		if len(instances) > 0 && instances[0].isCount {
-			sort.Slice(instances, func(i, j int) bool {
-				return instances[i].index < instances[j].index
-			})
-			vals := make([]cty.Value, len(instances))
-			for i, inst := range instances {
-				vals[i] = inst.value
-			}
-			resourcesByType[typeName][resName] = cty.TupleVal(vals)
-		} else {
-			objMap := make(map[string]cty.Value, len(instances))
-			for _, inst := range instances {
-				objMap[inst.eachKey] = inst.value
-			}
-			resourcesByType[typeName][resName] = cty.ObjectVal(objMap)
-		}
+		resourcesByType[typeName][resName] = val
 	}
 
 	for typeName, instances := range resourcesByType {
@@ -456,29 +509,32 @@ func (c *Context) HCLContext() *hcl.EvalContext {
 	}
 
 	// Add data.* namespace for data sources
-	// Data sources are referenced as data.type.name.attr
-	if len(c.dataSources) > 0 {
-		// Group by type: data.aws_ami.ubuntu -> data["aws_ami"]["ubuntu"]
-		typeGroups := make(map[string]map[string]cty.Value)
-		for key, value := range c.dataSources {
-			parts := splitResourceKey(key)
-			if len(parts) == 2 {
-				typeName, dsName := parts[0], parts[1]
-				if typeGroups[typeName] == nil {
-					typeGroups[typeName] = make(map[string]cty.Value)
-				}
-				typeGroups[typeName][dsName] = value
-			}
+	// Data sources are referenced as data.type.name.attr; grouped by type:
+	// data.aws_ami.ubuntu -> data["aws_ami"]["ubuntu"]
+	typeGroups := make(map[string]map[string]cty.Value)
+	addData := func(key string, value cty.Value) {
+		parts := splitResourceKey(key)
+		if len(parts) != 2 {
+			return
 		}
+		typeName, dsName := parts[0], parts[1]
+		if typeGroups[typeName] == nil {
+			typeGroups[typeName] = make(map[string]cty.Value)
+		}
+		typeGroups[typeName][dsName] = value
+	}
+	for key, value := range c.dataSources {
+		addData(key, value)
+	}
+	for key, val := range forEachRangedValue(c.rangedData) {
+		addData(key, val)
+	}
+	if len(typeGroups) > 0 {
 		dataMap := make(map[string]cty.Value)
 		for typeName, instances := range typeGroups {
 			dataMap[typeName] = cty.ObjectVal(instances)
 		}
-		if len(dataMap) > 0 {
-			vars["data"] = cty.ObjectVal(dataMap)
-		} else {
-			vars["data"] = cty.EmptyObjectVal
-		}
+		vars["data"] = cty.ObjectVal(dataMap)
 	} else {
 		vars["data"] = cty.EmptyObjectVal
 	}
@@ -625,9 +681,12 @@ func (c *Context) Clone() *Context {
 		clonedModuleOutputs[k] = maps.Clone(v)
 	}
 
-	clonedRanged := make(map[string][]rangedInstance, len(c.rangedResources))
-	for k, v := range c.rangedResources {
-		clonedRanged[k] = append([]rangedInstance(nil), v...)
+	cloneRanged := func(m map[string][]rangedInstance) map[string][]rangedInstance {
+		out := make(map[string][]rangedInstance, len(m))
+		for k, v := range m {
+			out[k] = append([]rangedInstance(nil), v...)
+		}
+		return out
 	}
 
 	clone := &Context{
@@ -637,8 +696,9 @@ func (c *Context) Clone() *Context {
 		variables:         maps.Clone(c.variables),
 		locals:            maps.Clone(c.locals),
 		resources:         maps.Clone(c.resources),
-		rangedResources:   clonedRanged,
+		rangedResources:   cloneRanged(c.rangedResources),
 		dataSources:       maps.Clone(c.dataSources),
+		rangedData:        cloneRanged(c.rangedData),
 		modules:           maps.Clone(c.modules),
 		moduleOutputs:     clonedModuleOutputs,
 		calls:             maps.Clone(c.calls),
