@@ -236,18 +236,15 @@ func Functions(baseDir string) map[string]function.Function {
 	}
 
 	// templatefile and templatestring render a file or string as a template. The
-	// functions available inside that template are every function except the
-	// template functions themselves, which keeps a template from invoking itself
-	// recursively without bound.
-	nestedTemplateFuncs := make(map[string]function.Function, len(funcs))
-	for name, fn := range funcs {
-		if name == "templatefile" || name == "templatestring" {
-			continue
-		}
-		nestedTemplateFuncs[name] = fn
-	}
-	funcs["templatefile"] = templateFileFunc(baseDir, nestedTemplateFuncs)
-	funcs["templatestring"] = templateStringFunc(nestedTemplateFuncs)
+	// rendered template may itself call the template functions: templatestring
+	// passes the full table through unchanged, and templatefile replaces itself
+	// inside each rendered template with a variant that counts recursion depth
+	// and errors past the limit. The callback defers the table lookup so the map
+	// can refer to itself, and so later additions to it (e.g. provider
+	// functions) are visible inside templates too.
+	funcsCb := func() map[string]function.Function { return funcs }
+	funcs["templatefile"] = templateFileFunc(baseDir, funcsCb, 0)
+	funcs["templatestring"] = templateStringFunc(funcsCb)
 
 	return funcs
 }
@@ -1469,14 +1466,39 @@ func fileBase64Func(baseDir string) function.Function {
 	})
 }
 
+// templateMaxRecursionDepth returns the maximum number of nested templatefile
+// renders allowed, from the TF_TEMPLATE_RECURSION_DEPTH environment variable
+// or a default of 1024.
+func templateMaxRecursionDepth() (int, error) {
+	const envkey = "TF_TEMPLATE_RECURSION_DEPTH"
+	if val := os.Getenv(envkey); val != "" {
+		i, err := strconv.Atoi(val)
+		if err != nil {
+			return -1, fmt.Errorf("invalid value for %s: %w", envkey, err)
+		}
+		return i, nil
+	}
+	return 1024, nil
+}
+
 // templateFileFunc reads the file at its first argument and renders it as an HCL
 // template using the variables in its second argument, just like OpenTofu: the
 // file's interpolations may call functions and use `%{ for }` / `%{ if }`
-// directives. nestedFuncs is the function table made available inside the
-// template; it omits the template functions themselves to prevent unbounded
-// recursion.
-func templateFileFunc(baseDir string, nestedFuncs map[string]function.Function) function.Function {
+// directives. funcsCb supplies the function table made available inside the
+// template, with templatefile itself replaced by a variant whose recursion
+// depth is one greater; depth counts how many templatefile renders are already
+// on the stack, and rendering fails past the limit.
+func templateFileFunc(
+	baseDir string, funcsCb func() map[string]function.Function, depth int,
+) function.Function {
 	render := func(args []cty.Value) (cty.Value, error) {
+		maxDepth, err := templateMaxRecursionDepth()
+		if err != nil {
+			return cty.NilVal, err
+		}
+		if depth > maxDepth {
+			return cty.NilVal, fmt.Errorf("maximum recursion depth %d reached", maxDepth)
+		}
 		path := args[0].AsString()
 		fullPath, err := resolveFilePath(baseDir, path)
 		if err != nil {
@@ -1485,6 +1507,14 @@ func templateFileFunc(baseDir string, nestedFuncs map[string]function.Function) 
 		content, err := os.ReadFile(fullPath)
 		if err != nil {
 			return cty.NilVal, err
+		}
+		given := funcsCb()
+		nestedFuncs := make(map[string]function.Function, len(given))
+		for name, fn := range given {
+			if name == "templatefile" {
+				fn = templateFileFunc(baseDir, funcsCb, depth+1)
+			}
+			nestedFuncs[name] = fn
 		}
 		return renderTemplate(path, cty.StringVal(string(content)), args[1], nestedFuncs)
 	}
@@ -1513,9 +1543,9 @@ func templateFileFunc(baseDir string, nestedFuncs map[string]function.Function) 
 }
 
 // templateStringFunc renders its first argument as an HCL template using the
-// variables in its second argument. nestedFuncs is the function table made
-// available inside the template.
-func templateStringFunc(nestedFuncs map[string]function.Function) function.Function {
+// variables in its second argument. funcsCb supplies the function table made
+// available inside the template, unchanged.
+func templateStringFunc(funcsCb func() map[string]function.Function) function.Function {
 	return function.New(&function.Spec{
 		Params: []function.Parameter{
 			{Name: "template", Type: cty.String},
@@ -1528,14 +1558,14 @@ func templateStringFunc(nestedFuncs map[string]function.Function) function.Funct
 			if !args[0].IsKnown() || !args[1].IsKnown() {
 				return cty.DynamicPseudoType, nil
 			}
-			val, err := renderTemplate("<templatestring>", args[0], args[1], nestedFuncs)
+			val, err := renderTemplate("<templatestring>", args[0], args[1], funcsCb())
 			if err != nil {
 				return cty.DynamicPseudoType, err
 			}
 			return val.Type(), nil
 		},
 		Impl: func(args []cty.Value, retType cty.Type) (cty.Value, error) {
-			return renderTemplate("<templatestring>", args[0], args[1], nestedFuncs)
+			return renderTemplate("<templatestring>", args[0], args[1], funcsCb())
 		},
 	})
 }
