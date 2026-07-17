@@ -1354,6 +1354,39 @@ func TestFileFunctions(t *testing.T) {
 	})
 }
 
+// TestNestedTemplateFunctions pins that a template rendered by templatefile may
+// itself call templatestring and templatefile, as OpenTofu allows, and that a
+// self-recursive templatefile stops at the recursion depth limit. No t.Parallel:
+// the recursion-limit subtest uses t.Setenv.
+func TestNestedTemplateFunctions(t *testing.T) {
+	tmpDir := t.TempDir()
+	write := func(name, content string) {
+		require.NoError(t, os.WriteFile(filepath.Join(tmpDir, name), []byte(content), 0o644))
+	}
+	write("string.tpl", `${templatestring("hi $${name}", { name = "bob" })}`)
+	write("chain.tpl", `${templatefile("inner.tpl", { name = "eve" })}`)
+	write("inner.tpl", `hello ${name}`)
+	write("loop.tpl", `${templatefile("loop.tpl", {})}`)
+
+	t.Run("templatestring inside templatefile", func(t *testing.T) {
+		assert.Equal(t, cty.StringVal("hi bob"), evalExpr(t, tmpDir, `templatefile("string.tpl", {})`))
+	})
+
+	t.Run("templatefile inside templatefile", func(t *testing.T) {
+		assert.Equal(t, cty.StringVal("hello eve"), evalExpr(t, tmpDir, `templatefile("chain.tpl", {})`))
+	})
+
+	t.Run("recursion limit", func(t *testing.T) {
+		t.Setenv("TF_TEMPLATE_RECURSION_DEPTH", "5")
+		expr, diags := hclsyntax.ParseExpression(
+			[]byte(`templatefile("loop.tpl", {})`), "test.hcl", hcl.Pos{Line: 1, Column: 1})
+		require.False(t, diags.HasErrors(), diags.Error())
+		_, diags = expr.Value(&hcl.EvalContext{Functions: Functions(tmpDir)})
+		require.True(t, diags.HasErrors())
+		assert.Contains(t, diags.Error(), "maximum recursion depth 5 reached")
+	})
+}
+
 // TestFileTildeExpansion pins that the file-reading functions expand a leading
 // `~` to the user's home directory, matching OpenTofu's openFile. Before the
 // fix these functions treated `~` as a literal path segment relative to baseDir

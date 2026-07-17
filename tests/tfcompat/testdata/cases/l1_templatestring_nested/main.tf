@@ -5,3 +5,9 @@
 output "nested" {
   value = templatefile("${path.module}/outer.tftpl", {})
 }
+
+# The recursion-limited exception: a template rendered by `templatefile` may
+# itself call `templatefile`.
+output "nested_file" {
+  value = templatefile("${path.module}/chain.tftpl", { dir = path.module })
+}
