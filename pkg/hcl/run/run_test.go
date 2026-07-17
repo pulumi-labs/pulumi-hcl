@@ -987,6 +987,81 @@ resource "aws_instance" "web" {
 	assert.Equal(t, []property.Glob{property.GlobFromSegments(property.NewSegment("tags"))}, req.IgnoreChanges)
 }
 
+// TestEngine_PreventDestroyExpression verifies that prevent_destroy accepts a
+// non-literal expression, evaluated against the program's scope.
+func TestEngine_PreventDestroyExpression(t *testing.T) {
+	t.Parallel()
+
+	runEngine := func(t *testing.T, lifecycle string) (*testutil.MockResourceMonitor, error) {
+		src := []byte(`
+variable "flag" {
+  default = true
+}
+
+resource "aws_instance" "web" {
+  ami = "ami-12345"
+
+  lifecycle {
+    prevent_destroy = ` + lifecycle + `
+  }
+}
+`)
+		p := parser.NewParser()
+		config, diags := p.ParseSource("test.hcl", src)
+		if diags.HasErrors() {
+			t.Fatalf("parse error: %s", diags.Error())
+		}
+
+		mock := &testutil.MockResourceMonitor{}
+		engine := newTestEngine(t, config, &run.EngineOptions{
+			ModuleLoader:    testModuleLoader(t),
+			ProjectName:     "test-project",
+			StackName:       "dev",
+			ResourceMonitor: mock,
+			WorkDir:         t.TempDir(),
+			RootDir:         t.TempDir(),
+			SchemaLoader: schemaloader.New(t, schema.PackageSpec{
+				Name: "aws",
+				Resources: map[string]schema.ResourceSpec{
+					"aws:index:Instance": {
+						InputProperties: map[string]schema.PropertySpec{
+							"ami": {TypeSpec: schema.TypeSpec{Type: "string"}},
+						},
+						ObjectTypeSpec: schema.ObjectTypeSpec{
+							Properties: map[string]schema.PropertySpec{
+								"ami": {TypeSpec: schema.TypeSpec{Type: "string"}},
+							},
+						},
+					},
+				},
+			}),
+		})
+		return mock, engine.Run(t.Context())
+	}
+
+	t.Run("variable", func(t *testing.T) {
+		t.Parallel()
+		mock, err := runEngine(t, "var.flag")
+		require.NoError(t, err)
+		require.Len(t, mock.RegisteredResources, 2)
+		assert.True(t, mock.RegisteredResources[1].Protect)
+	})
+
+	t.Run("negated variable", func(t *testing.T) {
+		t.Parallel()
+		mock, err := runEngine(t, "!var.flag")
+		require.NoError(t, err)
+		require.Len(t, mock.RegisteredResources, 2)
+		assert.False(t, mock.RegisteredResources[1].Protect)
+	})
+
+	t.Run("invalid type", func(t *testing.T) {
+		t.Parallel()
+		_, err := runEngine(t, "[true]")
+		require.ErrorContains(t, err, `invalid prevent_destroy value on "aws_instance.web"`)
+	})
+}
+
 func TestEngine_CreateBeforeDestroy(t *testing.T) {
 	t.Parallel()
 

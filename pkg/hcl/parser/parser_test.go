@@ -149,7 +149,9 @@ module "vpc" {
 		}
 		if r.Lifecycle == nil {
 			t.Error("Expected lifecycle block")
-		} else if r.Lifecycle.PreventDestroy == nil || !*r.Lifecycle.PreventDestroy {
+		} else if r.Lifecycle.PreventDestroy == nil {
+			t.Error("Expected prevent_destroy to be set")
+		} else if v, _ := r.Lifecycle.PreventDestroy.Value(nil); !cty.True.RawEquals(v) {
 			t.Error("Expected prevent_destroy to be true")
 		}
 	} else {
@@ -625,7 +627,9 @@ module "vpc" {
 	assert.True(t, cty.NumberIntVal(2).RawEquals(countVal))
 	require.NotNil(t, res.Lifecycle)
 	require.NotNil(t, res.Lifecycle.PreventDestroy)
-	assert.True(t, *res.Lifecycle.PreventDestroy)
+	pdVal, valDiags := res.Lifecycle.PreventDestroy.Value(nil)
+	require.False(t, valDiags.HasErrors())
+	assert.True(t, cty.True.RawEquals(pdVal))
 
 	content, _, contentDiags := res.Config.PartialContent(&hcl.BodySchema{
 		Attributes: []hcl.AttributeSchema{{Name: "ami"}, {Name: "count"}},
@@ -987,7 +991,6 @@ func TestParseConstantAttributeTypes(t *testing.T) {
 		"output sensitive":         `output "o" { value = "v", sensitive = 3 }`,
 		"output description":       `output "o" { value = "v", description = {} }`,
 		"lifecycle cbd":            `resource "r" "r" { lifecycle { create_before_destroy = "x" } }`,
-		"lifecycle prevent":        `resource "r" "r" { lifecycle { prevent_destroy = [true] } }`,
 		"provider alias":           `provider "p" { alias = ["a"] }`,
 		"module source":            `module "m" { source = ["./m"] }`,
 		"required_providers src":   `terraform { required_providers { p = { source = ["x"] } } }`,

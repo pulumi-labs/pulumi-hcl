@@ -21,16 +21,9 @@ import (
 	"github.com/pulumi-labs/pulumi-hcl/tests/testutil/tfcompat/providers"
 )
 
-// TestL2PreventDestroyVar proves that pulumi-hcl rejects a non-literal
-// `prevent_destroy` expression that OpenTofu accepts.
-//
-// The resource sets `prevent_destroy = var.flag`. OpenTofu evaluates the
-// expression and applies successfully (and, with flag=true, protects the
-// resource exactly as a literal `prevent_destroy = true` would). pulumi-hcl
-// decodes the `prevent_destroy` expression with a nil HCL eval context, so the
-// `var.flag` reference fails to resolve and `pulumi up` aborts with "Variables
-// not allowed" before the resource is created. The harness fails because
-// pulumi errors on a program OpenTofu runs cleanly.
+// TestL2PreventDestroyVar verifies that a non-literal `prevent_destroy`
+// expression (`prevent_destroy = var.flag`) is evaluated rather than rejected
+// at parse time, protecting the resource just as a literal `true` would.
 func TestL2PreventDestroyVar(t *testing.T) {
 	t.Parallel()
 	tfcompat.RunCase(t, "l2_prevent_destroy_var", tfcompat.Case{

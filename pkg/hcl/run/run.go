@@ -1645,10 +1645,25 @@ func (e *Engine) buildResourceOptionsInContext(
 		opts.DependsOn = append(opts.DependsOn, e.cellURNs.get(expansionCell{block: resPrefix + depKey, mi: miPath})...)
 	}
 
+	hclCtx := evalCtx.HCLContext()
+
 	// Handle lifecycle options
 	if res.Lifecycle != nil {
-		if res.Lifecycle.PreventDestroy != nil && *res.Lifecycle.PreventDestroy {
-			opts.Protect = true
+		if res.Lifecycle.PreventDestroy != nil {
+			val, diags := res.Lifecycle.PreventDestroy.Value(hclCtx)
+			if diags.HasErrors() {
+				return nil, fmt.Errorf("evaluating prevent_destroy on %q: %s",
+					res.Type+"."+res.Name, diags.Error())
+			}
+			val, _ = val.Unmark()
+			val, err := ctyconvert.Convert(val, cty.Bool)
+			if err != nil {
+				return nil, fmt.Errorf("invalid prevent_destroy value on %q: %w",
+					res.Type+"."+res.Name, err)
+			}
+			if cty.True.RawEquals(val) {
+				opts.Protect = true
+			}
 		}
 		// ignore_changes maps to ignoreChanges. The traversal names are TF
 		// (snake_case) attribute names; the Pulumi engine matches ignoreChanges
@@ -1806,8 +1821,6 @@ func (e *Engine) buildResourceOptionsInContext(
 		return nil, err
 	}
 	opts.ImportId = importId
-
-	hclCtx := evalCtx.HCLContext()
 
 	for _, t := range res.AdditionalSecretOutputs {
 		name, err := translateSecretOutputName(t, resourceMapping, outputProps)
