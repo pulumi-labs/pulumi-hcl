@@ -22,10 +22,10 @@ import (
 )
 
 // Like TestL2ModuleForEachInstanceFlow but with the module-internal `a` → `b`
-// reference routed through a local. Locals evaluate per module instance, so
-// m["x"].b still creates ahead of the delayed m["y"].a. The recorded op order
-// proves whether the runtime keeps locals module-instance-scoped or evaluates
-// them once across all instances of the module.
+// reference routed through a local. Verified against real tofu: the local
+// WIDENS the edge across module instances — both `b`s wait for the delayed
+// m["y"].a (unlike a direct reference, which stays per-instance). Guards
+// against over-narrowing module locals.
 func TestL2ModuleLocalInstanceFlow(t *testing.T) {
 	t.Parallel()
 	tfcompat.RunCase(t, "l2_module_local_instance_flow", tfcompat.Case{

@@ -43,6 +43,7 @@ import (
 	"github.com/pulumi-labs/pulumi-hcl/pkg/util"
 	"github.com/pulumi/pulumi/pkg/v3/codegen"
 	"github.com/pulumi/pulumi/pkg/v3/codegen/schema"
+	"github.com/pulumi/pulumi/pkg/v3/util/pdag"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/resource"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/resource/urn"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/tokens"
@@ -431,6 +432,15 @@ type Engine struct {
 
 	parallel int
 
+	// expansions maps each (block, module instance) cell to the expansion
+	// skeleton scheduling its instances. See cells.go.
+	expansions *util.SyncMap[expansionCell, *graph.BlockExpansion]
+
+	// planBarrier is the plan/apply phase boundary: every plan-time data read
+	// completes before it, and every resource expansion waits for it. See
+	// materializeRootCells.
+	planBarrier pdag.Node
+
 	// failedNodes tracks resource nodes that failed to register, keyed by instance key.
 	// Dependent nodes check this map and are skipped when a dependency failed.
 	failedNodes *util.SyncMap[string, error]
@@ -577,6 +587,7 @@ func NewEngine(ctx context.Context, config *ast.Config, opts *EngineOptions) (*E
 		moduleLoader:            opts.ModuleLoader,
 		moduleInstances:         util.NewSyncMap[modulepath.Path, []*moduleInstance](),
 		parallel:                opts.Parallel,
+		expansions:              util.NewSyncMap[expansionCell, *graph.BlockExpansion](),
 		failedNodes:             util.NewSyncMap[string, error](),
 		alwaysRegisterProviders: opts.AlwaysRegisterProviders,
 		resolver: packages.NewResolver(
@@ -624,6 +635,13 @@ func (e *Engine) Run(ctx context.Context) error {
 	}
 	e.graph = g
 	e.forcedCBD = g.ForcedCreateBeforeDestroy()
+
+	// Resource/data instances are scheduled by expansion cells; their graph
+	// nodes serve as completion barriers only. Root cells materialize before
+	// the walk; each module's cells materialize when its init node runs.
+	if err := e.materializeRootCells(g); err != nil {
+		return fmt.Errorf("materializing expansion cells: %w", err)
+	}
 
 	// Process nodes in parallel where possible
 	if err := e.processGraph(ctx, g); err != nil {
@@ -704,10 +722,10 @@ func (e *Engine) processNode(ctx context.Context, node *graph.Node) error {
 		return e.processVariableValidation(node)
 	case graph.NodeTypeLocal:
 		return e.processLocal(ctx, node)
-	case graph.NodeTypeResource:
-		return e.processResource(ctx, node)
-	case graph.NodeTypeDataSource:
-		return e.processDataSource(ctx, node)
+	case graph.NodeTypeResource, graph.NodeTypeDataSource:
+		// Instances run in expansion cells (cells.go); the node itself is a
+		// completion barrier ordered after every cell via CompleteBefore.
+		return nil
 	case graph.NodeTypeModuleInit:
 		return e.processModuleInit(ctx, node)
 	case graph.NodeTypeModule:
@@ -1369,121 +1387,7 @@ func (e *Engine) registerProviderInContext(
 	return nil
 }
 
-// processResource processes a resource definition.
-func (e *Engine) processResource(ctx context.Context, node *graph.Node) error {
-	res := node.Resource
-	if res == nil {
-		return fmt.Errorf("resource node missing Resource field")
-	}
 
-	if node.ModuleInfo != nil {
-		return e.forEachModuleInstance(node, func(inst *moduleInstance) error {
-			return e.processResourceInContext(ctx, node, res, inst.EvalCtx, inst.URN, inst)
-		})
-	}
-
-	return e.processResourceInContext(ctx, node, res, e.evaluator.Context(), e.stackURN, nil)
-}
-
-func (e *Engine) processResourceInContext(
-	ctx context.Context, node *graph.Node, res *ast.Resource,
-	evalCtx *eval.Context, parentURN urn.URN, modInst *moduleInstance,
-) error {
-	resSchema, err := e.resolver.ResolveResource(ctx, res.Type)
-	if err != nil {
-		if diag := unknownTokenDiag("resource", res.TypeRange, err); diag != err {
-			return diag
-		}
-		return fmt.Errorf("resolving resource type %s: %w", res.Type, err)
-	}
-
-	tempEvaluator := eval.NewEvaluator(evalCtx)
-
-	expander := graph.NewResourceExpander()
-
-	// A reference in count/for_each establishes a dependency (as in TF) that
-	// governs destroy ordering, even when nothing in the body references the
-	// target. Collect those references so every instance depends on them.
-	var metaArgDeps []string
-	unknownArg := ""
-	if res.Count != nil {
-		count, isBool, unknown, deps, diags := tempEvaluator.EvaluateCount(res.Count)
-		if diags.HasErrors() {
-			return fmt.Errorf("evaluating count: %s", diags.Error())
-		}
-		metaArgDeps = append(metaArgDeps, deps...)
-		switch {
-		case unknown:
-			unknownArg = "count"
-		case isBool:
-			expander.SetBoolCount(node.Key, count)
-		default:
-			expander.SetCount(node.Key, count)
-		}
-	}
-
-	if res.ForEach != nil {
-		forEach, unknown, deps, diags := tempEvaluator.EvaluateForEach(res.ForEach)
-		if diags.HasErrors() {
-			return fmt.Errorf("evaluating for_each: %s", diags.Error())
-		}
-		metaArgDeps = append(metaArgDeps, deps...)
-		if unknown {
-			unknownArg = "for_each"
-		} else {
-			expander.SetForEach(node.Key, forEach)
-		}
-	}
-
-	// A count/for_each that reads values this operation has not yet produced
-	// cannot be expanded. During preview, register no instances and bind the
-	// resource address to unknown so downstream references resolve to unknown
-	// rather than an empty collection.
-	if unknownArg != "" {
-		if !e.dryRun {
-			return fmt.Errorf("%s: the %s value depends on values that are not yet known", node.Key, unknownArg)
-		}
-		baseKey := node.Key
-		if node.ModuleInfo != nil {
-			baseKey = strings.TrimPrefix(baseKey, node.ModuleInfo.Prefix())
-		}
-		evalCtx.SetResource(baseKey, "", cty.UnknownVal(cty.DynamicPseudoType))
-		return nil
-	}
-
-	result := expander.Expand(node)
-
-	for _, instance := range result.Instances {
-		if e.hasFailedDependency(res) {
-			e.failedNodes.Set(instance.Key, fmt.Errorf("skipped: dependency failed"))
-			continue
-		}
-		if err := e.registerResourceInstanceInContext(
-			ctx, node, res, resSchema, instance, evalCtx, parentURN, modInst, metaArgDeps,
-		); err != nil {
-			return fmt.Errorf("registering %s: %w", instance.Key, err)
-		}
-	}
-
-	// Empty count/for_each still needs the resource address bound so downstream
-	// references (e.g. an unconditional module output that walks the resource)
-	// see an empty collection rather than "no such attribute".
-	if len(result.Instances) == 0 && (res.Count != nil || res.ForEach != nil) {
-		baseKey := node.Key
-		if node.ModuleInfo != nil {
-			baseKey = strings.TrimPrefix(baseKey, node.ModuleInfo.Prefix())
-		}
-		var empty cty.Value
-		if res.Count != nil {
-			empty = cty.EmptyTupleVal
-		} else {
-			empty = cty.EmptyObjectVal
-		}
-		evalCtx.SetResource(baseKey, "", empty)
-	}
-
-	return nil
-}
 
 // registerResourceInstanceInContext registers a single resource instance with Pulumi.
 func (e *Engine) registerResourceInstanceInContext(
@@ -3140,139 +3044,8 @@ func (e *Engine) readResource(
 	return resp.URN, resp.ID, resp.Outputs, nil
 }
 
-// processDataSource processes a data source definition.
-func (e *Engine) processDataSource(ctx context.Context, node *graph.Node) error {
-	ds := node.Resource
-	if ds == nil {
-		return fmt.Errorf("data source node missing Resource field")
-	}
 
-	if node.ModuleInfo != nil {
-		return e.forEachModuleInstance(node, func(inst *moduleInstance) error {
-			return e.processDataSourceInContext(ctx, node, ds, inst.EvalCtx)
-		})
-	}
 
-	return e.processDataSourceInContext(ctx, node, ds, e.evaluator.Context())
-}
-
-func (e *Engine) processDataSourceInContext(
-	ctx context.Context, node *graph.Node, ds *ast.Resource, evalCtx *eval.Context,
-) error {
-	funcSchema, err := e.resolver.ResolveFunction(ctx, ds.Type)
-	if err != nil {
-		if diag := unknownTokenDiag("data source", ds.TypeRange, err); diag != err {
-			return diag
-		}
-		return fmt.Errorf("resolving data source type %s: %w", ds.Type, err)
-	}
-
-	dsKey := node.Key
-	if node.ModuleInfo != nil {
-		dsKey = strings.TrimPrefix(dsKey, node.ModuleInfo.Prefix())
-	}
-	dsKey = strings.TrimPrefix(dsKey, "data.")
-
-	if ds.Count != nil || ds.ForEach != nil {
-		return e.processRangedDataSource(ctx, node, ds, funcSchema, evalCtx, dsKey)
-	}
-
-	ctyOutputs, err := e.invokeDataSourceOnce(ctx, node, ds, funcSchema, evalCtx)
-	if err != nil {
-		return err
-	}
-	evalCtx.SetDataSource(dsKey, ctyOutputs)
-	return nil
-}
-
-// processRangedDataSource handles a data source with count or for_each.
-// It expands into N instances, invokes each, and stores the aggregated
-// outputs as a tuple (count) or object keyed by each.key (for_each) so that
-// `data.<type>.<name>[<index>|<key>].<attr>` resolves as expected.
-func (e *Engine) processRangedDataSource(
-	ctx context.Context, node *graph.Node, ds *ast.Resource, funcSchema *schema.Function,
-	evalCtx *eval.Context, dsKey string,
-) error {
-	tempEvaluator := eval.NewEvaluator(evalCtx)
-	expander := graph.NewResourceExpander()
-
-	unknownArg := ""
-	if ds.Count != nil {
-		count, isBool, unknown, _, diags := tempEvaluator.EvaluateCount(ds.Count)
-		if diags.HasErrors() {
-			return fmt.Errorf("evaluating count: %s", diags.Error())
-		}
-		switch {
-		case unknown:
-			unknownArg = "count"
-		case isBool:
-			expander.SetBoolCount(node.Key, count)
-		default:
-			expander.SetCount(node.Key, count)
-		}
-	}
-
-	if ds.ForEach != nil {
-		forEach, unknown, _, diags := tempEvaluator.EvaluateForEach(ds.ForEach)
-		if diags.HasErrors() {
-			return fmt.Errorf("evaluating for_each: %s", diags.Error())
-		}
-		if unknown {
-			unknownArg = "for_each"
-		} else {
-			expander.SetForEach(node.Key, forEach)
-		}
-	}
-
-	// See the matching case in processResourceInContext: unexpandable during
-	// preview means no invokes and an unknown aggregate value.
-	if unknownArg != "" {
-		if !e.dryRun {
-			return fmt.Errorf("%s: the %s value depends on values that are not yet known", node.Key, unknownArg)
-		}
-		evalCtx.SetDataSource(dsKey, cty.UnknownVal(cty.DynamicPseudoType))
-		return nil
-	}
-
-	result := expander.Expand(node)
-
-	var tupleOutputs []cty.Value
-	eachOutputs := make(map[string]cty.Value)
-	isForEach := ds.ForEach != nil
-
-	for _, instance := range result.Instances {
-		instCtx := evalCtx.WithIteration(instance.Index, instance.EachKey, instance.EachValue)
-
-		ctyOut, invokeErr := e.invokeDataSourceOnce(ctx, node, ds, funcSchema, instCtx)
-
-		if invokeErr != nil {
-			return invokeErr
-		}
-		if isForEach {
-			eachOutputs[instance.EachKey.AsString()] = ctyOut
-		} else {
-			tupleOutputs = append(tupleOutputs, ctyOut)
-		}
-	}
-
-	var aggregated cty.Value
-	if isForEach {
-		if len(eachOutputs) == 0 {
-			aggregated = cty.EmptyObjectVal
-		} else {
-			aggregated = cty.ObjectVal(eachOutputs)
-		}
-	} else {
-		if len(tupleOutputs) == 0 {
-			aggregated = cty.EmptyTupleVal
-		} else {
-			aggregated = cty.TupleVal(tupleOutputs)
-		}
-	}
-
-	evalCtx.SetDataSource(dsKey, aggregated)
-	return nil
-}
 
 // invokeDataSourceOnce performs a single data-source invocation using the
 // current state of evalCtx (which may have each/count set by the caller).
@@ -3957,7 +3730,7 @@ func (e *Engine) processModuleInit(ctx context.Context, node *graph.Node) error 
 		instances = append(instances, insts...)
 	}
 	e.moduleInstances.Set(modInfo.Path, instances)
-	return nil
+	return e.materializeModuleCells(modInfo, instances)
 }
 
 // initModuleCallIn creates the instances of one module call within a single
@@ -4669,14 +4442,28 @@ func (e *Engine) evaluateCheck(ctx context.Context, name string, check *ast.Chec
 }
 
 // readScopedDataSource reads a check's scoped data source into evalCtx, making
-// it available as data.<type>.<name> within that context only.
+// it available as data.<type>.<name> within that context only. Scoped data
+// sources are single reads: they run after the walk, synchronously, outside
+// the expansion-cell machinery.
 func (e *Engine) readScopedDataSource(ctx context.Context, ds *ast.Resource, evalCtx *eval.Context) error {
 	node := &graph.Node{
 		Key:      "data." + ast.ResourceKey(ds.Type, ds.Name),
 		Type:     graph.NodeTypeDataSource,
 		Resource: ds,
 	}
-	return e.processDataSourceInContext(ctx, node, ds, evalCtx)
+	funcSchema, err := e.resolver.ResolveFunction(ctx, ds.Type)
+	if err != nil {
+		if diag := unknownTokenDiag("data source", ds.TypeRange, err); diag != err {
+			return diag
+		}
+		return fmt.Errorf("resolving data source type %s: %w", ds.Type, err)
+	}
+	ctyOutputs, err := e.invokeDataSourceOnce(ctx, node, ds, funcSchema, evalCtx)
+	if err != nil {
+		return err
+	}
+	evalCtx.SetDataSource(ast.ResourceKey(ds.Type, ds.Name), ctyOutputs)
+	return nil
 }
 
 // warnf emits a best-effort warning diagnostic. A transport failure emitting it

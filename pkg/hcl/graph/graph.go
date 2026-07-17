@@ -135,6 +135,13 @@ type Node struct {
 	// node's graph edges, kept in classified form so the engine's expansion
 	// layer can wire them per module instance at instance granularity.
 	Deps *BlockDeps
+
+	// PlanTimeRead is set on data-source nodes whose transitive prerequisites
+	// contain no resource: the read needs nothing a plan cannot know, so it
+	// completes before any resource instance is created (the plan/apply phase
+	// boundary). Deferred reads — those reaching a resource, directly or
+	// through their module's expansion — are false.
+	PlanTimeRead bool
 }
 
 // BlockDeps classifies a resource/data block's dependencies for the expansion
@@ -418,6 +425,26 @@ func (g *Graph) HasDependents(key string) bool {
 	return g.dependents[key] > 0
 }
 
+// KeyNode returns the dag node interned under key.
+func (g *Graph) KeyNode(key string) (pdag.Node, bool) {
+	n, ok := g.seen[key]
+	return n.i, ok
+}
+
+// ExpandableNodes returns the resource/data nodes carrying classified deps —
+// the blocks the engine schedules through BlockExpansion cells — sorted by
+// key for deterministic materialization.
+func (g *Graph) ExpandableNodes() []*Node {
+	var out []*Node
+	for _, n := range g.seen {
+		if n.n.Deps != nil {
+			out = append(out, n.n)
+		}
+	}
+	slices.SortFunc(out, func(a, b *Node) int { return cmp.Compare(a.Key, b.Key) })
+	return out
+}
+
 // BuildFromConfig builds a dependency graph from an HCL configuration.
 // moduleLoader is required when config contains modules.
 func BuildFromConfig(config *ast.Config, moduleLoader ModuleLoader, workDir string) (*Graph, error) {
@@ -533,7 +560,63 @@ func BuildFromConfig(config *ast.Config, moduleLoader ModuleLoader, workDir stri
 		}
 	}
 
+	g.classifyPlanTimeReads()
+
 	return g, nil
+}
+
+// classifyPlanTimeReads marks each data-source node whose transitive
+// prerequisites contain no resource node. Reachability runs over the
+// block-level graph, so a data source inside a module whose expansion depends
+// on a resource (through the module's init node) classifies as deferred.
+func (g *Graph) classifyPlanTimeReads() {
+	memo := make(map[pdag.Node]bool)
+	var reachesResource func(n pdag.Node) bool
+	reachesResource = func(n pdag.Node) bool {
+		if v, ok := memo[n]; ok {
+			return v
+		}
+		memo[n] = false
+		if in, ok := g.seen[g.keyByDagNode[n]]; ok && in.n.Type == NodeTypeResource {
+			memo[n] = true
+			return true
+		}
+		for p := range g.dag.Predecessors(n) {
+			if reachesResource(p) {
+				memo[n] = true
+				return true
+			}
+		}
+		return false
+	}
+	for _, in := range g.seen {
+		if in.n.Type == NodeTypeDataSource {
+			in.n.PlanTimeRead = !reachesResource(in.i)
+		}
+	}
+}
+
+// internExecNode creates an exec node interned under key (as a Builtin, so
+// pre-walk passes see it but Validate accepts it), leaving arming to the
+// caller.
+func (g *Graph) internExecNode(key string, exec func(context.Context) error) (pdag.Node, pdag.Done) {
+	i, done := g.dag.NewNode(dagNode{key: key, exec: exec})
+	g.seen[key] = internedNode{i: i, n: &Node{Key: key, Type: NodeTypeBuiltin}}
+	g.keyByDagNode[i] = key
+	return i, done
+}
+
+// NewJoinNode creates an armed no-op node interned under key, for the engine
+// to use as a synchronization point (edges added via Order).
+func (g *Graph) NewJoinNode(key string) pdag.Node {
+	i, done := g.internExecNode(key, func(context.Context) error { return nil })
+	done()
+	return i
+}
+
+// Order adds the edge from → to.
+func (g *Graph) Order(from, to pdag.Node) error {
+	return g.dag.NewEdge(from, to)
 }
 
 // defaultProviderDeps returns an implicit dependency on the un-aliased

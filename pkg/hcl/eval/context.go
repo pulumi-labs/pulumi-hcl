@@ -18,7 +18,6 @@ import (
 	"fmt"
 	"maps"
 	"path/filepath"
-	"sort"
 	"strings"
 	"sync"
 
@@ -62,8 +61,19 @@ type Context struct {
 	// keyed by the base resource key (e.g., "type.name").
 	rangedResources map[string][]rangedInstance
 
+	// rangedShapes records the declared instance shape of each count/for_each
+	// resource, so a partial assembly stays indexable while instances publish
+	// concurrently: unpublished count indexes and for_each keys read as
+	// unknown. Keys match rangedResources.
+	rangedShapes map[string]rangedShape
+
 	// dataSources contains data source outputs (data.type.name.*)
 	dataSources map[string]cty.Value
+
+	// rangedData and rangedDataShapes mirror rangedResources/rangedShapes for
+	// count/for_each data sources, keyed by the base data-source key.
+	rangedData       map[string][]rangedInstance
+	rangedDataShapes map[string]rangedShape
 
 	// modules contains module outputs (module.name.*)
 	modules map[string]cty.Value
@@ -144,6 +154,70 @@ type rangedInstance struct {
 	isEach  bool
 }
 
+// rangedShape is the declared instance set of one count/for_each block: count
+// instances 0..count-1, or the full for_each key set.
+type rangedShape struct {
+	count    int
+	eachKeys []string
+	isCount  bool
+}
+
+// forEachRangedValue assembles each ranged block's collection value —
+// including blocks with a declared shape but no published instances yet — and
+// hands it to visit keyed by the block's base key.
+func forEachRangedValue(
+	instances map[string][]rangedInstance, shapes map[string]rangedShape,
+	visit func(baseKey string, val cty.Value),
+) {
+	for baseKey, insts := range instances {
+		visit(baseKey, assembleRanged(insts, shapes[baseKey]))
+	}
+	for baseKey, shape := range shapes {
+		if _, ok := instances[baseKey]; !ok {
+			visit(baseKey, assembleRanged(nil, shape))
+		}
+	}
+}
+
+// assembleRanged builds a ranged block's collection value from its published
+// instances, padded to the declared shape: slots whose instance has not
+// published yet read as unknown, so a consumer holding only a single
+// instance's completion can index that instance while siblings still run. A
+// zero-value shape (nothing declared) pads count tuples to the highest
+// published index.
+func assembleRanged(instances []rangedInstance, shape rangedShape) cty.Value {
+	isCount := shape.isCount || (len(instances) > 0 && instances[0].isCount)
+	if isCount {
+		n := shape.count
+		for _, inst := range instances {
+			n = max(n, inst.index+1)
+		}
+		if n == 0 {
+			return cty.EmptyTupleVal
+		}
+		vals := make([]cty.Value, n)
+		for i := range vals {
+			vals[i] = cty.UnknownVal(cty.DynamicPseudoType)
+		}
+		for _, inst := range instances {
+			vals[inst.index] = inst.value
+		}
+		return cty.TupleVal(vals)
+	}
+
+	objMap := make(map[string]cty.Value, max(len(instances), len(shape.eachKeys)))
+	for _, k := range shape.eachKeys {
+		objMap[k] = cty.UnknownVal(cty.DynamicPseudoType)
+	}
+	for _, inst := range instances {
+		objMap[inst.eachKey] = inst.value
+	}
+	if len(objMap) == 0 {
+		return cty.EmptyObjectVal
+	}
+	return cty.ObjectVal(objMap)
+}
+
 // NewContext creates a new evaluation context from its three governing
 // directories:
 //
@@ -217,11 +291,14 @@ func newContext(path PathContext, rootModuleDir, stack, project, organization st
 	return &Context{
 		mu:              new(sync.RWMutex),
 		rootModuleDir:   rootModuleDir,
-		variables:       make(map[string]cty.Value),
-		locals:          make(map[string]cty.Value),
-		resources:       make(map[string]cty.Value),
-		rangedResources: make(map[string][]rangedInstance),
-		dataSources:     make(map[string]cty.Value),
+		variables:        make(map[string]cty.Value),
+		locals:           make(map[string]cty.Value),
+		resources:        make(map[string]cty.Value),
+		rangedResources:  make(map[string][]rangedInstance),
+		rangedShapes:     make(map[string]rangedShape),
+		dataSources:      make(map[string]cty.Value),
+		rangedData:       make(map[string][]rangedInstance),
+		rangedDataShapes: make(map[string]rangedShape),
 		modules:         make(map[string]cty.Value),
 		moduleOutputs:   make(map[string]map[string]cty.Value),
 		calls:           make(map[string]cty.Value),
@@ -309,12 +386,61 @@ func (c *Context) SetEachResource(baseKey string, eachKey string, urn urn.URN, v
 	})
 }
 
+// DeclareCountInstances records that the resource at baseKey expands to n
+// count instances. Declared before instances publish concurrently, it keeps
+// partial assemblies indexable: unpublished indexes read as unknown.
+func (c *Context) DeclareCountInstances(baseKey string, n int) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.rangedShapes[baseKey] = rangedShape{count: n, isCount: true}
+}
+
+// DeclareEachInstances records the full for_each key set of the resource at
+// baseKey; unpublished keys read as unknown until their instance publishes.
+func (c *Context) DeclareEachInstances(baseKey string, keys []string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.rangedShapes[baseKey] = rangedShape{eachKeys: keys}
+}
+
 // SetDataSource sets a data source's output values.
 // The key should be "type.name" (e.g., "aws_ami.ubuntu").
 func (c *Context) SetDataSource(key string, value cty.Value) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.dataSources[key] = value
+}
+
+// DeclareCountData and DeclareEachData mirror the resource declarations for
+// count/for_each data sources.
+func (c *Context) DeclareCountData(baseKey string, n int) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.rangedDataShapes[baseKey] = rangedShape{count: n, isCount: true}
+}
+
+func (c *Context) DeclareEachData(baseKey string, keys []string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.rangedDataShapes[baseKey] = rangedShape{eachKeys: keys}
+}
+
+// SetCountData stores one count instance of a data source's outputs.
+func (c *Context) SetCountData(baseKey string, index int, value cty.Value) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.rangedData[baseKey] = append(c.rangedData[baseKey], rangedInstance{
+		value: value, index: index, isCount: true,
+	})
+}
+
+// SetEachData stores one for_each instance of a data source's outputs.
+func (c *Context) SetEachData(baseKey string, eachKey string, value cty.Value) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.rangedData[baseKey] = append(c.rangedData[baseKey], rangedInstance{
+		value: value, eachKey: eachKey, isEach: true,
+	})
 }
 
 // SetModule sets a module's output values.
@@ -423,62 +549,49 @@ func (c *Context) HCLContext() *hcl.EvalContext {
 		}
 	}
 
-	// Assemble ranged resource instances into tuples (count) or objects (for_each).
-	for baseKey, instances := range c.rangedResources {
+	// Assemble ranged resource instances into tuples (count) or objects
+	// (for_each), padded to the declared shape.
+	forEachRangedValue(c.rangedResources, c.rangedShapes, func(baseKey string, val cty.Value) {
 		parts := splitResourceKey(baseKey)
 		if len(parts) != 2 {
-			continue
+			return
 		}
 		typeName, resName := parts[0], parts[1]
 		if resourcesByType[typeName] == nil {
 			resourcesByType[typeName] = make(map[string]cty.Value)
 		}
-		if len(instances) > 0 && instances[0].isCount {
-			sort.Slice(instances, func(i, j int) bool {
-				return instances[i].index < instances[j].index
-			})
-			vals := make([]cty.Value, len(instances))
-			for i, inst := range instances {
-				vals[i] = inst.value
-			}
-			resourcesByType[typeName][resName] = cty.TupleVal(vals)
-		} else {
-			objMap := make(map[string]cty.Value, len(instances))
-			for _, inst := range instances {
-				objMap[inst.eachKey] = inst.value
-			}
-			resourcesByType[typeName][resName] = cty.ObjectVal(objMap)
-		}
-	}
+		resourcesByType[typeName][resName] = val
+	})
 
 	for typeName, instances := range resourcesByType {
 		vars[typeName] = cty.ObjectVal(instances)
 	}
 
 	// Add data.* namespace for data sources
-	// Data sources are referenced as data.type.name.attr
-	if len(c.dataSources) > 0 {
-		// Group by type: data.aws_ami.ubuntu -> data["aws_ami"]["ubuntu"]
-		typeGroups := make(map[string]map[string]cty.Value)
-		for key, value := range c.dataSources {
-			parts := splitResourceKey(key)
-			if len(parts) == 2 {
-				typeName, dsName := parts[0], parts[1]
-				if typeGroups[typeName] == nil {
-					typeGroups[typeName] = make(map[string]cty.Value)
-				}
-				typeGroups[typeName][dsName] = value
-			}
+	// Data sources are referenced as data.type.name.attr; grouped by type:
+	// data.aws_ami.ubuntu -> data["aws_ami"]["ubuntu"]
+	typeGroups := make(map[string]map[string]cty.Value)
+	addData := func(key string, value cty.Value) {
+		parts := splitResourceKey(key)
+		if len(parts) != 2 {
+			return
 		}
+		typeName, dsName := parts[0], parts[1]
+		if typeGroups[typeName] == nil {
+			typeGroups[typeName] = make(map[string]cty.Value)
+		}
+		typeGroups[typeName][dsName] = value
+	}
+	for key, value := range c.dataSources {
+		addData(key, value)
+	}
+	forEachRangedValue(c.rangedData, c.rangedDataShapes, addData)
+	if len(typeGroups) > 0 {
 		dataMap := make(map[string]cty.Value)
 		for typeName, instances := range typeGroups {
 			dataMap[typeName] = cty.ObjectVal(instances)
 		}
-		if len(dataMap) > 0 {
-			vars["data"] = cty.ObjectVal(dataMap)
-		} else {
-			vars["data"] = cty.EmptyObjectVal
-		}
+		vars["data"] = cty.ObjectVal(dataMap)
 	} else {
 		vars["data"] = cty.EmptyObjectVal
 	}
@@ -625,9 +738,12 @@ func (c *Context) Clone() *Context {
 		clonedModuleOutputs[k] = maps.Clone(v)
 	}
 
-	clonedRanged := make(map[string][]rangedInstance, len(c.rangedResources))
-	for k, v := range c.rangedResources {
-		clonedRanged[k] = append([]rangedInstance(nil), v...)
+	cloneRanged := func(m map[string][]rangedInstance) map[string][]rangedInstance {
+		out := make(map[string][]rangedInstance, len(m))
+		for k, v := range m {
+			out[k] = append([]rangedInstance(nil), v...)
+		}
+		return out
 	}
 
 	clone := &Context{
@@ -637,8 +753,11 @@ func (c *Context) Clone() *Context {
 		variables:         maps.Clone(c.variables),
 		locals:            maps.Clone(c.locals),
 		resources:         maps.Clone(c.resources),
-		rangedResources:   clonedRanged,
+		rangedResources:   cloneRanged(c.rangedResources),
+		rangedShapes:      maps.Clone(c.rangedShapes),
 		dataSources:       maps.Clone(c.dataSources),
+		rangedData:        cloneRanged(c.rangedData),
+		rangedDataShapes:  maps.Clone(c.rangedDataShapes),
 		modules:           maps.Clone(c.modules),
 		moduleOutputs:     clonedModuleOutputs,
 		calls:             maps.Clone(c.calls),

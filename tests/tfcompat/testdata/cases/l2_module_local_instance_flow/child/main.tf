@@ -12,7 +12,8 @@ locals {
 }
 
 resource "order_resource" "b" {
-  name = "b-${local.r}"
+  name         = "b-${local.r}"
+  delay_create = var.key == "y"
 }
 
 output "result" {

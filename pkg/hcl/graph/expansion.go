@@ -65,9 +65,9 @@ type BlockExpansion struct {
 
 // NewBlockExpansion creates the expand/complete pair for one block. static
 // marks a skeleton created before the walk starts: its expand node is interned
-// under "<key>!expand" so pre-walk passes (Validate, InjectAfter) see it;
-// skeletons created mid-walk must not touch the interning maps and stay
-// anonymous. expandExec runs on the expand node; finish is deferred around it.
+// under "<key>!expand" so InjectAfter sees it; skeletons created mid-walk must
+// not touch the interning maps and stay anonymous. expandExec runs on the
+// expand node; finish is deferred around it.
 func (g *Graph) NewBlockExpansion(key string, static bool, expandExec func(context.Context) error) *BlockExpansion {
 	b := &BlockExpansion{
 		g:     g,
@@ -79,11 +79,7 @@ func (g *Graph) NewBlockExpansion(key string, static bool, expandExec func(conte
 		return expandExec(ctx)
 	}
 	if static {
-		expandKey := key + "!expand"
-		i, done := g.dag.NewNode(dagNode{key: expandKey, exec: exec})
-		g.seen[expandKey] = internedNode{i: i, n: &Node{Key: expandKey, Type: NodeTypeBuiltin}}
-		g.keyByDagNode[i] = expandKey
-		b.expand, b.armExpand = i, done
+		b.expand, b.armExpand = g.internExecNode(key+"!expand", exec)
 	} else {
 		b.expand, b.armExpand = g.dag.NewNode(dagNode{exec: exec})
 	}
@@ -124,6 +120,13 @@ func (b *BlockExpansion) Gate(suffix string) pdag.Node {
 // Arm makes the expand node runnable. Call once all deps and consumer gates
 // are wired.
 func (b *BlockExpansion) Arm() { b.armExpand() }
+
+// CompleteBefore orders n after this block's completion, so a node outside
+// the expansion (the block's own graph node, in particular) waits for every
+// instance.
+func (b *BlockExpansion) CompleteBefore(n pdag.Node) error {
+	return b.g.dag.NewEdge(b.complete, n)
+}
 
 // AddInstance creates the node that runs one instance's work, ordered before
 // complete and standing behind the instance's gate if a consumer created one.
