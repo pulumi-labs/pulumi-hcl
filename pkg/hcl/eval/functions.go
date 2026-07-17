@@ -335,7 +335,43 @@ var canFunc = function.New(&function.Spec{
 func TypeInferenceFunctions(baseDir string) map[string]function.Function {
 	funcs := Functions(baseDir)
 	funcs["try"] = typeInferenceTryFunc
+	// The file-reading functions error when their file is absent. During
+	// schema generation the file may legitimately not exist yet (it can be
+	// produced at runtime, or its name may only resolve then), so a failed
+	// read types as an unknown of the function's return type instead of
+	// failing schema generation.
+	for _, name := range []string{
+		"file", "filebase64", "fileexists", "fileset", "templatefile",
+		"filemd5", "filesha1", "filesha256", "filesha512",
+		"filebase64sha256", "filebase64sha512", "fileAsset", "fileArchive",
+	} {
+		funcs[name] = unknownOnError(funcs[name])
+	}
 	return funcs
+}
+
+// unknownOnError wraps fn so a failed call yields an unknown of fn's return
+// type — dynamic when even the return type cannot be computed — rather than an
+// error. See TypeInferenceFunctions.
+func unknownOnError(fn function.Function) function.Function {
+	return function.New(&function.Spec{
+		Params:   fn.Params(),
+		VarParam: fn.VarParam(),
+		Type: func(args []cty.Value) (cty.Type, error) {
+			t, err := fn.ReturnTypeForValues(args)
+			if err != nil {
+				return cty.DynamicPseudoType, nil
+			}
+			return t, nil
+		},
+		Impl: func(args []cty.Value, retType cty.Type) (cty.Value, error) {
+			v, err := fn.Call(args)
+			if err != nil {
+				return cty.UnknownVal(retType), nil
+			}
+			return v, nil
+		},
+	})
 }
 
 // typeInferenceTryFunc is a type-inference-only variant of tryfunc.TryFunc.

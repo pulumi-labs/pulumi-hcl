@@ -106,11 +106,10 @@ func TestGenerateModuleSchemaGolden(t *testing.T) {
 	}
 }
 
-// TestGenerateModuleSchemaFileLocalUsesModuleDir shows that schema inference
-// evaluates file-backed locals relative to the module directory. A
+// TestGenerateModuleSchemaFileLocalUsesModuleDir verifies that schema inference
+// evaluates file-backed locals relative to the module directory: a
 // parameterized module is generally not located in the provider's working
-// directory, so using "." for path.module makes the first local fail to seed;
-// the dependent local then reports that local.from_file has no such attribute.
+// directory, so resolving path.module against "." would fail to find the file.
 func TestGenerateModuleSchemaFileLocalUsesModuleDir(t *testing.T) {
 	t.Parallel()
 
@@ -135,6 +134,31 @@ output "count" {
 		componentToken("pkg", "index", "pkg"), semver.MustParse("0.0.0-dev"))
 	require.NoError(t, err)
 	assert.Equal(t, &PropertySpec{Type: "number"}, moduleSchema.OutputProperties["count"])
+}
+
+// TestGenerateModuleSchemaFileLocalMissingFile shows that a file-backed local
+// whose file is absent at schema generation time types to any instead of
+// failing schema generation: the file may only be produced at runtime.
+func TestGenerateModuleSchemaFileLocalMissingFile(t *testing.T) {
+	t.Parallel()
+
+	moduleDir := t.TempDir()
+	config, diags := parser.NewParser().ParseSource(filepath.Join(moduleDir, "main.tf"), []byte(`
+locals {
+  from_file = jsondecode(file("${path.module}/missing.json"))
+}
+
+output "count" {
+  value = local.from_file.count
+}
+`))
+	require.False(t, diags.HasErrors(), diags.Error())
+
+	moduleSchema, err := GenerateModuleSchema(
+		t.Context(), config, &Binder{ModuleDir: moduleDir},
+		componentToken("pkg", "index", "pkg"), semver.MustParse("0.0.0-dev"))
+	require.NoError(t, err)
+	assert.Equal(t, &PropertySpec{Type: "object"}, moduleSchema.OutputProperties["count"])
 }
 
 // stubResolver resolves a fixed set of resources by TF type, plus optionally a
