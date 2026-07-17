@@ -424,11 +424,12 @@ resource target "test:index:Item" {
 
 		mock := testConvertedPCL(t, pclSource, rangeSchema)
 
-		// stack + 2 source items + 1 target
+		// stack + 2 source items + 1 target; registration order between the
+		// target and the source instance it does not reference is undefined.
 		require.Len(t, mock.RegisteredResources, 4, "expected stack + 2 sources + 1 target")
 		assert.Equal(t, "pulumi:pulumi:Stack", mock.RegisteredResources[0].Type)
 
-		target := mock.RegisteredResources[3]
+		target := findRegistered(t, mock.RegisteredResources, "target")
 		assert.Equal(t, "test:index:Item", target.Type)
 		assert.Equal(t, property.New("src-0-ref"), target.Inputs.Get("name"))
 	})
@@ -452,13 +453,27 @@ resource target "test:index:Item" {
 
 		mock := testConvertedPCL(t, pclSource, rangeSchema)
 
-		// stack + 2 source items + 1 target
+		// stack + 2 source items + 1 target; registration order between the
+		// target and the source instance it does not reference is undefined.
 		require.Len(t, mock.RegisteredResources, 4, "expected stack + 2 sources + 1 target")
 
-		target := mock.RegisteredResources[3]
+		target := findRegistered(t, mock.RegisteredResources, "target")
 		assert.Equal(t, "test:index:Item", target.Type)
 		assert.Equal(t, property.New("alpha-ref"), target.Inputs.Get("name"))
 	})
+}
+
+// findRegistered returns the registered resource with the given name; sibling
+// instances register concurrently, so positional indexing is not stable.
+func findRegistered(t *testing.T, resources []hclrun.RegisterResourceRequest, name string) hclrun.RegisterResourceRequest {
+	t.Helper()
+	for _, r := range resources {
+		if r.Name == name {
+			return r
+		}
+	}
+	t.Fatalf("no registered resource named %q", name)
+	return hclrun.RegisterResourceRequest{}
 }
 
 // TestStdLookupInlinedInForEachResource checks that a `std:index:*` function (which has a

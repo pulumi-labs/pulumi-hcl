@@ -429,6 +429,9 @@ type Engine struct {
 
 	// moduleInstances maps module path → list of instances for inlined modules.
 	moduleInstances *util.SyncMap[modulepath.Path, []*moduleInstance]
+	// moduleInstancesMu serializes read-modify-write appends to
+	// moduleInstances (see appendModuleInstances).
+	moduleInstancesMu sync.Mutex
 
 	parallel int
 
@@ -698,6 +701,14 @@ func (e *Engine) registerStackOutputs(ctx context.Context) error {
 
 // processNode processes a single node based on its type.
 func (e *Engine) processNode(ctx context.Context, node *graph.Node) error {
+	// Module-owned work runs in per-module-instance walk units created by the
+	// enclosing init (see SpawnModuleInstanceUnits); the node itself is a
+	// template whose completion (gated on its units) anchors node-level
+	// ordering for everything outside the module. Call nodes are exempt: they
+	// resolve against the root config.
+	if node.Type != graph.NodeTypeCall && !node.OwnerPath().IsRoot() {
+		return nil
+	}
 	switch node.Type {
 	case graph.NodeTypeVariable:
 		return e.processVariable(ctx, node)
@@ -716,9 +727,6 @@ func (e *Engine) processNode(ctx context.Context, node *graph.Node) error {
 	case graph.NodeTypeCall:
 		return e.processCall(ctx, node)
 	case graph.NodeTypeOutput:
-		if node.ModuleInfo != nil {
-			return e.processModuleOutput(ctx, node)
-		}
 		return nil
 	case graph.NodeTypeProvider:
 		return e.processProvider(ctx, node)
@@ -745,11 +753,6 @@ func (e *Engine) processVariable(ctx context.Context, node *graph.Node) error {
 	v := node.Variable
 	if v == nil {
 		return fmt.Errorf("variable node missing Variable field")
-	}
-
-	// Module variable: evaluate input expression in parent context, store in each instance context.
-	if node.ModuleInfo != nil {
-		return e.processModuleVariable(node)
 	}
 
 	varName := v.Name
@@ -872,11 +875,6 @@ func (e *Engine) processVariableValidation(node *graph.Node) error {
 	if v == nil {
 		return fmt.Errorf("variable validation node missing Variable field")
 	}
-	if node.ModuleInfo != nil {
-		return e.forEachModuleInstance(node, func(inst *moduleInstance) error {
-			return runVariableValidations(eval.NewEvaluator(inst.EvalCtx), v.Name, v.Validations)
-		})
-	}
 	return runVariableValidations(e.evaluator, v.Name, v.Validations)
 }
 
@@ -947,18 +945,6 @@ func (e *Engine) processLocal(ctx context.Context, node *graph.Node) error {
 		return fmt.Errorf("local node missing Local field")
 	}
 
-	if node.ModuleInfo != nil {
-		return e.forEachModuleInstance(node, func(inst *moduleInstance) error {
-			localName := strings.TrimPrefix(node.Key, node.ModuleInfo.Prefix()+"local.")
-			val, diags := local.Value.Value(inst.EvalCtx.HCLContext())
-			if diags.HasErrors() {
-				return fmt.Errorf("evaluating local value %s: %s", localName, diags.Error())
-			}
-			inst.EvalCtx.SetLocal(localName, val)
-			return nil
-		})
-	}
-
 	val, diags := e.evaluator.EvaluateExpression(local.Value)
 	if diags.HasErrors() {
 		return fmt.Errorf("evaluating local value: %s", diags.Error())
@@ -986,12 +972,6 @@ func (e *Engine) processProvider(ctx context.Context, node *graph.Node) error {
 	// see explicitly-declared providers in the snapshot.
 	if !e.alwaysRegisterProviders && e.graph != nil && !e.graph.HasDependents(node.Key) {
 		return nil
-	}
-
-	if node.ModuleInfo != nil {
-		return e.forEachModuleInstance(node, func(inst *moduleInstance) error {
-			return e.registerProvider(ctx, node, provider, inst.EvalCtx, inst.URN, inst)
-		})
 	}
 
 	return e.registerProvider(ctx, node, provider, e.evaluator.Context(), e.stackURN, nil)
@@ -1377,18 +1357,13 @@ func (e *Engine) processResource(ctx context.Context, node *graph.Node) error {
 		return fmt.Errorf("resource node missing Resource field")
 	}
 
-	if node.ModuleInfo != nil {
-		return e.forEachModuleInstance(node, func(inst *moduleInstance) error {
-			return e.processResourceInContext(ctx, node, res, inst.EvalCtx, inst.URN, inst)
-		})
-	}
-
-	return e.processResourceInContext(ctx, node, res, e.evaluator.Context(), e.stackURN, nil)
+	return e.processResourceInContext(ctx, node, res, e.evaluator.Context(), e.stackURN, nil, nil)
 }
 
 func (e *Engine) processResourceInContext(
 	ctx context.Context, node *graph.Node, res *ast.Resource,
 	evalCtx *eval.Context, parentURN urn.URN, modInst *moduleInstance,
+	targets []graph.SpawnTarget,
 ) error {
 	resSchema, err := e.resolver.ResolveResource(ctx, res.Type)
 	if err != nil {
@@ -1468,10 +1443,12 @@ func (e *Engine) processResourceInContext(
 	}
 
 	// Expanded instances run as their own concurrent walk units, and this
-	// node's successors are re-gated on the instances they depend on: all of
+	// node's dependents are re-gated on the instances they depend on: all of
 	// them, or — for a dependent that references a single instance
 	// (`type.name["x"]`) — only that instance, so it does not wait for the
-	// delayed siblings.
+	// delayed siblings. At root the dependents are the node's static
+	// successors; inside a module clone they are the instance's aligned
+	// member units plus this node's template.
 	if !result.IsSingle && e.graph != nil {
 		insts := make([]graph.InstanceExec, len(result.Instances))
 		for i, instance := range result.Instances {
@@ -1480,7 +1457,13 @@ func (e *Engine) processResourceInContext(
 				Exec: func(ctx context.Context) error { return registerInstance(ctx, instance) },
 			}
 		}
-		if err := e.graph.SpawnInstances(node.Key, insts); err != nil {
+		var err error
+		if targets != nil {
+			err = e.graph.SpawnInstancesTo(node.Key, insts, targets)
+		} else {
+			err = e.graph.SpawnInstances(node.Key, insts)
+		}
+		if err != nil {
 			return fmt.Errorf("scheduling instances of %s: %w", node.Key, err)
 		}
 	} else {
@@ -3216,12 +3199,6 @@ func (e *Engine) processDataSource(ctx context.Context, node *graph.Node) error 
 		return fmt.Errorf("data source node missing Resource field")
 	}
 
-	if node.ModuleInfo != nil {
-		return e.forEachModuleInstance(node, func(inst *moduleInstance) error {
-			return e.processDataSourceInContext(ctx, node, ds, inst.EvalCtx)
-		})
-	}
-
 	return e.processDataSourceInContext(ctx, node, ds, e.evaluator.Context())
 }
 
@@ -3877,23 +3854,59 @@ func (a *moduleLoaderAdapter) LoadModule(source, version, workDir string) (*grap
 	}, nil
 }
 
-// forEachModuleInstance iterates over all instances of the module identified by node.ModuleInfo.Prefix().
-func (e *Engine) forEachModuleInstance(node *graph.Node, fn func(inst *moduleInstance) error) error {
-	instances, ok := e.moduleInstances.Get(node.ModuleInfo.Path)
-	if !ok {
-		return fmt.Errorf("no module instances for prefix %q", node.ModuleInfo.Prefix())
-	}
-	for _, inst := range instances {
-		if err := fn(inst); err != nil {
-			return err
-		}
-	}
-	return nil
+// appendModuleInstances records newly created instances of a module call,
+// creating the entry when absent so consumers can distinguish "initialized,
+// zero instances" from "not yet initialized". Nested calls append once per
+// enclosing-module instance, concurrently.
+func (e *Engine) appendModuleInstances(path modulepath.Path, insts []*moduleInstance) {
+	e.moduleInstancesMu.Lock()
+	defer e.moduleInstancesMu.Unlock()
+	cur, _ := e.moduleInstances.Get(path)
+	e.moduleInstances.Set(path, append(slices.Clip(cur), insts...))
 }
 
-// processModuleVariable evaluates a module variable's input expression in the parent context
-// and stores the result in each module instance's eval context.
-func (e *Engine) processModuleVariable(node *graph.Node) error {
+// processMemberUnit runs one module member's work for one instance of its
+// module — the body of a walk unit created by SpawnModuleInstanceUnits.
+func (e *Engine) processMemberUnit(ctx context.Context, u *graph.MemberUnit, inst *moduleInstance) error {
+	node := u.Node
+	switch node.Type {
+	case graph.NodeTypeVariable:
+		return e.processModuleVariableInstance(node, inst)
+	case graph.NodeTypeVariableValidation:
+		return runVariableValidations(eval.NewEvaluator(inst.EvalCtx), node.Variable.Name, node.Variable.Validations)
+	case graph.NodeTypeLocal:
+		localName := strings.TrimPrefix(node.Key, node.ModuleInfo.Prefix()+"local.")
+		val, diags := node.Local.Value.Value(inst.EvalCtx.HCLContext())
+		if diags.HasErrors() {
+			return fmt.Errorf("evaluating local value %s: %s", localName, diags.Error())
+		}
+		inst.EvalCtx.SetLocal(localName, val)
+		return nil
+	case graph.NodeTypeProvider:
+		// See processProvider: unused provider blocks are never configured.
+		if !e.alwaysRegisterProviders && e.graph != nil && !e.graph.HasDependents(node.Key) {
+			return nil
+		}
+		return e.registerProvider(ctx, node, node.Provider, inst.EvalCtx, inst.URN, inst)
+	case graph.NodeTypeResource:
+		return e.processResourceInContext(ctx, node, node.Resource, inst.EvalCtx, inst.URN, inst, u.Targets)
+	case graph.NodeTypeDataSource:
+		return e.processDataSourceInContext(ctx, node, node.Resource, inst.EvalCtx)
+	case graph.NodeTypeOutput:
+		return e.processModuleOutputInstance(node, inst)
+	case graph.NodeTypeModuleInit:
+		return e.initModuleCall(ctx, node, inst)
+	case graph.NodeTypeModule:
+		return e.completeModuleFor(ctx, node, inst)
+	default:
+		return nil
+	}
+}
+
+// processModuleVariableInstance evaluates a module variable's input expression
+// in the parent context and stores the result in one module instance's eval
+// context.
+func (e *Engine) processModuleVariableInstance(node *graph.Node, inst *moduleInstance) error {
 	v := node.Variable
 	modInfo := node.ModuleInfo
 	varName := v.Name
@@ -3901,101 +3914,94 @@ func (e *Engine) processModuleVariable(node *graph.Node) error {
 	moduleInputAttrs, _ := modInfo.Module.Config.JustAttributes()
 	inputAttr, hasInput := moduleInputAttrs[varName]
 
-	return e.forEachModuleInstance(node, func(inst *moduleInstance) error {
-		var val cty.Value
+	var val cty.Value
 
-		if hasInput {
-			// The input expression lives in the enclosing module instance's
-			// scope so that expressions like var.name resolve correctly; for
-			// root-level calls that is the root evaluator context.
-			parentEvalCtx := e.evaluator.Context()
-			if inst.Parent != nil {
-				parentEvalCtx = inst.Parent.EvalCtx
-			}
-			var diags hcl.Diagnostics
-			hclCtx := parentEvalCtx.HCLContextWithIteration(inst.Index, inst.EachKey, inst.EachVal)
-			val, diags = inputAttr.Expr.Value(hclCtx)
-			if diags.HasErrors() {
-				return fmt.Errorf("evaluating module input %s: %s", varName, diags.Error())
-			}
-		} else {
-			// No input: fall through to default/env/config
-			envVarName := "TF_VAR_" + varName
-			if envVal := os.Getenv(envVarName); envVal != "" {
-				val = cty.StringVal(envVal)
-			} else if v.Default != nil {
-				var diags hcl.Diagnostics
-				val, diags = v.Default.Value(inst.EvalCtx.HCLContext())
-				if diags.HasErrors() {
-					return fmt.Errorf("evaluating variable default for %s: %s", varName, diags.Error())
-				}
-			} else {
-				return fmt.Errorf("variable %q is required but no value was provided", varName)
-			}
+	if hasInput {
+		// The input expression lives in the enclosing module instance's
+		// scope so that expressions like var.name resolve correctly; for
+		// root-level calls that is the root evaluator context.
+		parentEvalCtx := e.evaluator.Context()
+		if inst.Parent != nil {
+			parentEvalCtx = inst.Parent.EvalCtx
 		}
-
-		// A `nullable = false` variable rejects an explicit null argument: the
-		// default is substituted when one is declared, otherwise it is an
-		// error. Matches Terraform/OpenTofu.
-		if val.IsNull() && !v.Nullable {
-			if v.Default == nil {
-				return fmt.Errorf("variable %q must not be set to null: it is declared with nullable = false and has no default", varName)
-			}
+		var diags hcl.Diagnostics
+		hclCtx := parentEvalCtx.HCLContextWithIteration(inst.Index, inst.EachKey, inst.EachVal)
+		val, diags = inputAttr.Expr.Value(hclCtx)
+		if diags.HasErrors() {
+			return fmt.Errorf("evaluating module input %s: %s", varName, diags.Error())
+		}
+	} else {
+		// No input: fall through to default/env/config
+		envVarName := "TF_VAR_" + varName
+		if envVal := os.Getenv(envVarName); envVal != "" {
+			val = cty.StringVal(envVal)
+		} else if v.Default != nil {
 			var diags hcl.Diagnostics
 			val, diags = v.Default.Value(inst.EvalCtx.HCLContext())
 			if diags.HasErrors() {
 				return fmt.Errorf("evaluating variable default for %s: %s", varName, diags.Error())
 			}
+		} else {
+			return fmt.Errorf("variable %q is required but no value was provided", varName)
 		}
+	}
 
-		// Fill in optional()-attribute defaults before type conversion so
-		// the result satisfies the declared object shape.
-		if v.TypeDefaults != nil && !val.IsNull() {
-			val = v.TypeDefaults.Apply(val)
+	// A `nullable = false` variable rejects an explicit null argument: the
+	// default is substituted when one is declared, otherwise it is an
+	// error. Matches Terraform/OpenTofu.
+	if val.IsNull() && !v.Nullable {
+		if v.Default == nil {
+			return fmt.Errorf("variable %q must not be set to null: it is declared with nullable = false and has no default", varName)
 		}
-
-		// Coerce the value to match the variable's type constraint.
-		if v.TypeConstraint != cty.NilType {
-			if converted, err := ctyconvert.Convert(val, v.TypeConstraint); err == nil {
-				val = converted
-			}
+		var diags hcl.Diagnostics
+		val, diags = v.Default.Value(inst.EvalCtx.HCLContext())
+		if diags.HasErrors() {
+			return fmt.Errorf("evaluating variable default for %s: %s", varName, diags.Error())
 		}
+	}
 
-		if v.Sensitive {
-			val = val.Mark(eval.SensitiveMark)
+	// Fill in optional()-attribute defaults before type conversion so
+	// the result satisfies the declared object shape.
+	if v.TypeDefaults != nil && !val.IsNull() {
+		val = v.TypeDefaults.Apply(val)
+	}
+
+	// Coerce the value to match the variable's type constraint.
+	if v.TypeConstraint != cty.NilType {
+		if converted, err := ctyconvert.Convert(val, v.TypeConstraint); err == nil {
+			val = converted
 		}
-		if v.Ephemeral {
-			val = val.Mark(eval.EphemeralMark)
-		}
+	}
 
-		inst.EvalCtx.SetVariable(varName, val)
+	if v.Sensitive {
+		val = val.Mark(eval.SensitiveMark)
+	}
+	if v.Ephemeral {
+		val = val.Mark(eval.EphemeralMark)
+	}
 
-		return runVariableValidations(eval.NewEvaluator(inst.EvalCtx), varName, v.Validations)
-	})
+	inst.EvalCtx.SetVariable(varName, val)
+
+	return runVariableValidations(eval.NewEvaluator(inst.EvalCtx), varName, v.Validations)
 }
 
-// processModuleInit processes a module init node: registers component resources and creates instances.
+// processModuleInit handles a root-level module call's init node. A nested
+// call's init runs as a per-parent-instance unit instead (see
+// processMemberUnit), so its work naturally happens once per instance of the
+// enclosing module — and never when the enclosing module has no instances.
 func (e *Engine) processModuleInit(ctx context.Context, node *graph.Node) error {
+	return e.initModuleCall(ctx, node, nil)
+}
+
+// initModuleCall evaluates one module call within a single instance of the
+// enclosing module (nil parent = the root config), registers the resulting
+// module instances, and spawns the per-instance walk units that run the
+// module's contents.
+func (e *Engine) initModuleCall(ctx context.Context, node *graph.Node, parent *moduleInstance) error {
 	modInfo := node.ModuleInfo
 	mod := modInfo.Module
 
 	componentType := fmt.Sprintf("components:index:%s", componentTypeName(modInfo.SourcePath))
-
-	// A nested module call runs once per instance of the enclosing module; a
-	// root-level call runs in the single root scope (a nil parent instance).
-	// When the parent has zero instances (count=0 / for_each empty) the
-	// entire inner subtree must be skipped — registering an empty instances
-	// slice lets downstream per-instance work (vars, locals, nested modules,
-	// resources) loop zero times instead of falling back to the root context.
-	parents := []*moduleInstance{nil}
-	if modInfo.ParentPrefix() != "" {
-		parentInstances, ok := e.moduleInstances.Get(modInfo.ParentPath())
-		if !ok || len(parentInstances) == 0 {
-			e.moduleInstances.Set(modInfo.Path, nil)
-			return nil
-		}
-		parents = parentInstances
-	}
 
 	// Load the child module to get variable type constraints for input coercion.
 	loaderWorkDir := modInfo.ParentSourcePath
@@ -4014,15 +4020,23 @@ func (e *Engine) processModuleInit(ctx context.Context, node *graph.Node) error 
 		return fmt.Errorf("module %s: %w", mod.Source, err)
 	}
 
-	var instances []*moduleInstance
-	for _, parent := range parents {
-		insts, err := e.initModuleCallIn(ctx, node, childMod, moduleFunctions, componentType, parent)
-		if err != nil {
-			return err
-		}
-		instances = append(instances, insts...)
+	instances, err := e.initModuleCallIn(ctx, node, childMod, moduleFunctions, componentType, parent)
+	if err != nil {
+		return err
 	}
-	e.moduleInstances.Set(modInfo.Path, instances)
+	e.appendModuleInstances(modInfo.Path, instances)
+
+	for _, inst := range instances {
+		err := e.graph.SpawnModuleInstanceUnits(modInfo.Path, "@"+inst.Path.String(),
+			func(u *graph.MemberUnit) func(context.Context) error {
+				return func(ctx context.Context) error {
+					return e.processMemberUnit(ctx, u, inst)
+				}
+			})
+		if err != nil {
+			return fmt.Errorf("scheduling module instance %s: %w", inst.Path.String(), err)
+		}
+	}
 	return nil
 }
 
@@ -4153,61 +4167,45 @@ func (e *Engine) initModuleCallIn(
 	return instances, nil
 }
 
-// processModuleOutput evaluates a module output in each instance and stores it in the parent context.
-func (e *Engine) processModuleOutput(_ context.Context, node *graph.Node) error {
+// processModuleOutputInstance evaluates a module output in one instance and
+// stores it in the enclosing scope's context.
+func (e *Engine) processModuleOutputInstance(node *graph.Node, inst *moduleInstance) error {
 	output := node.Output
 	modInfo := node.ModuleInfo
 	outputName := strings.TrimPrefix(node.Key, modInfo.Prefix()+"output.")
 
-	err := e.forEachModuleInstance(node, func(inst *moduleInstance) error {
-		if err := runOutputPreconditions(output, inst.EvalCtx.HCLContext(), outputName); err != nil {
-			return err
-		}
-		val, diags := output.Value.Value(inst.EvalCtx.HCLContext())
-		if diags.HasErrors() {
-			return fmt.Errorf("evaluating module output %s: %s", outputName, diags.Error())
-		}
-		// A `sensitive = true` output carries the mark into the calling module,
-		// so a reference to it stays sensitive; likewise for `ephemeral = true`.
-		if output.Sensitive {
-			val = val.Mark(eval.SensitiveMark)
-		}
-		if output.Ephemeral {
-			val = val.Mark(eval.EphemeralMark)
-		}
-		inst.mu.Lock()
-		inst.Outputs[outputName] = val
-		inst.mu.Unlock()
-		return nil
-	})
-	if err != nil {
+	if err := runOutputPreconditions(output, inst.EvalCtx.HCLContext(), outputName); err != nil {
 		return err
 	}
-
-	// Eagerly publish outputs to the parent contexts so other module variables
-	// can reference them before the completion node runs.
-	instances, ok := e.moduleInstances.Get(modInfo.Path)
-	if !ok {
-		return nil
+	val, diags := output.Value.Value(inst.EvalCtx.HCLContext())
+	if diags.HasErrors() {
+		return fmt.Errorf("evaluating module output %s: %s", outputName, diags.Error())
 	}
-	e.publishModuleValue(modInfo, instances)
+	// A `sensitive = true` output carries the mark into the calling module,
+	// so a reference to it stays sensitive; likewise for `ephemeral = true`.
+	if output.Sensitive {
+		val = val.Mark(eval.SensitiveMark)
+	}
+	if output.Ephemeral {
+		val = val.Mark(eval.EphemeralMark)
+	}
+	inst.mu.Lock()
+	inst.Outputs[outputName] = val
+	inst.mu.Unlock()
+
+	// Eagerly publish outputs to the enclosing scope so other module
+	// variables can reference them before the completion node runs.
+	if instances, ok := e.moduleInstances.Get(modInfo.Path); ok {
+		e.publishModuleValue(modInfo, instances, []*moduleInstance{inst.Parent})
+	}
 	return nil
 }
 
 // publishModuleValue assembles the value of `module.<name>` from the
-// instances' collected outputs and publishes it into each enclosing module
-// instance's eval context (or the root context for a top-level call). Each
-// enclosing instance sees only its own instances of the call.
-func (e *Engine) publishModuleValue(modInfo *graph.ModuleInfo, instances []*moduleInstance) {
-	parents := []*moduleInstance{nil}
-	if modInfo.ParentPrefix() != "" {
-		parentInstances, ok := e.moduleInstances.Get(modInfo.ParentPath())
-		if !ok {
-			return
-		}
-		parents = parentInstances
-	}
-
+// instances' collected outputs and publishes it into each given enclosing
+// module instance's eval context (nil = the root context). Each enclosing
+// instance sees only its own instances of the call.
+func (e *Engine) publishModuleValue(modInfo *graph.ModuleInfo, instances, parents []*moduleInstance) {
 	mod := modInfo.Module
 	name := modInfo.ModuleName()
 	for _, parent := range parents {
@@ -4263,36 +4261,46 @@ func (e *Engine) publishModuleValue(modInfo *graph.ModuleInfo, instances []*modu
 	}
 }
 
-// processModuleComplete handles the module completion node: registers component outputs
-// and assembles the full module value in the parent context.
+// processModuleComplete handles a root-level module call's completion node.
+// A nested call's completion runs as a per-parent-instance unit (see
+// processMemberUnit).
 func (e *Engine) processModuleComplete(ctx context.Context, node *graph.Node) error {
+	return e.completeModuleFor(ctx, node, nil)
+}
+
+// completeModuleFor registers component outputs for the call's instances
+// under one enclosing-module instance (nil = the root scope) and assembles
+// the full module value in that scope's context.
+func (e *Engine) completeModuleFor(ctx context.Context, node *graph.Node, parent *moduleInstance) error {
 	modInfo := node.ModuleInfo
 	if modInfo == nil {
 		return fmt.Errorf("module completion node missing ModuleInfo")
 	}
 
-	instances, ok := e.moduleInstances.Get(modInfo.Path)
-	if !ok {
-		return fmt.Errorf("no module instances for prefix %q", modInfo.Prefix())
-	}
+	instances, _ := e.moduleInstances.Get(modInfo.Path)
 
 	// Register component outputs and collect per-instance output objects.
 	for _, inst := range instances {
+		if inst.Parent != parent {
+			continue
+		}
 		if e.resmon != nil {
 			outputProps := make(map[string]property.Value)
+			inst.mu.Lock()
 			for k, v := range inst.Outputs {
 				pv, err := transform.CtyToPropertyValue(v)
 				if err == nil {
 					outputProps[k] = pv
 				}
 			}
+			inst.mu.Unlock()
 			if err := e.resmon.RegisterResourceOutputs(ctx, inst.URN, property.NewMap(outputProps)); err != nil {
 				return fmt.Errorf("registering module outputs: %w", err)
 			}
 		}
 	}
 
-	e.publishModuleValue(modInfo, instances)
+	e.publishModuleValue(modInfo, instances, []*moduleInstance{parent})
 	return nil
 }
 

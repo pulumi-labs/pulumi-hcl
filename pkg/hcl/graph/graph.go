@@ -207,10 +207,21 @@ type Graph struct {
 	// instanceDeps maps a dependent node's key to the keys of dependencies it
 	// narrows to specific instances: dependency node key → full instance keys
 	// (in ExpandedResource.Key form, e.g. `type.name["x"]`). An entry exists
-	// only when every reference from the dependent to that dependency is an
-	// instance-addressed depends_on; any whole-resource reference widens the
-	// dependency and no entry is recorded.
+	// only when every reference from the dependent to that dependency is
+	// instance-addressed; any whole-resource reference widens the dependency
+	// and no entry is recorded.
 	instanceDeps map[string]map[string][]string
+
+	// modulePlans holds, per module path, the plan for spawning one walk unit
+	// per member node for each module instance (see SpawnModuleInstanceUnits).
+	// Computed at the end of BuildFromConfig.
+	modulePlans map[modulepath.Path][]*memberPlan
+
+	// initInputEdges are deferred (from, to-init) edges ordering a module
+	// call's init after its input expressions' references. Applied
+	// best-effort once the whole graph exists, where a cyclic edge (mutual
+	// module-input references) can be detected and skipped.
+	initInputEdges [][2]pdag.Node
 
 	// moved holds the moved blocks of each module keyed by that module's path.
 	// A moved block's from/to addresses are relative to the module it is written
@@ -249,6 +260,7 @@ func NewGraph() *Graph {
 		dependents:   make(map[string]int),
 		successors:   make(map[string][]pdag.Node),
 		instanceDeps: make(map[string]map[string][]string),
+		modulePlans:  make(map[modulepath.Path][]*memberPlan),
 		moved:        make(map[modulepath.Path][]*ast.Moved),
 		scopes:       make(map[string]*moduleScope),
 
@@ -519,6 +531,18 @@ func BuildFromConfig(config *ast.Config, moduleLoader ModuleLoader, workDir stri
 		}
 	}
 
+	// Apply the deferred init-input edges (see initInputEdges), skipping any
+	// that the finished graph shows to be cyclic.
+	for _, edge := range g.initInputEdges {
+		if err := g.dag.NewEdge(edge[0], edge[1]); err != nil {
+			var cyc pdag.ErrorCycle[dagNode]
+			if errors.As(err, &cyc) {
+				continue
+			}
+			return nil, err
+		}
+	}
+
 	// Snapshot every resource node's successors for SpawnInstances (see the
 	// successors field).
 	for key, n := range g.seen {
@@ -526,6 +550,8 @@ func BuildFromConfig(config *ast.Config, moduleLoader ModuleLoader, workDir stri
 			g.successors[key] = slices.Collect(g.dag.Successors(n.i))
 		}
 	}
+
+	g.buildModulePlans()
 
 	return g, nil
 }
@@ -1169,6 +1195,16 @@ type InstanceExec struct {
 	Exec func(context.Context) error
 }
 
+// SpawnTarget is a walk node that must be re-gated on a resource's expanded
+// instances: a successor of the resource's own node (at root), or a member
+// unit and template inside a module clone. Key is the dependent's node key,
+// consulted for instance narrowing; an empty Key never narrows (the target
+// waits for every instance).
+type SpawnTarget struct {
+	Key string
+	N   pdag.Node
+}
+
 // SpawnInstances schedules the expanded instances of resource node nodeKey as
 // their own concurrent walk units. It must be called during a Walk from within
 // nodeKey's own exec, before it returns: each successor of nodeKey is re-gated
@@ -1178,17 +1214,31 @@ type InstanceExec struct {
 func (g *Graph) SpawnInstances(nodeKey string, instances []InstanceExec) error {
 	succs, ok := g.successors[nodeKey]
 	contract.Assertf(ok, "SpawnInstances is only valid for resource nodes, not %q", nodeKey)
+	targets := make([]SpawnTarget, len(succs))
+	for i, succ := range succs {
+		targets[i] = SpawnTarget{Key: g.keyByDagNode[succ], N: succ}
+	}
+	return g.SpawnInstancesTo(nodeKey, instances, targets)
+}
+
+// SpawnInstancesTo is SpawnInstances with an explicit target set, for
+// resources whose work runs inside a module-instance unit: the targets are
+// that instance's aligned successor units plus the resource's own template.
+func (g *Graph) SpawnInstancesTo(nodeKey string, instances []InstanceExec, targets []SpawnTarget) error {
 	nodes := make([]pdag.Node, len(instances))
 	ready := make([]pdag.Done, len(instances))
 	for i, inst := range instances {
 		nodes[i], ready[i] = g.dag.NewNode(dagNode{key: inst.Key, exec: inst.Exec})
 	}
-	for _, succ := range succs {
-		// nil means the successor depends on the whole resource. A narrow key
+	for _, t := range targets {
+		// nil means the target depends on the whole resource. A narrow key
 		// that names no actual instance (a nonexistent instance, or a count
 		// index against for_each string keys) also falls back to the whole
 		// resource, as OpenTofu's reference resolution does.
-		narrow := g.instanceDeps[g.keyByDagNode[succ]][nodeKey]
+		var narrow []string
+		if t.Key != "" {
+			narrow = g.instanceDeps[t.Key][nodeKey]
+		}
 		for _, key := range narrow {
 			if !slices.ContainsFunc(instances, func(inst InstanceExec) bool { return inst.Key == key }) {
 				narrow = nil
@@ -1199,10 +1249,141 @@ func (g *Graph) SpawnInstances(nodeKey string, instances []InstanceExec) error {
 			if narrow != nil && !slices.Contains(narrow, inst.Key) {
 				continue
 			}
-			if err := g.dag.NewEdge(nodes[i], succ); err != nil {
+			if err := g.dag.NewEdge(nodes[i], t.N); err != nil {
 				return err
 			}
 		}
+	}
+	for _, done := range ready {
+		done()
+	}
+	return nil
+}
+
+// memberPlan is the spawning plan for one member node of a module: the
+// classification of its static edges into intra-module (instance-aligned in
+// each clone) and external (node-level, unchanged).
+type memberPlan struct {
+	node *Node
+	tmpl pdag.Node
+	// sameModulePreds / sameModuleSuccs are member keys of the same module
+	// that are static predecessors / successors of this member.
+	sameModulePreds []string
+	sameModuleSuccs []string
+	// externalPreds are the walk nodes of static predecessors owned outside
+	// the module: root nodes, or other modules' templates (whose completion
+	// implies their units completed).
+	externalPreds []pdag.Node
+}
+
+// OwnerPath returns the module path whose instances execute this node's work.
+// A module's init and completion nodes run per instance of the *enclosing*
+// module (they evaluate the call in the parent's scope); every other
+// module-inlined node runs per instance of its own module. Root-owned nodes
+// run their work synchronously in their exec.
+func (n *Node) OwnerPath() modulepath.Path {
+	if n.ModuleInfo == nil {
+		return modulepath.Root()
+	}
+	switch n.Type {
+	case NodeTypeModuleInit, NodeTypeModule:
+		return n.ModuleInfo.ParentPath()
+	default:
+		return n.ModuleInfo.Path
+	}
+}
+
+// buildModulePlans classifies every non-root-owned node's static edges for
+// SpawnModuleInstanceUnits. Called once at the end of BuildFromConfig.
+func (g *Graph) buildModulePlans() {
+	// Call nodes execute at root against the root config, and pass-through
+	// provider shadows are inert stand-ins with no init edge; neither does
+	// per-instance work, so both they and their consumers connect at node
+	// level (external).
+	planned := func(n *Node) bool {
+		return !n.OwnerPath().IsRoot() && n.Type != NodeTypeCall && n.Type != NodeTypeBuiltin
+	}
+
+	plans := make(map[string]*memberPlan)
+	for key, in := range g.seen {
+		if !planned(in.n) {
+			continue
+		}
+		owner := in.n.OwnerPath()
+		plan := &memberPlan{node: in.n, tmpl: in.i}
+		for pred := range g.dag.Predecessors(in.i) {
+			pk := g.keyByDagNode[pred]
+			pn, ok := g.seen[pk]
+			if ok && planned(pn.n) && pn.n.OwnerPath() == owner {
+				if !slices.Contains(plan.sameModulePreds, pk) {
+					plan.sameModulePreds = append(plan.sameModulePreds, pk)
+				}
+			} else if !slices.Contains(plan.externalPreds, pred) {
+				plan.externalPreds = append(plan.externalPreds, pred)
+			}
+		}
+		plans[key] = plan
+		g.modulePlans[owner] = append(g.modulePlans[owner], plan)
+	}
+	for key, plan := range plans {
+		for _, pk := range plan.sameModulePreds {
+			pred := plans[pk]
+			pred.sameModuleSuccs = append(pred.sameModuleSuccs, key)
+		}
+	}
+}
+
+// MemberUnit hands a member's walk unit to the exec builder passed to
+// SpawnModuleInstanceUnits. Targets is filled in before the unit can run: the
+// instance's units of the members that statically depend on this member, plus
+// this member's own template — the set a resource unit re-gates when spawning
+// its count/for_each instances.
+type MemberUnit struct {
+	Node    *Node
+	Targets []SpawnTarget
+	n       pdag.Node
+}
+
+// SpawnModuleInstanceUnits creates one concurrent walk unit per member of the
+// module at path, for a single module instance. Units carry the module's
+// static topology instance-aligned: intra-module edges connect this
+// instance's units only, external predecessors attach at node level, and each
+// unit becomes a prerequisite of its member's template — so a template
+// completes only when every instance's unit has, preserving node-level
+// semantics for everything outside the module. Must be called during a Walk
+// from within the exec (or unit) of the module's init node.
+func (g *Graph) SpawnModuleInstanceUnits(
+	path modulepath.Path, label string, exec func(u *MemberUnit) func(context.Context) error,
+) error {
+	units := make(map[string]*MemberUnit)
+	var ready []pdag.Done
+	for _, plan := range g.modulePlans[path] {
+		u := &MemberUnit{Node: plan.node}
+		fn := exec(u)
+		var done pdag.Done
+		u.n, done = g.dag.NewNode(dagNode{key: plan.node.Key + label, exec: fn})
+		units[plan.node.Key] = u
+		ready = append(ready, done)
+	}
+	for _, plan := range g.modulePlans[path] {
+		u := units[plan.node.Key]
+		for _, pk := range plan.sameModulePreds {
+			if err := g.dag.NewEdge(units[pk].n, u.n); err != nil {
+				return err
+			}
+		}
+		for _, ext := range plan.externalPreds {
+			if err := g.dag.NewEdge(ext, u.n); err != nil {
+				return err
+			}
+		}
+		if err := g.dag.NewEdge(u.n, plan.tmpl); err != nil {
+			return err
+		}
+		for _, sk := range plan.sameModuleSuccs {
+			u.Targets = append(u.Targets, SpawnTarget{Key: sk, N: units[sk].n})
+		}
+		u.Targets = append(u.Targets, SpawnTarget{N: plan.tmpl})
 	}
 	for _, done := range ready {
 		done()
@@ -1382,6 +1563,17 @@ func (g *Graph) inlineModule(
 	}
 
 	_, initIdx := g.newNode(initKey)
+
+	// Init eagerly evaluates the call's input expressions in the parent scope
+	// (they become the component resource's registered inputs), so it should
+	// order after everything they reference. The edges are deferred to the
+	// end of BuildFromConfig and added best-effort there: module inputs may
+	// legally reference each other's outputs mutually (acyclic at variable
+	// granularity), and those eager component inputs then degrade instead of
+	// the graph failing.
+	for _, dep := range g.bodyDeps(mod.Config, parentPrefix, nil, nil) {
+		g.initInputEdges = append(g.initInputEdges, [2]pdag.Node{dep, initIdx})
+	}
 
 	// Variables: each depends on init + the corresponding input expression from the module block.
 	moduleInputAttrs, _ := mod.Config.JustAttributes()
