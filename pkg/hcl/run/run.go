@@ -845,6 +845,21 @@ func (e *Engine) processVariable(ctx context.Context, node *graph.Node) error {
 		val = converted
 	}
 
+	// A `nullable = false` variable rejects an explicit null value: the
+	// default is substituted when one is declared, otherwise it is an
+	// error.
+	if val.IsNull() && !v.Nullable && valueSource != "default" {
+		if v.Default == nil {
+			return fmt.Errorf("variable %q must not be set to null: it is declared with nullable = false and has no default", varName)
+		}
+		var diags hcl.Diagnostics
+		val, diags = e.evaluator.EvaluateExpression(v.Default)
+		if diags.HasErrors() {
+			return fmt.Errorf("evaluating variable default: %s", diags.Error())
+		}
+		valueSource = "default"
+	}
+
 	// Fill in optional()-attribute defaults before sensitive marking.
 	if v.TypeDefaults != nil && !val.IsNull() {
 		val = v.TypeDefaults.Apply(val)
