@@ -1496,12 +1496,9 @@ func (e *Engine) registerResourceInstanceInContext(
 			opts.HideDiffs = append(opts.HideDiffs, glob)
 		}
 	}
+	// The per-source collection may repeat URNs; widen dedups below.
 	for _, deps := range dependsOn {
-		for _, dep := range deps {
-			if !slices.Contains(opts.DependsOn, dep) {
-				opts.DependsOn = append(opts.DependsOn, dep)
-			}
-		}
+		opts.DependsOn = append(opts.DependsOn, deps...)
 	}
 	// count/for_each, lifecycle precondition/postcondition, and
 	// provisioner/connection references are not tied to any body property, so
@@ -1510,11 +1507,7 @@ func (e *Engine) registerResourceInstanceInContext(
 	checkDeps := checkRuleDeps(res.Preconditions, hclCtx)
 	checkDeps = append(checkDeps, checkRuleDeps(res.Postconditions, hclCtx)...)
 	provDeps := provisionerDeps(res, hclCtx)
-	for _, dep := range slices.Concat(metaArgDeps, checkDeps, provDeps) {
-		if !slices.Contains(opts.DependsOn, dep) {
-			opts.DependsOn = append(opts.DependsOn, dep)
-		}
-	}
+	opts.DependsOn = append(opts.DependsOn, slices.Concat(metaArgDeps, checkDeps, provDeps)...)
 	// Widen every collected instance URN to its resource's registered
 	// instance set: destroy ordering is resource-wide, so a reference to one
 	// instance makes every sibling wait for this resource. Sources that

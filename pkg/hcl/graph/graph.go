@@ -1232,11 +1232,7 @@ type depRef struct {
 
 // exprDeps extracts all dependencies from an expression, applying prefix to resolved keys.
 func (g *Graph) exprDeps(expr hcl.Expression, prefix string) []pdag.Node {
-	return g.exprDepsExcluding(expr, prefix, nil)
-}
-
-func (g *Graph) exprDepsExcluding(expr hcl.Expression, prefix string, exclude map[string]bool) []pdag.Node {
-	return g.refsToNodes(g.exprDepRefs(expr, prefix, exclude))
+	return g.refsToNodes(g.exprDepRefs(expr, prefix, nil))
 }
 
 // refsToNodes dedups refs by key and interns each as a graph node.
