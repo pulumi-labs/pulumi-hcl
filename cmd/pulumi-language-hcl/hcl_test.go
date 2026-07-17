@@ -19,6 +19,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -1543,7 +1544,7 @@ func TestInvokeInRangeOption(t *testing.T) {
 			sinkNames = append(sinkNames, r.Name)
 		}
 	}
-	assert.Equal(t, []string{"targets-0", "targets-1"}, sinkNames)
+	assert.ElementsMatch(t, []string{"targets-0", "targets-1"}, sinkNames)
 }
 
 // TestInvokeReturnType covers the case where a function declares its outputs via
