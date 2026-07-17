@@ -106,6 +106,37 @@ func TestGenerateModuleSchemaGolden(t *testing.T) {
 	}
 }
 
+// TestGenerateModuleSchemaFileLocalUsesModuleDir shows that schema inference
+// evaluates file-backed locals relative to the module directory. A
+// parameterized module is generally not located in the provider's working
+// directory, so using "." for path.module makes the first local fail to seed;
+// the dependent local then reports that local.from_file has no such attribute.
+func TestGenerateModuleSchemaFileLocalUsesModuleDir(t *testing.T) {
+	t.Parallel()
+
+	moduleDir := t.TempDir()
+	require.NoError(t, os.WriteFile(
+		filepath.Join(moduleDir, "data.json"), []byte(`{"count":42}`), 0o644))
+
+	config, diags := parser.NewParser().ParseSource(filepath.Join(moduleDir, "main.tf"), []byte(`
+locals {
+  from_file = jsondecode(file("${path.module}/data.json"))
+  derived   = local.from_file.count
+}
+
+output "count" {
+  value = local.derived
+}
+`))
+	require.False(t, diags.HasErrors(), diags.Error())
+
+	moduleSchema, err := GenerateModuleSchema(
+		t.Context(), config, &Binder{ModuleDir: moduleDir},
+		componentToken("pkg", "index", "pkg"), semver.MustParse("0.0.0-dev"))
+	require.NoError(t, err)
+	assert.Equal(t, &PropertySpec{Type: "number"}, moduleSchema.OutputProperties["count"])
+}
+
 // stubResolver resolves a fixed set of resources by TF type, plus optionally a
 // fixed set of provider-defined functions, so reference typing can be tested
 // without a provider schema.
