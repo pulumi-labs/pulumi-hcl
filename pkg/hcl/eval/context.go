@@ -16,6 +16,7 @@ package eval
 
 import (
 	"fmt"
+	"iter"
 	"maps"
 	"path/filepath"
 	"strings"
@@ -162,19 +163,24 @@ type rangedShape struct {
 	isCount  bool
 }
 
-// forEachRangedValue assembles each ranged block's collection value —
-// including blocks with a declared shape but no published instances yet — and
-// hands it to visit keyed by the block's base key.
+// forEachRangedValue yields each ranged block's collection value — including
+// blocks with a declared shape but no published instances yet — keyed by the
+// block's base key.
 func forEachRangedValue(
 	instances map[string][]rangedInstance, shapes map[string]rangedShape,
-	visit func(baseKey string, val cty.Value),
-) {
-	for baseKey, insts := range instances {
-		visit(baseKey, assembleRanged(insts, shapes[baseKey]))
-	}
-	for baseKey, shape := range shapes {
-		if _, ok := instances[baseKey]; !ok {
-			visit(baseKey, assembleRanged(nil, shape))
+) iter.Seq2[string, cty.Value] {
+	return func(yield func(string, cty.Value) bool) {
+		for baseKey, insts := range instances {
+			if !yield(baseKey, assembleRanged(insts, shapes[baseKey])) {
+				return
+			}
+		}
+		for baseKey, shape := range shapes {
+			if _, ok := instances[baseKey]; !ok {
+				if !yield(baseKey, assembleRanged(nil, shape)) {
+					return
+				}
+			}
 		}
 	}
 }
@@ -551,17 +557,17 @@ func (c *Context) HCLContext() *hcl.EvalContext {
 
 	// Assemble ranged resource instances into tuples (count) or objects
 	// (for_each), padded to the declared shape.
-	forEachRangedValue(c.rangedResources, c.rangedShapes, func(baseKey string, val cty.Value) {
+	for baseKey, val := range forEachRangedValue(c.rangedResources, c.rangedShapes) {
 		parts := splitResourceKey(baseKey)
 		if len(parts) != 2 {
-			return
+			continue
 		}
 		typeName, resName := parts[0], parts[1]
 		if resourcesByType[typeName] == nil {
 			resourcesByType[typeName] = make(map[string]cty.Value)
 		}
 		resourcesByType[typeName][resName] = val
-	})
+	}
 
 	for typeName, instances := range resourcesByType {
 		vars[typeName] = cty.ObjectVal(instances)
@@ -585,7 +591,9 @@ func (c *Context) HCLContext() *hcl.EvalContext {
 	for key, value := range c.dataSources {
 		addData(key, value)
 	}
-	forEachRangedValue(c.rangedData, c.rangedDataShapes, addData)
+	for key, val := range forEachRangedValue(c.rangedData, c.rangedDataShapes) {
+		addData(key, val)
+	}
 	if len(typeGroups) > 0 {
 		dataMap := make(map[string]cty.Value)
 		for typeName, instances := range typeGroups {
