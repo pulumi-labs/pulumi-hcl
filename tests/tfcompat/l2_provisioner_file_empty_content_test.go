@@ -22,10 +22,12 @@ import (
 	"github.com/pulumi-labs/pulumi-hcl/tests/testutil/tfcompat/providers"
 )
 
-// TestL2Provisioner_FileEmptyContent exercises a file provisioner whose
-// `content` is an explicit empty string. OpenTofu treats the attribute as set
-// (non-null) and uploads an empty file; pulumi-hcl treats empty-string content
-// as unset and rejects the config, so the apply fails where OpenTofu succeeds.
+// TestL2Provisioner_FileEmptyContent exercises provisioner attributes that are
+// set but empty: a file provisioner with `content = ""` (uploads an empty
+// file) and a remote-exec provisioner with `scripts = []` (runs nothing).
+// OpenTofu treats set-ness as non-null, so both succeed; pulumi-hcl treated
+// empty values as unset and rejected the config, so the apply failed where
+// OpenTofu succeeds.
 func TestL2Provisioner_FileEmptyContent(t *testing.T) {
 	t.Parallel()
 	c := sshd.Start(t.Context(), t)

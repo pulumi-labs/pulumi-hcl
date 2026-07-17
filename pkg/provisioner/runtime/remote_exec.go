@@ -22,6 +22,7 @@ import (
 	"strings"
 
 	"github.com/hashicorp/hcl/v2"
+	"github.com/zclconf/go-cty/cty"
 
 	"github.com/pulumi-labs/pulumi-hcl/pkg/provisioner/provisioners"
 	"github.com/pulumi-labs/pulumi-hcl/vendored/communicator"
@@ -42,20 +43,40 @@ func runRemoteExec(ctx context.Context, spec *Spec, hclCtx *hcl.EvalContext) err
 		return fmt.Errorf("remote-exec: %s", diags.Error())
 	}
 
-	inline, err := evalStringSlice(content, "inline", hclCtx)
+	inline, err := evalAttr(content, "inline", cty.List(cty.String), hclCtx)
 	if err != nil {
 		return err
 	}
-	script, err := evalString(content, "script", hclCtx)
+	script, err := evalAttr(content, "script", cty.String, hclCtx)
 	if err != nil {
 		return err
 	}
-	scripts, err := evalStringSlice(content, "scripts", hclCtx)
+	scripts, err := evalAttr(content, "scripts", cty.List(cty.String), hclCtx)
 	if err != nil {
 		return err
 	}
-	if exactlyOneSet(len(inline) > 0, script != "", len(scripts) > 0) != 1 {
+	if exactlyOneSet(!inline.IsNull(), !script.IsNull(), !scripts.IsNull()) != 1 {
 		return fmt.Errorf("remote-exec: exactly one of inline, script, or scripts must be set")
+	}
+
+	var lines, paths []string
+	switch {
+	case !inline.IsNull():
+		if lines, err = commandElems(inline, "inline"); err != nil {
+			return err
+		}
+		if len(lines) == 0 {
+			return fmt.Errorf("remote-exec: inline must contain at least one command")
+		}
+	case !script.IsNull():
+		if script.AsString() == "" {
+			return fmt.Errorf(`remote-exec: invalid empty string in "script"`)
+		}
+		paths = []string{script.AsString()}
+	default:
+		if paths, err = commandElems(scripts, "scripts"); err != nil {
+			return err
+		}
 	}
 
 	connVal, err := evalConnection(spec.Conn, hclCtx)
@@ -79,15 +100,27 @@ func runRemoteExec(ctx context.Context, spec *Spec, hclCtx *hcl.EvalContext) err
 	}
 	defer func() { _ = comm.Disconnect() }()
 
-	switch {
-	case len(inline) > 0:
-		return runInline(comm, inline, stdout, stderr)
-	case script != "":
-		return runScripts(comm, []string{script}, stdout, stderr)
-	case len(scripts) > 0:
-		return runScripts(comm, scripts, stdout, stderr)
+	if !inline.IsNull() {
+		return runInline(comm, lines, stdout, stderr)
 	}
-	return fmt.Errorf("remote-exec: no commands specified")
+	return runScripts(comm, paths, stdout, stderr)
+}
+
+// commandElems flattens a list attribute whose elements must be set,
+// non-empty strings.
+func commandElems(list cty.Value, attr string) ([]string, error) {
+	var out []string
+	for it := list.ElementIterator(); it.Next(); {
+		_, v := it.Element()
+		if v.IsNull() {
+			return nil, fmt.Errorf("remote-exec: invalid null string in %q", attr)
+		}
+		if v.AsString() == "" {
+			return nil, fmt.Errorf("remote-exec: invalid empty string in %q", attr)
+		}
+		out = append(out, v.AsString())
+	}
+	return out, nil
 }
 
 // TF joins inline lines into a single shell invocation.
