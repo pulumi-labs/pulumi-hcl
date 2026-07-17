@@ -49,16 +49,30 @@ func cellKey(node *graph.Node, mi *moduleInstance) expansionCell {
 	return c
 }
 
+// cell returns the expansion cell for a block within one module instance ("" =
+// root), erroring when materialization never created it.
+func (e *Engine) cell(block, mi string) (*graph.BlockExpansion, error) {
+	b, ok := e.expansions.Get(expansionCell{block: block, mi: mi})
+	if !ok {
+		return nil, fmt.Errorf("no expansion cell for %q in module instance %q", block, mi)
+	}
+	return b, nil
+}
+
 // materializeRootCells creates, wires, and arms the cells for every top-level
 // resource/data block, plus the plan barrier separating plan-time data reads
 // from resource creation. Runs after graph validation and before the walk.
 func (e *Engine) materializeRootCells(g *graph.Graph) error {
 	e.planBarrier = g.NewJoinNode("!plan-reads")
 
-	var blocks []*graph.Node
+	var blocks, locals []*graph.Node
 	for _, node := range g.ExpandableNodes() {
 		if node.ModuleInfo == nil {
-			blocks = append(blocks, node)
+			if node.Type == graph.NodeTypeLocal {
+				locals = append(locals, node)
+			} else {
+				blocks = append(blocks, node)
+			}
 			continue
 		}
 		// A module holding a plan-time data source keeps the barrier open
@@ -77,7 +91,45 @@ func (e *Engine) materializeRootCells(g *graph.Graph) error {
 			}
 		}
 	}
-	return e.materializeCells(g, blocks, []*moduleInstance{nil}, true)
+	if err := e.materializeCells(g, blocks, []*moduleInstance{nil}, true); err != nil {
+		return err
+	}
+	return e.wireRootLocals(g, locals)
+}
+
+// wireRootLocals gives each classified root local its instance-granular
+// dependency edges: whole-block references bind to the target cell's
+// completion, literal-indexed references to that instance's gate. The local's
+// static deps were wired at graph build; block-level edges were deliberately
+// omitted there so narrowness flows through the local to its consumers.
+// Although the cells are already armed, nothing executes until the walk
+// starts, so creating gates here still precedes every expansion.
+func (e *Engine) wireRootLocals(g *graph.Graph, locals []*graph.Node) error {
+	for _, node := range locals {
+		ln, ok := g.KeyNode(node.Key)
+		if !ok {
+			return fmt.Errorf("no graph node for %q", node.Key)
+		}
+		for _, whole := range node.Deps.Whole {
+			target, err := e.cell(whole, "")
+			if err != nil {
+				return err
+			}
+			if err := g.Order(target.Complete(), ln); err != nil {
+				return err
+			}
+		}
+		for _, narrow := range node.Deps.Narrow {
+			target, err := e.cell(narrow.Key, "")
+			if err != nil {
+				return err
+			}
+			if err := g.Order(target.Gate(narrow.Suffix), ln); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }
 
 // materializeModuleCells creates, wires, and arms the cells for one module's
@@ -147,18 +199,18 @@ func (e *Engine) wireCell(g *graph.Graph, node *graph.Node, mi *moduleInstance) 
 		}
 	}
 	for _, whole := range node.Deps.Whole {
-		target, ok := e.expansions.Get(expansionCell{block: whole, mi: key.mi})
-		if !ok {
-			return fmt.Errorf("no expansion cell for dependency %q of %v", whole, key)
+		target, err := e.cell(whole, key.mi)
+		if err != nil {
+			return err
 		}
 		if err := b.DependOn(target.Complete()); err != nil {
 			return err
 		}
 	}
 	for _, narrow := range node.Deps.Narrow {
-		target, ok := e.expansions.Get(expansionCell{block: narrow.Key, mi: key.mi})
-		if !ok {
-			return fmt.Errorf("no expansion cell for dependency %q of %v", narrow.Key, key)
+		target, err := e.cell(narrow.Key, key.mi)
+		if err != nil {
+			return err
 		}
 		if err := b.DependOn(target.Gate(narrow.Suffix)); err != nil {
 			return err

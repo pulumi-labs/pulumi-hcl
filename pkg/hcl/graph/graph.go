@@ -389,15 +389,33 @@ func (g *Graph) ForcedCreateBeforeDestroy() map[string]bool {
 			return
 		}
 		visited[node] = true
+		var n *Node
 		if key, ok := g.keyByDagNode[node]; ok {
-			if n, ok := g.seen[key]; ok && n.n.Type == NodeTypeResource {
-				forced[key] = true
+			if in, ok := g.seen[key]; ok {
+				n = in.n
+				if n.Type == NodeTypeResource {
+					forced[key] = true
+				}
 			}
 		}
 		// Recurse into dependencies through any node type, so a dependency
 		// reached via a local or other intermediary is still forced.
 		for dep := range g.dag.Predecessors(node) {
 			mark(dep)
+		}
+		// A node whose classified deps omit block-level edges (root locals)
+		// still forces the blocks it reads.
+		if n != nil && n.Deps != nil {
+			for _, whole := range n.Deps.Whole {
+				if in, ok := g.seen[whole]; ok {
+					mark(in.i)
+				}
+			}
+			for _, narrow := range n.Deps.Narrow {
+				if in, ok := g.seen[narrow.Key]; ok {
+					mark(in.i)
+				}
+			}
 		}
 	}
 
@@ -431,9 +449,10 @@ func (g *Graph) KeyNode(key string) (pdag.Node, bool) {
 	return n.i, ok
 }
 
-// ExpandableNodes returns the resource/data nodes carrying classified deps —
-// the blocks the engine schedules through BlockExpansion cells — sorted by
-// key for deterministic materialization.
+// ExpandableNodes returns the nodes carrying classified deps — resource/data
+// blocks the engine schedules through BlockExpansion cells, plus root locals
+// it wires at instance granularity — sorted by key for deterministic
+// materialization.
 func (g *Graph) ExpandableNodes() []*Node {
 	var out []*Node
 	for _, n := range g.seen {
@@ -476,13 +495,18 @@ func BuildFromConfig(config *ast.Config, moduleLoader ModuleLoader, workDir stri
 		}
 	}
 
-	// Add local value nodes
+	// Add local value nodes. Root locals carry classified deps and no
+	// block-level edges: the engine wires their resource/data dependencies at
+	// instance granularity, so narrowness flows through them. (Module locals
+	// keep block-level edges — references through them widen across module
+	// instances.)
 	for name, local := range config.Locals {
-		deps := g.exprDeps(local.Value, "")
+		bd, deps := g.localDeps(local, "")
 		err := g.AddNode(&Node{
 			Key:   "local." + name,
 			Type:  NodeTypeLocal,
 			Local: local,
+			Deps:  bd,
 		}, deps)
 		if err != nil {
 			return nil, err
@@ -842,45 +866,8 @@ func packageNameFromResourceType(token string) string {
 // dependency kind (provider refs, ResourceParent, DeletedWith, ReplaceWith,
 // replace_triggered_by, aliases) stays static (block-granular).
 func (g *Graph) resourceDeps(resource *ast.Resource, prefix string) (*BlockDeps, []pdag.Node) {
-	bd := &BlockDeps{}
-	seen := make(map[pdag.Node]bool)
-	staticSeen := make(map[pdag.Node]bool)
-	wholeSeen := make(map[string]bool)
-	narrowSeen := make(map[InstanceDep]bool)
-
-	addStatic := func(n pdag.Node) {
-		seen[n] = true
-		if !staticSeen[n] {
-			staticSeen[n] = true
-			bd.Static = append(bd.Static, n)
-		}
-	}
-	addStaticRefs := func(refs []depRef) {
-		for _, ref := range refs {
-			_, n := g.newNode(ref.key)
-			addStatic(n)
-		}
-	}
-	classify := func(refs []depRef) {
-		for _, ref := range refs {
-			_, n := g.newNode(ref.key)
-			id, sameScope := g.classifyDep(ref, prefix)
-			if !sameScope {
-				addStatic(n)
-				continue
-			}
-			seen[n] = true
-			if id.Suffix == "" {
-				if !wholeSeen[ref.key] {
-					wholeSeen[ref.key] = true
-					bd.Whole = append(bd.Whole, ref.key)
-				}
-			} else if !narrowSeen[id] {
-				narrowSeen[id] = true
-				bd.Narrow = append(bd.Narrow, id)
-			}
-		}
-	}
+	c := g.newDepClassifier(prefix, true)
+	addStatic, addStaticRefs, classify := c.addStatic, c.addStaticRefs, c.classify
 
 	classify(g.exprDepRefs(resource.Count, prefix, nil))
 	classify(g.exprDepRefs(resource.ForEach, prefix, nil))
@@ -944,14 +931,95 @@ func (g *Graph) resourceDeps(resource *ast.Resource, prefix string) (*BlockDeps,
 	}
 	addStaticRefs(g.exprDepRefs(resource.Aliases, prefix, nil))
 
-	// A whole-block dependency already waits for every instance; drop narrow
-	// entries it subsumes.
-	bd.Narrow = slices.DeleteFunc(bd.Narrow, func(d InstanceDep) bool { return wholeSeen[d.Key] })
-	if len(bd.Narrow) == 0 {
-		bd.Narrow = nil
-	}
+	return c.finish()
+}
 
-	return bd, slices.Collect(maps.Keys(seen))
+// localDeps classifies a local value's dependencies. Unlike resourceDeps, the
+// returned edge set omits same-scope resource/data blocks entirely: the
+// engine wires those at instance granularity (completion or gate), so the
+// local evaluates as soon as the instances it actually reads are available.
+func (g *Graph) localDeps(local *ast.Local, prefix string) (*BlockDeps, []pdag.Node) {
+	c := g.newDepClassifier(prefix, false)
+	c.classify(g.exprDepRefs(local.Value, prefix, nil))
+	return c.finish()
+}
+
+// depClassifier accumulates one block's dependencies into a BlockDeps and the
+// pdag edge set for the block's graph node. blockEdges controls whether
+// same-scope resource/data targets also get a block-level edge (resources
+// keep them so completion ordering, cycle detection, and Validate stay
+// block-granular; locals drop them so only the instance-level wiring orders
+// the local's evaluation).
+type depClassifier struct {
+	g          *Graph
+	prefix     string
+	blockEdges bool
+	bd         *BlockDeps
+	seen       map[pdag.Node]bool
+	staticSeen map[pdag.Node]bool
+	wholeSeen  map[string]bool
+	narrowSeen map[InstanceDep]bool
+}
+
+func (g *Graph) newDepClassifier(prefix string, blockEdges bool) *depClassifier {
+	return &depClassifier{
+		g:          g,
+		prefix:     prefix,
+		blockEdges: blockEdges,
+		bd:         &BlockDeps{},
+		seen:       make(map[pdag.Node]bool),
+		staticSeen: make(map[pdag.Node]bool),
+		wholeSeen:  make(map[string]bool),
+		narrowSeen: make(map[InstanceDep]bool),
+	}
+}
+
+func (c *depClassifier) addStatic(n pdag.Node) {
+	c.seen[n] = true
+	if !c.staticSeen[n] {
+		c.staticSeen[n] = true
+		c.bd.Static = append(c.bd.Static, n)
+	}
+}
+
+func (c *depClassifier) addStaticRefs(refs []depRef) {
+	for _, ref := range refs {
+		_, n := c.g.newNode(ref.key)
+		c.addStatic(n)
+	}
+}
+
+func (c *depClassifier) classify(refs []depRef) {
+	for _, ref := range refs {
+		_, n := c.g.newNode(ref.key)
+		id, sameScope := c.g.classifyDep(ref, c.prefix)
+		if !sameScope {
+			c.addStatic(n)
+			continue
+		}
+		if c.blockEdges {
+			c.seen[n] = true
+		}
+		if id.Suffix == "" {
+			if !c.wholeSeen[ref.key] {
+				c.wholeSeen[ref.key] = true
+				c.bd.Whole = append(c.bd.Whole, ref.key)
+			}
+		} else if !c.narrowSeen[id] {
+			c.narrowSeen[id] = true
+			c.bd.Narrow = append(c.bd.Narrow, id)
+		}
+	}
+}
+
+// finish subsumes narrow entries under whole-block dependencies and returns
+// the classified deps with the node's edge set.
+func (c *depClassifier) finish() (*BlockDeps, []pdag.Node) {
+	c.bd.Narrow = slices.DeleteFunc(c.bd.Narrow, func(d InstanceDep) bool { return c.wholeSeen[d.Key] })
+	if len(c.bd.Narrow) == 0 {
+		c.bd.Narrow = nil
+	}
+	return c.bd, slices.Collect(maps.Keys(c.seen))
 }
 
 // classifyDep reports whether ref names a resource/data block declared in the

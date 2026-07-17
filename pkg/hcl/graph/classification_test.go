@@ -268,6 +268,67 @@ module "m" {
 	assert.Less(t, indexOf(order, "module.m.data.order_data.d"), indexOf(order, "module.m.order_resource.a"))
 }
 
+// A root local classifies its value's references and carries no block-level
+// edge to the resources it reads, so the engine's instance-level wiring alone
+// orders its evaluation.
+func TestClassifyRootLocal(t *testing.T) {
+	t.Parallel()
+	g := buildGraph(t, `
+resource "order_resource" "a" {
+  for_each = toset(["x", "y"])
+  name     = each.key
+}
+
+locals {
+  picked = order_resource.a["x"].result
+}
+
+resource "order_resource" "b" {
+  name = "b-${local.picked}"
+}
+`)
+
+	assert.Equal(t, blockDepsView{
+		Narrow: []InstanceDep{{Key: "order_resource.a", Suffix: `["x"]`}},
+	}, depsView(t, g, "local.picked"))
+
+	// No block-level edge from the resource to the local: the local's only
+	// build-time prerequisites are its static deps (none here).
+	local, ok := g.seen["local.picked"]
+	require.True(t, ok)
+	for pred := range g.dag.Predecessors(local.i) {
+		assert.NotEqual(t, "order_resource.a", g.keyByDagNode[pred])
+	}
+}
+
+// create_before_destroy still propagates through a root local even though the
+// local has no block-level edge to the resource it reads.
+func TestForcedCreateBeforeDestroyThroughClassifiedLocal(t *testing.T) {
+	t.Parallel()
+	g := buildGraph(t, `
+resource "order_resource" "a" {
+  for_each = toset(["x", "y"])
+  name     = each.key
+}
+
+locals {
+  picked = order_resource.a["x"].result
+}
+
+resource "order_resource" "b" {
+  name = "b-${local.picked}"
+  lifecycle {
+    create_before_destroy = true
+  }
+}
+`)
+
+	assert.Equal(t, map[string]bool{
+		"order_resource.a": true,
+		"order_resource.b": true,
+	}, g.ForcedCreateBeforeDestroy())
+}
+
 // A narrow reference still creates the block-level graph edge, so completion
 // ordering, Validate, and cycle detection stay block-granular.
 func TestClassifyKeepsBlockEdges(t *testing.T) {
