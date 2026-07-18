@@ -1464,6 +1464,16 @@ func (e *Engine) registerResourceInstanceInContext(
 				tdataEvaluated[string(propKey)] = val
 			}
 
+			// Record every evaluated property, even with no dependencies: an
+			// absent PropertyDependencies map makes the engine assume every
+			// property depends on every entry in Dependencies — but those
+			// include ordering-only dependencies (widened instance sets,
+			// depends_on, replace_triggered_by), and a delete-before-replace
+			// of such a target would then spuriously replace this resource.
+			if _, ok := dependsOn[string(propKey)]; !ok {
+				dependsOn[string(propKey)] = nil
+			}
+
 			if plainInputProps[string(propKey)] {
 				return val, diags
 			}
