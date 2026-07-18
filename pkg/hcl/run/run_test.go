@@ -5518,9 +5518,10 @@ resource "aws_instance" "base" {
 // TestEngine_LifecycleRefDependencies: a resource referenced only from a
 // lifecycle precondition/postcondition/replace_triggered_by establishes a
 // dependency, as in TF — directly, through a local, and through a data
-// source's check rule — while staying out of PropertyDependencies (no body
-// property carries it). `self` in a postcondition is not a reference and
-// must not break dep collection.
+// source's check rule — while body properties carry explicit empty
+// PropertyDependencies entries (the reference is ordering-only; an absent
+// map would make the engine assume every property depends on it). `self`
+// in a postcondition is not a reference and must not break dep collection.
 func TestEngine_LifecycleRefDependencies(t *testing.T) {
 	t.Parallel()
 
@@ -5591,7 +5592,7 @@ resource "aws_instance" "reader" {
 		r := find(name)
 		require.NotNilf(t, r, "%s resource should be registered", name)
 		assert.Equal(t, []string{firstURN}, r.Dependencies)
-		assert.Empty(t, r.PropertyDependencies)
+		assert.Equal(t, map[string][]string{"ami": nil}, r.PropertyDependencies)
 	}
 
 	reader := find("reader")
@@ -5603,7 +5604,8 @@ resource "aws_instance" "reader" {
 // TestEngine_ProvisionerRefDependencies: a resource referenced only from a
 // provisioner command, a resource-level connection block, or a provisioner's
 // connection override establishes a dependency — directly and through a local
-// — while staying out of PropertyDependencies (no body property carries it).
+// — while body properties carry explicit empty PropertyDependencies entries
+// (the reference is ordering-only).
 // The referent is declared last so the edge, not source order, must sequence
 // its evaluation before the referencing resources register. `self` in a
 // create-time provisioner is not a reference and must not break dep
@@ -5670,7 +5672,7 @@ resource "aws_instance" "first" {
 		r := find(name)
 		require.NotNilf(t, r, "%s resource should be registered", name)
 		assert.Equal(t, []string{firstURN}, r.Dependencies)
-		assert.Empty(t, r.PropertyDependencies)
+		assert.Equal(t, map[string][]string{"ami": nil}, r.PropertyDependencies)
 	}
 
 	dprov := find("dprov")
