@@ -3211,10 +3211,8 @@ func (e *Engine) invokeDataSourceOnce(
 	hclCtx := evalCtx.HCLContext()
 
 	// Failed preconditions prevent the read; unknown conditions defer.
-	for i, rule := range ds.Preconditions {
-		if err := evaluatePrecondition(rule, hclCtx, i+1, node.Key); err != nil {
-			return cty.NilVal, err
-		}
+	if err := evaluatePreconditions(ds.Preconditions, hclCtx, node.Key); err != nil {
+		return cty.NilVal, err
 	}
 
 	depMarks := cty.ValueMarks{}
@@ -3334,10 +3332,8 @@ func (e *Engine) invokeDataSourceOnce(
 		return cty.NilVal, fmt.Errorf("converting function outputs to HCL types: %w", err)
 	}
 
-	for i, rule := range ds.Postconditions {
-		if err := evaluatePostconditionValue(rule, hclCtx, ctyOutputs, i+1, node.Key); err != nil {
-			return cty.NilVal, err
-		}
+	if err := evaluatePostconditionValues(ds.Postconditions, hclCtx, ctyOutputs, node.Key); err != nil {
+		return cty.NilVal, err
 	}
 
 	return ctyOutputs.WithMarks(depMarks), nil
@@ -4372,8 +4368,10 @@ func provisionerDeps(res *ast.Resource, hclCtx *hcl.EvalContext) []string {
 	return deps
 }
 
-// bindPreconditionHooks registers a hook per precondition and binds it to
-// BeforeCreate/BeforeUpdate so a false condition blocks the operation.
+// bindPreconditionHooks registers a single hook that evaluates every
+// precondition and binds it to BeforeCreate/BeforeUpdate so a false condition
+// blocks the operation. All rules are evaluated in one hook because the engine
+// stops at the first failing hook, while every failing rule must be reported.
 //
 // The HCL eval context is snapshotted at registration so the async callback
 // sees the per-instance count/each/self that was in scope here — by the time
@@ -4389,32 +4387,34 @@ func (e *Engine) bindPreconditionHooks(
 	opts *ResourceOptions,
 	resourceName string,
 ) error {
+	if len(res.Preconditions) == 0 {
+		return nil
+	}
 	if opts.Hooks == nil {
 		opts.Hooks = &ResourceHookBinding{}
 	}
 	hclSnapshot := evalCtx.HCLContext()
-	for i, rule := range res.Preconditions {
-		rule, index := rule, i+1
-		hookName := fmt.Sprintf("%s.%s:precondition:%d", res.Type, resourceName, i)
-		callback := func(_ context.Context, _ *ResourceHookArgs) error {
-			return evaluatePrecondition(rule, hclSnapshot, index, instance.Key)
-		}
-		if err := e.resmon.RegisterResourceHook(ctx, hookName, callback, ResourceHookOptions{
-			OnDryRun: true,
-		}); err != nil {
-			return fmt.Errorf("registering precondition hook: %w", err)
-		}
-		opts.Hooks.BeforeCreate = append(opts.Hooks.BeforeCreate, hookName)
-		opts.Hooks.BeforeUpdate = append(opts.Hooks.BeforeUpdate, hookName)
+	hookName := fmt.Sprintf("%s.%s:precondition", res.Type, resourceName)
+	callback := func(_ context.Context, _ *ResourceHookArgs) error {
+		return evaluatePreconditions(res.Preconditions, hclSnapshot, instance.Key)
 	}
+	if err := e.resmon.RegisterResourceHook(ctx, hookName, callback, ResourceHookOptions{
+		OnDryRun: true,
+	}); err != nil {
+		return fmt.Errorf("registering precondition hook: %w", err)
+	}
+	opts.Hooks.BeforeCreate = append(opts.Hooks.BeforeCreate, hookName)
+	opts.Hooks.BeforeUpdate = append(opts.Hooks.BeforeUpdate, hookName)
 	return nil
 }
 
-// bindPostconditionHooks registers a hook per postcondition and binds it to
-// AfterCreate/AfterUpdate. The hook fires after the resource is created or
-// updated; the engine supplies the resource's new outputs as `self` in the
-// callback. Failed postconditions surface as deployment errors but do not
-// unwind the resource registration — same as TF.
+// bindPostconditionHooks registers a single hook that evaluates every
+// postcondition and binds it to AfterCreate/AfterUpdate. The hook fires after
+// the resource is created or updated; the engine supplies the resource's new
+// outputs as `self` in the callback. All rules are evaluated in one hook
+// because the engine stops at the first failing hook, while every failing rule
+// must be reported. Failed postconditions surface as deployment errors but do
+// not unwind the resource registration — same as TF.
 func (e *Engine) bindPostconditionHooks(
 	ctx context.Context,
 	res *ast.Resource,
@@ -4425,46 +4425,59 @@ func (e *Engine) bindPostconditionHooks(
 	opts *ResourceOptions,
 	resourceName string,
 ) error {
+	if len(res.Postconditions) == 0 {
+		return nil
+	}
 	if opts.Hooks == nil {
 		opts.Hooks = &ResourceHookBinding{}
 	}
 	hclSnapshot := evalCtx.HCLContext()
 	dryRun := e.dryRun
-	for i, rule := range res.Postconditions {
-		rule, index := rule, i+1
-		hookName := fmt.Sprintf("%s.%s:postcondition:%d", res.Type, resourceName, i)
-		callback := func(_ context.Context, args *ResourceHookArgs) error {
-			// Hooks receive raw engine outputs, so terraform_data's surface is
-			// adapted the same way as on the registration path: property-level
-			// lowering here, wrapper unboxing after re-expansion.
-			outputs := lowerTerraformDataOutputs(res.Type, args.NewOutputs, opts)
-			return evaluatePostcondition(rule, hclSnapshot, outputs, res.Type, resSchema, mapping, dryRun, index, instance.Key)
-		}
-		if err := e.resmon.RegisterResourceHook(ctx, hookName, callback, ResourceHookOptions{
-			OnDryRun: true,
-		}); err != nil {
-			return fmt.Errorf("registering postcondition hook: %w", err)
-		}
-		opts.Hooks.AfterCreate = append(opts.Hooks.AfterCreate, hookName)
-		opts.Hooks.AfterUpdate = append(opts.Hooks.AfterUpdate, hookName)
+	hookName := fmt.Sprintf("%s.%s:postcondition", res.Type, resourceName)
+	callback := func(_ context.Context, args *ResourceHookArgs) error {
+		// Hooks receive raw engine outputs, so terraform_data's surface is
+		// adapted the same way as on the registration path: property-level
+		// lowering here, wrapper unboxing after re-expansion.
+		outputs := lowerTerraformDataOutputs(res.Type, args.NewOutputs, opts)
+		return evaluatePostconditions(res.Postconditions, hclSnapshot, outputs, res.Type, resSchema, mapping, dryRun, instance.Key)
 	}
+	if err := e.resmon.RegisterResourceHook(ctx, hookName, callback, ResourceHookOptions{
+		OnDryRun: true,
+	}); err != nil {
+		return fmt.Errorf("registering postcondition hook: %w", err)
+	}
+	opts.Hooks.AfterCreate = append(opts.Hooks.AfterCreate, hookName)
+	opts.Hooks.AfterUpdate = append(opts.Hooks.AfterUpdate, hookName)
 	return nil
 }
 
-// evaluatePostcondition evaluates a postcondition with `self` bound to the
-// engine-supplied NewOutputs.
-func evaluatePostcondition(
-	rule *ast.CheckRule, hclCtx *hcl.EvalContext, newOutputs property.Map, tfType string,
-	resSchema *schema.Resource, mapping *bridge.BodyMapping, dryRun bool, index int, resourceName string,
+// evaluatePostconditions evaluates every postcondition with `self` bound to
+// the engine-supplied NewOutputs, joining the failures so every failing rule
+// is reported.
+func evaluatePostconditions(
+	rules []*ast.CheckRule, hclCtx *hcl.EvalContext, newOutputs property.Map, tfType string,
+	resSchema *schema.Resource, mapping *bridge.BodyMapping, dryRun bool, resourceName string,
 ) error {
 	outputObj, err := transform.ResourceOutputToCty(newOutputs, resSchema, mapping, dryRun)
 	if err != nil {
-		return fmt.Errorf("converting outputs for postcondition %d on %s: %w", index, resourceName, err)
+		return fmt.Errorf("converting outputs for postconditions on %s: %w", resourceName, err)
 	}
 	if err := unwrapTerraformDataOutputs(tfType, outputObj, newOutputs); err != nil {
-		return fmt.Errorf("converting outputs for postcondition %d on %s: %w", index, resourceName, err)
+		return fmt.Errorf("converting outputs for postconditions on %s: %w", resourceName, err)
 	}
-	return evaluatePostconditionValue(rule, hclCtx, cty.ObjectVal(outputObj), index, resourceName)
+	return evaluatePostconditionValues(rules, hclCtx, cty.ObjectVal(outputObj), resourceName)
+}
+
+// evaluatePostconditionValues evaluates every postcondition with `self` bound
+// to the given value, joining the failures so every failing rule is reported.
+func evaluatePostconditionValues(
+	rules []*ast.CheckRule, hclCtx *hcl.EvalContext, self cty.Value, resourceName string,
+) error {
+	var errs []error
+	for i, rule := range rules {
+		errs = append(errs, evaluatePostconditionValue(rule, hclCtx, self, i+1, resourceName))
+	}
+	return errors.Join(errs...)
 }
 
 // evaluatePostconditionValue evaluates a postcondition with `self` bound to
@@ -4518,15 +4531,20 @@ func conditionResultToBool(v cty.Value) (bool, error) {
 }
 
 // runOutputPreconditions evaluates an output's `precondition` rules against
-// hclCtx and returns an error for the first rule whose condition is known and
-// false; unknown conditions are deferred.
+// hclCtx, reporting every rule whose condition is known and false; unknown
+// conditions are deferred.
 func runOutputPreconditions(output *ast.Output, hclCtx *hcl.EvalContext, name string) error {
-	for i, rule := range output.Preconditions {
-		if err := evaluatePrecondition(rule, hclCtx, i+1, fmt.Sprintf("output %q", name)); err != nil {
-			return err
-		}
+	return evaluatePreconditions(output.Preconditions, hclCtx, fmt.Sprintf("output %q", name))
+}
+
+// evaluatePreconditions evaluates every rule and joins the failures so every
+// failing rule is reported, not just the first.
+func evaluatePreconditions(rules []*ast.CheckRule, hclCtx *hcl.EvalContext, resourceName string) error {
+	var errs []error
+	for i, rule := range rules {
+		errs = append(errs, evaluatePrecondition(rule, hclCtx, i+1, resourceName))
 	}
-	return nil
+	return errors.Join(errs...)
 }
 
 // evaluatePrecondition returns nil when the rule holds or its condition is

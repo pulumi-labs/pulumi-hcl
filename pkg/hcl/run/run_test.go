@@ -2111,6 +2111,94 @@ resource "test_resource" "res" {
 	})
 }
 
+func TestEngine_Precondition_MultipleFailures(t *testing.T) {
+	t.Parallel()
+
+	// When several check rules fail, every failing rule's message is reported,
+	// not just the first.
+	runProgram := func(t *testing.T, src string) error {
+		t.Helper()
+		p := parser.NewParser()
+		config, diags := p.ParseSource("test.hcl", []byte(src))
+		require.False(t, diags.HasErrors(), diags.Error())
+
+		engine := newTestEngine(t, config, &run.EngineOptions{
+			ModuleLoader:    testModuleLoader(t),
+			ProjectName:     "test-project",
+			StackName:       "dev",
+			ResourceMonitor: &testutil.MockResourceMonitor{},
+			WorkDir:         t.TempDir(),
+			RootDir:         t.TempDir(),
+			SchemaLoader:    schemaloader.New(t, testSchema()),
+		})
+		return engine.Run(t.Context())
+	}
+
+	t.Run("preconditions", func(t *testing.T) {
+		t.Parallel()
+		err := runProgram(t, `
+resource "test_resource" "res" {
+  field = "x"
+
+  lifecycle {
+    precondition {
+      condition     = 1 > 5
+      error_message = "FIRST_RULE_FAILED"
+    }
+    precondition {
+      condition     = 1 > 10
+      error_message = "SECOND_RULE_FAILED"
+    }
+  }
+}
+`)
+		require.ErrorContains(t, err, "FIRST_RULE_FAILED")
+		require.ErrorContains(t, err, "SECOND_RULE_FAILED")
+	})
+
+	t.Run("postconditions", func(t *testing.T) {
+		t.Parallel()
+		err := runProgram(t, `
+resource "test_resource" "res" {
+  field = "x"
+
+  lifecycle {
+    postcondition {
+      condition     = self.field == "a"
+      error_message = "FIRST_RULE_FAILED"
+    }
+    postcondition {
+      condition     = self.field == "b"
+      error_message = "SECOND_RULE_FAILED"
+    }
+  }
+}
+`)
+		require.ErrorContains(t, err, "FIRST_RULE_FAILED")
+		require.ErrorContains(t, err, "SECOND_RULE_FAILED")
+	})
+
+	t.Run("output preconditions", func(t *testing.T) {
+		t.Parallel()
+		err := runProgram(t, `
+output "result" {
+  value = "x"
+
+  precondition {
+    condition     = 1 > 5
+    error_message = "FIRST_RULE_FAILED"
+  }
+  precondition {
+    condition     = 1 > 10
+    error_message = "SECOND_RULE_FAILED"
+  }
+}
+`)
+		require.ErrorContains(t, err, "FIRST_RULE_FAILED")
+		require.ErrorContains(t, err, "SECOND_RULE_FAILED")
+	})
+}
+
 func TestEngine_Precondition_SensitiveErrorMessage(t *testing.T) {
 	t.Parallel()
 
