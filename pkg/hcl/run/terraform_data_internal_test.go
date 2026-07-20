@@ -81,6 +81,34 @@ func TestLowerTerraformDataInputs(t *testing.T) {
 				property.New("x"), property.New("lifecycle"),
 			}),
 		},
+		{
+			name: "ignored triggers_replace holds a null trigger slot",
+			inputs: property.NewMap(map[string]property.Value{
+				"input":            property.New("a"),
+				"triggers_replace": property.New("x"),
+			}),
+			opts: ResourceOptions{IgnoreChanges: []property.Glob{
+				property.GlobFromSegments(property.NewSegment("triggers_replace")),
+			}},
+			wantInputs: property.NewMap(map[string]property.Value{
+				"input": property.New("a"),
+			}),
+			wantTrigger: property.New([]property.Value{null, null}),
+		},
+		{
+			name: "ignore_changes = all nulls the trigger slot too",
+			inputs: property.NewMap(map[string]property.Value{
+				"input":            property.New("a"),
+				"triggers_replace": property.New("x"),
+			}),
+			opts: ResourceOptions{IgnoreChanges: []property.Glob{
+				property.GlobFromSegments(property.Splat),
+			}},
+			wantInputs: property.NewMap(map[string]property.Value{
+				"input": property.New("a"),
+			}),
+			wantTrigger: property.New([]property.Value{null, null}),
+		},
 	}
 
 	for _, tt := range tests {
@@ -105,7 +133,7 @@ func TestLowerTerraformDataInputs(t *testing.T) {
 		assert.Equal(t, ResourceOptions{}, opts)
 	})
 
-	t.Run("ignore_changes paths into input collapse to the whole attribute", func(t *testing.T) {
+	t.Run("input ignore_changes collapse to the whole attribute; triggers_replace ones drop", func(t *testing.T) {
 		t.Parallel()
 
 		glob := func(s string) property.Glob {
@@ -114,11 +142,14 @@ func TestLowerTerraformDataInputs(t *testing.T) {
 			return g
 		}
 		opts := ResourceOptions{IgnoreChanges: []property.Glob{
-			glob("input.k"), glob("input[0]"), glob("input"), glob("triggers_replace.k"),
+			glob("input.k"), glob("input[0]"), glob("input"),
+			glob("triggers_replace"), glob("triggers_replace.k"),
+			property.GlobFromSegments(property.Splat), glob("other"),
 		}}
 		lowerTerraformDataInputs(packages.TerraformDataType, property.Map{}, &opts)
 		assert.Equal(t, []property.Glob{
-			glob("input"), glob("input"), glob("input"), glob("triggers_replace.k"),
+			glob("input"), glob("input"), glob("input"),
+			property.GlobFromSegments(property.Splat), glob("other"),
 		}, opts.IgnoreChanges)
 	})
 }
