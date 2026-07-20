@@ -50,22 +50,55 @@ func lowerTerraformDataInputs(resType string, inputs property.Map, opts *Resourc
 	if resType != packages.TerraformDataType {
 		return inputs
 	}
-	// An ignore_changes path into input (input["k"], input[0]) ignores the
-	// whole attribute: input is a single dynamic attribute, and its keys live
-	// under the {type, value} wrapper in the engine's encoding, where a nested
-	// glob would match nothing.
-	for i, g := range opts.IgnoreChanges {
+	// triggers_replace is not a Stash input but the engine's replacement trigger,
+	// which processIgnoreChanges (input-only) cannot suppress. An ignore_changes
+	// entry naming it is handled here instead: the trigger slot is held null so a
+	// later value change never diffs against the stored trigger.
+	//
+	// Known limitation: this reconciles only against a trigger that was itself
+	// recorded under ignore (null). If ignore_changes is added in the same update
+	// that changes triggers_replace, the prior state still holds the real value,
+	// so nulling the slot registers as a change and forces one replacement — the
+	// engine substitutes prior state for ignored *inputs* only, and Stash rejects
+	// triggers_replace as an input, so the language host cannot see it here.
+	triggersIgnored := false
+	kept := opts.IgnoreChanges[:0]
+	for _, g := range opts.IgnoreChanges {
 		text, err := g.MarshalText()
 		if err != nil {
+			kept = append(kept, g)
 			continue
 		}
-		if s := string(text); strings.HasPrefix(s, "input.") || strings.HasPrefix(s, "input[") {
-			opts.IgnoreChanges[i] = property.GlobFromSegments(property.NewSegment("input"))
+		s := string(text)
+		switch {
+		// An ignore_changes path into input (input["k"], input[0]) ignores the
+		// whole attribute: input is a single dynamic attribute, and its keys live
+		// under the {type, value} wrapper in the engine's encoding, where a nested
+		// glob would match nothing.
+		case strings.HasPrefix(s, "input.") || strings.HasPrefix(s, "input["):
+			kept = append(kept, property.GlobFromSegments(property.NewSegment("input")))
+		// A glob rooted at triggers_replace (exact or nested) ignores the whole
+		// trigger. It is dropped rather than kept: triggers_replace is no engine
+		// property, so the engine would flag it as an unresolved ignore path.
+		case s == "triggers_replace" ||
+			strings.HasPrefix(s, "triggers_replace.") || strings.HasPrefix(s, "triggers_replace["):
+			triggersIgnored = true
+		// ignore_changes = all (the "[*]" splat) covers triggers_replace too; the
+		// splat still applies to the Stash input, so it is kept.
+		case s == "[*]":
+			triggersIgnored = true
+			kept = append(kept, g)
+		default:
+			kept = append(kept, g)
 		}
 	}
+	opts.IgnoreChanges = kept
 	triggers := inputs.Get("triggers_replace")
 	inputs = inputs.Delete("triggers_replace")
 	delete(opts.PropertyDependencies, "triggers_replace")
+	if triggersIgnored {
+		triggers = property.New(property.Null)
+	}
 	opts.ReplacementTrigger = property.New([]property.Value{triggers, opts.ReplacementTrigger})
 	if _, ok := inputs.GetOk("input"); !ok {
 		inputs = inputs.Set("input", property.New(property.Null))
