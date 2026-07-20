@@ -191,6 +191,16 @@ func (p *Parser) parseTerraformBlock(config *ast.Config, block *hcl.Block) hcl.D
 		})
 	}
 
+	if attr, ok := content.Attributes["experiments"]; ok {
+		diags = append(diags, &hcl.Diagnostic{
+			Severity: hcl.DiagWarning,
+			Summary:  "Ignoring terraform experiments argument",
+			Detail: "Language experiments are a Terraform concept with no Pulumi HCL " +
+				"equivalent; the `experiments` argument is accepted and ignored.",
+			Subject: attr.Range.Ptr(),
+		})
+	}
+
 	for _, subBlock := range content.Blocks {
 		switch subBlock.Type {
 		case "required_providers":

@@ -503,6 +503,28 @@ terraform {
 		}
 		require.True(t, found, "expected warning for required_version, got %v", diags)
 	})
+
+	t.Run("experiments_warns_continues", func(t *testing.T) {
+		t.Parallel()
+		src := `
+terraform {
+  experiments = [module_variable_optional_attrs]
+  required_providers {
+    aws = { source = "hashicorp/aws", version = "6.19.0" }
+  }
+}`
+		cfg, diags := NewParser().ParseSource("test.hcl", []byte(src))
+		require.False(t, diags.HasErrors(), "unexpected errors: %v", diags)
+		require.Contains(t, cfg.Terraform.RequiredProviders, "aws")
+		var found bool
+		for _, d := range diags {
+			if d.Severity == hcl.DiagWarning && d.Summary == "Ignoring terraform experiments argument" {
+				found = true
+				break
+			}
+		}
+		require.True(t, found, "expected warning for experiments, got %v", diags)
+	})
 }
 
 func TestParseUnknownBlockType(t *testing.T) {

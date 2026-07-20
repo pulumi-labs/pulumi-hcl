@@ -47,13 +47,14 @@ var checkSchema = &hcl.BodySchema{
 
 // terraformSchema defines the structure of a terraform block.
 //
-// `required_version`, `backend`, and `provider_meta` are accepted for
-// Terraform compatibility: the parser warns and ignores them rather than
-// failing.
+// `required_version`, `experiments`, `backend`, and `provider_meta` are
+// accepted for Terraform compatibility: the parser warns and ignores them
+// rather than failing.
 var terraformSchema = &hcl.BodySchema{
 	Attributes: []hcl.AttributeSchema{
 		{Name: "required_version_range"},
 		{Name: "required_version"},
+		{Name: "experiments"},
 	},
 	Blocks: []hcl.BlockHeaderSchema{
 		{Type: "required_providers"},
