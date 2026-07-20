@@ -939,11 +939,13 @@ func runVariableValidations(ev *eval.Evaluator, varName string, validations []*a
 
 		if !condOK {
 			errMsgVal, diags := ev.EvaluateExpression(validation.ErrorMessage)
+			if diags.HasErrors() {
+				return fmt.Errorf("validation failed for variable %q (could not evaluate error message: %s)",
+					varName, diags.Error())
+			}
 			errMsg := "validation failed"
-			if !diags.HasErrors() {
-				if s := renderErrorMessage(errMsgVal); s != "" {
-					errMsg = s
-				}
+			if s := renderErrorMessage(errMsgVal); s != "" {
+				errMsg = s
 			}
 			return fmt.Errorf("validation failed for variable %q: %s", varName, errMsg)
 		}
