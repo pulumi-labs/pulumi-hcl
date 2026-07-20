@@ -9,6 +9,7 @@ A small number of Terraform features are not modeled:
 - **`backend`, `required_version`, and `provider_meta`** in the `terraform` block are accepted but ignored with a warning. Pulumi manages state independently and tracks its own version constraints via `required_version_range`.
 - **WinRM `connection` blocks** are not supported — `connection` accepts `type = "ssh"` only.
 - **`List<Object>` empty vs null** — HCL block syntax cannot distinguish an empty `List<Object>` from a null one, a known incompatibility with some Pulumi programs.
+- **Resource-wide destroy ordering of late-created instances** — Terraform rebuilds destroy-time dependencies from configuration, so every instance of a `count`/`for_each` resource waits for a consumer's delete even when the consumer referenced only one instance (`depends_on = [a["x"]]`). Pulumi records each resource's dependencies once, when it is created, and cannot depend on an instance that registers later. A sibling instance created *after* the consumer is therefore not held back by it during destroy and may be deleted first.
 
 State files are not interchangeable: import existing resources with `pulumi import` rather than reusing a Terraform state file. By default `create_before_destroy` matches Terraform's delete-first replacement order.
 
