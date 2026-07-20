@@ -88,17 +88,32 @@ type bundle struct {
 	Archive []byte `json:"archive"`
 }
 
-// encodeBundle serialises a bundle to the parameterization Value.
+// encodeBundle serialises a bundle to the parameterization Value: gzipped JSON,
+// so the base64-encoded copy the engine bakes into schema.json stays small.
 func (b bundle) encode() []byte {
 	data, err := json.Marshal(b)
 	contract.AssertNoErrorf(err, "bundle is always serializable")
-	return data
+	var buf bytes.Buffer
+	gz := gzip.NewWriter(&buf)
+	_, err = gz.Write(data)
+	contract.AssertNoErrorf(err, "gzipping bundle is always possible")
+	contract.AssertNoErrorf(gz.Close(), "closing gzip writer is always possible")
+	return buf.Bytes()
 }
 
-// decodeBundle parses a parameterization Value produced by encodeBundle.
+// decodeBundle parses a parameterization Value produced by encode.
 func decodeBundle(value []byte) (bundle, error) {
+	gz, err := gzip.NewReader(bytes.NewReader(value))
+	if err != nil {
+		return bundle{}, fmt.Errorf("decompressing bundle: %w", err)
+	}
+	defer func() { _ = gz.Close() }()
+	data, err := io.ReadAll(gz)
+	if err != nil {
+		return bundle{}, fmt.Errorf("decompressing bundle: %w", err)
+	}
 	var b bundle
-	if err := json.Unmarshal(value, &b); err != nil {
+	if err := json.Unmarshal(data, &b); err != nil {
 		return bundle{}, fmt.Errorf("decoding bundle: %w", err)
 	}
 	return b, nil
