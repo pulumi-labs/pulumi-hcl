@@ -398,6 +398,13 @@ func TestBundleBakesPackages(t *testing.T) {
 	require.Equal(t, packages, b.Packages)
 }
 
+func TestDecodeBundleRejectsNonGzip(t *testing.T) {
+	t.Parallel()
+
+	_, err := decodeBundle([]byte(`{"manifest":{}}`))
+	require.ErrorContains(t, err, "decompressing bundle")
+}
+
 // TestDedupeEdges verifies edges are deduplicated (each reference is recorded by
 // both the provider and schema walks) and sorted, so the manifest is stable.
 func TestDedupeEdges(t *testing.T) {
