@@ -5,7 +5,8 @@
 
 // Package vendored holds third-party code copied verbatim from upstream
 // projects and re-imported under our module path. Files under
-// vendored/communicator/ are MPL-2.0 and must keep their original headers; see
+// vendored/communicator/ and vendored/hcl2shim/ are MPL-2.0 and must keep
+// their original headers; see
 // vendored/LICENSE-MPL-2.0 and vendored/NOTICE.
 //
 // Do not edit vendored files by hand. Regenerate with `go generate ./vendored`.
