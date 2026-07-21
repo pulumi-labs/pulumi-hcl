@@ -156,6 +156,19 @@ func lowerRemoteStateInvoke(tfType string, req InvokeRequest) (InvokeRequest, pr
 	return req, defaults, nil
 }
 
+// remoteStateResult builds the terraform_remote_state data source's object from
+// the state-reference invoke's result. The data source's own `backend`,
+// `config`, `workspace` and `defaults` arguments are readable attributes of it,
+// so they are stored back alongside `outputs`; the invoke reports only the
+// outputs. Absent arguments read as null.
+func remoteStateResult(args, defaults, ret property.Map) property.Map {
+	ret = applyRemoteStateDefaults(defaults, ret)
+	for _, k := range []string{"backend", "config", "workspace", "defaults"} {
+		ret = ret.Set(k, args.Get(k))
+	}
+	return ret
+}
+
 // applyRemoteStateDefaults overlays the data source's `defaults` beneath the
 // outputs returned by the state-reference invoke: each default supplies the
 // value for an output the referenced state does not define, matching OpenTofu's

@@ -68,8 +68,8 @@ func TerraformDataSchema() *schema.Resource {
 // TerraformRemoteStateSchema is the synthetic schema terraform_remote_state
 // resolves to: the TF data source surface as inputs. lowerRemoteStateInvoke
 // selects the concrete pulumi-terraform invoke (local or remote) by backend and
-// translates the inputs to its arguments, and applyRemoteStateDefaults overlays
-// `defaults` on the result. The placeholder Token is always overridden there.
+// translates the inputs to its arguments, and remoteStateResult assembles the
+// data source's object from it. The placeholder Token is always overridden there.
 func TerraformRemoteStateSchema() *schema.Function {
 	opt := func(t schema.Type) schema.Type { return &schema.OptionalType{ElementType: t} }
 	return &schema.Function{
@@ -82,8 +82,16 @@ func TerraformRemoteStateSchema() *schema.Function {
 				{Name: "defaults", Type: opt(schema.AnyType)},
 			},
 		},
+		// The data source's own arguments are readable attributes of it, so they
+		// are part of the result too; remoteStateResult stores them back.
 		ReturnType: &schema.ObjectType{
-			Properties: []*schema.Property{{Name: "outputs", Type: schema.AnyType}},
+			Properties: []*schema.Property{
+				{Name: "outputs", Type: schema.AnyType},
+				{Name: "backend", Type: opt(schema.StringType)},
+				{Name: "config", Type: opt(schema.AnyType)},
+				{Name: "workspace", Type: opt(schema.StringType)},
+				{Name: "defaults", Type: opt(schema.AnyType)},
+			},
 		},
 	}
 }

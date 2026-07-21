@@ -307,3 +307,23 @@ func TestApplyRemoteStateDefaults(t *testing.T) {
 		}), applyRemoteStateDefaults(defaults, ret))
 	})
 }
+
+func TestRemoteStateResult(t *testing.T) {
+	t.Parallel()
+
+	args := property.NewMap(map[string]property.Value{
+		"backend": property.New("local"),
+		"config":  property.New(map[string]property.Value{"path": property.New("remote.tfstate")}),
+	})
+	ret := property.NewMap(map[string]property.Value{
+		"outputs": property.New(map[string]property.Value{"greeting": property.New("hello")}),
+	})
+
+	assert.Equal(t, property.NewMap(map[string]property.Value{
+		"outputs":   property.New(map[string]property.Value{"greeting": property.New("hello")}),
+		"backend":   property.New("local"),
+		"config":    property.New(map[string]property.Value{"path": property.New("remote.tfstate")}),
+		"workspace": property.Value{},
+		"defaults":  property.Value{},
+	}), remoteStateResult(args, property.Map{}, ret))
+}
