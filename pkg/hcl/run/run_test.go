@@ -1336,6 +1336,99 @@ output "ws" {
 	assert.Equal(t, "dev", ws.AsString())
 }
 
+// TestEngine_VariableFromTfvars covers the engine wiring of the
+// automatically-loaded variable-value files: a declared variable takes its
+// value from the file, a name the root module does not declare is reported and
+// never evaluated, and a value that does not fit the declared type is an error.
+func TestEngine_VariableFromTfvars(t *testing.T) {
+	t.Parallel()
+
+	run1 := func(t *testing.T, program, tfvars string) (*testutil.MockResourceMonitor, error) {
+		workDir := t.TempDir()
+		require.NoError(t, os.WriteFile(filepath.Join(workDir, "terraform.tfvars"), []byte(tfvars), 0o600))
+
+		p := parser.NewParser()
+		config, diags := p.ParseSource("test.hcl", []byte(program))
+		require.False(t, diags.HasErrors(), "%s", diags)
+
+		mock := &testutil.MockResourceMonitor{}
+		engine := newTestEngine(t, config, &run.EngineOptions{
+			ModuleLoader:    testModuleLoader(t),
+			ProjectName:     "test-project",
+			StackName:       "dev",
+			ResourceMonitor: mock,
+			RootModule:      true,
+			WorkDir:         workDir,
+			RootDir:         t.TempDir(),
+			SchemaLoader:    schemaloader.New(t, schema.PackageSpec{Name: "empty"}),
+		})
+		return mock, engine.Run(t.Context())
+	}
+
+	const program = `
+variable "greeting" {
+  type    = string
+  default = "from-default"
+}
+
+output "greeting" {
+  value = var.greeting
+}
+`
+
+	t.Run("value and undeclared warning", func(t *testing.T) {
+		t.Parallel()
+		mock, err := run1(t, program, "greeting = \"from-tfvars\"\nundeclared = upper(\"x\")\n")
+		require.NoError(t, err)
+
+		greeting, ok := mock.StackOutputs.GetOk("greeting")
+		require.True(t, ok, "expected greeting output")
+		assert.Equal(t, "from-tfvars", greeting.AsString())
+		assert.Equal(t, []string{
+			`Value for undeclared variable: the root module does not declare a variable named ` +
+				`"undeclared" but a value was found in file "terraform.tfvars". If you meant to use ` +
+				`this value, add a "variable" block to the configuration.`,
+		}, mock.Warnings)
+	})
+
+	t.Run("value must fit the declared type", func(t *testing.T) {
+		t.Parallel()
+		_, err := run1(t, "variable \"n\" {\n  type = number\n}\n", "n = \"abc\"\n")
+		assert.EqualError(t, err,
+			`variable "n": the given value is not suitable for var.n: a number is required`)
+	})
+
+	// A declared default is held to the declared type too.
+	t.Run("default must fit the declared type", func(t *testing.T) {
+		t.Parallel()
+		_, err := run1(t, "variable \"n\" {\n  type    = number\n  default = \"abc\"\n}\n", "")
+		assert.EqualError(t, err, `variable "n": this default value is not compatible with `+
+			`the variable's type constraint: a number is required`)
+	})
+
+	// An explicit null from a file is rejected like any other supplied null:
+	// the default is substituted.
+	t.Run("null substitutes the default when nullable is false", func(t *testing.T) {
+		t.Parallel()
+		program := `
+variable "greeting" {
+  type     = string
+  default  = "from-default"
+  nullable = false
+}
+
+output "greeting" {
+  value = var.greeting
+}
+`
+		mock, err := run1(t, program, "greeting = null\n")
+		require.NoError(t, err)
+		greeting, ok := mock.StackOutputs.GetOk("greeting")
+		require.True(t, ok, "expected greeting output")
+		assert.Equal(t, "from-default", greeting.AsString())
+	})
+}
+
 func TestEngine_VariableFromEnv(t *testing.T) {
 	src := []byte(`
 variable "region" {
@@ -1380,27 +1473,13 @@ output "region_value" {
 				},
 			},
 		}),
-		Config: map[string]run.ConfigValue{
-			"test-project:region": run.UntypedConfigValue("us-west-2", false), // This should be ignored
-		},
 	})
 
-	err := engine.Run(t.Context())
-	if err != nil {
-		t.Fatalf("run error: %v", err)
-	}
+	require.NoError(t, engine.Run(t.Context()))
 
-	// Check the stack outputs - region should be eu-west-1 from env (highest priority)
-	if mock.StackOutputs.Len() == 0 {
-		t.Fatal("expected stack outputs")
-	}
 	regionOutput, ok := mock.StackOutputs.GetOk("region_value")
-	if !ok {
-		t.Fatal("expected region_value output")
-	}
-	if regionOutput.AsString() != "eu-west-1" {
-		t.Errorf("expected region_value=%q from env, got %q", "eu-west-1", regionOutput.AsString())
-	}
+	require.True(t, ok, "expected region_value output")
+	assert.Equal(t, "eu-west-1", regionOutput.AsString())
 }
 
 func TestEngine_VariableDefaultCoercedToType(t *testing.T) {
@@ -1508,7 +1587,8 @@ variable "required_var" {
 
 			err := engine.Run(t.Context())
 			assert.EqualError(t, err, `variable "required_var" is required but no value was provided. `+
-				`Set it with TF_VAR_required_var environment variable or Pulumi config: `+
+				`Set it in a variable-value file such as terraform.tfvars, with the `+
+				`TF_VAR_required_var environment variable, or with Pulumi config: `+
 				`pulumi config set required_var <value>`)
 		})
 	}

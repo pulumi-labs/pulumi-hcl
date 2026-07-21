@@ -427,6 +427,10 @@ type Engine struct {
 	// pulumiConfig contains Pulumi stack configuration values.
 	pulumiConfig map[string]ConfigValue
 
+	// tfvars holds the root variable values read from the variable-value files
+	// loaded automatically from the program directory. See loadTfvars.
+	tfvars map[string]*hcl.Attribute
+
 	// moduleLoader loads and caches module configurations.
 	moduleLoader *modules.Loader
 
@@ -514,6 +518,12 @@ type EngineOptions struct {
 	// name (optionally project-prefixed)
 	Config map[string]ConfigValue
 
+	// RootModule indicates the engine runs the program as the root module,
+	// which is the only module that automatically loads variable-value files
+	// (`terraform.tfvars` and friends). Engines that run a module — a component
+	// or a module resource — leave it false.
+	RootModule bool
+
 	// DryRun indicates this is a preview operation.
 	DryRun bool
 
@@ -572,6 +582,17 @@ func NewEngine(ctx context.Context, config *ast.Config, opts *EngineOptions) (*E
 		return nil, fmt.Errorf("creating the root evaluation context: %w", err)
 	}
 
+	// Only the root module auto-loads variable-value files; a module's own
+	// `terraform.tfvars` is inert, including when that module is consumed as a
+	// Pulumi component.
+	var tfvars map[string]*hcl.Attribute
+	if opts.RootModule {
+		tfvars, err = loadTfvars(opts.WorkDir)
+		if err != nil {
+			return nil, fmt.Errorf("loading variable values: %w", err)
+		}
+	}
+
 	return &Engine{
 		config:                  config,
 		evaluator:               eval.NewEvaluator(evalCtx),
@@ -589,6 +610,7 @@ func NewEngine(ctx context.Context, config *ast.Config, opts *EngineOptions) (*E
 		workDir:                 opts.WorkDir,
 		absolutePaths:           opts.AbsolutePaths,
 		pulumiConfig:            opts.Config,
+		tfvars:                  tfvars,
 		packages:                opts.Packages,
 		packageRefs:             make(map[string]PackageRef),
 		moduleLoader:            opts.ModuleLoader,
@@ -625,6 +647,10 @@ func (e *Engine) Run(ctx context.Context) error {
 	// Register the root stack resource to get its URN for outputs
 	if err := e.registerStack(ctx); err != nil {
 		return fmt.Errorf("registering stack: %w", err)
+	}
+
+	if err := e.warnUndeclaredTfvars(ctx); err != nil {
+		return err
 	}
 
 	if err := e.installProviderFunctions(ctx, e.evaluator.Context(), e.config, nil); err != nil {
@@ -765,6 +791,58 @@ func (e *Engine) processGraph(ctx context.Context, g *graph.Graph) error {
 	return g.Walk(ctx, e.processNode, e.parallel)
 }
 
+// warnUndeclaredTfvars reports every name set by a variable-value file that the
+// root module does not declare. Such a value reaches nothing — in particular it
+// does not reach a module input of the same name — so the only signal a user
+// gets that the file is not doing what they meant is this warning.
+func (e *Engine) warnUndeclaredTfvars(ctx context.Context) error {
+	for _, varName := range slices.Sorted(maps.Keys(e.tfvars)) {
+		if _, declared := e.config.Variables[varName]; declared {
+			continue
+		}
+		err := e.warnf(ctx, "Value for undeclared variable: the root module does not declare a variable "+
+			"named %q but a value was found in file %q. If you meant to use this value, add a \"variable\" "+
+			"block to the configuration.", varName, e.tfvars[varName].Range.Filename)
+		if err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// varSource is where a root variable's value came from. Most of the resolution
+// is source-independent; the few steps that are not name the source they mean.
+type varSource int
+
+const (
+	sourceNone varSource = iota
+	// sourceSupplied covers every value supplied from outside the program —
+	// Pulumi stack config, a variable-value file, TF_VAR_<name> — which
+	// resolution treats alike once the value is typed.
+	sourceSupplied
+	sourceConfigTyped
+	sourceDefault
+)
+
+// variableDefault evaluates a variable's declared default.
+func (e *Engine) variableDefault(v *ast.Variable) (cty.Value, error) {
+	val, diags := e.evaluator.EvaluateExpression(v.Default)
+	if diags.HasErrors() {
+		return cty.NilVal, fmt.Errorf("evaluating variable default: %s", diags.Error())
+	}
+	return val, nil
+}
+
+// lookupConfig returns the Pulumi stack config value supplied for a root
+// variable, preferring the project-prefixed key.
+func (e *Engine) lookupConfig(varName string) (ConfigValue, bool) {
+	if cv, ok := e.pulumiConfig[e.projectName+":"+varName]; ok {
+		return cv, true
+	}
+	cv, ok := e.pulumiConfig[varName]
+	return cv, ok
+}
+
 // processVariable processes a variable definition.
 func (e *Engine) processVariable(ctx context.Context, node *graph.Node) error {
 	v := node.Variable
@@ -780,87 +858,87 @@ func (e *Engine) processVariable(ctx context.Context, node *graph.Node) error {
 	varName := v.Name
 	var val cty.Value
 	var isSecret bool
-	var valueSource string
+	source := sourceNone
 
 	// Variable value precedence (highest to lowest):
-	// 1. Environment variable TF_VAR_<name>
-	// 2. Pulumi stack config (projectName:<name>)
-	// 3. Default value
+	// 1. Pulumi stack config (projectName:<name>), which stands in for -var
+	// 2. Automatically-loaded variable-value files (see loadTfvars)
+	// 3. Environment variable TF_VAR_<name>
+	// 4. Default value
 
 	if e.evaluator.Context().HCLContext().Variables["var"].Type().HasAttribute(varName) {
 		return fmt.Errorf("%q already evaluated", varName)
 	}
 
-	// Check environment variable first
-	envVarName := "TF_VAR_" + varName
-	if envVal := os.Getenv(envVarName); envVal != "" {
-		val = cty.StringVal(envVal)
-		valueSource = "environment"
-	} else if e.pulumiConfig != nil {
-		// Check Pulumi stack config, preferring the project-prefixed key.
-		configKey := e.projectName + ":" + varName
-		cv, ok := e.pulumiConfig[configKey]
-		if !ok {
-			cv, ok = e.pulumiConfig[varName]
+	// A value that arrives as a raw string is parsed according to the declared
+	// type. A variable declared without a type keeps its literal string value,
+	// matching OpenTofu's VariableParseLiteral default; one declared with any
+	// type — including `any` — parses its value as HCL (VariableParseHCL).
+	parseString := func(s string) (cty.Value, error) {
+		if v.TypeConstraint == cty.NilType {
+			return cty.StringVal(s), nil
 		}
-		if ok {
-			if cv.untyped != nil {
-				// A raw string parsed below according to the declared type.
-				val = cty.StringVal(*cv.untyped)
-				valueSource = "config"
-				isSecret = cv.secret
-			} else {
-				// An already-typed value; its marks (e.g. secrets) ride along,
-				// so it bypasses string parsing.
-				val = cv.typed
-				valueSource = "config-typed"
-			}
+		converted, err := convertStringToType(s, v.TypeConstraint)
+		if err != nil {
+			return cty.NilVal, fmt.Errorf("variable %q: %w", varName, err)
 		}
+		return converted, nil
 	}
 
-	// If no value from env or config, use default. A variable without a default
+	var err error
+	if cv, ok := e.lookupConfig(varName); ok {
+		if cv.untyped != nil {
+			if val, err = parseString(*cv.untyped); err != nil {
+				return err
+			}
+			source = sourceSupplied
+			isSecret = cv.secret
+		} else {
+			// An already-typed value; its marks (e.g. secrets) ride along.
+			val = cv.typed
+			source = sourceConfigTyped
+		}
+	} else if tfvarsVal, ok := e.tfvars[varName]; ok {
+		if val, err = tfvarsValue(tfvarsVal); err != nil {
+			return err
+		}
+		source = sourceSupplied
+	} else if envVal, ok := os.LookupEnv("TF_VAR_" + varName); ok {
+		// A variable set to the empty string is set: only an absent variable
+		// falls through to the default.
+		if val, err = parseString(envVal); err != nil {
+			return err
+		}
+		source = sourceSupplied
+	}
+
+	// If no value from any source, use default. A variable without a default
 	// is required, regardless of its `nullable` setting (which only governs
 	// whether a *provided* value may be the null literal).
-	if valueSource == "" {
-		if v.Default != nil {
-			var diags hcl.Diagnostics
-			val, diags = e.evaluator.EvaluateExpression(v.Default)
-			if diags.HasErrors() {
-				return fmt.Errorf("evaluating variable default: %s", diags.Error())
-			}
-			valueSource = "default"
-		} else {
-			return fmt.Errorf("variable %q is required but no value was provided. Set it with TF_VAR_%s environment variable or Pulumi config: pulumi config set %s <value>",
+	if source == sourceNone {
+		if v.Default == nil {
+			return fmt.Errorf("variable %q is required but no value was provided. Set it in a "+
+				"variable-value file such as terraform.tfvars, with the TF_VAR_%s environment "+
+				"variable, or with Pulumi config: pulumi config set %s <value>",
 				varName, varName, varName)
 		}
-	}
-
-	// A value from a string source (env/config) is parsed according to the declared
-	// type. A variable declared without a type keeps its literal string value,
-	// matching OpenTofu's VariableParseLiteral default; one declared with any type
-	// — including `any` — parses its value as HCL (VariableParseHCL).
-	if (valueSource == "environment" || valueSource == "config") &&
-		v.TypeConstraint != cty.NilType {
-		converted, err := convertStringToType(val.AsString(), v.TypeConstraint)
-		if err != nil {
-			return fmt.Errorf("variable %q: %w", varName, err)
+		if val, err = e.variableDefault(v); err != nil {
+			return err
 		}
-		val = converted
+		source = sourceDefault
 	}
 
 	// A `nullable = false` variable rejects an explicit null value: the
 	// default is substituted when one is declared, otherwise it is an
 	// error.
-	if val.IsNull() && !v.Nullable && valueSource != "default" {
+	if val.IsNull() && !v.Nullable && source != sourceDefault {
 		if v.Default == nil {
 			return fmt.Errorf("variable %q must not be set to null: it is declared with nullable = false and has no default", varName)
 		}
-		var diags hcl.Diagnostics
-		val, diags = e.evaluator.EvaluateExpression(v.Default)
-		if diags.HasErrors() {
-			return fmt.Errorf("evaluating variable default: %s", diags.Error())
+		if val, err = e.variableDefault(v); err != nil {
+			return err
 		}
-		valueSource = "default"
+		source = sourceDefault
 	}
 
 	// Fill in optional()-attribute defaults before sensitive marking.
@@ -868,17 +946,23 @@ func (e *Engine) processVariable(ctx context.Context, node *graph.Node) error {
 		val = v.TypeDefaults.Apply(val)
 	}
 
-	if valueSource != "environment" && valueSource != "config" &&
-		v.TypeConstraint != cty.NilType && v.TypeConstraint != cty.DynamicPseudoType {
-		if converted, err := ctyconvert.Convert(val, v.TypeConstraint); err == nil {
-			val = converted
+	if v.TypeConstraint != cty.NilType && v.TypeConstraint != cty.DynamicPseudoType {
+		converted, err := ctyconvert.Convert(val, v.TypeConstraint)
+		if err != nil {
+			if source == sourceDefault {
+				return fmt.Errorf("variable %q: this default value is not compatible with the "+
+					"variable's type constraint: %s", varName, err)
+			}
+			return fmt.Errorf("variable %q: the given value is not suitable for var.%s: %s",
+				varName, varName, err)
 		}
+		val = converted
 	}
 
 	// A resource reference supplied as a typed config value — e.g. a component
 	// input from a calling program — carries only its identity. Fetch the
 	// referenced resource's state so the program can read its fields.
-	if valueSource == "config-typed" {
+	if source == sourceConfigTyped {
 		if u, ok := eval.ResourceReferenceURN(val); ok {
 			resolved, err := e.resolveConfigResourceReference(ctx, val, u)
 			if err != nil {
@@ -3826,11 +3910,9 @@ func (e *Engine) processModuleVariable(node *graph.Node) error {
 				return fmt.Errorf("evaluating module input %s: %s", varName, diags.Error())
 			}
 		} else {
-			// No input: fall through to default/env/config
-			envVarName := "TF_VAR_" + varName
-			if envVal := os.Getenv(envVarName); envVal != "" {
-				val = cty.StringVal(envVal)
-			} else if v.Default != nil {
+			// No input: the variable takes its default. Only root variables
+			// are set from outside the program, so nothing else applies here.
+			if v.Default != nil {
 				var diags hcl.Diagnostics
 				val, diags = v.Default.Value(inst.EvalCtx.HCLContext())
 				if diags.HasErrors() {

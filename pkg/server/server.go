@@ -619,6 +619,7 @@ func (host *LanguageHost) Run(
 		ProviderInfoSource:      providerInfoSource,
 		WorkDir:                 req.Info.ProgramDirectory,
 		RootDir:                 req.Info.RootDirectory,
+		RootModule:              true,
 		ModuleLoader:            modules.NewLoader(modules.LiveResolver(ctx)),
 		Packages:                paramDescriptors,
 		Parallel:                int(req.Parallel),

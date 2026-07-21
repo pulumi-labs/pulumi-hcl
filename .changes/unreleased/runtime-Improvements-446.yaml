@@ -1,0 +1,7 @@
+kind: Improvements
+body: Load root variable values from `terraform.tfvars`, `terraform.tfvars.json`, `*.auto.tfvars`
+    and `*.auto.tfvars.json`
+time: 2026-07-21T13:30:00Z
+custom:
+    Component: runtime
+    PR: "446"
