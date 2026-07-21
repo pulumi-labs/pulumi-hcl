@@ -457,6 +457,13 @@ type Engine struct {
 	// here; catching those needs the engine's diff, not the outputs.
 	pendingURNs *util.SyncMap[string, struct{}]
 
+	// pendingModuleCalls holds the cells of the module calls that contain a
+	// pending resource, so `depends_on` naming a module call — which covers
+	// every resource the module contains — defers a read just as naming the
+	// resource itself does. A call is keyed by the block key it has in the
+	// calling scope, so every instance of an expanded call shares one entry.
+	pendingModuleCalls *util.SyncMap[expansionCell, struct{}]
+
 	// failedNodes tracks resource nodes that failed to register, keyed by instance key.
 	// Dependent nodes check this map and are skipped when a dependency failed.
 	failedNodes *util.SyncMap[string, error]
@@ -624,6 +631,7 @@ func NewEngine(ctx context.Context, config *ast.Config, opts *EngineOptions) (*E
 		expansions:              util.NewSyncMap[expansionCell, *graph.BlockExpansion](),
 		cellURNs:                newURNRegistry(),
 		pendingURNs:             util.NewSyncMap[string, struct{}](),
+		pendingModuleCalls:      util.NewSyncMap[expansionCell, struct{}](),
 		failedNodes:             util.NewSyncMap[string, error](),
 		alwaysRegisterProviders: opts.AlwaysRegisterProviders,
 		resolver: packages.NewResolver(
@@ -1716,6 +1724,9 @@ func (e *Engine) registerResourceInstanceInContext(
 
 	if !markedOutputs.IsWhollyKnown() {
 		e.pendingURNs.Set(string(urn), struct{}{})
+		for inst := modInst; inst != nil; inst = inst.Parent {
+			e.pendingModuleCalls.Set(moduleCallCell(inst), struct{}{})
+		}
 	}
 
 	var iOpts inheritableOpts
@@ -3485,11 +3496,12 @@ func (e *Engine) invokeDataSourceOnce(
 		if node.ModuleInfo != nil {
 			fullDepKey = node.ModuleInfo.Prefix() + depKey
 		}
-		for _, urn := range e.cellURNs.get(expansionCell{block: fullDepKey, mi: miPath}) {
+		cell := expansionCell{block: fullDepKey, mi: miPath}
+		for _, urn := range e.cellURNs.get(cell) {
 			addURN(urn)
-			if _, pending := e.pendingURNs.Get(urn); pending {
-				dependsOnPending = true
-			}
+		}
+		if e.cellPending(cell) {
+			dependsOnPending = true
 		}
 	}
 
@@ -3525,25 +3537,53 @@ func (e *Engine) invokeDataSourceOnce(
 // defers the reads inside it just as one written on the data block would.
 func (e *Engine) moduleDependsOnPending(mi *moduleInstance) bool {
 	for inst := mi; inst != nil; inst = inst.Parent {
-		// The targets are addressed from the calling module's scope.
-		parentMI := ""
-		if inst.Parent != nil {
-			parentMI = inst.Parent.Path.String()
-		}
 		for _, dep := range inst.ModuleInfo.Module.DependsOn {
 			depKey := graph.FormatTraversal(dep)
 			if depKey == "" {
 				continue
 			}
-			cell := expansionCell{block: inst.ModuleInfo.ParentPrefix() + depKey, mi: parentMI}
-			for _, urn := range e.cellURNs.get(cell) {
-				if _, pending := e.pendingURNs.Get(urn); pending {
-					return true
-				}
+			// The targets are addressed from the calling module's scope.
+			cell := expansionCell{block: inst.ModuleInfo.ParentPrefix() + depKey, mi: parentMIPath(inst)}
+			if e.cellPending(cell) {
+				return true
 			}
 		}
 	}
 	return false
+}
+
+// cellPending reports whether the block cell resolves to anything whose changes
+// have not been applied yet: a resource instance with unknowns in its outputs,
+// or a module call containing one.
+func (e *Engine) cellPending(cell expansionCell) bool {
+	if _, pending := e.pendingModuleCalls.Get(cell); pending {
+		return true
+	}
+	for _, urn := range e.cellURNs.get(cell) {
+		if _, pending := e.pendingURNs.Get(urn); pending {
+			return true
+		}
+	}
+	return false
+}
+
+// moduleCallCell is the cell of the module call inst instantiates, keyed as the
+// calling scope addresses it: every instance of an expanded call shares it,
+// matching how a `depends_on` entry naming the call covers the whole call.
+func moduleCallCell(inst *moduleInstance) expansionCell {
+	return expansionCell{
+		block: inst.ModuleInfo.ParentPrefix() + "module." + inst.ModuleInfo.ModuleName(),
+		mi:    parentMIPath(inst),
+	}
+}
+
+// parentMIPath is the instance path of the module instance enclosing inst, or
+// "" when inst was called from the root.
+func parentMIPath(inst *moduleInstance) string {
+	if inst.Parent == nil {
+		return ""
+	}
+	return inst.Parent.Path.String()
 }
 
 // processCall processes a call block (method invocation on a resource).
