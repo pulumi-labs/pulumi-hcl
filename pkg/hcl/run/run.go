@@ -3654,6 +3654,7 @@ func (e *Engine) providerFunctionImpl(
 
 // invokeFunction invokes a Pulumi function (data source).
 func (e *Engine) invokeFunction(ctx context.Context, tfType string, req InvokeRequest) (property.Map, error) {
+	dsArgs := req.Args
 	req, defaults, err := lowerRemoteStateInvoke(tfType, req)
 	if err != nil {
 		return property.Map{}, err
@@ -3668,7 +3669,10 @@ func (e *Engine) invokeFunction(ctx context.Context, tfType string, req InvokeRe
 		return property.Map{}, fmt.Errorf("function invocation failed: %v", resp.Failures)
 	}
 
-	return applyRemoteStateDefaults(defaults, resp.Return), nil
+	if tfType == packages.RemoteStateType {
+		return remoteStateResult(dsArgs, defaults, resp.Return), nil
+	}
+	return resp.Return, nil
 }
 
 func (e *Engine) getResourceState(ctx context.Context, ref property.ResourceReference) (property.Map, error) {
