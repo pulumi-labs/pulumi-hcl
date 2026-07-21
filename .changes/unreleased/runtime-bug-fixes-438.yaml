@@ -1,0 +1,6 @@
+kind: bug-fixes
+body: Compose a `moved` module-call rename with a `moved` rename of a resource inside it
+time: 2026-07-21T13:30:00Z
+custom:
+    Component: runtime
+    PR: "438"
