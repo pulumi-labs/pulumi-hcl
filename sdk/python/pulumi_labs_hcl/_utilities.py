@@ -323,4 +323,4 @@ def get_plugin_download_url():
 	return "github://api.github.com/pulumi-labs/pulumi-hcl"
 
 def get_version():
-    return "0.10.0"
+    return "0.11.0"

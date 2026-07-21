@@ -1,6 +1,6 @@
 {
   "resource": true,
   "name": "hcl",
-  "version": "0.10.0",
+  "version": "0.11.0",
   "server": "github://api.github.com/pulumi-labs/pulumi-hcl"
 }
