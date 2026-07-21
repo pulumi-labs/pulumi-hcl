@@ -1,0 +1,6 @@
+kind: bug-fixes
+body: Defer a data source read during preview when its `depends_on` target has pending changes, instead of reading state the dependency has not produced yet
+time: 2026-07-21T21:40:00Z
+custom:
+    Component: runtime
+    PR: "452"

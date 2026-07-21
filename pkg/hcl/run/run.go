@@ -452,6 +452,12 @@ type Engine struct {
 	// dependency-metadata recording. See urnRegistry.
 	cellURNs *urnRegistry
 
+	// pendingURNs holds the URNs of resource instances whose outputs came back
+	// with unknowns, so a data source that `depends_on` one of them can defer
+	// its read to apply. An update that leaves every output known does not land
+	// here; catching those needs the engine's diff, not the outputs.
+	pendingURNs *util.SyncMap[string, struct{}]
+
 	// failedNodes tracks resource nodes that failed to register, keyed by instance key.
 	// Dependent nodes check this map and are skipped when a dependency failed.
 	failedNodes *util.SyncMap[string, error]
@@ -618,6 +624,7 @@ func NewEngine(ctx context.Context, config *ast.Config, opts *EngineOptions) (*E
 		parallel:                opts.Parallel,
 		expansions:              util.NewSyncMap[expansionCell, *graph.BlockExpansion](),
 		cellURNs:                newURNRegistry(),
+		pendingURNs:             util.NewSyncMap[string, struct{}](),
 		failedNodes:             util.NewSyncMap[string, error](),
 		alwaysRegisterProviders: opts.AlwaysRegisterProviders,
 		resolver: packages.NewResolver(
@@ -1707,6 +1714,10 @@ func (e *Engine) registerResourceInstanceInContext(
 	markedOutputs := cty.ObjectVal(outputObj).Mark(eval.DepMark(urn))
 
 	e.resourceOutputs.Set(instance.Key, markedOutputs)
+
+	if !markedOutputs.IsWhollyKnown() {
+		e.pendingURNs.Set(string(urn), struct{}{})
+	}
 
 	var iOpts inheritableOpts
 	if opts.Protect {
@@ -3460,6 +3471,7 @@ func (e *Engine) invokeDataSourceOnce(
 	// depends_on marks the outputs with every registered instance URN of the
 	// target block, keyed or not — dependency metadata is resource-wide (see
 	// buildResourceOptionsInContext).
+	dependsOnPending := false
 	for _, dep := range ds.DependsOn {
 		depKey := graph.FormatTraversal(dep)
 		if depKey == "" {
@@ -3471,14 +3483,19 @@ func (e *Engine) invokeDataSourceOnce(
 		}
 		for _, urn := range e.cellURNs.get(expansionCell{block: fullDepKey, mi: miPath}) {
 			addURN(urn)
+			if _, pending := e.pendingURNs.Get(urn); pending {
+				dependsOnPending = true
+			}
 		}
 	}
 
 	// Match the Node.js / Python SDK behavior: during preview, if any input
 	// to the invoke is unknown, skip the provider call and synthesize an
-	// all-unknown result.
+	// all-unknown result. A pending `depends_on` target defers the read too,
+	// even with every input known: the read would observe state that the
+	// dependency has not produced yet.
 	var outputs property.Map
-	if !e.dryRun || !property.New(inputs).HasComputed() {
+	if !e.dryRun || (!property.New(inputs).HasComputed() && !dependsOnPending) {
 		var err error
 		outputs, err = e.invokeFunction(ctx, ds.Type, invokeReq)
 		if err != nil {
