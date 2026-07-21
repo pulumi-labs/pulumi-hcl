@@ -323,7 +323,7 @@ func TestRemoteStateResult(t *testing.T) {
 		"outputs":   property.New(map[string]property.Value{"greeting": property.New("hello")}),
 		"backend":   property.New("local"),
 		"config":    property.New(map[string]property.Value{"path": property.New("remote.tfstate")}),
-		"workspace": property.Value{},
-		"defaults":  property.Value{},
+		"workspace": {},
+		"defaults":  {},
 	}), remoteStateResult(args, property.Map{}, ret))
 }
