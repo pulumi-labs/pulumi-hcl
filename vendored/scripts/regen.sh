@@ -27,6 +27,7 @@ COMMUNICATOR_DIR="$VENDORED_DIR/communicator"
 GETMODULES_DIR="$VENDORED_DIR/getmodules"
 COPY_DIR="$VENDORED_DIR/copy"
 IPADDR_DIR="$VENDORED_DIR/ipaddr"
+HCL2SHIM_DIR="$VENDORED_DIR/hcl2shim"
 
 MODULE="github.com/pulumi-labs/pulumi-hcl"
 UPSTREAM_MODULE="github.com/opentofu/opentofu"
@@ -74,13 +75,15 @@ tar -xzf "$TARBALL" -C "$EXTRACT_ROOT" --strip-components=1 \
   "opentofu-$SHA/internal/communicator" \
   "opentofu-$SHA/internal/getmodules" \
   "opentofu-$SHA/internal/copy" \
-  "opentofu-$SHA/internal/ipaddr"
+  "opentofu-$SHA/internal/ipaddr" \
+  "opentofu-$SHA/internal/configs/hcl2shim"
 
 SRC="$EXTRACT_ROOT/internal/communicator"
 GETMODULES_SRC="$EXTRACT_ROOT/internal/getmodules"
 COPY_SRC="$EXTRACT_ROOT/internal/copy"
 IPADDR_SRC="$EXTRACT_ROOT/internal/ipaddr"
-for d in "$SRC" "$GETMODULES_SRC" "$COPY_SRC" "$IPADDR_SRC"; do
+HCL2SHIM_SRC="$EXTRACT_ROOT/internal/configs/hcl2shim"
+for d in "$SRC" "$GETMODULES_SRC" "$COPY_SRC" "$IPADDR_SRC" "$HCL2SHIM_SRC"; do
   if [[ ! -d "$d" ]]; then
     echo "error: expected $d to exist after extraction" >&2
     exit 1
@@ -149,6 +152,19 @@ mkdir -p "$IPADDR_DIR"
 cp -R "$IPADDR_SRC"/. "$IPADDR_DIR"/
 find "$IPADDR_DIR" -type f -name '*_test.go' -delete
 gofmt -w "$IPADDR_DIR"
+
+# ---------------------------------------------------------------------------
+# vendored/hcl2shim: only the override-merge body from upstream
+# internal/configs/hcl2shim. merge_body.go implements the body that gives
+# override files their "attributes replace, blocks shadow" semantics, and
+# util.go holds the two schema helpers it calls. The rest of the package
+# (mock value composition, synthetic bodies) is unused here. It imports only
+# hcl and cty, so no import rewriting is needed.
+# ---------------------------------------------------------------------------
+rm -rf "$HCL2SHIM_DIR"
+mkdir -p "$HCL2SHIM_DIR"
+cp "$HCL2SHIM_SRC/merge_body.go" "$HCL2SHIM_SRC/util.go" "$HCL2SHIM_DIR"/
+gofmt -w "$HCL2SHIM_DIR"
 
 # ---------------------------------------------------------------------------
 # vendored/getmodules: upstream internal/getmodules with the OCI getter
@@ -230,4 +246,5 @@ comm_count=$(find "$COMMUNICATOR_DIR" -type f | wc -l | tr -d ' ')
 gm_count=$(find "$GETMODULES_DIR" -type f | wc -l | tr -d ' ')
 copy_count=$(find "$COPY_DIR" -type f | wc -l | tr -d ' ')
 ipaddr_count=$(find "$IPADDR_DIR" -type f | wc -l | tr -d ' ')
-echo "regen: wrote $comm_count files under vendored/communicator/, $gm_count under vendored/getmodules/, $copy_count under vendored/copy/, $ipaddr_count under vendored/ipaddr/" >&2
+hcl2shim_count=$(find "$HCL2SHIM_DIR" -type f | wc -l | tr -d ' ')
+echo "regen: wrote $comm_count files under vendored/communicator/, $gm_count under vendored/getmodules/, $copy_count under vendored/copy/, $ipaddr_count under vendored/ipaddr/, $hcl2shim_count under vendored/hcl2shim/" >&2

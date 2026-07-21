@@ -50,7 +50,16 @@ func (p *Parser) ParseDirectory(dir string) (*ast.Config, hcl.Diagnostics) {
 		return nil, diags
 	}
 
-	return p.parseFiles(files)
+	primary, override := map[string]*hcl.File{}, map[string]*hcl.File{}
+	for path, file := range files {
+		if isOverrideFile(path) {
+			override[path] = file
+		} else {
+			primary[path] = file
+		}
+	}
+
+	return p.parseFiles(primary, override)
 }
 
 // ParseFile parses a single HCL file into a configuration.
@@ -60,7 +69,7 @@ func (p *Parser) ParseFile(path string) (*ast.Config, hcl.Diagnostics) {
 		return nil, diags
 	}
 
-	return p.parseFiles(map[string]*hcl.File{path: file})
+	return p.parseFiles(map[string]*hcl.File{path: file}, nil)
 }
 
 // ParseSource parses HCL source code into a configuration.
@@ -70,35 +79,54 @@ func (p *Parser) ParseSource(filename string, src []byte) (*ast.Config, hcl.Diag
 		return nil, diags
 	}
 
-	return p.parseFiles(map[string]*hcl.File{filename: file})
+	return p.parseFiles(map[string]*hcl.File{filename: file}, nil)
 }
 
-// parseFiles processes all loaded HCL files into a configuration.
-func (p *Parser) parseFiles(files map[string]*hcl.File) (*ast.Config, hcl.Diagnostics) {
+// parseFiles processes all loaded HCL files into a configuration. Blocks in
+// the override files amend the blocks the primary files declare rather than
+// declaring new ones; see applyOverrides.
+func (p *Parser) parseFiles(primary, override map[string]*hcl.File) (*ast.Config, hcl.Diagnostics) {
 	config := ast.NewConfig()
-	config.Files = files
+	config.Files = make(map[string]*hcl.File, len(primary)+len(override))
+	maps.Copy(config.Files, primary)
+	maps.Copy(config.Files, override)
 	var diags hcl.Diagnostics
 
 	calls := map[string]struct{}{}
-	for _, file := range files {
-		fileCalls, scanned := ast.ProviderFunctionCallsInBody(file.Body)
-		if !scanned {
-			config.ProviderFunctionCallsIncomplete = true
-		}
-		for _, name := range fileCalls {
-			calls[name] = struct{}{}
-		}
+	// Files are visited in path order so that the configuration a directory
+	// parses to - and the diagnostics it produces - do not depend on map
+	// iteration order.
+	collect := func(files map[string]*hcl.File) []*hcl.Block {
+		var blocks []*hcl.Block
+		for _, path := range slices.Sorted(maps.Keys(files)) {
+			file := files[path]
+			fileCalls, scanned := ast.ProviderFunctionCallsInBody(file.Body)
+			if !scanned {
+				config.ProviderFunctionCallsIncomplete = true
+			}
+			for _, name := range fileCalls {
+				calls[name] = struct{}{}
+			}
 
-		content, contentDiags := file.Body.Content(rootSchema)
-		diags = append(diags, contentDiags...)
-		if contentDiags.HasErrors() {
-			continue
-		}
+			content, contentDiags := file.Body.Content(rootSchema)
+			diags = append(diags, contentDiags...)
+			if contentDiags.HasErrors() {
+				continue
+			}
 
-		for _, block := range content.Blocks {
-			blockDiags := p.parseBlock(config, block)
-			diags = append(diags, blockDiags...)
+			blocks = append(blocks, content.Blocks...)
 		}
+		return blocks
+	}
+
+	blocks, deferred, overrideDiags := applyOverrides(collect(primary), collect(override))
+	diags = append(diags, overrideDiags...)
+
+	for _, block := range blocks {
+		diags = append(diags, p.parseBlock(config, block)...)
+	}
+	for _, block := range deferred {
+		diags = append(diags, p.mergeParsedOverride(config, block)...)
 	}
 	config.ProviderFunctionCalls = slices.Sorted(maps.Keys(calls))
 

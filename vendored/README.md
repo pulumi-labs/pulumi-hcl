@@ -8,6 +8,7 @@ Third-party code copied verbatim from upstream projects.
 | ---- | -------- | ------- |
 | `communicator/` | [`opentofu/opentofu`](https://github.com/opentofu/opentofu) `internal/communicator/` | MPL-2.0 |
 | `ipaddr/` | [`opentofu/opentofu`](https://github.com/opentofu/opentofu) `internal/ipaddr/` | BSD-3-Clause (Go Authors) |
+| `hcl2shim/` | [`opentofu/opentofu`](https://github.com/opentofu/opentofu) `internal/configs/hcl2shim/` | MPL-2.0 |
 
 ## Pinned revision
 
@@ -39,7 +40,7 @@ The second target is an in-tree shim (Apache-2.0) that defines the small
 
 ## License
 
-Files under `communicator/` carry MPL-2.0 headers and remain MPL-2.0. Any
+Files under `communicator/` and `hcl2shim/` carry MPL-2.0 headers and remain MPL-2.0. Any
 modification you make to those files (including hand-edits, which you should
 not be making) must stay MPL-2.0. New files outside `vendored/` are
 Apache-2.0 like the rest of the project. The MPL-2.0 license text is in
