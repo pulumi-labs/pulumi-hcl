@@ -1,6 +1,0 @@
-kind: bug-fixes
-body: Scope `replace_triggered_by` indexed-instance references to that instance and stop `depends_on` from propagating replacement
-time: 2026-07-17T00:00:00Z
-custom:
-    Component: runtime
-    PR: "428"

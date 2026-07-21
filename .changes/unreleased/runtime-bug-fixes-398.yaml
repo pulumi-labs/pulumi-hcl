@@ -1,6 +1,0 @@
-kind: bug-fixes
-body: Preserve nested element types of heterogeneous collections (e.g. `terraform_remote_state` outputs mixing `set(number)` and `set(string)`)
-time: 2026-07-16T07:30:38Z
-custom:
-    Component: runtime
-    PR: "398"

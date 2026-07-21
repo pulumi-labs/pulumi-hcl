@@ -1,6 +1,0 @@
-kind: Improvements
-body: Convert and eject multi-argument invokes as `provider::<name>::<fn>(...)` provider-defined function calls
-time: 2026-07-14T13:00:00Z
-custom:
-    Component: codegen
-    PR: "363"

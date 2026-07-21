@@ -1,6 +1,0 @@
-kind: Improvements
-body: Schedule `count`/`for_each` instances individually, so a reference to a single instance no longer waits on the whole resource
-time: 2026-07-17T18:00:00Z
-custom:
-    Component: runtime
-    PR: "422"

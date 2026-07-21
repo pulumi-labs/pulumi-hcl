@@ -1,6 +1,0 @@
-kind: bug-fixes
-body: Support `workspace` on `terraform_remote_state` with the local backend
-time: 2026-07-15T20:49:34Z
-custom:
-    Component: runtime
-    PR: "380"

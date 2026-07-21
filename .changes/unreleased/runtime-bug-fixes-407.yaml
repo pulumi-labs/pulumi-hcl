@@ -1,6 +1,0 @@
-kind: bug-fixes
-body: Preserve null-valued `terraform_remote_state` outputs
-time: 2026-07-21T10:05:00Z
-custom:
-    Component: runtime
-    PR: "407"

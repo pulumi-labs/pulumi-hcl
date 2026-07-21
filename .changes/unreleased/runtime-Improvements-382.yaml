@@ -1,6 +1,0 @@
-kind: Improvements
-body: Add a `pulumi { name = ... }` resource option that overrides an instance's Pulumi logical name, evaluated per instance with `count.index`/`each.key` in scope
-time: 2026-07-15T15:30:00Z
-custom:
-    Component: runtime
-    PR: "382"

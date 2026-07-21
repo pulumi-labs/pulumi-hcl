@@ -1,6 +1,0 @@
-kind: bug-fixes
-body: Replace a resource whose `replace_triggered_by` names a whole resource when that resource is replaced, even if its value is unchanged
-time: 2026-07-15T18:30:00Z
-custom:
-    Component: runtime
-    PR: "383"

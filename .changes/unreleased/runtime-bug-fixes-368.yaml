@@ -1,6 +1,0 @@
-kind: bug-fixes
-body: Accept OpenSSH-format private keys in `rsadecrypt`
-time: 2026-07-15T12:30:00Z
-custom:
-    Component: runtime
-    PR: "368"

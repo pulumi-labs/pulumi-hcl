@@ -1,6 +1,0 @@
-kind: Improvements
-body: Pin the Pulumi logical names of resources and module calls inside generated component sources via `pulumi { name = "${pulumi.module.name}-..." }`
-time: 2026-07-15T20:30:00Z
-custom:
-    Component: codegen
-    PR: "391"

@@ -1,6 +1,0 @@
-kind: Improvements
-body: Compress the module parameterization value baked into the generated `schema.json`
-time: 2026-07-20T12:37:06Z
-custom:
-    Component: runtime
-    PR: "436"

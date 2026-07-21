@@ -1,6 +1,0 @@
-kind: bug-fixes
-body: Propagate `create_before_destroy` to a resource's dependencies
-time: 2026-07-15T15:00:00Z
-custom:
-    Component: runtime
-    PR: "375"

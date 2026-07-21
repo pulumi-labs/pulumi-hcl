@@ -1,6 +1,0 @@
-kind: bug-fixes
-body: Fix duplicate URNs when a `for_each` key or logical name contains `-`; instance names are now `name[0]` / `name["key"]`
-time: 2026-07-15T15:30:00Z
-custom:
-    Component: runtime
-    PR: "382"

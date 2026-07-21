@@ -1,6 +1,0 @@
-kind: bug-fixes
-body: Accept list fields nested in object-typed attributes whose bridged names are pluralized (e.g. `azapi_resource`'s `retry.error_message_regex`)
-time: 2026-07-16T12:55:28Z
-custom:
-    Component: runtime
-    PR: "417"

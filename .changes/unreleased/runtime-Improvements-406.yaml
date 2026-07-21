@@ -1,6 +1,0 @@
-kind: Improvements
-body: Return meaningful gRPC status codes (`NotFound`, `Unauthenticated`, `PermissionDenied`, `Unavailable`, `InvalidArgument`, `Unimplemented`) from `Parameterize` and `GetSchema` failures
-time: 2026-07-16T11:36:38Z
-custom:
-    Component: runtime
-    PR: "406"

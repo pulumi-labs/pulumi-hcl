@@ -1,6 +1,0 @@
-kind: bug-fixes
-body: Fix `moved` out of `count`/`for_each` (`a[0]` → `a`) destroying and recreating the instance instead of renaming it
-time: 2026-07-16T14:50:00Z
-custom:
-    Component: runtime
-    PR: "411"
