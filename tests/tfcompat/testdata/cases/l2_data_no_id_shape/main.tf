@@ -5,3 +5,12 @@ data "pfx_lookup" "d" {}
 output "keys" {
   value = sort(keys(data.pfx_lookup.d))
 }
+
+data "simple_lookup" "s" {
+  query = "q"
+}
+
+# simple_lookup declares no `id` either, but SDKv2 adds an implicit one.
+output "sdkv2_keys" {
+  value = sort(keys(data.simple_lookup.s))
+}

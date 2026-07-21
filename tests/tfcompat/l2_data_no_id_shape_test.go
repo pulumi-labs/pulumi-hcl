@@ -26,6 +26,7 @@ func TestL2DataNoIDShape(t *testing.T) {
 	tfcompat.RunCase(t, "l2_data_no_id_shape", tfcompat.Case{
 		Providers: []tfcompat.Provider{
 			{Name: "pfx", PFFactory: providers.PFXProvider},
+			{Name: "simple", Factory: providers.SimpleProvider},
 		},
 	})
 }

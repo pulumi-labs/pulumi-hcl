@@ -1,0 +1,6 @@
+kind: bug-fixes
+body: Drop the synthetic `id` attribute from data sources whose schema declares no `id`
+time: 2026-07-17T00:00:00Z
+custom:
+    Component: runtime
+    PR: "429"
