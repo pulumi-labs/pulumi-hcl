@@ -28,6 +28,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"path"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -197,6 +198,22 @@ func (l *Loader) resolveSource(source, versionConstraint, callerDir string) (str
 		return resolved, nil
 	}
 	return packageDir, nil
+}
+
+// SourceName is the name a module source declares: the subdirectory it selects,
+// the registry module name, or the last element of the path. It names a module
+// independently of where that module happens to be resolved on disk, which for a
+// bundled module is a numbered directory carrying no name at all.
+func SourceName(source string) string {
+	packageSource, subdir := getmodules.SplitPackageSubdir(source)
+	if subdir != "" {
+		return path.Base(subdir)
+	}
+	if mod, err := regaddr.ParseModuleSource(packageSource); err == nil {
+		return mod.Package.Name
+	}
+	base, _, _ := strings.Cut(packageSource, "?")
+	return strings.TrimSuffix(path.Base(strings.TrimRight(base, "/")), ".git")
 }
 
 func statDir(p string) (string, error) {

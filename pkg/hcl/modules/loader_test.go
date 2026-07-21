@@ -29,6 +29,7 @@ import (
 	"github.com/opentofu/svchost"
 	"github.com/opentofu/svchost/disco"
 	"github.com/pulumi-labs/pulumi-hcl/vendored/getmodules"
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
@@ -465,4 +466,20 @@ func buildModuleTarGz(t *testing.T, files map[string]string) []byte {
 	data, err := os.ReadFile(out)
 	require.NoError(t, err)
 	return data
+}
+
+func TestSourceName(t *testing.T) {
+	t.Parallel()
+
+	tests := map[string]string{
+		"../vendor/acme/aws/modules/networking":                "networking",
+		"./modules/vpc":                                        "vpc",
+		"terraform-aws-modules/vpc/aws":                        "vpc",
+		"terraform-aws-modules/vpc/aws//modules/vpc-endpoints": "vpc-endpoints",
+		"github.com/acme/terraform-modules.git?ref=v1.2.0":     "terraform-modules",
+		"git::https://example.com/network.git//subnets":        "subnets",
+	}
+	for source, want := range tests {
+		assert.Equal(t, want, SourceName(source), source)
+	}
 }

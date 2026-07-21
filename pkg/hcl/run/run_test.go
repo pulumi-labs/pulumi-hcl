@@ -2715,6 +2715,61 @@ resource "aws_instance" "web" {
 	assert.Equal(t, "web-id\n", string(got))
 }
 
+// A module consumed through `pulumi package add hcl module <source>` is unpacked
+// from its bundle into numbered directories, so the resolved source path carries
+// no name. The component type token must come from the declared source address.
+//
+// https://github.com/pulumi-labs/pulumi-hcl/issues/451
+func TestEngine_ComponentTypeFromDeclaredSource(t *testing.T) {
+	t.Parallel()
+
+	tmpDir := t.TempDir()
+	unpackDir := filepath.Join(tmpDir, "pulumi-hcl-module-504221242", "15")
+	require.NoError(t, os.MkdirAll(unpackDir, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(unpackDir, "main.tf"), []byte(`
+output "id" {
+  value = "net"
+}
+`), 0o644))
+
+	rootDir := filepath.Join(tmpDir, "root")
+	require.NoError(t, os.MkdirAll(rootDir, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(rootDir, "main.tf"), []byte(`
+module "net" {
+  source = "../vendor/acme/aws/modules/networking"
+}
+`), 0o644))
+
+	p := parser.NewParser()
+	config, diags := p.ParseDirectory(rootDir)
+	require.False(t, diags.HasErrors(), "%s", diags.Error())
+
+	mock := &testutil.MockResourceMonitor{}
+	engine := newTestEngine(t, config, &run.EngineOptions{
+		// Stands in for the bundle resolver: every source resolves to a
+		// numbered directory under the unpacked bundle.
+		ModuleLoader: modules.NewLoader(func(source, version, callerDir string) (string, error) {
+			return unpackDir, nil
+		}),
+		ProjectName:     "test-project",
+		StackName:       "dev",
+		ResourceMonitor: mock,
+		WorkDir:         rootDir,
+		RootDir:         rootDir,
+		SchemaLoader:    schemaloader.New(t),
+	})
+
+	require.NoError(t, engine.Run(t.Context()))
+
+	var componentTypes []string
+	for _, r := range mock.RegisteredResources {
+		if strings.HasPrefix(r.Type, "components:index:") {
+			componentTypes = append(componentTypes, r.Type)
+		}
+	}
+	assert.Equal(t, []string{"components:index:Networking"}, componentTypes)
+}
+
 func TestEngine_SimpleModule(t *testing.T) {
 	t.Parallel()
 
