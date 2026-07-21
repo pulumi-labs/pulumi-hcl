@@ -3401,11 +3401,13 @@ func (e *Engine) invokeDataSourceOnce(
 	}
 
 	depMarks := cty.ValueMarks{}
+	var depURNs []string
 	addURN := func(urn string) {
 		if urn == "" {
 			return
 		}
 		depMarks[eval.DepMark(urn)] = struct{}{}
+		depURNs = append(depURNs, urn)
 	}
 
 	// Check-rule references establish dependencies, as in TF; carry them on
@@ -3502,6 +3504,28 @@ func (e *Engine) invokeDataSourceOnce(
 		}
 		if e.cellPending(cell) {
 			dependsOnPending = true
+		}
+	}
+
+	// A data source carrying custom conditions widens the decision to its whole
+	// dependency set, direct and indirect: a condition can only be made to pass
+	// by an upstream change, so a pending resource reached through another data
+	// source counts too. Without conditions a `depends_on` naming a data source
+	// is no reason to wait — a read has no side effects of its own.
+	if len(ds.Preconditions) > 0 || len(ds.Postconditions) > 0 {
+		for _, dep := range ds.DependsOn {
+			val, diags := dep.TraverseAbs(hclCtx)
+			if diags.HasErrors() {
+				continue
+			}
+			for _, urn := range eval.CollectDepURNs(val) {
+				addURN(urn)
+			}
+		}
+		for _, urn := range depURNs {
+			if _, pending := e.pendingURNs.Get(urn); pending {
+				dependsOnPending = true
+			}
 		}
 	}
 
