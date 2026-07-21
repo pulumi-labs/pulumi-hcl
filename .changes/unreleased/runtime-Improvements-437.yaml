@@ -1,0 +1,6 @@
+kind: Improvements
+body: Evaluate `check` blocks declared in child modules, once per module instance
+time: 2026-07-21T13:30:00Z
+custom:
+    Component: runtime
+    PR: "437"
