@@ -3375,9 +3375,14 @@ func (e *Engine) readResource(
 // without a separate dependency map.
 func (e *Engine) invokeDataSourceOnce(
 	ctx context.Context, node *graph.Node, ds *ast.Resource, funcSchema *schema.Function,
-	evalCtx *eval.Context, miPath string,
+	evalCtx *eval.Context, mi *moduleInstance,
 ) (cty.Value, error) {
 	hclCtx := evalCtx.HCLContext()
+
+	miPath := ""
+	if mi != nil {
+		miPath = mi.Path.String()
+	}
 
 	// Failed preconditions prevent the read; unknown conditions defer.
 	if err := evaluatePreconditions(ds.Preconditions, hclCtx, node.Key); err != nil {
@@ -3470,7 +3475,7 @@ func (e *Engine) invokeDataSourceOnce(
 	// depends_on marks the outputs with every registered instance URN of the
 	// target block, keyed or not — dependency metadata is resource-wide (see
 	// buildResourceOptionsInContext).
-	dependsOnPending := false
+	dependsOnPending := e.moduleDependsOnPending(mi)
 	for _, dep := range ds.DependsOn {
 		depKey := graph.FormatTraversal(dep)
 		if depKey == "" {
@@ -3512,6 +3517,33 @@ func (e *Engine) invokeDataSourceOnce(
 	}
 
 	return ctyOutputs.WithMarks(depMarks), nil
+}
+
+// moduleDependsOnPending reports whether any enclosing module call
+// `depends_on`s a resource whose changes have not been applied yet. A module's
+// depends_on covers everything the module contains, so such a dependency
+// defers the reads inside it just as one written on the data block would.
+func (e *Engine) moduleDependsOnPending(mi *moduleInstance) bool {
+	for inst := mi; inst != nil; inst = inst.Parent {
+		// The targets are addressed from the calling module's scope.
+		parentMI := ""
+		if inst.Parent != nil {
+			parentMI = inst.Parent.Path.String()
+		}
+		for _, dep := range inst.ModuleInfo.Module.DependsOn {
+			depKey := graph.FormatTraversal(dep)
+			if depKey == "" {
+				continue
+			}
+			cell := expansionCell{block: inst.ModuleInfo.ParentPrefix() + depKey, mi: parentMI}
+			for _, urn := range e.cellURNs.get(cell) {
+				if _, pending := e.pendingURNs.Get(urn); pending {
+					return true
+				}
+			}
+		}
+	}
+	return false
 }
 
 // processCall processes a call block (method invocation on a resource).
@@ -4830,7 +4862,7 @@ func (e *Engine) readScopedDataSource(ctx context.Context, ds *ast.Resource, eva
 		}
 		return fmt.Errorf("resolving data source type %s: %w", ds.Type, err)
 	}
-	ctyOutputs, err := e.invokeDataSourceOnce(ctx, node, ds, funcSchema, evalCtx, "")
+	ctyOutputs, err := e.invokeDataSourceOnce(ctx, node, ds, funcSchema, evalCtx, nil)
 	if err != nil {
 		return err
 	}

@@ -451,7 +451,7 @@ func (e *Engine) expandDataCell(
 
 	if ds.Count == nil && ds.ForEach == nil {
 		return b.AddInstance("", func(ctx context.Context) error {
-			ctyOutputs, err := e.invokeDataSourceOnce(ctx, node, ds, funcSchema, evalCtx, cellKey(node, mi).mi)
+			ctyOutputs, err := e.invokeDataSourceOnce(ctx, node, ds, funcSchema, evalCtx, mi)
 			if err != nil {
 				return err
 			}
@@ -491,7 +491,7 @@ func (e *Engine) expandDataCell(
 		inst := instance
 		err := b.AddInstance(strings.TrimPrefix(inst.Key, node.Key), func(ctx context.Context) error {
 			instCtx := evalCtx.WithIteration(inst.Index, inst.EachKey, inst.EachValue)
-			ctyOut, err := e.invokeDataSourceOnce(ctx, node, ds, funcSchema, instCtx, cellKey(node, mi).mi)
+			ctyOut, err := e.invokeDataSourceOnce(ctx, node, ds, funcSchema, instCtx, mi)
 			if err != nil {
 				return err
 			}
