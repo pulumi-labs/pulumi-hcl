@@ -1336,6 +1336,69 @@ output "ws" {
 	assert.Equal(t, "dev", ws.AsString())
 }
 
+// TestEngine_VariableFromTfvars covers the engine wiring of the
+// automatically-loaded variable-value files: a declared variable takes its
+// value from the file, a name the root module does not declare is reported and
+// never evaluated, and a value that does not fit the declared type is an error.
+func TestEngine_VariableFromTfvars(t *testing.T) {
+	t.Parallel()
+
+	run1 := func(t *testing.T, program, tfvars string) (*testutil.MockResourceMonitor, error) {
+		workDir := t.TempDir()
+		require.NoError(t, os.WriteFile(filepath.Join(workDir, "terraform.tfvars"), []byte(tfvars), 0o600))
+
+		p := parser.NewParser()
+		config, diags := p.ParseSource("test.hcl", []byte(program))
+		require.False(t, diags.HasErrors(), "%s", diags)
+
+		mock := &testutil.MockResourceMonitor{}
+		engine := newTestEngine(t, config, &run.EngineOptions{
+			ModuleLoader:    testModuleLoader(t),
+			ProjectName:     "test-project",
+			StackName:       "dev",
+			ResourceMonitor: mock,
+			RootModule:      true,
+			WorkDir:         workDir,
+			RootDir:         t.TempDir(),
+			SchemaLoader:    schemaloader.New(t, schema.PackageSpec{Name: "empty"}),
+		})
+		return mock, engine.Run(t.Context())
+	}
+
+	const program = `
+variable "greeting" {
+  type    = string
+  default = "from-default"
+}
+
+output "greeting" {
+  value = var.greeting
+}
+`
+
+	t.Run("value and undeclared warning", func(t *testing.T) {
+		t.Parallel()
+		mock, err := run1(t, program, "greeting = \"from-tfvars\"\nundeclared = upper(\"x\")\n")
+		require.NoError(t, err)
+
+		greeting, ok := mock.StackOutputs.GetOk("greeting")
+		require.True(t, ok, "expected greeting output")
+		assert.Equal(t, "from-tfvars", greeting.AsString())
+		assert.Equal(t, []string{
+			`Value for undeclared variable: the root module does not declare a variable named ` +
+				`"undeclared" but a value was found in file "terraform.tfvars". If you meant to use ` +
+				`this value, add a "variable" block to the configuration.`,
+		}, mock.Warnings)
+	})
+
+	t.Run("value must fit the declared type", func(t *testing.T) {
+		t.Parallel()
+		_, err := run1(t, "variable \"n\" {\n  type = number\n}\n", "n = \"abc\"\n")
+		assert.EqualError(t, err,
+			`variable "n": the given value is not suitable for var.n: a number is required`)
+	})
+}
+
 func TestEngine_VariableFromEnv(t *testing.T) {
 	src := []byte(`
 variable "region" {
