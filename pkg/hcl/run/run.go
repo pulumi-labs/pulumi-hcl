@@ -1158,23 +1158,33 @@ func (e *Engine) resolveExplicitProvider(
 }
 
 // inheritedDefaultProvider walks up the module tree from modInfo, returning
-// the nearest ancestor's un-aliased default provider config for pkg
-// (URN::ID), or "" if none. An ancestor's default is its own registered block
-// or one passed to it through its module call. The graph adds a matching edge
-// so that block is registered before this resolves.
-func (e *Engine) inheritedDefaultProvider(modInfo *graph.ModuleInfo, pkg string) string {
+// the nearest ancestor's un-aliased default provider config for the provider
+// that modInfo calls name (URN::ID), or "" if none. An ancestor's default is
+// its own registered block or one passed to it through its module call.
+// Inheritance is by fully-qualified provider address, so each ancestor is
+// searched under the name that ancestor gives the provider. The graph adds a
+// matching edge so that block is registered before this resolves.
+func (e *Engine) inheritedDefaultProvider(modInfo *graph.ModuleInfo, name string) string {
+	fqn := graph.ProviderFQN(modInfo.Terraform, name)
 	for path := modInfo.Path; ; {
 		parent, _, ok := path.Parent()
 		if !ok {
 			return ""
 		}
-		if outputs, ok := e.resourceOutputs.Get(parent.PrefixString() + pkg); ok {
+		var parentInfo *graph.ModuleInfo
+		tfBlock := e.config.Terraform
+		if insts, ok := e.moduleInstances.Get(parent); ok && len(insts) > 0 {
+			parentInfo = insts[0].ModuleInfo
+			tfBlock = parentInfo.Terraform
+		}
+		local := graph.LocalProviderName(tfBlock, fqn, name)
+		if outputs, ok := e.resourceOutputs.Get(parent.PrefixString() + local); ok {
 			if ref, err := providerRefFromCty(outputs); err == nil {
 				return ref
 			}
 		}
-		if insts, ok := e.moduleInstances.Get(parent); ok && len(insts) > 0 {
-			if ref := e.resolvePassThroughProvider(insts[0].ModuleInfo, pkg); ref != "" {
+		if parentInfo != nil {
+			if ref := e.resolvePassThroughProvider(parentInfo, local); ref != "" {
 				return ref
 			}
 		}

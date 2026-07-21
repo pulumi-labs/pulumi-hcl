@@ -309,3 +309,58 @@ module "child" {
 	order := walkOrder(t, g)
 	assert.Less(t, indexOf(order, "simple"), indexOf(order, "module.child.simple_resource.r"))
 }
+
+// TestBareProviderReferenceInheritedRenamedLocalName covers the same
+// inheritance where the child names `hashicorp/simple` `myp`: inheritance is
+// by fully-qualified address, so the resource must still be ordered after the
+// root's `provider "simple"` block.
+func TestBareProviderReferenceInheritedRenamedLocalName(t *testing.T) {
+	t.Parallel()
+
+	childSrc := []byte(`
+terraform {
+  required_providers {
+    myp = {
+      source = "hashicorp/simple"
+    }
+  }
+}
+
+resource "simple_resource" "r" {
+  provider = myp
+}
+`)
+	child, diags := parser.NewParser().ParseSource("child.hcl", childSrc)
+	require.False(t, diags.HasErrors(), diags.Error())
+
+	rootSrc := []byte(`
+terraform {
+  required_providers {
+    simple = {
+      source = "hashicorp/simple"
+    }
+  }
+}
+
+provider "simple" {}
+
+module "child" {
+  source = "./child"
+}
+`)
+	root, diags := parser.NewParser().ParseSource("root.hcl", rootSrc)
+	require.False(t, diags.HasErrors(), diags.Error())
+
+	loader := fakeModuleLoader{modules: map[string]*LoadedModule{
+		"./child": {Config: child, SourcePath: "./child"},
+	}}
+
+	g, err := BuildFromConfig(root, loader, ".")
+	require.NoError(t, err)
+
+	assert.Empty(t, g.Validate())
+	assert.True(t, g.HasDependents("simple"))
+
+	order := walkOrder(t, g)
+	assert.Less(t, indexOf(order, "simple"), indexOf(order, "module.child.simple_resource.r"))
+}
