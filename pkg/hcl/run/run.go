@@ -813,10 +813,11 @@ type varSource int
 
 const (
 	sourceNone varSource = iota
-	sourceConfig
+	// sourceSupplied covers every value supplied from outside the program —
+	// Pulumi stack config, a variable-value file, TF_VAR_<name> — which
+	// resolution treats alike once the value is typed.
+	sourceSupplied
 	sourceConfigTyped
-	sourceTfvars
-	sourceEnv
 	sourceDefault
 )
 
@@ -870,25 +871,24 @@ func (e *Engine) processVariable(ctx context.Context, node *graph.Node) error {
 	// type. A variable declared without a type keeps its literal string value,
 	// matching OpenTofu's VariableParseLiteral default; one declared with any
 	// type — including `any` — parses its value as HCL (VariableParseHCL).
-	parseString := func(s string) error {
-		val = cty.StringVal(s)
+	parseString := func(s string) (cty.Value, error) {
 		if v.TypeConstraint == cty.NilType {
-			return nil
+			return cty.StringVal(s), nil
 		}
 		converted, err := convertStringToType(s, v.TypeConstraint)
 		if err != nil {
-			return fmt.Errorf("variable %q: %w", varName, err)
+			return cty.NilVal, fmt.Errorf("variable %q: %w", varName, err)
 		}
-		val = converted
-		return nil
+		return converted, nil
 	}
 
+	var err error
 	if cv, ok := e.lookupConfig(varName); ok {
 		if cv.untyped != nil {
-			if err := parseString(*cv.untyped); err != nil {
+			if val, err = parseString(*cv.untyped); err != nil {
 				return err
 			}
-			source = sourceConfig
+			source = sourceSupplied
 			isSecret = cv.secret
 		} else {
 			// An already-typed value; its marks (e.g. secrets) ride along.
@@ -896,19 +896,17 @@ func (e *Engine) processVariable(ctx context.Context, node *graph.Node) error {
 			source = sourceConfigTyped
 		}
 	} else if tfvarsVal, ok := e.tfvars[varName]; ok {
-		var err error
-		val, err = tfvarsValue(tfvarsVal)
-		if err != nil {
+		if val, err = tfvarsValue(tfvarsVal); err != nil {
 			return err
 		}
-		source = sourceTfvars
+		source = sourceSupplied
 	} else if envVal, ok := os.LookupEnv("TF_VAR_" + varName); ok {
 		// A variable set to the empty string is set: only an absent variable
 		// falls through to the default.
-		if err := parseString(envVal); err != nil {
+		if val, err = parseString(envVal); err != nil {
 			return err
 		}
-		source = sourceEnv
+		source = sourceSupplied
 	}
 
 	// If no value from any source, use default. A variable without a default
@@ -921,7 +919,6 @@ func (e *Engine) processVariable(ctx context.Context, node *graph.Node) error {
 				"variable, or with Pulumi config: pulumi config set %s <value>",
 				varName, varName, varName)
 		}
-		var err error
 		if val, err = e.variableDefault(v); err != nil {
 			return err
 		}
@@ -935,7 +932,6 @@ func (e *Engine) processVariable(ctx context.Context, node *graph.Node) error {
 		if v.Default == nil {
 			return fmt.Errorf("variable %q must not be set to null: it is declared with nullable = false and has no default", varName)
 		}
-		var err error
 		if val, err = e.variableDefault(v); err != nil {
 			return err
 		}
