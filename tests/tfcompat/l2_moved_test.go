@@ -61,6 +61,9 @@ func TestL2Moved(t *testing.T) {
 
 		// Moving a resource out of a module back to the root.
 		{name: "consolidate", dir: "l2_moved_consolidate"}, // module.a.r -> r
+
+		// Renaming a module call composed with a move out of it, in one apply.
+		{name: "module_call_rename_out", dir: "l2_moved_module_call_rename_out"}, // module.a.r -> r
 	}
 
 	for _, c := range cases {
@@ -86,3 +89,4 @@ func TestL2Moved(t *testing.T) {
 		})
 	})
 }
+

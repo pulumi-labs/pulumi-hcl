@@ -2264,6 +2264,22 @@ func (e *Engine) resolveMovedAliases(
 					ParentURN: parentURN,
 					NoParent:  noParent,
 				}})
+
+				// The module the resource moved out of may itself be renamed in
+				// the same apply; the object then lived under the pre-rename
+				// module path, parented to the same component under its
+				// pre-rename name. A prior address in the resource's own module
+				// is handled below instead, where the parent is the resource's
+				// own component and Pulumi supplies it from the component alias.
+				if fromPath != resPath {
+					for _, oldPath := range e.oldModulePaths(fromPath) {
+						aliases = append(aliases, Alias{Spec: &AliasSpec{
+							Name:      prefixWithModulePath(oldPath, buildResourceName(from.Name, priorIdx, priorEach)),
+							Type:      prior.token,
+							ParentURN: string(urn.URN(parentURN).Rename(oldPath.LogicalName())),
+						}})
+					}
+				}
 			}
 		}
 	}
