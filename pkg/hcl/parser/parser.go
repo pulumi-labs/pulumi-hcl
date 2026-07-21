@@ -690,16 +690,9 @@ func (p *Parser) decodeResourceBlock(block *hcl.Block, isDataSource bool) (*ast.
 	}
 
 	if attr, ok := content.Attributes["depends_on"]; ok {
-		// depends_on should be a list of references
-		exprs, exprDiags := hcl.ExprList(attr.Expr)
-		diags = append(diags, exprDiags...)
-		for _, expr := range exprs {
-			traversal, travDiags := hcl.AbsTraversalForExpr(expr)
-			diags = append(diags, travDiags...)
-			if traversal != nil {
-				resource.DependsOn = append(resource.DependsOn, traversal)
-			}
-		}
+		deps, depsDiags := decodeDependsOn(attr)
+		diags = append(diags, depsDiags...)
+		resource.DependsOn = append(resource.DependsOn, deps...)
 	}
 
 	if attr, ok := content.Attributes["provider"]; ok {
@@ -882,6 +875,9 @@ func (p *Parser) parseLifecycleBlock(block *hcl.Block) (*lifecycleResult, hcl.Di
 			exprs, exprDiags := hcl.ExprList(attr.Expr)
 			diags = append(diags, exprDiags...)
 			for _, expr := range exprs {
+				expr, shimDiags := shimTraversalInString(expr)
+				diags = append(diags, shimDiags...)
+
 				traversal, travDiags := hcl.RelTraversalForExpr(expr)
 				diags = append(diags, travDiags...)
 				if traversal != nil {
@@ -1121,15 +1117,9 @@ func (p *Parser) parseOutputBlock(config *ast.Config, block *hcl.Block) hcl.Diag
 	}
 
 	if attr, ok := content.Attributes["depends_on"]; ok {
-		exprs, exprDiags := hcl.ExprList(attr.Expr)
-		diags = append(diags, exprDiags...)
-		for _, expr := range exprs {
-			traversal, travDiags := hcl.AbsTraversalForExpr(expr)
-			diags = append(diags, travDiags...)
-			if traversal != nil {
-				output.DependsOn = append(output.DependsOn, traversal)
-			}
-		}
+		deps, depsDiags := decodeDependsOn(attr)
+		diags = append(diags, depsDiags...)
+		output.DependsOn = append(output.DependsOn, deps...)
 	}
 
 	// Parse preconditions
@@ -1280,15 +1270,9 @@ func (p *Parser) parseModuleBlock(config *ast.Config, block *hcl.Block) hcl.Diag
 	}
 
 	if attr, ok := content.Attributes["depends_on"]; ok {
-		exprs, exprDiags := hcl.ExprList(attr.Expr)
-		diags = append(diags, exprDiags...)
-		for _, expr := range exprs {
-			traversal, travDiags := hcl.AbsTraversalForExpr(expr)
-			diags = append(diags, travDiags...)
-			if traversal != nil {
-				module.DependsOn = append(module.DependsOn, traversal)
-			}
-		}
+		deps, depsDiags := decodeDependsOn(attr)
+		diags = append(diags, depsDiags...)
+		module.DependsOn = append(module.DependsOn, deps...)
 	}
 
 	// Parse providers map. Keys may be bare provider names ("simple"),
