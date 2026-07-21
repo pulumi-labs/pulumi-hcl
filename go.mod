@@ -24,7 +24,7 @@ require (
 	github.com/opentofu/svchost v0.0.0-20250610175836-86c9e5e3d8c8
 	github.com/pulumi/providertest v0.7.0
 	github.com/pulumi/pulumi-go-provider v1.3.3-0.20260622142528-c5c3719552bc
-	github.com/pulumi/pulumi-terraform-bridge/v3 v3.134.1-0.20260714115759-6744a8e7082e
+	github.com/pulumi/pulumi-terraform-bridge/v3 v3.134.1-0.20260720151533-5ffabd1227c9
 	github.com/pulumi/pulumi/pkg/v3 v3.253.1-0.20260715102847-ee776490db8f
 	github.com/pulumi/pulumi/sdk/v3 v3.253.1-0.20260715102847-ee776490db8f
 	github.com/stretchr/testify v1.11.1
