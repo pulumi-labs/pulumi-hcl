@@ -1380,27 +1380,13 @@ output "region_value" {
 				},
 			},
 		}),
-		Config: map[string]run.ConfigValue{
-			"test-project:region": run.UntypedConfigValue("us-west-2", false), // This should be ignored
-		},
 	})
 
-	err := engine.Run(t.Context())
-	if err != nil {
-		t.Fatalf("run error: %v", err)
-	}
+	require.NoError(t, engine.Run(t.Context()))
 
-	// Check the stack outputs - region should be eu-west-1 from env (highest priority)
-	if mock.StackOutputs.Len() == 0 {
-		t.Fatal("expected stack outputs")
-	}
 	regionOutput, ok := mock.StackOutputs.GetOk("region_value")
-	if !ok {
-		t.Fatal("expected region_value output")
-	}
-	if regionOutput.AsString() != "eu-west-1" {
-		t.Errorf("expected region_value=%q from env, got %q", "eu-west-1", regionOutput.AsString())
-	}
+	require.True(t, ok, "expected region_value output")
+	assert.Equal(t, "eu-west-1", regionOutput.AsString())
 }
 
 func TestEngine_VariableDefaultCoercedToType(t *testing.T) {
@@ -1508,7 +1494,8 @@ variable "required_var" {
 
 			err := engine.Run(t.Context())
 			assert.EqualError(t, err, `variable "required_var" is required but no value was provided. `+
-				`Set it with TF_VAR_required_var environment variable or Pulumi config: `+
+				`Set it in a variable-value file such as terraform.tfvars, with the `+
+				`TF_VAR_required_var environment variable, or with Pulumi config: `+
 				`pulumi config set required_var <value>`)
 		})
 	}

@@ -19,17 +19,24 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/hashicorp/hcl/v2"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/zclconf/go-cty/cty"
 )
 
-// assertTfvars compares loaded values with cty's own equality: assert.Equal
-// compares big.Float precision, which differs between a parsed number and a
-// constructed one.
-func assertTfvars(t *testing.T, expected, actual map[string]cty.Value) {
+// assertTfvars evaluates the loaded assignments and compares them with cty's
+// own equality: assert.Equal compares big.Float precision, which differs
+// between a parsed number and a constructed one.
+func assertTfvars(t *testing.T, expected map[string]cty.Value, actual map[string]*hcl.Attribute) {
 	t.Helper()
-	want, got := cty.ObjectVal(expected), cty.ObjectVal(actual)
+	values := map[string]cty.Value{}
+	for name, attr := range actual {
+		val, err := tfvarsValue(attr)
+		require.NoError(t, err)
+		values[name] = val
+	}
+	want, got := cty.ObjectVal(expected), cty.ObjectVal(values)
 	assert.True(t, want.RawEquals(got), "expected %#v, got %#v", want, got)
 }
 
@@ -100,10 +107,22 @@ o = { k = "v" }
 		require.ErrorContains(t, err, "reading terraform.tfvars:")
 	})
 
+	// An assignment is evaluated only when a variable of that name is
+	// declared, so a file may carry a value that cannot be evaluated.
 	t.Run("references are not allowed", func(t *testing.T) {
 		t.Parallel()
 		dir := writeTfvarsDir(t, map[string]string{"terraform.tfvars": `x = var.y`})
-		_, err := loadTfvars(dir)
+		values, err := loadTfvars(dir)
+		require.NoError(t, err)
+		_, err = tfvarsValue(values["x"])
 		require.ErrorContains(t, err, "Variables not allowed")
+	})
+
+	t.Run("a directory is a file that cannot be read", func(t *testing.T) {
+		t.Parallel()
+		dir := t.TempDir()
+		require.NoError(t, os.Mkdir(filepath.Join(dir, "terraform.tfvars"), 0o700))
+		_, err := loadTfvars(dir)
+		require.ErrorContains(t, err, "is a directory")
 	})
 }
