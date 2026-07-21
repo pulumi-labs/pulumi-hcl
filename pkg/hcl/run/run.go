@@ -23,7 +23,6 @@ import (
 	"math"
 	"math/big"
 	"os"
-	"path/filepath"
 	"slices"
 	"strings"
 	"sync"
@@ -4015,7 +4014,7 @@ func (e *Engine) processModuleInit(ctx context.Context, node *graph.Node) error 
 	modInfo := node.ModuleInfo
 	mod := modInfo.Module
 
-	componentType := fmt.Sprintf("components:index:%s", componentTypeName(modInfo.SourcePath))
+	componentType := fmt.Sprintf("components:index:%s", componentTypeName(modules.SourceName(mod.Source)))
 
 	// A nested module call runs once per instance of the enclosing module; a
 	// root-level call runs in the single root scope (a nil parent instance).
@@ -4333,10 +4332,9 @@ func (e *Engine) processModuleComplete(ctx context.Context, node *graph.Node) er
 	return nil
 }
 
-// componentTypeName derives a component type name from its source directory path,
+// componentTypeName derives a component type name from a module's name,
 // replicating PCL's DeclarationName logic.
-func componentTypeName(sourcePath string) string {
-	name := filepath.Base(sourcePath)
+func componentTypeName(name string) string {
 	for _, ch := range []string{"-", ".", " "} {
 		name = strings.ReplaceAll(name, ch, "_")
 	}

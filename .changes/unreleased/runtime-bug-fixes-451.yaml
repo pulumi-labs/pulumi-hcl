@@ -1,0 +1,6 @@
+kind: bug-fixes
+body: Name module components after their declared source, not the resolved directory
+time: 2026-07-21T15:00:00Z
+custom:
+    Component: runtime
+    PR: "451"
