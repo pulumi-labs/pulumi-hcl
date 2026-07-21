@@ -20,6 +20,7 @@ import (
 	"testing"
 
 	"github.com/hashicorp/hcl/v2"
+	"github.com/hashicorp/hcl/v2/hclwrite"
 	"github.com/pulumi-labs/pulumi-hcl/pkg/hcl/ast"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -1095,4 +1096,45 @@ func contains(s, sub string) bool {
 		}
 	}
 	return false
+}
+
+// Quoted references are the pre-0.12 form of `depends_on` and `ignore_changes`
+// entries. They are still accepted, with a deprecation warning.
+func TestParseQuotedReferences(t *testing.T) {
+	t.Parallel()
+	src := []byte(`
+resource "aws_instance" "web" {
+  depends_on = ["aws_vpc.main"]
+
+  lifecycle {
+    ignore_changes = ["tags"]
+  }
+}
+`)
+
+	p := NewParser()
+	config, diags := p.ParseSource("test.hcl", src)
+	require.False(t, diags.HasErrors(), "%s", diags)
+
+	r, ok := config.Resources["aws_instance.web"]
+	require.True(t, ok)
+	assert.Equal(t, []string{"aws_vpc.main"}, traversalStrings(r.DependsOn))
+	require.NotNil(t, r.Lifecycle)
+	assert.Equal(t, []string{".tags"}, traversalStrings(r.Lifecycle.IgnoreChanges))
+
+	require.Len(t, diags, 2)
+	for _, d := range diags {
+		assert.Equal(t, hcl.DiagWarning, d.Severity)
+		assert.Equal(t, "Quoted references are deprecated", d.Summary)
+	}
+}
+
+// traversalStrings renders each traversal as it would be written in source. A
+// relative traversal keeps its leading dot (`.tags`).
+func traversalStrings(traversals []hcl.Traversal) []string {
+	var ret []string
+	for _, t := range traversals {
+		ret = append(ret, string(hclwrite.TokensForTraversal(t).Bytes()))
+	}
+	return ret
 }
