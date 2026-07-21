@@ -1,6 +1,0 @@
-kind: Improvements
-body: Add `ephemeralasnull`; hide diffs of resource properties that ephemeral values flow into
-time: 2026-07-16T09:20:00Z
-custom:
-    Component: runtime
-    PR: "402"

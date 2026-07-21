@@ -1,6 +1,0 @@
-kind: Improvements
-body: Support `recover(value, recovery)` for recovering from failed resources under continue-on-error
-time: 2026-07-14T15:00:00Z
-custom:
-    Component: runtime
-    PR: "366"

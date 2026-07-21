@@ -1,6 +1,0 @@
-kind: bug-fixes
-body: Replace `terraform_data` when `triggers_replace` is set or cleared
-time: 2026-07-15T15:00:00Z
-custom:
-    Component: runtime
-    PR: "381"

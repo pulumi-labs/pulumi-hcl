@@ -1,6 +1,0 @@
-kind: bug-fixes
-body: Materialize an unset `Optional+Computed` `MaxItems=1` list block as `null` rather than `[]`
-time: 2026-07-16T10:00:00Z
-custom:
-    Component: runtime
-    PR: "397"

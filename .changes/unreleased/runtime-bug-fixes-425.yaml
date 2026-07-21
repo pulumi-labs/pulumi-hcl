@@ -1,6 +1,0 @@
-kind: bug-fixes
-body: Support `templatestring` and recursion-limited `templatefile` calls inside rendered templates
-time: 2026-07-17T12:00:00Z
-custom:
-    Component: runtime
-    PR: "425"

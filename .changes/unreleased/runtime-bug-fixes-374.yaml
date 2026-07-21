@@ -1,6 +1,0 @@
-kind: bug-fixes
-body: Keep `for_each` instances distinct when a key contains a `[` character
-time: 2026-07-15T14:00:00Z
-custom:
-    Component: runtime
-    PR: "374"

@@ -1,6 +1,0 @@
-kind: Improvements
-body: Join module-nested names with `.` so distinct addresses cannot collide; add `pulumi.module.name` and a module-block `pulumi { name = ... }`; a resource's `pulumi { name }` is now the full logical name
-time: 2026-07-15T20:30:00Z
-custom:
-    Component: runtime
-    PR: "391"

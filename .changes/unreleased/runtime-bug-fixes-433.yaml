@@ -1,6 +1,0 @@
-kind: bug-fixes
-body: Honor `ignore_changes` targeting a `terraform_data` `triggers_replace`, so an ignored change no longer forces a replacement
-time: 2026-07-20T10:00:00Z
-custom:
-    Component: runtime
-    PR: "433"

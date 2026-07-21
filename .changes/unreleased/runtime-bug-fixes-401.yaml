@@ -1,6 +1,0 @@
-kind: bug-fixes
-body: Evaluate an `import` block's `id` expression at plan time instead of requiring a constant
-time: 2026-07-16T07:33:49Z
-custom:
-    Component: runtime
-    PR: "401"

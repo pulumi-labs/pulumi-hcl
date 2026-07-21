@@ -1,6 +1,0 @@
-kind: bug-fixes
-body: Honor the instance key and module path in an `import` block's `to` address
-time: 2026-07-15T16:50:35Z
-custom:
-    Component: runtime
-    PR: "389"

@@ -1,6 +1,0 @@
-kind: bug-fixes
-body: Accept `ephemeral` on `variable` and `output` blocks, treating ephemeral values as secrets
-time: 2026-07-16T08:57:00Z
-custom:
-    Component: runtime
-    PR: "402"

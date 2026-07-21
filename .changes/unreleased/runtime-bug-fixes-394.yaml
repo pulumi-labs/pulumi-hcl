@@ -1,6 +1,0 @@
-kind: bug-fixes
-body: Follow chained `moved` blocks when resolving resource and module-call renames
-time: 2026-07-16T09:40:00Z
-custom:
-    Component: runtime
-    PR: "394"

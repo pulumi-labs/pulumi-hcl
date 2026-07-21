@@ -1,6 +1,0 @@
-kind: bug-fixes
-body: Surface `error_message` evaluation failures when a variable `validation` fails, instead of a generic message
-time: 2026-07-20T12:00:00Z
-custom:
-    Component: runtime
-    PR: "427"

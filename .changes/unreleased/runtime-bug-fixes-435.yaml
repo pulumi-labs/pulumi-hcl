@@ -1,6 +1,0 @@
-kind: bug-fixes
-body: Substitute the default when a root variable declared `nullable = false` is set to null
-time: 2026-07-17T22:30:00Z
-custom:
-    Component: runtime
-    PR: "435"

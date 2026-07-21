@@ -1,6 +1,0 @@
-kind: Improvements
-body: Support extension-parameterized packages, whose resources and functions extend a base provider's namespace
-time: 2026-07-14T16:30:00Z
-custom:
-    Component: runtime
-    PR: "367"

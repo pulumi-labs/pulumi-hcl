@@ -1,6 +1,0 @@
-kind: bug-fixes
-body: Resolve a provider's SDK and package by its source's package name when its `required_providers` local name is renamed
-time: 2026-07-16T16:10:00Z
-custom:
-    Component: runtime
-    PR: "415"
