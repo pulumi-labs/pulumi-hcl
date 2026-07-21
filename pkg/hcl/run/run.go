@@ -2453,22 +2453,10 @@ func (e *Engine) resolveImportId(
 	for _, imp := range e.config.Imports {
 		evs := []*eval.Evaluator{e.evaluator}
 		if imp.ForEach != nil {
-			forEach, unknown, _, diags := e.evaluator.EvaluateForEach(imp.ForEach)
-			if diags.HasErrors() {
-				return "", diags
-			}
-			if unknown {
-				return "", hcl.Diagnostics{{
-					Severity: hcl.DiagError,
-					Summary:  "Invalid for_each argument",
-					Detail:   `The import block "for_each" argument depends on resource attributes that cannot be determined until apply.`,
-					Subject:  imp.ForEach.Range().Ptr(),
-				}}
-			}
-			evs = evs[:0]
-			for k, v := range forEach {
-				kVal := cty.StringVal(k)
-				evs = append(evs, eval.NewEvaluator(e.evaluator.Context().WithIteration(nil, &kVal, &v)))
+			var err error
+			evs, err = e.expandImportForEach(imp.ForEach)
+			if err != nil {
+				return "", err
 			}
 		}
 		for _, ev := range evs {
@@ -2480,6 +2468,48 @@ func (e *Engine) resolveImportId(
 	}
 
 	return "", nil
+}
+
+// expandImportForEach expands an import block's for_each into one evaluator
+// per element, each carrying that element's each.key/each.value. Beyond the
+// map, object and set a resource's for_each accepts, an import block also
+// accepts a tuple, whose each.key is the element's index — so a tuple can key
+// a counted resource directly.
+func (e *Engine) expandImportForEach(expr hcl.Expression) ([]*eval.Evaluator, error) {
+	newEvaluator := func(k, v cty.Value) *eval.Evaluator {
+		return eval.NewEvaluator(e.evaluator.Context().WithIteration(nil, &k, &v))
+	}
+
+	val, diags := e.evaluator.Evaluate(expr)
+	if diags.HasErrors() {
+		return nil, diags
+	}
+	if unmarked, _ := val.Unmark(); !val.HasMark(eval.SensitiveMark) &&
+		unmarked.IsKnown() && !unmarked.IsNull() && unmarked.Type().IsTupleType() {
+		evs := make([]*eval.Evaluator, 0, unmarked.LengthInt())
+		for i, v := range unmarked.AsValueSlice() {
+			evs = append(evs, newEvaluator(cty.NumberIntVal(int64(i)), v))
+		}
+		return evs, nil
+	}
+
+	forEach, unknown, _, diags := e.evaluator.EvaluateForEach(expr)
+	if diags.HasErrors() {
+		return nil, diags
+	}
+	if unknown {
+		return nil, hcl.Diagnostics{{
+			Severity: hcl.DiagError,
+			Summary:  "Invalid for_each argument",
+			Detail:   `The import block "for_each" argument depends on resource attributes that cannot be determined until apply.`,
+			Subject:  expr.Range().Ptr(),
+		}}
+	}
+	evs := make([]*eval.Evaluator, 0, len(forEach))
+	for k, v := range forEach {
+		evs = append(evs, newEvaluator(cty.StringVal(k), v))
+	}
+	return evs, nil
 }
 
 // matchImport reports whether imp targets the given resource instance and, if
