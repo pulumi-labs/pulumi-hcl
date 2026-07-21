@@ -1,0 +1,38 @@
+// Copyright 2026, Pulumi Corporation.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+package tfcompat_test
+
+import (
+	"testing"
+
+	"github.com/pulumi-labs/pulumi-hcl/tests/testutil/tfcompat"
+	"github.com/pulumi-labs/pulumi-hcl/tests/testutil/tfcompat/providers"
+)
+
+// TestL2MapListObjectUpdate writes a `map(list(object))` attribute whose two
+// keys hold equal-length lists, then grows one of them on a second apply. An
+// object-literal expression types each map value as a tuple, so once the
+// lengths differ the two values have different tuple types. OpenTofu converts
+// each element to the attribute's list type before assembling the map and
+// applies the update; pulumi-hcl builds the map first, and cty.MapVal panics
+// with "inconsistent map element types".
+func TestL2MapListObjectUpdate(t *testing.T) {
+	t.Parallel()
+	tfcompat.RunCase(t, "l2_map_list_object_update", tfcompat.Case{
+		Providers: []tfcompat.Provider{
+			{Name: "pfx", PFFactory: providers.PFXProvider},
+		},
+	})
+}
