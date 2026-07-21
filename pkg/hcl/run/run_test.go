@@ -3837,6 +3837,27 @@ import {
 		}, importIdsByName(t, tmpDir))
 	})
 
+	t.Run("tuple_for_each", func(t *testing.T) {
+		t.Parallel()
+
+		tmpDir := writeRoot(t, `
+resource "aws_instance" "web" {
+  count = 2
+  ami   = "ami-12345"
+}
+
+import {
+  for_each = ["id-a", "id-b"]
+  to       = aws_instance.web[each.key]
+  id       = each.value
+}
+`)
+		assert.Equal(t, map[string]string{
+			"web[0]": "id-a",
+			"web[1]": "id-b",
+		}, importIdsByName(t, tmpDir))
+	})
+
 	t.Run("unkeyed_import_does_not_match_expanded_resource", func(t *testing.T) {
 		t.Parallel()
 
