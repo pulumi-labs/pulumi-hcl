@@ -1397,6 +1397,36 @@ output "greeting" {
 		assert.EqualError(t, err,
 			`variable "n": the given value is not suitable for var.n: a number is required`)
 	})
+
+	// A declared default is held to the declared type too.
+	t.Run("default must fit the declared type", func(t *testing.T) {
+		t.Parallel()
+		_, err := run1(t, "variable \"n\" {\n  type    = number\n  default = \"abc\"\n}\n", "")
+		assert.EqualError(t, err, `variable "n": this default value is not compatible with `+
+			`the variable's type constraint: a number is required`)
+	})
+
+	// An explicit null from a file is rejected like any other supplied null:
+	// the default is substituted.
+	t.Run("null substitutes the default when nullable is false", func(t *testing.T) {
+		t.Parallel()
+		program := `
+variable "greeting" {
+  type     = string
+  default  = "from-default"
+  nullable = false
+}
+
+output "greeting" {
+  value = var.greeting
+}
+`
+		mock, err := run1(t, program, "greeting = null\n")
+		require.NoError(t, err)
+		greeting, ok := mock.StackOutputs.GetOk("greeting")
+		require.True(t, ok, "expected greeting output")
+		assert.Equal(t, "from-default", greeting.AsString())
+	})
 }
 
 func TestEngine_VariableFromEnv(t *testing.T) {
