@@ -20,9 +20,9 @@ import (
 	"github.com/pulumi-labs/pulumi-hcl/tests/testutil/tfcompat"
 )
 
-// TestL1VarBareListMap exercises `tolist` / `toset` / `tomap` over tuples and
-// objects whose elements have differing types. Both paths must unify the
-// element types to a single common type rather than erroring on the mismatch.
+// TestL1VarBareListMap exercises the pre-0.12 shorthand type constraints
+// `type = list` and `type = map` on a variable block, which are equivalent to
+// `list(any)` and `map(any)`.
 func TestL1VarBareListMap(t *testing.T) {
 	t.Parallel()
 	tfcompat.RunCase(t, "l1_var_bare_list_map", tfcompat.Case{})

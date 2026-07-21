@@ -939,6 +939,25 @@ variable "subnets" {
 	}
 }
 
+// The pre-0.12 bare keywords `list` and `map` are shorthand for `list(any)`
+// and `map(any)`; typeexpr itself rejects them.
+func TestVariableTypeBareListMap(t *testing.T) {
+	t.Parallel()
+	src := []byte(`
+variable "l" {
+  type = list
+}
+
+variable "m" {
+  type = map
+}
+`)
+	config, diags := NewParser().ParseSource("test.tf", src)
+	require.False(t, diags.HasErrors(), "unexpected errors: %v", diags.Errs())
+	assert.Equal(t, cty.List(cty.DynamicPseudoType), config.Variables["l"].TypeConstraint)
+	assert.Equal(t, cty.Map(cty.DynamicPseudoType), config.Variables["m"].TypeConstraint)
+}
+
 func TestParseEphemeral(t *testing.T) {
 	t.Parallel()
 	src := []byte(`
