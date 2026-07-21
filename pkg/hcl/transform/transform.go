@@ -540,21 +540,31 @@ func conformUnmarkedCtyToType(val cty.Value, typ cty.Type) cty.Value {
 	if val.Type().IsObjectType() && typ.IsMapType() {
 		elemType := typ.ElementType()
 		m := make(map[string]cty.Value, val.LengthInt())
+		uniform := true
 		for attrs := val.ElementIterator(); attrs.Next(); {
 			k, v := attrs.Element()
 			v = conformCtyToType(v, elemType)
-			// Coerce primitive elements to the target type so a literal like
-			// {fromBool = true, fromString = "true"} becomes a uniform map<bool>.
-			// Without this, cty.MapVal panics on mixed-type values.
-			if elemType.IsPrimitiveType() && !v.Type().Equals(elemType) {
+			// Coerce elements to the target type so that a literal like
+			// {fromBool = true, fromString = "true"} becomes a uniform map<bool>,
+			// and so that {a = [x, y], b = [z]} becomes a uniform map<list<...>>
+			// instead of two differently sized tuples. Without this, cty.MapVal
+			// panics on mixed-type values.
+			if !v.Type().Equals(elemType) {
 				if converted, err := convert.Convert(v, elemType); err == nil {
 					v = converted
+				} else {
+					uniform = false
 				}
 			}
 			m[k.AsString()] = v
 		}
 		if len(m) == 0 {
 			return cty.MapValEmpty(elemType)
+		}
+		// An element that cannot be converted (a null of an unrelated type, say)
+		// would make cty.MapVal panic, so keep the object shape instead.
+		if !uniform {
+			return cty.ObjectVal(m)
 		}
 		return cty.MapVal(m)
 	}

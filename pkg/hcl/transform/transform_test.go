@@ -2082,6 +2082,41 @@ func TestConformCtyToType_UnknownAndNull(t *testing.T) {
 	}
 }
 
+// TestConformCtyToType_CollectionElements pins that map values are converted
+// to the target element type before the map is assembled: two lists of
+// different lengths are differently typed tuples, and cty.MapVal would panic
+// on them.
+func TestConformCtyToType_CollectionElements(t *testing.T) {
+	t.Parallel()
+
+	obj := cty.Object(map[string]cty.Type{"name": cty.String})
+	name := func(s string) cty.Value { return cty.ObjectVal(map[string]cty.Value{"name": cty.StringVal(s)}) }
+
+	val := cty.ObjectVal(map[string]cty.Value{
+		"left":  cty.TupleVal([]cty.Value{name("a"), name("b")}),
+		"right": cty.TupleVal([]cty.Value{name("c")}),
+	})
+
+	assert.Equal(t, cty.MapVal(map[string]cty.Value{
+		"left":  cty.ListVal([]cty.Value{name("a"), name("b")}),
+		"right": cty.ListVal([]cty.Value{name("c")}),
+	}), conformCtyToType(val, cty.Map(cty.List(obj))))
+}
+
+// TestConformCtyToType_UnconvertibleElement pins that an element that cannot be
+// converted to the map's element type leaves the value as an object rather than
+// panicking in cty.MapVal.
+func TestConformCtyToType_UnconvertibleElement(t *testing.T) {
+	t.Parallel()
+
+	val := cty.ObjectVal(map[string]cty.Value{
+		"list":   cty.ListVal([]cty.Value{cty.StringVal("a")}),
+		"number": cty.NumberIntVal(1),
+	})
+
+	assert.Equal(t, val, conformCtyToType(val, cty.Map(cty.List(cty.String))))
+}
+
 // TestUnifyPreservesNestedElementTypes pins that a heterogeneous collection
 // whose unification would coerce primitive leaves — at any depth — keeps its
 // per-element types instead of collapsing to a common type. cty unifies

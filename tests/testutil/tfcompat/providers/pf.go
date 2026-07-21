@@ -64,6 +64,7 @@ func (p *pfxProvider) Resources(context.Context) []func() resource.Resource {
 		func() resource.Resource { return &pfxWidget{} },
 		func() resource.Resource { return &pfxRes{} },
 		func() resource.Resource { return &pfxObj{} },
+		func() resource.Resource { return &pfxMatrix{} },
 	}
 }
 
@@ -480,3 +481,61 @@ func (d *pfxLookup) Read(ctx context.Context, _ datasource.ReadRequest, resp *da
 	state := pfxLookupModel{Value: types.StringValue("pfx-value")}
 	resp.Diagnostics.Append(resp.State.Set(ctx, &state)...)
 }
+
+// pfxMatrix carries a single map-of-list-of-object attribute. The values of
+// the map are lists, so two keys may hold lists of different lengths while the
+// attribute as a whole stays one well-typed map(list(object)). Create and
+// Update echo the plan into state so a stack output shows what the runtime
+// planned.
+type pfxMatrix struct{}
+
+var _ resource.Resource = (*pfxMatrix)(nil)
+
+type pfxMatrixModel struct {
+	ID     types.String `tfsdk:"id"`
+	Matrix types.Map    `tfsdk:"matrix"`
+}
+
+func (r *pfxMatrix) Metadata(_ context.Context, req resource.MetadataRequest, resp *resource.MetadataResponse) {
+	resp.TypeName = req.ProviderTypeName + "_matrix"
+}
+
+func (r *pfxMatrix) Schema(_ context.Context, _ resource.SchemaRequest, resp *resource.SchemaResponse) {
+	resp.Schema = rschema.Schema{
+		Attributes: map[string]rschema.Attribute{
+			"id": rschema.StringAttribute{
+				Computed:      true,
+				PlanModifiers: []planmodifier.String{stringplanmodifier.UseStateForUnknown()},
+			},
+			"matrix": rschema.MapAttribute{
+				Optional: true,
+				ElementType: types.ListType{ElemType: types.ObjectType{
+					AttrTypes: map[string]attr.Type{"name": types.StringType},
+				}},
+			},
+		},
+	}
+}
+
+func (r *pfxMatrix) Create(ctx context.Context, req resource.CreateRequest, resp *resource.CreateResponse) {
+	var plan pfxMatrixModel
+	resp.Diagnostics.Append(req.Plan.Get(ctx, &plan)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+	plan.ID = types.StringValue("pfx-matrix-id")
+	resp.Diagnostics.Append(resp.State.Set(ctx, &plan)...)
+}
+
+func (r *pfxMatrix) Read(_ context.Context, _ resource.ReadRequest, _ *resource.ReadResponse) {}
+
+func (r *pfxMatrix) Update(ctx context.Context, req resource.UpdateRequest, resp *resource.UpdateResponse) {
+	var plan pfxMatrixModel
+	resp.Diagnostics.Append(req.Plan.Get(ctx, &plan)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+	resp.Diagnostics.Append(resp.State.Set(ctx, &plan)...)
+}
+
+func (r *pfxMatrix) Delete(_ context.Context, _ resource.DeleteRequest, _ *resource.DeleteResponse) {}
