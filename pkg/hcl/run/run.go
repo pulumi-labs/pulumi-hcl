@@ -2264,6 +2264,9 @@ func (e *Engine) resolveMovedAliases(
 		name    string
 		index   *int
 		eachKey *string
+		// token is the prior type's Pulumi token, set only when the move also
+		// changes the resource's type.
+		token string
 	}
 	type addrKey struct {
 		typ    string
@@ -2275,6 +2278,11 @@ func (e *Engine) resolveMovedAliases(
 
 	work := []address{{path: resPath, typ: res.Type, name: res.Name, index: index, eachKey: eachKey}}
 	seen := map[addrKey]bool{mkAddrKey(work[0]): true}
+
+	// sameModule holds the addresses the resource had within its own module,
+	// current one first: the names to reconstruct under a prior module path when
+	// the enclosing module call is renamed in the same apply.
+	sameModule := []address{work[0]}
 
 	for len(work) > 0 {
 		cur := work[0]
@@ -2321,8 +2329,23 @@ func (e *Engine) resolveMovedAliases(
 				if seen[mkAddrKey(prior)] {
 					continue
 				}
+
+				// A `moved` may also change the resource's type; the alias then
+				// carries the prior type's token so the engine matches the old URN.
+				if from.Type != res.Type {
+					priorRes, err := e.resolver.ResolveResource(ctx, from.Type)
+					if err != nil {
+						logging.V(5).Infof("moved: cannot resolve prior type %q: %v", from.Type, err)
+						continue
+					}
+					prior.token = priorRes.Token
+				}
+
 				seen[mkAddrKey(prior)] = true
 				work = append(work, prior)
+				if fromPath == resPath {
+					sameModule = append(sameModule, prior)
+				}
 
 				// The prior name is the resource's own name under its prior module
 				// path; the prior parent is described relative to where it is now.
@@ -2332,35 +2355,42 @@ func (e *Engine) resolveMovedAliases(
 					continue
 				}
 
-				// A `moved` may also change the resource's type; the alias then
-				// carries the prior type's token so the engine matches the old URN.
-				var priorType string
-				if from.Type != res.Type {
-					priorRes, err := e.resolver.ResolveResource(ctx, from.Type)
-					if err != nil {
-						logging.V(5).Infof("moved: cannot resolve prior type %q: %v", from.Type, err)
-						continue
-					}
-					priorType = priorRes.Token
-				}
-
 				aliases = append(aliases, Alias{Spec: &AliasSpec{
 					Name:      name,
-					Type:      priorType,
+					Type:      prior.token,
 					ParentURN: parentURN,
 					NoParent:  noParent,
 				}})
+
+				// The module the resource moved out of may itself be renamed in
+				// the same apply; the object then lived under the pre-rename
+				// module path, parented to the same component under its
+				// pre-rename name. A prior address in the resource's own module
+				// is handled below instead, where the parent is the resource's
+				// own component and Pulumi supplies it from the component alias.
+				if fromPath != resPath {
+					for _, oldPath := range e.oldModulePaths(fromPath) {
+						aliases = append(aliases, Alias{Spec: &AliasSpec{
+							Name:      prefixWithModulePath(oldPath, buildResourceName(from.Name, priorIdx, priorEach)),
+							Type:      prior.token,
+							ParentURN: string(urn.URN(parentURN).Rename(oldPath.LogicalName())),
+						}})
+					}
+				}
 			}
 		}
 	}
 
 	// A `moved` block that renames an enclosing module call moves this resource
-	// with it. The resource keeps its own name within the module, so it is
-	// aliased to the name it had under each prior module path; Pulumi combines
-	// that with the renamed component's own alias to recover the old URN.
+	// with it. The resource is aliased to each name it held within the module —
+	// its current one and any it is being renamed from in the same apply — under
+	// each prior module path; Pulumi combines that with the renamed component's
+	// own alias to recover the old URN.
 	for _, oldPath := range e.oldModulePaths(resPath) {
-		name := prefixWithModulePath(oldPath, buildResourceName(res.Name, index, eachKey))
-		aliases = append(aliases, Alias{Spec: &AliasSpec{Name: name}})
+		for _, a := range sameModule {
+			name := prefixWithModulePath(oldPath, buildResourceName(a.name, a.index, a.eachKey))
+			aliases = append(aliases, Alias{Spec: &AliasSpec{Name: name, Type: a.token}})
+		}
 	}
 
 	return aliases
