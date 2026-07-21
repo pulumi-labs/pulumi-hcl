@@ -29,7 +29,7 @@ const (
 	// TerraformStatePackage / TerraformStatePackageVersion is the external
 	// pulumi-terraform package that provides the state-reference invokes.
 	TerraformStatePackage        = "terraform"
-	TerraformStatePackageVersion = "6.0.2"
+	TerraformStatePackageVersion = "6.1.0"
 )
 
 // lowerRemoteStateInvoke rewrites a terraform_remote_state invoke into the matching

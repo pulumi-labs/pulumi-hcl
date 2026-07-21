@@ -92,7 +92,7 @@ jobs:
       - uses: opentofu/setup-opentofu@v2
       # terraform_remote_state lowers to the pulumi-terraform getLocalReference
       # invoke; the tfcompat harness disables plugin acquisition, so pre-install it.
-      - run: pulumi plugin install resource terraform 6.0.2
+      - run: pulumi plugin install resource terraform 6.1.0
       - run: pulumi plugin install resource terraform-provider 1.2.1
       - run: pulumi plugin install resource local 0.1.6
       - run: make bin/pulumi-language-hcl bin/pulumi-converter-hcl bin/pulumi-resource-hcl
