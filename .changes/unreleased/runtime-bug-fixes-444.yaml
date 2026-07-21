@@ -1,0 +1,6 @@
+kind: bug-fixes
+body: Inherit default provider configurations by source address, not local name
+time: 2026-07-21T13:40:00Z
+custom:
+    Component: runtime
+    PR: "444"

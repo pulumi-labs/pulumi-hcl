@@ -46,6 +46,12 @@ type ModuleInfo struct {
 	Module     *ast.Module // the module block from the parent config
 	SourcePath string      // resolved source path (for component type name)
 
+	// Terraform is the module's own `terraform` block (nil when it has
+	// none). Its `required_providers` names the providers this module uses,
+	// which the runtime needs to re-key provider references crossing the
+	// module boundary — see [LocalProviderName].
+	Terraform *ast.Terraform
+
 	// ParentSourcePath is the resolved source directory of the parent module
 	// (or the root program dir for top-level calls). It's the dir that
 	// Module.Source is relative to, so the runtime can re-resolve it when
@@ -760,7 +766,7 @@ func (g *Graph) resolvePassedProvider(
 			return nil
 		}
 	}
-	addr := fmt.Sprintf("%sprovider[%q]", parent.prefix, providerFQN(childConfig, strings.SplitN(childKey, ".", 2)[0]))
+	addr := fmt.Sprintf("%sprovider[%q]", parent.prefix, ProviderFQN(childConfig.Terraform, strings.SplitN(childKey, ".", 2)[0]))
 	if aliased {
 		addr += "." + alias
 	}
@@ -781,13 +787,14 @@ func (g *Graph) recordMissingProvider(addr string, rng hcl.Range) {
 	}
 }
 
-// providerFQN returns the fully-qualified address of the provider behind
-// localName in config: the `required_providers` source when declared, else the
-// default namespace, both anchored at the default registry host.
-func providerFQN(config *ast.Config, localName string) string {
+// ProviderFQN returns the fully-qualified address of the provider behind
+// localName in the module whose `terraform` block is tfBlock: the
+// `required_providers` source when declared, else the default namespace, both
+// anchored at the default registry host.
+func ProviderFQN(tfBlock *ast.Terraform, localName string) string {
 	source := localName
-	if config.Terraform != nil {
-		if req, ok := config.Terraform.RequiredProviders[localName]; ok && req.Source != "" {
+	if tfBlock != nil {
+		if req, ok := tfBlock.RequiredProviders[localName]; ok && req.Source != "" {
 			source = req.Source
 		}
 	}
@@ -801,6 +808,28 @@ func providerFQN(config *ast.Config, localName string) string {
 	}
 }
 
+// LocalProviderName returns the name by which the module whose `terraform`
+// block is tfBlock refers to the provider fqn. Provider configurations are
+// shared across module boundaries by fully-qualified address, so a lookup
+// crossing into another module must be re-keyed through this. fallback is
+// returned when the module declares no name for fqn: an undeclared local name
+// stands for itself.
+func LocalProviderName(tfBlock *ast.Terraform, fqn, fallback string) string {
+	if tfBlock == nil || ProviderFQN(tfBlock, fallback) == fqn {
+		return fallback
+	}
+	local := ""
+	for name := range tfBlock.RequiredProviders {
+		if ProviderFQN(tfBlock, name) == fqn && (local == "" || name < local) {
+			local = name
+		}
+	}
+	if local == "" {
+		return fallback
+	}
+	return local
+}
+
 // defaultProviderNode returns an edge to the node that registers the default
 // (un-aliased) provider configuration `name` as seen from scope s: the
 // nearest enclosing scope with a `provider "<name>"` block, or with a
@@ -809,14 +838,19 @@ func providerFQN(config *ast.Config, localName string) string {
 // reference then names the implicit empty default configuration, which needs
 // no ordering edge.
 func (g *Graph) defaultProviderNode(name string, s *moduleScope) []pdag.Node {
+	if s == nil {
+		return nil
+	}
+	fqn := ProviderFQN(s.config.Terraform, name)
 	for ; s != nil; s = s.parent {
-		if _, ok := s.config.Providers[name]; ok {
-			_, idx := g.newNode(s.prefix + name)
+		local := LocalProviderName(s.config.Terraform, fqn, name)
+		if _, ok := s.config.Providers[local]; ok {
+			_, idx := g.newNode(s.prefix + local)
 			return []pdag.Node{idx}
 		}
 		if s.mod != nil {
-			if _, ok := s.mod.Providers[name]; ok {
-				_, idx := g.newNode(s.prefix + name)
+			if _, ok := s.mod.Providers[local]; ok {
+				_, idx := g.newNode(s.prefix + local)
 				return []pdag.Node{idx}
 			}
 		}
@@ -1488,6 +1522,7 @@ func (g *Graph) inlineModule(
 		Path:             path,
 		Module:           mod,
 		SourcePath:       loaded.SourcePath,
+		Terraform:        loaded.Config.Terraform,
 		ParentSourcePath: workDir,
 	}
 
