@@ -1,0 +1,6 @@
+kind: bug-fixes
+body: Accept the bare `list` and `map` variable type constraints
+time: 2026-07-21T13:30:00Z
+custom:
+    Component: runtime
+    PR: "440"

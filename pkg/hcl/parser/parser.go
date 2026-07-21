@@ -515,11 +515,21 @@ func (p *Parser) parseVariableBlock(config *ast.Config, block *hcl.Block) hcl.Di
 
 	if attr, ok := content.Attributes["type"]; ok {
 		variable.Type = attr.Expr
-		ty, defs, typeDiags := typeexpr.TypeConstraintWithDefaults(attr.Expr)
-		diags = append(diags, typeDiags...)
-		if !typeDiags.HasErrors() {
-			variable.TypeConstraint = ty
-			variable.TypeDefaults = defs
+		// The bare keywords `list` and `map` are shorthand forms that the
+		// HCL-level type expression parser doesn't include, equivalent to
+		// list(any) and map(any).
+		switch hcl.ExprAsKeyword(attr.Expr) {
+		case "list":
+			variable.TypeConstraint = cty.List(cty.DynamicPseudoType)
+		case "map":
+			variable.TypeConstraint = cty.Map(cty.DynamicPseudoType)
+		default:
+			ty, defs, typeDiags := typeexpr.TypeConstraintWithDefaults(attr.Expr)
+			diags = append(diags, typeDiags...)
+			if !typeDiags.HasErrors() {
+				variable.TypeConstraint = ty
+				variable.TypeDefaults = defs
+			}
 		}
 	}
 
