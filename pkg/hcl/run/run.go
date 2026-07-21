@@ -424,6 +424,10 @@ type Engine struct {
 	// pulumiConfig contains Pulumi stack configuration values.
 	pulumiConfig map[string]ConfigValue
 
+	// tfvars holds the root variable values read from the variable-value files
+	// loaded automatically from the program directory. See loadTfvars.
+	tfvars map[string]cty.Value
+
 	// moduleLoader loads and caches module configurations.
 	moduleLoader *modules.Loader
 
@@ -569,6 +573,11 @@ func NewEngine(ctx context.Context, config *ast.Config, opts *EngineOptions) (*E
 		return nil, fmt.Errorf("creating the root evaluation context: %w", err)
 	}
 
+	tfvars, err := loadTfvars(opts.WorkDir)
+	if err != nil {
+		return nil, fmt.Errorf("loading variable values: %w", err)
+	}
+
 	return &Engine{
 		config:                  config,
 		evaluator:               eval.NewEvaluator(evalCtx),
@@ -586,6 +595,7 @@ func NewEngine(ctx context.Context, config *ast.Config, opts *EngineOptions) (*E
 		workDir:                 opts.WorkDir,
 		absolutePaths:           opts.AbsolutePaths,
 		pulumiConfig:            opts.Config,
+		tfvars:                  tfvars,
 		packages:                opts.Packages,
 		packageRefs:             make(map[string]PackageRef),
 		moduleLoader:            opts.ModuleLoader,
@@ -780,17 +790,21 @@ func (e *Engine) processVariable(ctx context.Context, node *graph.Node) error {
 	var valueSource string
 
 	// Variable value precedence (highest to lowest):
-	// 1. Environment variable TF_VAR_<name>
-	// 2. Pulumi stack config (projectName:<name>)
-	// 3. Default value
+	// 1. Automatically-loaded variable-value files (see loadTfvars)
+	// 2. Environment variable TF_VAR_<name>
+	// 3. Pulumi stack config (projectName:<name>)
+	// 4. Default value
 
 	if e.evaluator.Context().HCLContext().Variables["var"].Type().HasAttribute(varName) {
 		return fmt.Errorf("%q already evaluated", varName)
 	}
 
-	// Check environment variable first
 	envVarName := "TF_VAR_" + varName
-	if envVal := os.Getenv(envVarName); envVal != "" {
+	if tfvarsVal, ok := e.tfvars[varName]; ok {
+		// The value is already typed, so it bypasses the string parsing below.
+		val = tfvarsVal
+		valueSource = "tfvars"
+	} else if envVal := os.Getenv(envVarName); envVal != "" {
 		val = cty.StringVal(envVal)
 		valueSource = "environment"
 	} else if e.pulumiConfig != nil {

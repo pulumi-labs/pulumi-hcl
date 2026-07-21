@@ -107,11 +107,24 @@ Each `validation` block has:
 
 ### Setting Variable Values
 
-Variables are set through Pulumi's config system, in priority order:
+Variables are set from the following sources, in priority order:
 
-1. **Environment variables**: `TF_VAR_name=value` (highest priority)
-2. **Stack config**: `pulumi config set <project>:<varName> <value>`
-3. **Default values** in `variable` blocks (lowest priority)
+1. **Variable-value files** in the program directory (highest priority), applied
+   in this order, with later files winning: `terraform.tfvars`,
+   `terraform.tfvars.json`, then every `*.auto.tfvars` and `*.auto.tfvars.json`
+   in lexical order by file name
+2. **Environment variables**: `TF_VAR_name=value`
+3. **Stack config**: `pulumi config set <project>:<varName> <value>`
+4. **Default values** in `variable` blocks (lowest priority)
+
+A variable-value file assigns values to variable names, and its values are
+literals — they may not refer to anything else in the program:
+
+```hcl
+# terraform.tfvars
+instance_type = "t3.micro"
+tags          = { Name = "web-server" }
+```
 
 Reference variables in expressions as `var.<name>`:
 
