@@ -260,7 +260,10 @@ type moduleInstance struct {
 	// instance's Name joined to this instance's step with ".". It prefixes
 	// the derived names of everything inside the instance and is exposed to
 	// the instance as pulumi.module.name.
-	Name    string
+	Name string
+	// Config is the parsed configuration of the called module, shared by
+	// every instance of the call.
+	Config  *ast.Config
 	EvalCtx *eval.Context        // per-instance evaluation context
 	URN     urn.URN              // component URN
 	Parent  *moduleInstance      // enclosing module instance (nil for root-level calls)
@@ -3988,6 +3991,7 @@ func (e *Engine) initModuleCallIn(
 			Path:       instPath,
 			ModuleInfo: modInfo,
 			Name:       instName,
+			Config:     childMod.Config,
 			EvalCtx:    instCtx,
 			URN:        componentURN,
 			Parent:     parent,
@@ -4620,16 +4624,39 @@ func evaluatePrecondition(rule *ast.CheckRule, hclCtx *hcl.EvalContext, index in
 }
 
 // evaluateChecks evaluates every check block after all resources have settled.
-// Both scoped-data-source errors and failed assertions emit warnings and
-// processing continues, matching Terraform: check blocks are the only custom
-// condition that does not block the operation.
+// Checks declared in child modules are evaluated once per module instance, in
+// that instance's scope. Both scoped-data-source errors and failed assertions
+// emit warnings and processing continues, matching Terraform: check blocks are
+// the only custom condition that does not block the operation.
 func (e *Engine) evaluateChecks(ctx context.Context) error {
 	contract.Assertf(e.resmon != nil, "e.resmon cannot be nil")
-	names := slices.Collect(maps.Keys(e.config.Checks))
+	var errs []error
+	errs = append(errs, e.evaluateConfigChecks(ctx, "", e.config, e.evaluator.Context()))
+	var instances []*moduleInstance
+	for insts := range e.moduleInstances.Values() {
+		instances = append(instances, insts...)
+	}
+	slices.SortFunc(instances, func(a, b *moduleInstance) int {
+		return strings.Compare(a.Path.PrefixString(), b.Path.PrefixString())
+	})
+	for _, inst := range instances {
+		errs = append(errs, e.evaluateConfigChecks(
+			ctx, inst.Path.PrefixString()+".", inst.Config, inst.EvalCtx))
+	}
+	return errors.Join(errs...)
+}
+
+// evaluateConfigChecks evaluates the check blocks of one config in the scope
+// given by evalCtx. addrPrefix qualifies the reported check name with its
+// module instance address ("" for the root config).
+func (e *Engine) evaluateConfigChecks(
+	ctx context.Context, addrPrefix string, config *ast.Config, evalCtx *eval.Context,
+) error {
+	names := slices.Collect(maps.Keys(config.Checks))
 	slices.Sort(names)
 	var errs []error
 	for _, name := range names {
-		errs = append(errs, e.evaluateCheck(ctx, name, e.config.Checks[name]))
+		errs = append(errs, e.evaluateCheck(ctx, addrPrefix+name, config.Checks[name], evalCtx))
 	}
 	return errors.Join(errs...)
 }
@@ -4637,8 +4664,7 @@ func (e *Engine) evaluateChecks(ctx context.Context) error {
 // evaluateCheck evaluates one check block. Its scoped data source is read into a
 // cloned context so it is visible only to this check's assertions and cannot
 // collide with a top-level data source of the same address.
-func (e *Engine) evaluateCheck(ctx context.Context, name string, check *ast.Check) error {
-	evalCtx := e.evaluator.Context()
+func (e *Engine) evaluateCheck(ctx context.Context, name string, check *ast.Check, evalCtx *eval.Context) error {
 	var errs []error
 	if ds := check.DataResource; ds != nil {
 		evalCtx = evalCtx.Clone()
