@@ -56,6 +56,9 @@ func (e *Engine) bindProvisionerHooks(
 
 	for i, prov := range res.Provisioners {
 		prov, index := prov, i+1
+		if err := runtime.Validate(prov.Type); err != nil {
+			return fmt.Errorf("provisioner %d for %s: %w", index, instance.Key, err)
+		}
 		spec := &runtime.Spec{
 			Type:   prov.Type,
 			Config: prov.Config,

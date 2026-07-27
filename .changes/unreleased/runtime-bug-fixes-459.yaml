@@ -1,0 +1,6 @@
+kind: bug-fixes
+body: Reject an unknown `provisioner` type at preview instead of at apply
+time: 2026-07-27T12:39:44Z
+custom:
+    Component: runtime
+    PR: "459"
