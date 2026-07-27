@@ -315,7 +315,7 @@ func TestResourceExpander(t *testing.T) {
 		if len(result.Instances) != 1 {
 			t.Errorf("Expected 1 instance, got %d", len(result.Instances))
 		}
-		if result.Instances[0].Key != "aws_instance.web" {
+		if result.Instances[0].Key.String() != "aws_instance.web" {
 			t.Errorf("Unexpected key: %s", result.Instances[0].Key)
 		}
 	})
@@ -333,7 +333,7 @@ func TestResourceExpander(t *testing.T) {
 		}
 		for i, inst := range result.Instances {
 			expectedKey := "aws_instance.web[" + string(rune('0'+i)) + "]"
-			if inst.Key != expectedKey {
+			if inst.Key.String() != expectedKey {
 				t.Errorf("Instance %d: expected key %s, got %s", i, expectedKey, inst.Key)
 			}
 			if inst.Index == nil || *inst.Index != i {

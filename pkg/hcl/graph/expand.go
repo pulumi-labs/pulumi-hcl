@@ -20,13 +20,18 @@ import (
 	"github.com/zclconf/go-cty/cty"
 )
 
+// InstanceKey identifies one instance of a block: the block's node key plus
+// the instance suffix ("", "[0]", `["k"]`).
+type InstanceKey struct {
+	Node   NodeKey
+	Suffix string
+}
+
+func (k InstanceKey) String() string { return k.Node.String() + k.Suffix }
+
 // ExpandedResource represents a single instance of a resource after count/for_each expansion.
 type ExpandedResource struct {
-	// Key is the rendered identifier for this instance (e.g., "aws_instance.web[0]" or "aws_instance.web[\"a\"]")
-	Key string
-
-	// Suffix is the instance-key suffix ("[0]", `["a"]`, or "" for a single instance)
-	Suffix string
+	Key InstanceKey
 
 	// Index is the numeric index for count-based expansion (nil for for_each)
 	Index *int
@@ -91,7 +96,7 @@ func (e *ResourceExpander) SetForEach(key NodeKey, values map[string]cty.Value) 
 // Expand expands a resource node into its instances.
 func (e *ResourceExpander) Expand(node *Node) *ExpandResult {
 	single := &ExpandResult{
-		Instances: []*ExpandedResource{{Key: node.Key.String(), Node: node}},
+		Instances: []*ExpandedResource{{Key: InstanceKey{Node: node.Key}, Node: node}},
 		IsSingle:  true,
 	}
 
@@ -109,12 +114,10 @@ func (e *ResourceExpander) Expand(node *Node) *ExpandResult {
 		instances := make([]*ExpandedResource, count)
 		for i := range count {
 			idx := i
-			suffix := fmt.Sprintf("[%d]", i)
 			instances[i] = &ExpandedResource{
-				Key:    node.Key.String() + suffix,
-				Suffix: suffix,
-				Index:  &idx,
-				Node:   node,
+				Key:   InstanceKey{Node: node.Key, Suffix: fmt.Sprintf("[%d]", i)},
+				Index: &idx,
+				Node:  node,
 			}
 		}
 		return &ExpandResult{Instances: instances}
@@ -126,10 +129,8 @@ func (e *ResourceExpander) Expand(node *Node) *ExpandResult {
 		for k, v := range forEachVals {
 			key := cty.StringVal(k)
 			val := v
-			suffix := fmt.Sprintf("[%q]", k)
 			instances = append(instances, &ExpandedResource{
-				Key:       node.Key.String() + suffix,
-				Suffix:    suffix,
+				Key:       InstanceKey{Node: node.Key, Suffix: fmt.Sprintf("[%q]", k)},
 				EachKey:   &key,
 				EachValue: &val,
 				Node:      node,

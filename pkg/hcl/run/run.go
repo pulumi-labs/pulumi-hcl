@@ -386,10 +386,10 @@ type Engine struct {
 	resmon ResourceMonitor
 
 	// resourceOutputs maps resource keys to their output values.
-	resourceOutputs *util.SyncMap[string, cty.Value]
+	resourceOutputs *util.SyncMap[graph.InstanceKey, cty.Value]
 
 	// resourceInheritableOpts maps resource keys to the options that children can inherit.
-	resourceInheritableOpts *util.SyncMap[string, inheritableOpts]
+	resourceInheritableOpts *util.SyncMap[graph.InstanceKey, inheritableOpts]
 
 	// defaultProviders maps a package name to the urn::id of its un-aliased
 	// `provider "<pkg>" {}` block. Resources whose package matches and that
@@ -474,7 +474,7 @@ type Engine struct {
 
 	// failedNodes tracks resource nodes that failed to register, keyed by instance key.
 	// Dependent nodes check this map and are skipped when a dependency failed.
-	failedNodes *util.SyncMap[string, error]
+	failedNodes *util.SyncMap[graph.InstanceKey, error]
 
 	// graph is the resolved dependency graph for the current run. Stored on
 	// the engine so processNode handlers can consult its topology (e.g.
@@ -630,8 +630,8 @@ func NewEngine(ctx context.Context, config *ast.Config, opts *EngineOptions) (*E
 		pkgLoader:               opts.SchemaLoader,
 		providerInfoSource:      opts.ProviderInfoSource,
 		resmon:                  opts.ResourceMonitor,
-		resourceOutputs:         util.NewSyncMap[string, cty.Value](),
-		resourceInheritableOpts: util.NewSyncMap[string, inheritableOpts](),
+		resourceOutputs:         util.NewSyncMap[graph.InstanceKey, cty.Value](),
+		resourceInheritableOpts: util.NewSyncMap[graph.InstanceKey, inheritableOpts](),
 		defaultProviders:        util.NewSyncMap[string, string](),
 		stackOutputs:            make(map[string]property.Value),
 		projectName:             opts.ProjectName,
@@ -651,7 +651,7 @@ func NewEngine(ctx context.Context, config *ast.Config, opts *EngineOptions) (*E
 		cellURNs:                newURNRegistry(),
 		pendingURNs:             util.NewSyncMap[string, struct{}](),
 		pendingModuleCalls:      util.NewSyncMap[expansionCell, struct{}](),
-		failedNodes:             util.NewSyncMap[string, error](),
+		failedNodes:             util.NewSyncMap[graph.InstanceKey, error](),
 		alwaysRegisterProviders: opts.AlwaysRegisterProviders,
 		resolver: packages.NewResolver(
 			opts.SchemaLoader, opts.ProviderInfoSource, opts.Packages, knownProviders(config.Terraform)),
@@ -1298,7 +1298,7 @@ func (e *Engine) inheritedDefaultProvider(modInfo *graph.ModuleInfo, name string
 			tfBlock = parentInfo.Terraform
 		}
 		local := graph.LocalProviderName(tfBlock, fqn, name)
-		if outputs, ok := e.resourceOutputs.Get(graph.ReferencePrefix(parent) + local); ok {
+		if outputs, ok := e.nodeOutputs(graph.NodeKey{Module: parent, ID: local}); ok {
 			if ref, err := providerRefFromCty(outputs); err == nil {
 				return ref
 			}
@@ -1510,9 +1510,9 @@ func (e *Engine) registerProviderInContext(
 	// into.
 	outputObj["urn"] = cty.StringVal(string(resp.URN))
 
-	outputsKey := node.Key.String()
+	outputsKey := graph.InstanceKey{Node: node.Key}
 	if inst != nil {
-		outputsKey = fmt.Sprintf("%s[%q]", node.Key, inst.key)
+		outputsKey.Suffix = fmt.Sprintf("[%q]", inst.key)
 	}
 	e.resourceOutputs.Set(outputsKey, cty.ObjectVal(outputObj).Mark(eval.DepMark(resp.URN)))
 
@@ -1774,22 +1774,19 @@ func (e *Engine) buildResourceOptionsInContext(
 	opts := &ResourceOptions{}
 	opts.Parent = parentURN
 
-	resPrefix := graph.ReferencePrefix(node.Key.Module)
-
 	// depends_on records every registered instance of the target block,
 	// keyed or not — dependency metadata is resource-wide (see urnRegistry).
 	// The registry lookup also covers expanded targets, whose instance
 	// outputs are not addressable by the block key.
-	miPath := ""
+	miPath := modulepath.Root()
 	if modInst != nil {
-		miPath = modInst.Path.String()
+		miPath = modInst.Path
 	}
 	for _, dep := range res.DependsOn {
-		depKey := graph.FormatTraversal(dep)
-		if depKey == "" {
+		block, ok := graph.TraversalKey(node.Key.Module, dep)
+		if !ok {
 			continue
 		}
-		block := graph.ResolveRef(node.Key.Module, depKey)
 		opts.DependsOn = append(opts.DependsOn, e.cellURNs.get(expansionCell{block: block, mi: miPath})...)
 	}
 
@@ -1849,13 +1846,10 @@ func (e *Engine) buildResourceOptionsInContext(
 	opts.DeleteBeforeReplaceDef = true
 	opts.DeleteBeforeReplace = !cbd
 
-	if res.ResourceParent != nil {
-		depKey := graph.FormatTraversal(res.ResourceParent)
-		if depKey != "" {
-			if outputs, ok := e.resourceOutputs.Get(resPrefix + depKey); ok {
-				if parentURN := ctyAsString(outputs.GetAttr("urn")); parentURN != "" {
-					opts.Parent = urn.URN(parentURN) // TODO: Don't look at attrs for this
-				}
+	if key, ok := graph.TraversalKey(node.Key.Module, res.ResourceParent); ok {
+		if outputs, ok := e.nodeOutputs(key); ok {
+			if parentURN := ctyAsString(outputs.GetAttr("urn")); parentURN != "" {
+				opts.Parent = urn.URN(parentURN) // TODO: Don't look at attrs for this
 			}
 		}
 	}
@@ -1870,14 +1864,13 @@ func (e *Engine) buildResourceOptionsInContext(
 		}
 	} else if modInfo != nil {
 		// Implicit default in a module: try a pass-through entry, then
-		// the in-module `provider "<pkg>" {}` block (registered earlier
-		// at key resPrefix+pkg in resourceOutputs), then an inherited
+		// the in-module `provider "<pkg>" {}` block, then an inherited
 		// ancestor default. If none exist, fall through to Pulumi's
 		// engine default.
 		pkg := packageNameFromResourceType(res.Type)
 		if ref := e.resolvePassThroughProvider(modInfo, pkg); ref != "" {
 			opts.Provider = ref
-		} else if outputs, ok := e.resourceOutputs.Get(resPrefix + pkg); ok {
+		} else if outputs, ok := e.nodeOutputs(graph.NodeKey{Module: node.Key.Module, ID: pkg}); ok {
 			if ref, err := providerRefFromCty(outputs); err == nil {
 				opts.Provider = ref
 			}
@@ -1891,15 +1884,15 @@ func (e *Engine) buildResourceOptionsInContext(
 	}
 
 	for _, traversal := range res.Providers {
-		providerKey := graph.FormatTraversal(traversal)
-		if providerKey == "" {
+		key, ok := graph.TraversalKey(node.Key.Module, traversal)
+		if !ok {
 			continue
 		}
-		if providerOutputs, ok := e.resourceOutputs.Get(resPrefix + providerKey); ok {
+		if providerOutputs, ok := e.nodeOutputs(key); ok {
 			urn := ctyAsString(providerOutputs.GetAttr("urn"))
 			id := ctyAsString(providerOutputs.GetAttr("id"))
 			if urn != "" && id != "" {
-				pkgName := packageNameFromResourceType(strings.SplitN(providerKey, ".", 2)[0])
+				pkgName := packageNameFromResourceType(strings.SplitN(key.ID, ".", 2)[0])
 				if opts.Providers == nil {
 					opts.Providers = make(map[string]string)
 				}
@@ -1995,23 +1988,20 @@ func (e *Engine) buildResourceOptionsInContext(
 		}
 	}
 
-	if res.DeletedWith != nil {
-		depKey := graph.FormatTraversal(res.DeletedWith)
-		if depKey != "" {
-			if outputs, ok := e.resourceOutputs.Get(resPrefix + depKey); ok {
-				if urn := ctyAsString(outputs.GetAttr("urn")); urn != "" {
-					opts.DeletedWith = urn
-				}
+	if key, ok := graph.TraversalKey(node.Key.Module, res.DeletedWith); ok {
+		if outputs, ok := e.nodeOutputs(key); ok {
+			if urn := ctyAsString(outputs.GetAttr("urn")); urn != "" {
+				opts.DeletedWith = urn
 			}
 		}
 	}
 
 	for _, ref := range res.ReplaceWith {
-		depKey := graph.FormatTraversal(ref)
-		if depKey == "" {
+		key, ok := graph.TraversalKey(node.Key.Module, ref)
+		if !ok {
 			continue
 		}
-		if outputs, ok := e.resourceOutputs.Get(resPrefix + depKey); ok {
+		if outputs, ok := e.nodeOutputs(key); ok {
 			if urn := ctyAsString(outputs.GetAttr("urn")); urn != "" {
 				opts.ReplaceWith = append(opts.ReplaceWith, urn)
 			}
@@ -2118,17 +2108,14 @@ func (e *Engine) buildResourceOptionsInContext(
 		}
 	}
 
-	if res.ResourceParent != nil {
-		depKey := graph.FormatTraversal(res.ResourceParent)
-		if depKey != "" {
-			if parentOpts, ok := e.resourceInheritableOpts.Get(resPrefix + depKey); ok {
-				if (res.Lifecycle == nil || res.Lifecycle.PreventDestroy == nil) &&
-					parentOpts.Protect != nil && *parentOpts.Protect {
-					opts.Protect = true
-				}
-				if res.RetainOnDelete == nil && parentOpts.RetainOnDelete != nil {
-					opts.RetainOnDelete = parentOpts.RetainOnDelete
-				}
+	if key, ok := graph.TraversalKey(node.Key.Module, res.ResourceParent); ok {
+		if parentOpts, ok := e.resourceInheritableOpts.Get(graph.InstanceKey{Node: key}); ok {
+			if (res.Lifecycle == nil || res.Lifecycle.PreventDestroy == nil) &&
+				parentOpts.Protect != nil && *parentOpts.Protect {
+				opts.Protect = true
+			}
+			if res.RetainOnDelete == nil && parentOpts.RetainOnDelete != nil {
+				opts.RetainOnDelete = parentOpts.RetainOnDelete
 			}
 		}
 	}
@@ -2892,15 +2879,19 @@ func knownProviders(tfBlock *ast.Terraform) []string {
 	return providers
 }
 
+// nodeOutputs returns the outputs of a block's single (suffixless) instance.
+func (e *Engine) nodeOutputs(key graph.NodeKey) (cty.Value, bool) {
+	return e.resourceOutputs.Get(graph.InstanceKey{Node: key})
+}
+
 // hasFailedDependency reports whether any dependency of res is in failedNodes.
 // When true, the resource should be skipped so that only genuinely independent
 // resources are registered with the engine.
 func (e *Engine) hasFailedDependency(res *ast.Resource) bool {
 	// Check explicit depends_on traversals.
 	for _, dep := range res.DependsOn {
-		depKey := graph.FormatTraversal(dep)
-		if depKey != "" {
-			if _, failed := e.failedNodes.Get(depKey); failed {
+		if key, ok := graph.TraversalKey(modulepath.Root(), dep); ok {
+			if _, failed := e.failedNodes.Get(graph.InstanceKey{Node: key}); failed {
 				return true
 			}
 		}
@@ -2912,7 +2903,7 @@ func (e *Engine) hasFailedDependency(res *ast.Resource) bool {
 		attrs, _ := res.Config.JustAttributes()
 		for _, attr := range attrs {
 			for _, depKey := range eval.NonRecoverableDependencies(attr.Expr) {
-				if _, failed := e.failedNodes.Get(depKey); failed {
+				if _, failed := e.failedNodes.Get(graph.InstanceKey{Node: graph.NodeKey{ID: depKey}}); failed {
 					return true
 				}
 			}
@@ -3378,9 +3369,9 @@ func (e *Engine) invokeDataSourceOnce(
 ) (cty.Value, error) {
 	hclCtx := evalCtx.HCLContext()
 
-	miPath := ""
+	miPath := modulepath.Root()
 	if mi != nil {
-		miPath = mi.Path.String()
+		miPath = mi.Path
 	}
 
 	// Failed preconditions prevent the read; unknown conditions defer.
@@ -3450,10 +3441,9 @@ func (e *Engine) invokeDataSourceOnce(
 		}
 	} else if node.ModuleInfo != nil {
 		pkg := packageNameFromResourceType(ds.Type)
-		resPrefix := graph.ReferencePrefix(node.ModuleInfo.Path)
 		if ref := e.resolvePassThroughProvider(node.ModuleInfo, pkg); ref != "" {
 			invokeReq.Provider = ref
-		} else if outputs, ok := e.resourceOutputs.Get(resPrefix + pkg); ok {
+		} else if outputs, ok := e.nodeOutputs(graph.NodeKey{Module: node.Key.Module, ID: pkg}); ok {
 			if ref, err := providerRefFromCty(outputs); err == nil {
 				invokeReq.Provider = ref
 			}
@@ -3478,11 +3468,11 @@ func (e *Engine) invokeDataSourceOnce(
 	// buildResourceOptionsInContext).
 	dependsOnPending := e.moduleDependsOnPending(mi)
 	for _, dep := range ds.DependsOn {
-		depKey := graph.FormatTraversal(dep)
-		if depKey == "" {
+		block, ok := graph.TraversalKey(node.Key.Module, dep)
+		if !ok {
 			continue
 		}
-		cell := expansionCell{block: graph.ResolveRef(node.Key.Module, depKey), mi: miPath}
+		cell := expansionCell{block: block, mi: miPath}
 		for _, urn := range e.cellURNs.get(cell) {
 			addURN(urn)
 		}
@@ -3546,12 +3536,12 @@ func (e *Engine) invokeDataSourceOnce(
 func (e *Engine) moduleDependsOnPending(mi *moduleInstance) bool {
 	for inst := mi; inst != nil; inst = inst.Parent {
 		for _, dep := range inst.ModuleInfo.Module.DependsOn {
-			depKey := graph.FormatTraversal(dep)
-			if depKey == "" {
+			// The targets are addressed from the calling module's scope.
+			block, ok := graph.TraversalKey(inst.ModuleInfo.ParentPath(), dep)
+			if !ok {
 				continue
 			}
-			// The targets are addressed from the calling module's scope.
-			cell := expansionCell{block: graph.ResolveRef(inst.ModuleInfo.ParentPath(), depKey), mi: parentMIPath(inst)}
+			cell := expansionCell{block: block, mi: parentMIPath(inst)}
 			if e.cellPending(cell) {
 				return true
 			}
@@ -3586,12 +3576,12 @@ func moduleCallCell(inst *moduleInstance) expansionCell {
 }
 
 // parentMIPath is the instance path of the module instance enclosing inst, or
-// "" when inst was called from the root.
-func parentMIPath(inst *moduleInstance) string {
+// the root when inst was called from the root.
+func parentMIPath(inst *moduleInstance) modulepath.Path {
 	if inst.Parent == nil {
-		return ""
+		return modulepath.Root()
 	}
-	return inst.Parent.Path.String()
+	return inst.Parent.Path
 }
 
 // processCall processes a call block (method invocation on a resource).
@@ -3666,7 +3656,7 @@ func (e *Engine) processCall(ctx context.Context, node *graph.Node) error {
 	}
 
 	// Look up resource outputs to get URN and ID
-	outputs, ok := e.resourceOutputs.Get(resKey)
+	outputs, ok := e.nodeOutputs(graph.NodeKey{ID: resKey})
 	if !ok {
 		return fmt.Errorf("resource %q outputs not found", resKey)
 	}
@@ -3840,7 +3830,7 @@ func (e *Engine) providerFunctionImpl(
 		if modInfo != nil {
 			if ref := e.resolvePassThroughProvider(modInfo, providerName); ref != "" {
 				req.Provider = ref
-			} else if outputs, ok := e.resourceOutputs.Get(graph.ReferencePrefix(modInfo.Path) + providerName); ok {
+			} else if outputs, ok := e.nodeOutputs(graph.NodeKey{Module: modInfo.Path, ID: providerName}); ok {
 				if ref, err := providerRefFromCty(outputs); err == nil {
 					req.Provider = ref
 				}
@@ -4658,7 +4648,7 @@ func (e *Engine) bindPreconditionHooks(
 	hclSnapshot := evalCtx.HCLContext()
 	hookName := fmt.Sprintf("%s.%s:precondition", res.Type, resourceName)
 	callback := func(_ context.Context, _ *ResourceHookArgs) error {
-		return evaluatePreconditions(res.Preconditions, hclSnapshot, instance.Key)
+		return evaluatePreconditions(res.Preconditions, hclSnapshot, instance.Key.String())
 	}
 	if err := e.resmon.RegisterResourceHook(ctx, hookName, callback, ResourceHookOptions{
 		OnDryRun: true,
@@ -4701,7 +4691,7 @@ func (e *Engine) bindPostconditionHooks(
 		// adapted the same way as on the registration path: property-level
 		// lowering here, wrapper unboxing after re-expansion.
 		outputs := lowerTerraformDataOutputs(res.Type, args.NewOutputs, opts)
-		return evaluatePostconditions(res.Postconditions, hclSnapshot, outputs, res.Type, resSchema, mapping, dryRun, instance.Key)
+		return evaluatePostconditions(res.Postconditions, hclSnapshot, outputs, res.Type, resSchema, mapping, dryRun, instance.Key.String())
 	}
 	if err := e.resmon.RegisterResourceHook(ctx, hookName, callback, ResourceHookOptions{
 		OnDryRun: true,

@@ -29,7 +29,7 @@ import (
 type blockDepsView struct {
 	Static []string
 	Whole  []string
-	Narrow []InstanceDep
+	Narrow []InstanceKey
 }
 
 func depsView(t *testing.T, g *Graph, key string) blockDepsView {
@@ -47,8 +47,8 @@ func depsView(t *testing.T, g *Graph, key string) blockDepsView {
 	}
 	slices.Sort(view.Static)
 	slices.Sort(view.Whole)
-	slices.SortFunc(view.Narrow, func(a, b InstanceDep) int {
-		return cmp.Or(cmp.Compare(a.Key.String(), b.Key.String()), cmp.Compare(a.Suffix, b.Suffix))
+	slices.SortFunc(view.Narrow, func(a, b InstanceKey) int {
+		return cmp.Or(cmp.Compare(a.Node.String(), b.Node.String()), cmp.Compare(a.Suffix, b.Suffix))
 	})
 	return view
 }
@@ -92,11 +92,11 @@ resource "order_resource" "dyn" {
 `)
 
 	assert.Equal(t, blockDepsView{
-		Narrow: []InstanceDep{{Key: nk("order_resource.a"), Suffix: `["x"]`}},
+		Narrow: []InstanceKey{{Node: nk("order_resource.a"), Suffix: `["x"]`}},
 	}, depsView(t, g, "order_resource.b"))
 
 	assert.Equal(t, blockDepsView{
-		Narrow: []InstanceDep{{Key: nk("order_resource.a"), Suffix: `[0]`}},
+		Narrow: []InstanceKey{{Node: nk("order_resource.a"), Suffix: `[0]`}},
 	}, depsView(t, g, "order_resource.c"))
 
 	assert.Equal(t, blockDepsView{
@@ -136,7 +136,7 @@ resource "order_resource" "d" {
 `)
 
 	assert.Equal(t, blockDepsView{
-		Narrow: []InstanceDep{{Key: nk("order_resource.a"), Suffix: `["x"]`}},
+		Narrow: []InstanceKey{{Node: nk("order_resource.a"), Suffix: `["x"]`}},
 	}, depsView(t, g, "order_resource.b"))
 
 	assert.Equal(t, blockDepsView{
@@ -144,7 +144,7 @@ resource "order_resource" "d" {
 	}, depsView(t, g, "order_resource.c"))
 
 	assert.Equal(t, blockDepsView{
-		Narrow: []InstanceDep{{Key: nk("order_resource.a"), Suffix: `["x"]`}},
+		Narrow: []InstanceKey{{Node: nk("order_resource.a"), Suffix: `["x"]`}},
 	}, depsView(t, g, "order_resource.d"))
 }
 
@@ -189,11 +189,11 @@ data "order_data" "narrow" {
 `)
 
 	assert.Equal(t, blockDepsView{
-		Narrow: []InstanceDep{{Key: nk("data.order_data.d"), Suffix: `["x"]`}},
+		Narrow: []InstanceKey{{Node: nk("data.order_data.d"), Suffix: `["x"]`}},
 	}, depsView(t, g, "order_resource.b"))
 
 	assert.Equal(t, blockDepsView{
-		Narrow: []InstanceDep{{Key: nk("order_resource.a"), Suffix: `["x"]`}},
+		Narrow: []InstanceKey{{Node: nk("order_resource.a"), Suffix: `["x"]`}},
 	}, depsView(t, g, "data.order_data.narrow"))
 }
 
@@ -227,7 +227,7 @@ module "m" {
 
 	assert.Equal(t, blockDepsView{
 		Static: []string{"module.m.__init__"},
-		Narrow: []InstanceDep{{Key: nk("module.m.order_resource.a"), Suffix: `["x"]`}},
+		Narrow: []InstanceKey{{Node: nk("module.m.order_resource.a"), Suffix: `["x"]`}},
 	}, depsView(t, g, "module.m.order_resource.b"))
 }
 
@@ -292,7 +292,7 @@ resource "order_resource" "b" {
 `)
 
 	assert.Equal(t, blockDepsView{
-		Narrow: []InstanceDep{{Key: nk("order_resource.a"), Suffix: `["x"]`}},
+		Narrow: []InstanceKey{{Node: nk("order_resource.a"), Suffix: `["x"]`}},
 	}, depsView(t, g, "local.picked"))
 
 	// No block-level edge from the resource to the local: the local's only

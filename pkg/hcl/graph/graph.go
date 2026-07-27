@@ -122,17 +122,35 @@ type NodeKey struct {
 
 func (k NodeKey) String() string { return ReferencePrefix(k.Module) + k.ID }
 
-// ResolveRef resolves a scope-relative reference string (as produced by
-// FormatTraversal) to a NodeKey. A reference has at most one leading
-// "module.<name>." hop; a bare "module.<name>" names the call's completion
-// node, which lives in scope itself.
-func ResolveRef(scope modulepath.Path, ref string) NodeKey {
-	if rest, ok := strings.CutPrefix(ref, "module."); ok {
-		if name, id, ok := strings.Cut(rest, "."); ok {
-			return NodeKey{Module: scope.Append(modulepath.NewStep(name)), ID: id}
+// TraversalKey resolves a reference traversal in the module at scope to its
+// node key; ok is false for non-referencing traversals. A `module.<name>`
+// reference names the call's completion node (which lives in scope itself);
+// `module.<name>.<output>` resolves into the child module.
+func TraversalKey(scope modulepath.Path, traversal hcl.Traversal) (NodeKey, bool) {
+	namespace, parts := eval.ParseTraversal(traversal)
+	switch namespace {
+	case "", "path", "terraform", "count", "each", "self", "pulumi":
+	case "data":
+		if len(parts) >= 2 {
+			return NodeKey{Module: scope, ID: "data." + parts[0] + "." + parts[1]}, true
+		}
+	case "module":
+		if len(parts) >= 1 {
+			if out := moduleOutputName(traversal); out != "" {
+				return NodeKey{Module: scope.Append(modulepath.NewStep(parts[0])), ID: "output." + out}, true
+			}
+			return NodeKey{Module: scope, ID: "module." + parts[0]}, true
+		}
+	case "call":
+		if len(parts) >= 2 {
+			return NodeKey{Module: scope, ID: "call." + parts[0] + "." + parts[1]}, true
+		}
+	default: // var, local, and resource references share one shape.
+		if len(parts) >= 1 {
+			return NodeKey{Module: scope, ID: namespace + "." + parts[0]}, true
 		}
 	}
-	return NodeKey{Module: scope, ID: ref}
+	return NodeKey{}, false
 }
 
 // Node represents a node in the dependency graph.
@@ -189,14 +207,7 @@ type Node struct {
 type BlockDeps struct {
 	Static []pdag.Node
 	Whole  []NodeKey
-	Narrow []InstanceDep
-}
-
-// InstanceDep names one instance of a same-scope resource/data block: the
-// block's node key plus the instance's key suffix (`[0]`, `["x"]`).
-type InstanceDep struct {
-	Key    NodeKey
-	Suffix string
+	Narrow []InstanceKey
 }
 
 // NodeType indicates what type of configuration element a node represents.
@@ -448,7 +459,7 @@ func (g *Graph) ForcedCreateBeforeDestroy() map[NodeKey]bool {
 				}
 			}
 			for _, narrow := range n.Deps.Narrow {
-				if in, ok := g.seen[narrow.Key]; ok {
+				if in, ok := g.seen[narrow.Node]; ok {
 					mark(in.i)
 				}
 			}
@@ -928,11 +939,10 @@ func packageNameFromResourceType(token string) string {
 func (g *Graph) traversalDepRefs(path modulepath.Path, traversals ...hcl.Traversal) []depRef {
 	var refs []depRef
 	for _, t := range traversals {
-		ref := FormatTraversal(t)
-		if ref == "" {
+		key, ok := TraversalKey(path, t)
+		if !ok {
 			continue
 		}
-		key := ResolveRef(path, ref)
 		g.recordRef(key, t.SourceRange())
 		refs = append(refs, depRef{key: key, traversal: t})
 	}
@@ -1010,7 +1020,7 @@ type depClassifier struct {
 	seen       map[pdag.Node]bool
 	staticSeen map[pdag.Node]bool
 	wholeSeen  map[NodeKey]bool
-	narrowSeen map[InstanceDep]bool
+	narrowSeen map[InstanceKey]bool
 }
 
 func (g *Graph) newDepClassifier(path modulepath.Path, blockEdges bool) *depClassifier {
@@ -1022,7 +1032,7 @@ func (g *Graph) newDepClassifier(path modulepath.Path, blockEdges bool) *depClas
 		seen:       make(map[pdag.Node]bool),
 		staticSeen: make(map[pdag.Node]bool),
 		wholeSeen:  make(map[NodeKey]bool),
-		narrowSeen: make(map[InstanceDep]bool),
+		narrowSeen: make(map[InstanceKey]bool),
 	}
 }
 
@@ -1067,7 +1077,7 @@ func (c *depClassifier) classify(refs []depRef) {
 // finish subsumes narrow entries under whole-block dependencies and returns
 // the classified deps with the node's edge set.
 func (c *depClassifier) finish() (*BlockDeps, []pdag.Node) {
-	c.bd.Narrow = slices.DeleteFunc(c.bd.Narrow, func(d InstanceDep) bool { return c.wholeSeen[d.Key] })
+	c.bd.Narrow = slices.DeleteFunc(c.bd.Narrow, func(d InstanceKey) bool { return c.wholeSeen[d.Node] })
 	if len(c.bd.Narrow) == 0 {
 		c.bd.Narrow = nil
 	}
@@ -1078,10 +1088,10 @@ func (c *depClassifier) finish() (*BlockDeps, []pdag.Node) {
 // scope at path (sameScope), and if so which instance it addresses: a
 // non-empty Suffix when the traversal indexes the block with a literal string
 // or whole-number key, "" for a whole-block reference.
-func (g *Graph) classifyDep(ref depRef, path modulepath.Path) (id InstanceDep, sameScope bool) {
+func (g *Graph) classifyDep(ref depRef, path modulepath.Path) (id InstanceKey, sameScope bool) {
 	scope := g.scopes[path]
 	if scope == nil || ref.traversal == nil || ref.key.Module != path {
-		return InstanceDep{}, false
+		return InstanceKey{}, false
 	}
 	// The index step follows the two naming steps (type.name), or three for
 	// data sources (data.type.name).
@@ -1090,12 +1100,12 @@ func (g *Graph) classifyDep(ref depRef, path modulepath.Path) (id InstanceDep, s
 	if isData {
 		idxPos = 3
 		if _, ok := scope.config.DataSources[blockKey]; !ok {
-			return InstanceDep{}, false
+			return InstanceKey{}, false
 		}
 	} else if _, ok := scope.config.Resources[ref.key.ID]; !ok {
-		return InstanceDep{}, false
+		return InstanceKey{}, false
 	}
-	return InstanceDep{Key: ref.key, Suffix: literalIndexSuffix(ref.traversal, idxPos)}, true
+	return InstanceKey{Node: ref.key, Suffix: literalIndexSuffix(ref.traversal, idxPos)}, true
 }
 
 // literalIndexSuffix returns the instance-key suffix (`[0]`, `["x"]`) when the
@@ -1349,50 +1359,6 @@ func (g *Graph) providerFunctionDep(path modulepath.Path, providerName string) (
 		}
 	}
 	return NodeKey{}, false
-}
-
-// FormatTraversal converts a traversal to a scope-relative dependency
-// reference string ("" for non-referencing traversals).
-func FormatTraversal(traversal hcl.Traversal) string {
-	if len(traversal) == 0 {
-		return ""
-	}
-
-	namespace, parts := eval.ParseTraversal(traversal)
-
-	switch namespace {
-	case "var", "local", "path", "terraform", "count", "each", "self", "pulumi":
-		// These are handled differently
-		if namespace == "local" && len(parts) >= 1 {
-			return "local." + parts[0]
-		}
-		if namespace == "var" && len(parts) >= 1 {
-			return "var." + parts[0]
-		}
-		return ""
-	case "data":
-		if len(parts) >= 2 {
-			return fmt.Sprintf("data.%s.%s", parts[0], parts[1])
-		}
-	case "module":
-		if len(parts) >= 1 {
-			if out := moduleOutputName(traversal); out != "" {
-				return fmt.Sprintf("module.%s.output.%s", parts[0], out)
-			}
-			return "module." + parts[0]
-		}
-	case "call":
-		if len(parts) >= 2 {
-			return fmt.Sprintf("call.%s.%s", parts[0], parts[1])
-		}
-	default:
-		// Resource reference
-		if len(parts) >= 1 {
-			return fmt.Sprintf("%s.%s", namespace, parts[0])
-		}
-	}
-
-	return ""
 }
 
 // moduleOutputName returns the output name from a `module.NAME[idx].OUTPUT`

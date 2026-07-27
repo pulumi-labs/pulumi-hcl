@@ -23,6 +23,7 @@ import (
 
 	"github.com/pulumi-labs/pulumi-hcl/pkg/hcl/eval"
 	"github.com/pulumi-labs/pulumi-hcl/pkg/hcl/graph"
+	"github.com/pulumi-labs/pulumi-hcl/pkg/hcl/modulepath"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/resource/urn"
 	"github.com/zclconf/go-cty/cty"
 )
@@ -39,24 +40,24 @@ import (
 // is: create every cell of the scope, wire dependencies and gates, then arm —
 // so a gate is always created before its target's expansion runs.
 type expansionCell struct {
-	block graph.NodeKey // graph node key
-	mi    string        // module instance path, "" at the root
+	block graph.NodeKey
+	mi    modulepath.Path // module instance path
 }
 
 func cellKey(node *graph.Node, mi *moduleInstance) expansionCell {
 	c := expansionCell{block: node.Key}
 	if mi != nil {
-		c.mi = mi.Path.String()
+		c.mi = mi.Path
 	}
 	return c
 }
 
-// cell returns the expansion cell for a block within one module instance ("" =
-// root), erroring when materialization never created it.
-func (e *Engine) cell(block graph.NodeKey, mi string) (*graph.BlockExpansion, error) {
+// cell returns the expansion cell for a block within one module instance,
+// erroring when materialization never created it.
+func (e *Engine) cell(block graph.NodeKey, mi modulepath.Path) (*graph.BlockExpansion, error) {
 	b, ok := e.expansions.Get(expansionCell{block: block, mi: mi})
 	if !ok {
-		return nil, fmt.Errorf("no expansion cell for %q in module instance %q", block.String(), mi)
+		return nil, fmt.Errorf("no expansion cell for %q in module instance %q", block.String(), mi.String())
 	}
 	return b, nil
 }
@@ -165,7 +166,7 @@ func (e *Engine) wireRootLocals(g *graph.Graph, locals []*graph.Node) error {
 			return fmt.Errorf("no graph node for %q", node.Key.String())
 		}
 		for _, whole := range node.Deps.Whole {
-			target, err := e.cell(whole, "")
+			target, err := e.cell(whole, modulepath.Root())
 			if err != nil {
 				return err
 			}
@@ -174,7 +175,7 @@ func (e *Engine) wireRootLocals(g *graph.Graph, locals []*graph.Node) error {
 			}
 		}
 		for _, narrow := range node.Deps.Narrow {
-			target, err := e.cell(narrow.Key, "")
+			target, err := e.cell(narrow.Node, modulepath.Root())
 			if err != nil {
 				return err
 			}
@@ -262,7 +263,7 @@ func (e *Engine) wireCell(g *graph.Graph, node *graph.Node, mi *moduleInstance) 
 		}
 	}
 	for _, narrow := range node.Deps.Narrow {
-		target, err := e.cell(narrow.Key, key.mi)
+		target, err := e.cell(narrow.Node, key.mi)
 		if err != nil {
 			return err
 		}
@@ -408,7 +409,7 @@ func (e *Engine) expandResourceCell(
 
 	for _, instance := range result.Instances {
 		inst := instance
-		err := b.AddInstance(inst.Suffix, func(ctx context.Context) error {
+		err := b.AddInstance(inst.Key.Suffix, func(ctx context.Context) error {
 			if e.hasFailedDependency(res) {
 				e.failedNodes.Set(inst.Key, fmt.Errorf("skipped: dependency failed"))
 				return nil
@@ -488,7 +489,7 @@ func (e *Engine) expandDataCell(
 
 	for _, instance := range result.Instances {
 		inst := instance
-		err := b.AddInstance(inst.Suffix, func(ctx context.Context) error {
+		err := b.AddInstance(inst.Key.Suffix, func(ctx context.Context) error {
 			instCtx := evalCtx.WithIteration(inst.Index, inst.EachKey, inst.EachValue)
 			ctyOut, err := e.invokeDataSourceOnce(ctx, node, ds, funcSchema, instCtx, mi)
 			if err != nil {
