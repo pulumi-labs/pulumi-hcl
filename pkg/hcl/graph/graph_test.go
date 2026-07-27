@@ -19,6 +19,7 @@ import (
 	"testing"
 
 	"github.com/hashicorp/hcl/v2"
+	"github.com/pulumi-labs/pulumi-hcl/pkg/hcl/modulepath"
 	"github.com/pulumi-labs/pulumi-hcl/pkg/hcl/parser"
 	"github.com/pulumi/pulumi/pkg/v3/util/pdag"
 	"github.com/stretchr/testify/assert"
@@ -381,4 +382,31 @@ func TestResourceExpander(t *testing.T) {
 			}
 		}
 	})
+}
+
+func TestReferencePrefix(t *testing.T) {
+	t.Parallel()
+
+	assert.Equal(t, "", ReferencePrefix(modulepath.Root()))
+
+	p := modulepath.Root().Append(modulepath.NewStep("a"))
+	assert.Equal(t, "module.a.", ReferencePrefix(p))
+
+	keyed := modulepath.Root().
+		Append(modulepath.NewIndexedStep("a", 2)).
+		Append(modulepath.NewKeyedStep("b", "k"))
+	assert.Equal(t, `module.a[2].module.b["k"].`, ReferencePrefix(keyed))
+}
+
+func TestReferencePrefix_DistinguishesDottedLabels(t *testing.T) {
+	t.Parallel()
+
+	// "a.b" / "c" must produce a different prefix than "a" / "b.c".
+	p1 := modulepath.Root().
+		Append(modulepath.NewStep("a.b")).
+		Append(modulepath.NewStep("c"))
+	p2 := modulepath.Root().
+		Append(modulepath.NewStep("a")).
+		Append(modulepath.NewStep("b.c"))
+	assert.NotEqual(t, ReferencePrefix(p1), ReferencePrefix(p2))
 }

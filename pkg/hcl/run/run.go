@@ -90,6 +90,11 @@ type ResourceMonitor interface {
 	// resource registration that binds the hook by name via Hooks.
 	RegisterResourceHook(ctx context.Context, name string, callback ResourceHookFunction, opts ResourceHookOptions) error
 
+	// ResolveURN returns the URN the engine will assign to a resource with
+	// this (parent, token, name), and the name it registers under. The MLC
+	// monitor rewrites both after this package sees them.
+	ResolveURN(parent urn.URN, token, name string) (urn.URN, string)
+
 	// LogWarning emits a non-fatal warning diagnostic to the engine.
 	LogWarning(ctx context.Context, message string) error
 }
@@ -416,6 +421,9 @@ type Engine struct {
 	// dryRun indicates if this is a preview operation.
 	dryRun bool
 
+	// dispatcher is EngineOptions.DestroyDispatcher (or a private default).
+	dispatcher *DestroyDispatcher
+
 	// workDir is the working directory.
 	workDir string
 
@@ -539,6 +547,11 @@ type EngineOptions struct {
 	// DryRun indicates this is a preview operation.
 	DryRun bool
 
+	// DestroyDispatcher is the deployment's destroy-provisioner dispatch
+	// table, shared by every engine of the deployment. Nil gets a fresh,
+	// engine-private dispatcher.
+	DestroyDispatcher *DestroyDispatcher
+
 	// ResourceMonitor is the resource monitor for registering resources.
 	ResourceMonitor ResourceMonitor
 
@@ -605,8 +618,14 @@ func NewEngine(ctx context.Context, config *ast.Config, opts *EngineOptions) (*E
 		}
 	}
 
+	dispatcher := opts.DestroyDispatcher
+	if dispatcher == nil {
+		dispatcher = NewDestroyDispatcher()
+	}
+
 	return &Engine{
 		config:                  config,
+		dispatcher:              dispatcher,
 		evaluator:               eval.NewEvaluator(evalCtx),
 		pkgLoader:               opts.SchemaLoader,
 		providerInfoSource:      opts.ProviderInfoSource,
@@ -662,6 +681,10 @@ func (e *Engine) Run(ctx context.Context) error {
 	if err := e.registerStack(ctx); err != nil {
 		return fmt.Errorf("registering stack: %w", err)
 	}
+
+	// Before any resource registration: a delete-before-replace delete fires
+	// BeforeDelete hooks while the triggering registration is still blocked.
+	e.registerDestroyDispatcher(ctx)
 
 	if err := e.warnUndeclaredTfvars(ctx); err != nil {
 		return err
@@ -1279,7 +1302,7 @@ func (e *Engine) inheritedDefaultProvider(modInfo *graph.ModuleInfo, name string
 			tfBlock = parentInfo.Terraform
 		}
 		local := graph.LocalProviderName(tfBlock, fqn, name)
-		if outputs, ok := e.resourceOutputs.Get(parent.PrefixString() + local); ok {
+		if outputs, ok := e.resourceOutputs.Get(graph.ReferencePrefix(parent) + local); ok {
 			if ref, err := providerRefFromCty(outputs); err == nil {
 				return ref
 			}
@@ -1382,7 +1405,7 @@ func (e *Engine) registerProviderInContext(
 		logicalName = provider.Name
 	}
 	if inst != nil {
-		logicalName = buildResourceName(logicalName, nil, &inst.key)
+		logicalName = modulepath.NewKeyedStep(logicalName, inst.key).LogicalName()
 	}
 	if modInst != nil {
 		logicalName = joinModuleName(modInst.Name, logicalName)
@@ -2294,7 +2317,7 @@ func (e *Engine) resolveMovedAliases(
 		prefix string
 	}
 	mkAddrKey := func(a address) addrKey {
-		return addrKey{a.typ, prefixWithModulePath(a.path, buildResourceName(a.name, a.index, a.eachKey))}
+		return addrKey{a.typ, modulepath.NewAddress(a.path, instanceStep(a.name, a.index, a.eachKey)).LogicalName()}
 	}
 
 	work := []address{{path: resPath, typ: res.Type, name: res.Name, index: index, eachKey: eachKey}}
@@ -2370,7 +2393,7 @@ func (e *Engine) resolveMovedAliases(
 
 				// The prior name is the resource's own name under its prior module
 				// path; the prior parent is described relative to where it is now.
-				name := prefixWithModulePath(fromPath, buildResourceName(from.Name, priorIdx, priorEach))
+				name := modulepath.NewAddress(fromPath, instanceStep(from.Name, priorIdx, priorEach)).LogicalName()
 				parentURN, noParent, ok := e.priorParentSpec(fromPath, resPath, modInst)
 				if !ok {
 					continue
@@ -2392,7 +2415,7 @@ func (e *Engine) resolveMovedAliases(
 				if fromPath != resPath {
 					for _, oldPath := range e.oldModulePaths(fromPath) {
 						aliases = append(aliases, Alias{Spec: &AliasSpec{
-							Name:      prefixWithModulePath(oldPath, buildResourceName(from.Name, priorIdx, priorEach)),
+							Name:      modulepath.NewAddress(oldPath, instanceStep(from.Name, priorIdx, priorEach)).LogicalName(),
 							Type:      prior.token,
 							ParentURN: string(urn.URN(parentURN).Rename(oldPath.LogicalName())),
 						}})
@@ -2409,7 +2432,7 @@ func (e *Engine) resolveMovedAliases(
 	// own alias to recover the old URN.
 	for _, oldPath := range e.oldModulePaths(resPath) {
 		for _, a := range sameModule {
-			name := prefixWithModulePath(oldPath, buildResourceName(a.name, a.index, a.eachKey))
+			name := modulepath.NewAddress(oldPath, instanceStep(a.name, a.index, a.eachKey)).LogicalName()
 			aliases = append(aliases, Alias{Spec: &AliasSpec{Name: name, Type: a.token}})
 		}
 	}
@@ -2918,32 +2941,17 @@ func (e *Engine) hasFailedDependency(res *ast.Resource) bool {
 	return false
 }
 
-// buildResourceName builds the Pulumi resource name from the logical name and
-// instance key, using Terraform-style instance addressing: single instances
-// use the logical name as-is, count instances get a "[N]" suffix, and ForEach
-// instances get a `["key"]` suffix (see [modulepath.Step.LogicalName]).
-func buildResourceName(logicalName string, index *int, eachKey *string) string {
+// instanceStep builds the modulepath step for one instance of a block from
+// the expansion's optional count index or for_each key.
+func instanceStep(logicalName string, index *int, eachKey *string) modulepath.Step {
 	switch {
 	case index != nil:
-		return modulepath.NewIndexedStep(logicalName, *index).LogicalName()
+		return modulepath.NewIndexedStep(logicalName, *index)
 	case eachKey != nil:
-		return modulepath.NewKeyedStep(logicalName, *eachKey).LogicalName()
+		return modulepath.NewKeyedStep(logicalName, *eachKey)
 	default:
-		return logicalName
+		return modulepath.NewStep(logicalName)
 	}
-}
-
-// prefixWithModulePath prefixes name with the logical name of the module
-// instance path it lives in, joined with ".". The "." separator cannot appear
-// in an HCL label, so the module prefix cannot collide with a dash in a
-// sibling's label or for_each key. Used where only a path (not a resolved
-// [moduleInstance]) is available — the moved-block alias reconstruction; live
-// instances prefix with [joinModuleName] on the instance's resolved Name.
-func prefixWithModulePath(path modulepath.Path, name string) string {
-	if path.IsRoot() {
-		return name
-	}
-	return joinModuleName(path.LogicalName(), name)
 }
 
 // joinModuleName joins an enclosing module instance's resolved name and a
@@ -2991,7 +2999,7 @@ func (*Engine) resourceInstanceName(
 			return name, nil
 		}
 	}
-	name := buildResourceName(res.Name, instance.Index, instance.EachKeyString())
+	name := instanceStep(res.Name, instance.Index, instance.EachKeyString()).LogicalName()
 	if modInst == nil {
 		return name, nil
 	}
@@ -4598,32 +4606,37 @@ func checkRuleDeps(rules []*ast.CheckRule, hclCtx *hcl.EvalContext) []string {
 	return deps
 }
 
+// bodyTraversals returns every variable traversal in body, recursing into
+// nested blocks and both halves of an escaped body.
+func bodyTraversals(body hcl.Body) []hcl.Traversal {
+	if body == nil {
+		return nil
+	}
+	if eb, ok := body.(*ast.EscapedBody); ok {
+		return append(bodyTraversals(eb.Base), bodyTraversals(eb.Escape)...)
+	}
+	var traversals []hcl.Traversal
+	attrs, _ := body.JustAttributes()
+	for _, attr := range attrs {
+		traversals = append(traversals, attr.Expr.Variables()...)
+	}
+	if syntaxBody, ok := body.(*hclsyntax.Body); ok {
+		for _, block := range syntaxBody.Blocks {
+			traversals = append(traversals, bodyTraversals(block.Body)...)
+		}
+	}
+	return traversals
+}
+
 func provisionerDeps(res *ast.Resource, hclCtx *hcl.EvalContext) []string {
 	var deps []string
-	var collect func(body hcl.Body)
-	collect = func(body hcl.Body) {
-		if body == nil {
-			return
-		}
-		if eb, ok := body.(*ast.EscapedBody); ok {
-			collect(eb.Base)
-			collect(eb.Escape)
-			return
-		}
-		attrs, _ := body.JustAttributes()
-		for _, attr := range attrs {
-			for _, traversal := range attr.Expr.Variables() {
-				val, diags := traversal.TraverseAbs(hclCtx)
-				if diags.HasErrors() {
-					continue
-				}
-				deps = append(deps, eval.CollectDepURNs(val)...)
+	collect := func(body hcl.Body) {
+		for _, traversal := range bodyTraversals(body) {
+			val, diags := traversal.TraverseAbs(hclCtx)
+			if diags.HasErrors() {
+				continue
 			}
-		}
-		if syntaxBody, ok := body.(*hclsyntax.Body); ok {
-			for _, block := range syntaxBody.Blocks {
-				collect(block.Body)
-			}
+			deps = append(deps, eval.CollectDepURNs(val)...)
 		}
 	}
 	if res.Connection != nil {
@@ -4864,11 +4877,11 @@ func (e *Engine) evaluateChecks(ctx context.Context) error {
 		instances = append(instances, insts...)
 	}
 	slices.SortFunc(instances, func(a, b *moduleInstance) int {
-		return strings.Compare(a.Path.PrefixString(), b.Path.PrefixString())
+		return modulepath.Compare(a.Path, b.Path)
 	})
 	for _, inst := range instances {
 		errs = append(errs, e.evaluateConfigChecks(
-			ctx, inst.Path.PrefixString()+".", inst.Config, inst.EvalCtx))
+			ctx, graph.ReferencePrefix(inst.Path)+".", inst.Config, inst.EvalCtx))
 	}
 	return errors.Join(errs...)
 }

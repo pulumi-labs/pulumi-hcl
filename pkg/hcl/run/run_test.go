@@ -2650,6 +2650,71 @@ resource "aws_instance" "web" {
 		"resource must not be registered when a provisioner type is unknown")
 }
 
+// Create-time provisioners bind per-instance AfterCreate names; destroy-time
+// provisioners bind the single constant BeforeDelete name that stays
+// registered on every later run, when the instance may be orphaned.
+func TestEngine_DestroyProvisionerHookBinding(t *testing.T) {
+	t.Parallel()
+
+	src := []byte(`
+resource "aws_instance" "web" {
+  ami = "ami-12345"
+
+  provisioner "local-exec" {
+    command = "true"
+  }
+
+  provisioner "local-exec" {
+    when    = destroy
+    command = "true"
+  }
+}
+`)
+
+	p := parser.NewParser()
+	config, diags := p.ParseSource("test.hcl", src)
+	require.False(t, diags.HasErrors(), diags.Error())
+
+	mock := &testutil.MockResourceMonitor{}
+	engine := newTestEngine(t, config, &run.EngineOptions{
+		ModuleLoader:    testModuleLoader(t),
+		ProjectName:     "test-project",
+		StackName:       "dev",
+		ResourceMonitor: mock,
+		WorkDir:         t.TempDir(),
+		RootDir:         t.TempDir(),
+		SchemaLoader: schemaloader.New(t, schema.PackageSpec{
+			Name: "aws",
+			Resources: map[string]schema.ResourceSpec{
+				"aws:index:Instance": {
+					InputProperties: map[string]schema.PropertySpec{
+						"ami": {TypeSpec: schema.TypeSpec{Type: "string"}},
+					},
+					ObjectTypeSpec: schema.ObjectTypeSpec{
+						Properties: map[string]schema.PropertySpec{
+							"ami": {TypeSpec: schema.TypeSpec{Type: "string"}},
+						},
+					},
+				},
+			},
+		}),
+	})
+
+	require.NoError(t, engine.Run(t.Context()))
+
+	var instance *run.RegisterResourceRequest
+	for i, req := range mock.RegisteredResources {
+		if req.Type == "aws:index:Instance" {
+			instance = &mock.RegisteredResources[i]
+		}
+	}
+	require.NotNil(t, instance)
+	assert.Equal(t, &run.ResourceHookBinding{
+		AfterCreate:  []string{"aws_instance.web:provisioner:0"},
+		BeforeDelete: []string{"pulumi-hcl:provisioner:before-delete"},
+	}, instance.Hooks)
+}
+
 // TestEngine_ProvisionerReference covers a provisioner whose command
 // interpolates another resource's outputs: the referent must be created
 // first, and its created value must reach the command.

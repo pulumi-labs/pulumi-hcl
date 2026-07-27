@@ -16,11 +16,11 @@ package modulepath_test
 
 import (
 	"slices"
-	"strings"
 	"testing"
 
 	"github.com/pulumi-labs/pulumi-hcl/pkg/hcl/modulepath"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestRoot(t *testing.T) {
@@ -70,6 +70,60 @@ func TestStep_Accessors(t *testing.T) {
 	gotKey, ok := key.Key()
 	assert.True(t, ok)
 	assert.Equal(t, "k", gotKey)
+	_, ok = key.Index()
+	assert.False(t, ok)
+
+	indexed := modulepath.NewIndexedStep("a", 3)
+	gotIndex, ok := indexed.Index()
+	assert.True(t, ok)
+	assert.Equal(t, 3, gotIndex)
+	_, ok = indexed.Key()
+	assert.False(t, ok)
+}
+
+func TestParseLogicalName(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		want modulepath.Path
+	}{
+		{name: "target", want: modulepath.Root().
+			Append(modulepath.NewStep("target"))},
+		{name: "target[3]", want: modulepath.Root().
+			Append(modulepath.NewIndexedStep("target", 3))},
+		{name: `target["key"]`, want: modulepath.Root().
+			Append(modulepath.NewKeyedStep("target", "key"))},
+		{name: `m["a.b"].target`, want: modulepath.Root().
+			Append(modulepath.NewKeyedStep("m", "a.b")).
+			Append(modulepath.NewStep("target"))},
+		{name: `m[0].n["x\"y"].target[1]`, want: modulepath.Root().
+			Append(modulepath.NewIndexedStep("m", 0)).
+			Append(modulepath.NewKeyedStep("n", `x"y`)).
+			Append(modulepath.NewIndexedStep("target", 1))},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got, err := modulepath.ParseLogicalName(tt.name)
+			require.NoError(t, err)
+			assert.Equal(t, tt.want, got)
+			assert.Equal(t, tt.name, got.LogicalName())
+		})
+	}
+
+	// "a[01]" and `a["\x41"]` are well-formed but non-canonical: LogicalName
+	// never emits them, and accepting them would break the exact-inverse law.
+	for _, malformed := range []string{
+		"", ".", "a.", ".a", "a[", "a[]", "a[1", `a["x]`, "a[1]b", "a[x]",
+		"a[01]", `a["\x41"]`,
+	} {
+		t.Run("malformed_"+malformed, func(t *testing.T) {
+			t.Parallel()
+			_, err := modulepath.ParseLogicalName(malformed)
+			assert.Error(t, err)
+		})
+	}
 }
 
 func TestNewIndexedStep_NegativePanics(t *testing.T) {
@@ -225,34 +279,6 @@ func TestPath_LogicalName_NoCollisionAcrossDashedKeys(t *testing.T) {
 	byLabel := modulepath.Root().Append(modulepath.NewKeyedStep("m-a", "b"))
 	assert.Equal(t, `m["a-b"]`, byKey.LogicalName())
 	assert.Equal(t, `m-a["b"]`, byLabel.LogicalName())
-}
-
-func TestPath_PrefixString(t *testing.T) {
-	t.Parallel()
-
-	assert.Equal(t, "", modulepath.Root().PrefixString())
-
-	p := modulepath.Root().Append(modulepath.NewStep("a"))
-	got := p.PrefixString()
-	// Must end with "." so concatenation works.
-	assert.True(t, strings.HasSuffix(got, "."))
-
-	// Must contain the label content for diagnostics, but the exact
-	// format is part of the API contract: it's a quoted bracketed form.
-	assert.Contains(t, got, "a")
-}
-
-func TestPath_PrefixString_DistinguishesDottedLabels(t *testing.T) {
-	t.Parallel()
-
-	// "a.b" / "c" must produce a different prefix than "a" / "b.c".
-	p1 := modulepath.Root().
-		Append(modulepath.NewStep("a.b")).
-		Append(modulepath.NewStep("c"))
-	p2 := modulepath.Root().
-		Append(modulepath.NewStep("a")).
-		Append(modulepath.NewStep("b.c"))
-	assert.NotEqual(t, p1.PrefixString(), p2.PrefixString())
 }
 
 func TestPath_String_Diagnostic(t *testing.T) {

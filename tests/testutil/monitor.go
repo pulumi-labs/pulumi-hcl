@@ -51,6 +51,11 @@ type registeredHook struct {
 	opts     run.ResourceHookOptions
 }
 
+// ResolveURN mirrors RegisterResource's URN scheme.
+func (m *MockResourceMonitor) ResolveURN(_ urn.URN, token, name string) (urn.URN, string) {
+	return urn.URN("urn:pulumi:test::project::" + token + "::" + name), name
+}
+
 func (m *MockResourceMonitor) RegisterResource(ctx context.Context, req run.RegisterResourceRequest) (*run.RegisterResourceResponse, error) {
 	m.mu.Lock()
 	resURN := urn.URN("urn:pulumi:test::project::" + req.Type + "::" + req.Name)

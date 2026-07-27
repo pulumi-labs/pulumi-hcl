@@ -150,6 +150,28 @@ func (l *lazyCallbackServer) close() {
 	}
 }
 
+// dispatcherSet hands out one run.DestroyDispatcher per deployment (monitor
+// endpoint): one provider process serves several deployments, whose
+// Constructs must each share their deployment's dispatcher.
+type dispatcherSet struct {
+	mu         sync.Mutex
+	byEndpoint map[string]*run.DestroyDispatcher
+}
+
+func (s *dispatcherSet) get(endpoint string) *run.DestroyDispatcher {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.byEndpoint == nil {
+		s.byEndpoint = map[string]*run.DestroyDispatcher{}
+	}
+	d, ok := s.byEndpoint[endpoint]
+	if !ok {
+		d = run.NewDestroyDispatcher()
+		s.byEndpoint[endpoint] = d
+	}
+	return d
+}
+
 // hooksToProto returns nil for a nil binding so the field is omitted.
 func hooksToProto(hooks *run.ResourceHookBinding) *pulumirpc.RegisterResourceRequest_ResourceHooksBinding {
 	if hooks == nil {

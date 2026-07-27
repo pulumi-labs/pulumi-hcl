@@ -70,7 +70,28 @@ func (m *ModuleInfo) ModuleName() string {
 
 // Prefix returns the string prefix used to disambiguate node keys
 // belonging to this module from the rest of the graph.
-func (m *ModuleInfo) Prefix() string { return m.Path.PrefixString() }
+func (m *ModuleInfo) Prefix() string { return ReferencePrefix(m.Path) }
+
+// ReferencePrefix renders path in the dependency-reference syntax used for
+// graph keys — "module.<name>.module.<name>." — matching how HCL traversals
+// reference module contents, so lookups by string concatenation hit the keys
+// the prefixed nodes were stored under. The root renders "". NOT
+// collision-free ("a.module.b" collides with ["a", "b"]); use Path equality
+// when that matters.
+func ReferencePrefix(path modulepath.Path) string {
+	var b strings.Builder
+	for s := range path.Steps {
+		b.WriteString("module.")
+		b.WriteString(s.Name())
+		if idx, ok := s.Index(); ok {
+			fmt.Fprintf(&b, "[%d]", idx)
+		} else if key, ok := s.Key(); ok {
+			fmt.Fprintf(&b, "[%q]", key)
+		}
+		b.WriteByte('.')
+	}
+	return b.String()
+}
 
 // ParentPrefix returns the string prefix of the enclosing module, or "" if
 // this module is at the root of the configuration.
@@ -79,7 +100,7 @@ func (m *ModuleInfo) ParentPrefix() string {
 	if !ok {
 		return ""
 	}
-	return parent.PrefixString()
+	return ReferencePrefix(parent)
 }
 
 // ParentPath returns the path of the enclosing module, or modulepath.Root() if
@@ -1507,8 +1528,8 @@ func (g *Graph) inlineModule(
 	}
 
 	path := parentPath.Append(modulepath.NewStep(name))
-	prefix := path.PrefixString()
-	parentPrefix := parentPath.PrefixString()
+	prefix := ReferencePrefix(path)
+	parentPrefix := ReferencePrefix(parentPath)
 	g.moved[path] = loaded.Config.Moved
 	scope := &moduleScope{
 		prefix:       prefix,
