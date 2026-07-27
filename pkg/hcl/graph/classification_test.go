@@ -29,23 +29,26 @@ import (
 type blockDepsView struct {
 	Static []string
 	Whole  []string
-	Narrow []InstanceDep
+	Narrow []InstanceKey
 }
 
 func depsView(t *testing.T, g *Graph, key string) blockDepsView {
 	t.Helper()
-	node, ok := g.seen[key]
+	node, ok := g.seen[nk(key)]
 	require.True(t, ok, "no node %q", key)
 	require.NotNil(t, node.n.Deps, "node %q has no classified deps", key)
 	bd := node.n.Deps
-	view := blockDepsView{Whole: slices.Clone(bd.Whole), Narrow: slices.Clone(bd.Narrow)}
+	view := blockDepsView{Narrow: slices.Clone(bd.Narrow)}
 	for _, n := range bd.Static {
-		view.Static = append(view.Static, g.keyByDagNode[n])
+		view.Static = append(view.Static, g.keyByDagNode[n].String())
+	}
+	for _, w := range bd.Whole {
+		view.Whole = append(view.Whole, w.String())
 	}
 	slices.Sort(view.Static)
 	slices.Sort(view.Whole)
-	slices.SortFunc(view.Narrow, func(a, b InstanceDep) int {
-		return cmp.Or(cmp.Compare(a.Key, b.Key), cmp.Compare(a.Suffix, b.Suffix))
+	slices.SortFunc(view.Narrow, func(a, b InstanceKey) int {
+		return cmp.Or(cmp.Compare(a.Node.String(), b.Node.String()), cmp.Compare(a.Suffix, b.Suffix))
 	})
 	return view
 }
@@ -89,11 +92,11 @@ resource "order_resource" "dyn" {
 `)
 
 	assert.Equal(t, blockDepsView{
-		Narrow: []InstanceDep{{Key: "order_resource.a", Suffix: `["x"]`}},
+		Narrow: []InstanceKey{{Node: nk("order_resource.a"), Suffix: `["x"]`}},
 	}, depsView(t, g, "order_resource.b"))
 
 	assert.Equal(t, blockDepsView{
-		Narrow: []InstanceDep{{Key: "order_resource.a", Suffix: `[0]`}},
+		Narrow: []InstanceKey{{Node: nk("order_resource.a"), Suffix: `[0]`}},
 	}, depsView(t, g, "order_resource.c"))
 
 	assert.Equal(t, blockDepsView{
@@ -133,7 +136,7 @@ resource "order_resource" "d" {
 `)
 
 	assert.Equal(t, blockDepsView{
-		Narrow: []InstanceDep{{Key: "order_resource.a", Suffix: `["x"]`}},
+		Narrow: []InstanceKey{{Node: nk("order_resource.a"), Suffix: `["x"]`}},
 	}, depsView(t, g, "order_resource.b"))
 
 	assert.Equal(t, blockDepsView{
@@ -141,7 +144,7 @@ resource "order_resource" "d" {
 	}, depsView(t, g, "order_resource.c"))
 
 	assert.Equal(t, blockDepsView{
-		Narrow: []InstanceDep{{Key: "order_resource.a", Suffix: `["x"]`}},
+		Narrow: []InstanceKey{{Node: nk("order_resource.a"), Suffix: `["x"]`}},
 	}, depsView(t, g, "order_resource.d"))
 }
 
@@ -186,11 +189,11 @@ data "order_data" "narrow" {
 `)
 
 	assert.Equal(t, blockDepsView{
-		Narrow: []InstanceDep{{Key: "data.order_data.d", Suffix: `["x"]`}},
+		Narrow: []InstanceKey{{Node: nk("data.order_data.d"), Suffix: `["x"]`}},
 	}, depsView(t, g, "order_resource.b"))
 
 	assert.Equal(t, blockDepsView{
-		Narrow: []InstanceDep{{Key: "order_resource.a", Suffix: `["x"]`}},
+		Narrow: []InstanceKey{{Node: nk("order_resource.a"), Suffix: `["x"]`}},
 	}, depsView(t, g, "data.order_data.narrow"))
 }
 
@@ -224,7 +227,7 @@ module "m" {
 
 	assert.Equal(t, blockDepsView{
 		Static: []string{"module.m.__init__"},
-		Narrow: []InstanceDep{{Key: "module.m.order_resource.a", Suffix: `["x"]`}},
+		Narrow: []InstanceKey{{Node: nk("module.m.order_resource.a"), Suffix: `["x"]`}},
 	}, depsView(t, g, "module.m.order_resource.b"))
 }
 
@@ -258,7 +261,7 @@ module "m" {
 	require.NoError(t, err)
 	require.Empty(t, g.Validate())
 
-	assert.Equal(t, NodeTypeDataSource, g.seen["module.m.data.order_data.d"].n.Type)
+	assert.Equal(t, NodeTypeDataSource, g.seen[nk("module.m.data.order_data.d")].n.Type)
 	assert.Equal(t, blockDepsView{
 		Static: []string{"module.m.__init__"},
 		Whole:  []string{"module.m.data.order_data.d"},
@@ -289,12 +292,12 @@ resource "order_resource" "b" {
 `)
 
 	assert.Equal(t, blockDepsView{
-		Narrow: []InstanceDep{{Key: "order_resource.a", Suffix: `["x"]`}},
+		Narrow: []InstanceKey{{Node: nk("order_resource.a"), Suffix: `["x"]`}},
 	}, depsView(t, g, "local.picked"))
 
 	// No block-level edge from the resource to the local: the local's only
 	// build-time prerequisites are its static deps (none here).
-	local, ok := g.seen["local.picked"]
+	local, ok := g.seen[nk("local.picked")]
 	require.True(t, ok)
 	for pred := range g.dag.Predecessors(local.i) {
 		assert.NotEqual(t, "order_resource.a", g.keyByDagNode[pred])
@@ -323,9 +326,9 @@ resource "order_resource" "b" {
 }
 `)
 
-	assert.Equal(t, map[string]bool{
-		"order_resource.a": true,
-		"order_resource.b": true,
+	assert.Equal(t, map[NodeKey]bool{
+		nk("order_resource.a"): true,
+		nk("order_resource.b"): true,
 	}, g.ForcedCreateBeforeDestroy())
 }
 

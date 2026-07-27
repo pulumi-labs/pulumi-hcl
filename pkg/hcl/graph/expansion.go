@@ -52,7 +52,7 @@ import (
 // expand exec, which the walker cannot start until wiring armed it.
 type BlockExpansion struct {
 	g         *Graph
-	key       string
+	key       NodeKey
 	expand    pdag.Node
 	armExpand pdag.Done
 	complete  pdag.Node
@@ -68,7 +68,7 @@ type BlockExpansion struct {
 // under "<key>!expand" so InjectAfter sees it; skeletons created mid-walk must
 // not touch the interning maps and stay anonymous. expandExec runs on the
 // expand node; finish is deferred around it.
-func (g *Graph) NewBlockExpansion(key string, static bool, expandExec func(context.Context) error) *BlockExpansion {
+func (g *Graph) NewBlockExpansion(key NodeKey, static bool, expandExec func(context.Context) error) *BlockExpansion {
 	b := &BlockExpansion{
 		g:     g,
 		key:   key,
@@ -79,7 +79,7 @@ func (g *Graph) NewBlockExpansion(key string, static bool, expandExec func(conte
 		return expandExec(ctx)
 	}
 	if static {
-		b.expand, b.armExpand = g.internExecNode(key+"!expand", exec)
+		b.expand, b.armExpand = g.internExecNode(NodeKey{Module: key.Module, ID: key.ID + "!expand"}, exec)
 	} else {
 		b.expand, b.armExpand = g.dag.NewNode(dagNode{exec: exec})
 	}
@@ -106,7 +106,7 @@ func (b *BlockExpansion) Complete() pdag.Node { return b.complete }
 // expansion runs — consumers wire during skeleton materialization, which
 // happens before Arm.
 func (b *BlockExpansion) Gate(suffix string) pdag.Node {
-	contract.Assertf(!b.expanded, "gate %q%s requested after expansion", b.key, suffix)
+	contract.Assertf(!b.expanded, "gate %q%s requested after expansion", b.key.String(), suffix)
 	if gate, ok := b.gates[suffix]; ok {
 		return gate
 	}

@@ -68,7 +68,7 @@ func TestBlockExpansionGateRunsBeforeDelayedSibling(t *testing.T) {
 	narrowDone := make(chan struct{})
 
 	var b *BlockExpansion
-	b = g.NewBlockExpansion("order_resource.a", false, func(context.Context) error {
+	b = g.NewBlockExpansion(nk("order_resource.a"), false, func(context.Context) error {
 		if err := b.AddInstance(`["x"]`, record(log, "a-x")); err != nil {
 			return err
 		}
@@ -109,7 +109,7 @@ func TestBlockExpansionUnmatchedGateFallsBack(t *testing.T) {
 	log := &eventLog{}
 
 	var b *BlockExpansion
-	b = g.NewBlockExpansion("order_resource.a", false, func(context.Context) error {
+	b = g.NewBlockExpansion(nk("order_resource.a"), false, func(context.Context) error {
 		return b.AddInstance(`[0]`, record(log, "a-0"))
 	})
 
@@ -131,7 +131,7 @@ func TestBlockExpansionExpandErrorDoesNotHang(t *testing.T) {
 
 	expandErr := errors.New("count evaluation failed")
 	var b *BlockExpansion
-	b = g.NewBlockExpansion("order_resource.a", false, func(context.Context) error {
+	b = g.NewBlockExpansion(nk("order_resource.a"), false, func(context.Context) error {
 		if err := b.AddInstance(`[0]`, func(context.Context) error { return nil }); err != nil {
 			return err
 		}
@@ -154,11 +154,11 @@ func TestBlockExpansionStaticInterning(t *testing.T) {
 	t.Parallel()
 	g := NewGraph()
 
-	b := g.NewBlockExpansion("order_resource.a", true, func(context.Context) error { return nil })
+	b := g.NewBlockExpansion(nk("order_resource.a"), true, func(context.Context) error { return nil })
 	b.Arm()
 
-	interned, ok := g.seen["order_resource.a!expand"]
+	interned, ok := g.seen[nk("order_resource.a!expand")]
 	require.True(t, ok)
-	assert.Equal(t, &Node{Key: "order_resource.a!expand", Type: NodeTypeBuiltin}, interned.n)
+	assert.Equal(t, &Node{Key: nk("order_resource.a!expand"), Type: NodeTypeBuiltin}, interned.n)
 	assert.Empty(t, g.Validate())
 }

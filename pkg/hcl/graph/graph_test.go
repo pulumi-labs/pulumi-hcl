@@ -58,7 +58,7 @@ output "instance_id" {
 	require.Len(t, nodes, 7, "4 explicit nodes + 3 builtins")
 
 	// Verify dependencies
-	localNode := g.seen["local.greeting"].n
+	localNode := g.seen[nk("local.greeting")].n
 	if localNode == nil {
 		t.Fatal("Expected local.greeting node")
 	}
@@ -66,7 +66,7 @@ output "instance_id" {
 	// Verify topological sort works
 	var sorted []string
 	err = g.dag.Walk(t.Context(), func(_ context.Context, n dagNode) error {
-		sorted = append(sorted, n.key)
+		sorted = append(sorted, n.key.String())
 		return nil
 	}, pdag.MaxProcs(1))
 	require.NoError(t, err)
@@ -121,8 +121,8 @@ output "gate" {
 	g, err := BuildFromConfig(config, nil, "")
 	require.NoError(t, err)
 
-	assert.Equal(t, NodeTypeVariableValidation, g.seen["var.gate"].n.Type)
-	assert.Equal(t, NodeTypeVariable, g.seen["var.gate!value"].n.Type)
+	assert.Equal(t, NodeTypeVariableValidation, g.seen[nk("var.gate")].n.Type)
+	assert.Equal(t, NodeTypeVariable, g.seen[nk("var.gate!value")].n.Type)
 
 	barrierKey := "barrier"
 	require.NoError(t, g.InjectAfter(func(context.Context) error { return nil }, func(n *Node) bool {
@@ -131,7 +131,7 @@ output "gate" {
 
 	var sorted []string
 	err = g.dag.Walk(t.Context(), func(_ context.Context, n dagNode) error {
-		key := n.key
+		key := n.key.String()
 		if n.exec != nil {
 			key = barrierKey
 		}
@@ -170,8 +170,8 @@ variable "name" {
 	g, err := BuildFromConfig(config, nil, "")
 	require.NoError(t, err)
 
-	assert.Equal(t, NodeTypeVariable, g.seen["var.name"].n.Type)
-	assert.NotContains(t, g.seen, "var.name!value")
+	assert.Equal(t, NodeTypeVariable, g.seen[nk("var.name")].n.Type)
+	assert.NotContains(t, g.seen, nk("var.name!value"))
 }
 
 func TestForcedCreateBeforeDestroy(t *testing.T) {
@@ -206,10 +206,10 @@ resource "aws_instance" "d" {
 	g, err := BuildFromConfig(config, nil, "")
 	require.NoError(t, err)
 
-	assert.Equal(t, map[string]bool{
-		"aws_instance.a": true,
-		"aws_instance.b": true,
-		"aws_instance.c": true,
+	assert.Equal(t, map[NodeKey]bool{
+		nk("aws_instance.a"): true,
+		nk("aws_instance.b"): true,
+		nk("aws_instance.c"): true,
 	}, g.ForcedCreateBeforeDestroy())
 }
 
@@ -242,9 +242,9 @@ resource "aws_instance" "user" {
 	g, err := BuildFromConfig(config, nil, "")
 	require.NoError(t, err)
 
-	assert.Equal(t, map[string]bool{
-		"aws_instance.dep":  true,
-		"aws_instance.user": true,
+	assert.Equal(t, map[NodeKey]bool{
+		nk("aws_instance.dep"):  true,
+		nk("aws_instance.user"): true,
 	}, g.ForcedCreateBeforeDestroy())
 }
 
@@ -253,8 +253,8 @@ func TestValidate(t *testing.T) {
 	g := NewGraph()
 
 	// Missing dependency
-	_, i := g.newNode("NonExistent")
-	err := g.AddNode(&Node{Key: "A", Type: NodeTypeLocal}, []pdag.Node{i})
+	_, i := g.newNode(nk("NonExistent"))
+	err := g.AddNode(&Node{Key: nk("A"), Type: NodeTypeLocal}, []pdag.Node{i})
 	require.NoError(t, err)
 
 	errors := g.Validate()
@@ -302,7 +302,7 @@ func TestResourceExpander(t *testing.T) {
 	t.Parallel()
 
 	node := &Node{
-		Key:  "aws_instance.web",
+		Key:  nk("aws_instance.web"),
 		Type: NodeTypeResource,
 	}
 
@@ -315,7 +315,7 @@ func TestResourceExpander(t *testing.T) {
 		if len(result.Instances) != 1 {
 			t.Errorf("Expected 1 instance, got %d", len(result.Instances))
 		}
-		if result.Instances[0].Key != "aws_instance.web" {
+		if result.Instances[0].Key.String() != "aws_instance.web" {
 			t.Errorf("Unexpected key: %s", result.Instances[0].Key)
 		}
 	})
@@ -323,7 +323,7 @@ func TestResourceExpander(t *testing.T) {
 	t.Run("count expansion", func(t *testing.T) {
 		t.Parallel()
 		expander := NewResourceExpander()
-		expander.SetCount("aws_instance.web", 3)
+		expander.SetCount(nk("aws_instance.web"), 3)
 		result := expander.Expand(node)
 		if result.IsSingle {
 			t.Error("Should not be single instance")
@@ -333,7 +333,7 @@ func TestResourceExpander(t *testing.T) {
 		}
 		for i, inst := range result.Instances {
 			expectedKey := "aws_instance.web[" + string(rune('0'+i)) + "]"
-			if inst.Key != expectedKey {
+			if inst.Key.String() != expectedKey {
 				t.Errorf("Instance %d: expected key %s, got %s", i, expectedKey, inst.Key)
 			}
 			if inst.Index == nil || *inst.Index != i {
@@ -345,8 +345,8 @@ func TestResourceExpander(t *testing.T) {
 	t.Run("count zero", func(t *testing.T) {
 		t.Parallel()
 		expander := NewResourceExpander()
-		expander.SetCount("aws_instance.zero", 0)
-		zeroNode := &Node{Key: "aws_instance.zero", Type: NodeTypeResource}
+		expander.SetCount(nk("aws_instance.zero"), 0)
+		zeroNode := &Node{Key: nk("aws_instance.zero"), Type: NodeTypeResource}
 		result := expander.Expand(zeroNode)
 		if result.IsSingle {
 			t.Error("Should not be single instance")
@@ -359,11 +359,11 @@ func TestResourceExpander(t *testing.T) {
 	t.Run("for_each expansion", func(t *testing.T) {
 		t.Parallel()
 		expander := NewResourceExpander()
-		expander.SetForEach("aws_instance.each", map[string]cty.Value{
+		expander.SetForEach(nk("aws_instance.each"), map[string]cty.Value{
 			"a": cty.StringVal("value_a"),
 			"b": cty.StringVal("value_b"),
 		})
-		eachNode := &Node{Key: "aws_instance.each", Type: NodeTypeResource}
+		eachNode := &Node{Key: nk("aws_instance.each"), Type: NodeTypeResource}
 		result := expander.Expand(eachNode)
 		if result.IsSingle {
 			t.Error("Should not be single instance")

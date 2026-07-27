@@ -20,13 +20,18 @@ import (
 	"github.com/zclconf/go-cty/cty"
 )
 
+// InstanceKey identifies one instance of a block: the block's node key plus
+// the instance suffix ("", "[0]", `["k"]`).
+type InstanceKey struct {
+	Node   NodeKey
+	Suffix string
+}
+
+func (k InstanceKey) String() string { return k.Node.String() + k.Suffix }
+
 // ExpandedResource represents a single instance of a resource after count/for_each expansion.
 type ExpandedResource struct {
-	// Key is the unique identifier for this instance (e.g., "aws_instance.web[0]" or "aws_instance.web[\"a\"]")
-	Key string
-
-	// OriginalKey is the key of the original resource before expansion
-	OriginalKey string
+	Key InstanceKey
 
 	// Index is the numeric index for count-based expansion (nil for for_each)
 	Index *int
@@ -53,118 +58,88 @@ type ExpandResult struct {
 // ResourceExpander handles count and for_each expansion.
 type ResourceExpander struct {
 	// countValues maps resource keys to their evaluated count values
-	countValues map[string]int
+	countValues map[NodeKey]int
 
 	// boolCountKeys tracks resources whose count is a bool (0 or 1, single-instance semantics)
-	boolCountKeys map[string]bool
+	boolCountKeys map[NodeKey]bool
 
 	// forEachValues maps resource keys to their evaluated for_each values
-	forEachValues map[string]map[string]cty.Value
+	forEachValues map[NodeKey]map[string]cty.Value
 }
 
 // NewResourceExpander creates a new resource expander.
 func NewResourceExpander() *ResourceExpander {
 	return &ResourceExpander{
-		countValues:   make(map[string]int),
-		boolCountKeys: make(map[string]bool),
-		forEachValues: make(map[string]map[string]cty.Value),
+		countValues:   make(map[NodeKey]int),
+		boolCountKeys: make(map[NodeKey]bool),
+		forEachValues: make(map[NodeKey]map[string]cty.Value),
 	}
 }
 
 // SetCount sets the evaluated count value for a resource.
-func (e *ResourceExpander) SetCount(key string, count int) {
+func (e *ResourceExpander) SetCount(key NodeKey, count int) {
 	e.countValues[key] = count
 }
 
 // SetBoolCount sets a bool-derived count for a resource (0 or 1).
 // When count > 0, produces a single instance with no numeric index suffix.
-func (e *ResourceExpander) SetBoolCount(key string, count int) {
+func (e *ResourceExpander) SetBoolCount(key NodeKey, count int) {
 	e.countValues[key] = count
 	e.boolCountKeys[key] = true
 }
 
 // SetForEach sets the evaluated for_each value for a resource.
-func (e *ResourceExpander) SetForEach(key string, values map[string]cty.Value) {
+func (e *ResourceExpander) SetForEach(key NodeKey, values map[string]cty.Value) {
 	e.forEachValues[key] = values
 }
 
 // Expand expands a resource node into its instances.
 func (e *ResourceExpander) Expand(node *Node) *ExpandResult {
+	single := &ExpandResult{
+		Instances: []*ExpandedResource{{Key: InstanceKey{Node: node.Key}, Node: node}},
+		IsSingle:  true,
+	}
+
 	// Check for count
 	if count, ok := e.countValues[node.Key]; ok {
 		if count == 0 {
-			return &ExpandResult{
-				Instances: nil,
-				IsSingle:  false,
-			}
+			return &ExpandResult{}
 		}
 
 		// Bool-derived counts produce a single instance without an index suffix.
 		if e.boolCountKeys[node.Key] {
-			return &ExpandResult{
-				Instances: []*ExpandedResource{{
-					Key:         node.Key,
-					OriginalKey: node.Key,
-					Node:        node,
-				}},
-				IsSingle: true,
-			}
+			return single
 		}
 
 		instances := make([]*ExpandedResource, count)
 		for i := range count {
 			idx := i
 			instances[i] = &ExpandedResource{
-				Key:         fmt.Sprintf("%s[%d]", node.Key, i),
-				OriginalKey: node.Key,
-				Index:       &idx,
-				Node:        node,
+				Key:   InstanceKey{Node: node.Key, Suffix: fmt.Sprintf("[%d]", i)},
+				Index: &idx,
+				Node:  node,
 			}
 		}
-		return &ExpandResult{
-			Instances: instances,
-			IsSingle:  false,
-		}
+		return &ExpandResult{Instances: instances}
 	}
 
 	// Check for for_each
 	if forEachVals, ok := e.forEachValues[node.Key]; ok {
-		if len(forEachVals) == 0 {
-			return &ExpandResult{
-				Instances: nil,
-				IsSingle:  false,
-			}
-		}
-
 		instances := make([]*ExpandedResource, 0, len(forEachVals))
 		for k, v := range forEachVals {
 			key := cty.StringVal(k)
 			val := v
 			instances = append(instances, &ExpandedResource{
-				Key:         fmt.Sprintf("%s[%q]", node.Key, k),
-				OriginalKey: node.Key,
-				EachKey:     &key,
-				EachValue:   &val,
-				Node:        node,
+				Key:       InstanceKey{Node: node.Key, Suffix: fmt.Sprintf("[%q]", k)},
+				EachKey:   &key,
+				EachValue: &val,
+				Node:      node,
 			})
 		}
-		return &ExpandResult{
-			Instances: instances,
-			IsSingle:  false,
-		}
+		return &ExpandResult{Instances: instances}
 	}
 
-	// Single instance
-	return &ExpandResult{
-		Instances: []*ExpandedResource{
-			{
-				Key:         node.Key,
-				OriginalKey: node.Key,
-				Node:        node,
-			},
-		},
-		IsSingle: true,
-	}
+	return single
 }
 
 // EachKeyString returns the for_each instance key as a plain string, or nil for

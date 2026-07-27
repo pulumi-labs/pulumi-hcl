@@ -44,7 +44,7 @@ variable "name" {
 	g, err := BuildFromConfig(config, nil, "")
 	require.NoError(t, err)
 
-	assert.True(t, g.HasDependents("simple"))
+	assert.True(t, g.HasDependents(nk("simple")))
 	assert.Empty(t, g.Validate())
 
 	order := walkOrder(t, g)
@@ -74,8 +74,8 @@ variable "name" {
 	require.NoError(t, err)
 
 	assert.Empty(t, g.Validate())
-	assert.False(t, g.HasDependents("simple"))
-	_, ok := g.seen["simple"]
+	assert.False(t, g.HasDependents(nk("simple")))
+	_, ok := g.seen[nk("simple")]
 	assert.False(t, ok, "no node should be created for an undeclared provider")
 }
 
@@ -118,7 +118,7 @@ variable "name" {
 	g, err := BuildFromConfig(config, nil, "")
 	require.NoError(t, err)
 
-	assert.True(t, g.HasDependents("simple"))
+	assert.True(t, g.HasDependents(nk("simple")))
 	assert.Empty(t, g.Validate())
 
 	order := walkOrder(t, g)
@@ -178,7 +178,7 @@ module "child" {
 	require.NoError(t, err)
 
 	assert.Empty(t, g.Validate())
-	assert.True(t, g.HasDependents("simple"))
+	assert.True(t, g.HasDependents(nk("simple")))
 
 	order := walkOrder(t, g)
 	assert.Less(t, indexOf(order, "simple"), indexOf(order, "module.child.simple_thing.y"))
@@ -229,7 +229,7 @@ module "child" {
 	require.NoError(t, err)
 
 	assert.Empty(t, g.Validate())
-	assert.True(t, g.HasDependents("simple.aliased"))
+	assert.True(t, g.HasDependents(nk("simple.aliased")))
 
 	order := walkOrder(t, g)
 	assert.Less(t, indexOf(order, "simple.aliased"), indexOf(order, "module.child.simple_thing.y"))

@@ -204,7 +204,7 @@ module "mid" {
 	require.NoError(t, err)
 
 	assert.Empty(t, g.Validate())
-	assert.True(t, g.HasDependents("simple"))
+	assert.True(t, g.HasDependents(nk("simple")))
 }
 
 // TestPassThroughAliasedProviderMissingBlock covers a module call passing an
@@ -304,7 +304,7 @@ module "child" {
 	require.NoError(t, err)
 
 	assert.Empty(t, g.Validate())
-	assert.True(t, g.HasDependents("simple"))
+	assert.True(t, g.HasDependents(nk("simple")))
 
 	order := walkOrder(t, g)
 	assert.Less(t, indexOf(order, "simple"), indexOf(order, "module.child.simple_resource.r"))
@@ -359,7 +359,7 @@ module "child" {
 	require.NoError(t, err)
 
 	assert.Empty(t, g.Validate())
-	assert.True(t, g.HasDependents("simple"))
+	assert.True(t, g.HasDependents(nk("simple")))
 
 	order := walkOrder(t, g)
 	assert.Less(t, indexOf(order, "simple"), indexOf(order, "module.child.simple_resource.r"))
