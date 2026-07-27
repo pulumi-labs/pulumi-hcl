@@ -68,14 +68,14 @@ func (m *ModuleInfo) ModuleName() string {
 	return last.Name()
 }
 
-// ReferencePrefix renders path in the dependency-reference syntax used for
-// rendered node keys — "module.<name>.module.<name>." — matching how HCL
-// traversals reference module contents. The root renders "". NOT
-// collision-free ("a.module.b" collides with ["a", "b"]); use Path equality
-// when that matters.
-func ReferencePrefix(path modulepath.Path) string {
+// ModuleAddress renders path in Terraform address syntax —
+// "module.<name>[key].module.<name>" — for diagnostics. The root renders "".
+func ModuleAddress(path modulepath.Path) string {
 	var b strings.Builder
 	for s := range path.Steps {
+		if b.Len() > 0 {
+			b.WriteByte('.')
+		}
 		b.WriteString("module.")
 		b.WriteString(s.Name())
 		if idx, ok := s.Index(); ok {
@@ -83,7 +83,6 @@ func ReferencePrefix(path modulepath.Path) string {
 		} else if key, ok := s.Key(); ok {
 			fmt.Fprintf(&b, "[%q]", key)
 		}
-		b.WriteByte('.')
 	}
 	return b.String()
 }
@@ -120,7 +119,12 @@ type NodeKey struct {
 	ID     string
 }
 
-func (k NodeKey) String() string { return ReferencePrefix(k.Module) + k.ID }
+func (k NodeKey) String() string {
+	if k.Module.IsRoot() {
+		return k.ID
+	}
+	return ModuleAddress(k.Module) + "." + k.ID
+}
 
 // TraversalKey resolves a reference traversal in the module at scope to its
 // node key; ok is false for non-referencing traversals. A `module.<name>`
@@ -809,7 +813,10 @@ func (g *Graph) resolvePassedProvider(
 			return nil
 		}
 	}
-	addr := fmt.Sprintf("%sprovider[%q]", ReferencePrefix(parent.path), ProviderFQN(childConfig.Terraform, strings.SplitN(childKey, ".", 2)[0]))
+	addr := NodeKey{
+		Module: parent.path,
+		ID:     fmt.Sprintf("provider[%q]", ProviderFQN(childConfig.Terraform, strings.SplitN(childKey, ".", 2)[0])),
+	}.String()
 	if aliased {
 		addr += "." + alias
 	}

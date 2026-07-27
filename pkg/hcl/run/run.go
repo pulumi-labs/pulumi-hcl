@@ -3988,7 +3988,7 @@ func (a *moduleLoaderAdapter) LoadModule(source, version, workDir string) (*grap
 func (e *Engine) forEachModuleInstance(node *graph.Node, fn func(inst *moduleInstance) error) error {
 	instances, ok := e.moduleInstances.Get(node.ModuleInfo.Path)
 	if !ok {
-		return fmt.Errorf("no module instances for prefix %q", graph.ReferencePrefix(node.ModuleInfo.Path))
+		return fmt.Errorf("no module instances for %q", graph.ModuleAddress(node.ModuleInfo.Path))
 	}
 	for _, inst := range instances {
 		if err := fn(inst); err != nil {
@@ -4379,7 +4379,7 @@ func (e *Engine) processModuleComplete(ctx context.Context, node *graph.Node) er
 
 	instances, ok := e.moduleInstances.Get(modInfo.Path)
 	if !ok {
-		return fmt.Errorf("no module instances for prefix %q", graph.ReferencePrefix(modInfo.Path))
+		return fmt.Errorf("no module instances for %q", graph.ModuleAddress(modInfo.Path))
 	}
 
 	// Register component outputs and collect per-instance output objects.
@@ -4847,7 +4847,7 @@ func (e *Engine) evaluateChecks(ctx context.Context) error {
 	})
 	for _, inst := range instances {
 		errs = append(errs, e.evaluateConfigChecks(
-			ctx, graph.ReferencePrefix(inst.Path)+".", inst.Config, inst.EvalCtx))
+			ctx, graph.ModuleAddress(inst.Path)+".", inst.Config, inst.EvalCtx))
 	}
 	return errors.Join(errs...)
 }
