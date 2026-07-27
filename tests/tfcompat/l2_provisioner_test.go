@@ -83,7 +83,25 @@ func TestL2Provisioner_WhenDestroyFail(t *testing.T) {
 		},
 		Stages: []tfcompat.Stage{
 			{},
-			{Mode: tfcompat.StageDestroy, ExpectErr: "exit status 1"},
+			{Mode: tfcompat.StageDestroy, ExpectErr: "exit status 7"},
+		},
+	})
+}
+
+// Transitioning from no meta-arg to count = 0 orphans the existing instance;
+// the failing destroy provisioner proves both runtimes still run it.
+func TestL2Provisioner_WhenDestroyCountZero(t *testing.T) {
+	t.Parallel()
+	tfcompat.RunCase(t, "l2_provisioner_destroy_count_zero", tfcompat.Case{
+		Providers: []tfcompat.Provider{
+			{Name: "simple", Factory: providers.SimpleProvider},
+		},
+		Stages: []tfcompat.Stage{
+			{},
+			// exit 7 rather than exit 1 because the harness wraps a failed
+			// `pulumi up` as "exit status 1", which would satisfy the
+			// assertion without the provisioner running.
+			{ExpectErr: "exit status 7"},
 		},
 	})
 }
