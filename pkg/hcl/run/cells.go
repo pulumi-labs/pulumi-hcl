@@ -139,7 +139,7 @@ func (e *Engine) materializeRootCells(g *graph.Graph) error {
 		if node.Type == graph.NodeTypeDataSource && node.PlanTimeRead {
 			init, ok := g.KeyNode(graph.NodeKey{Module: node.ModuleInfo.Path, ID: "__init__"})
 			if !ok {
-				return fmt.Errorf("no init node for module %q", graph.ReferencePrefix(node.ModuleInfo.Path))
+				return fmt.Errorf("no init node for module %q", graph.ModuleAddress(node.ModuleInfo.Path))
 			}
 			if err := g.Order(init, e.planBarrier); err != nil {
 				return err

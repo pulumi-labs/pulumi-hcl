@@ -1,0 +1,6 @@
+kind: Improvements
+body: Render module addresses in diagnostics in Terraform syntax
+time: 2026-07-27T16:41:38Z
+custom:
+    Component: runtime
+    PR: "464"

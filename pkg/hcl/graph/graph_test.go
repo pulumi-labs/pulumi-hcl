@@ -384,29 +384,21 @@ func TestResourceExpander(t *testing.T) {
 	})
 }
 
-func TestReferencePrefix(t *testing.T) {
+func TestModuleAddress(t *testing.T) {
 	t.Parallel()
 
-	assert.Equal(t, "", ReferencePrefix(modulepath.Root()))
+	assert.Equal(t, "", ModuleAddress(modulepath.Root()))
 
 	p := modulepath.Root().Append(modulepath.NewStep("a"))
-	assert.Equal(t, "module.a.", ReferencePrefix(p))
+	assert.Equal(t, "module.a", ModuleAddress(p))
 
 	keyed := modulepath.Root().
 		Append(modulepath.NewIndexedStep("a", 2)).
 		Append(modulepath.NewKeyedStep("b", "k"))
-	assert.Equal(t, `module.a[2].module.b["k"].`, ReferencePrefix(keyed))
-}
+	assert.Equal(t, `module.a[2].module.b["k"]`, ModuleAddress(keyed))
 
-func TestReferencePrefix_DistinguishesDottedLabels(t *testing.T) {
-	t.Parallel()
-
-	// "a.b" / "c" must produce a different prefix than "a" / "b.c".
-	p1 := modulepath.Root().
-		Append(modulepath.NewStep("a.b")).
-		Append(modulepath.NewStep("c"))
-	p2 := modulepath.Root().
-		Append(modulepath.NewStep("a")).
-		Append(modulepath.NewStep("b.c"))
-	assert.NotEqual(t, ReferencePrefix(p1), ReferencePrefix(p2))
+	assert.Equal(t, "module.a.aws_instance.web",
+		NodeKey{Module: p, ID: "aws_instance.web"}.String())
+	assert.Equal(t, "aws_instance.web",
+		NodeKey{ID: "aws_instance.web"}.String())
 }
