@@ -72,6 +72,10 @@ type moduleProvider struct {
 	// hooks is provider-scoped so a `before_delete` hook survives past the
 	// Construct call that registered it, to fire during `destroy --run-program`.
 	hooks lazyCallbackServer
+
+	// dispatchers holds each deployment's destroy-provisioner dispatcher,
+	// shared by that deployment's Constructs.
+	dispatchers dispatcherSet
 }
 
 // NewModuleProvider builds the fully dynamic HCL provider on top of the raw
@@ -255,6 +259,7 @@ func (m *moduleProvider) construct(ctx context.Context, req p.ConstructRequest) 
 		ProjectName:        string(req.Urn.Project()),
 		StackName:          string(req.Urn.Stack()),
 		DryRun:             req.DryRun,
+		DestroyDispatcher:  m.dispatchers.get(req.MonitorEndpoint),
 		WorkDir:            loaded.SourcePath,
 		RootDir:            loaded.SourcePath,
 		AbsolutePaths:      true,
@@ -326,6 +331,7 @@ func (m *moduleProvider) constructParameterized(ctx context.Context, req p.Const
 		ProjectName:        string(req.Urn.Project()),
 		StackName:          string(req.Urn.Stack()),
 		DryRun:             req.DryRun,
+		DestroyDispatcher:  m.dispatchers.get(req.MonitorEndpoint),
 		WorkDir:            loaded.SourcePath,
 		RootDir:            loaded.SourcePath,
 		AbsolutePaths:      true,

@@ -35,6 +35,12 @@ import (
 // (when=destroy). TF does not re-run provisioners on update — no AfterUpdate
 // binding. The HCL eval context is snapshotted now since the callback fires
 // asynchronously, after processing has moved past this resource.
+//
+// Destroy-time provisioners bind the constant [destroyProvisionerHook]: a
+// per-instance name recorded in state would be unregistered on a later run
+// that no longer declares the instance, bricking its delete. The runner is
+// keyed by a URN computed before registration, because a delete-before-replace
+// delete fires while RegisterResource is still blocked.
 func (e *Engine) bindProvisionerHooks(
 	ctx context.Context,
 	res *ast.Resource,
@@ -54,60 +60,70 @@ func (e *Engine) bindProvisionerHooks(
 	hclSnapshot := evalCtx.HCLContext()
 	dryRun := e.dryRun
 
-	for i, prov := range res.Provisioners {
-		prov, index := prov, i+1
-		if err := runtime.Validate(prov.Type); err != nil {
-			return fmt.Errorf("provisioner %d for %s: %w", index, instance.Key, err)
-		}
+	runOne := func(hookCtx context.Context, prov *ast.Provisioner, index int, outputs property.Map, id, urn string) error {
 		spec := &runtime.Spec{
 			Type:   prov.Type,
 			Config: prov.Config,
 			Conn:   effectiveConnectionBody(prov, res),
 		}
-		when := prov.When
-		if when == "" {
-			when = "create"
+		// Hooks receive raw engine outputs, so terraform_data's surface is
+		// adapted the same way as on the registration path. This holds for
+		// old outputs too: their {type, value} wrappers carry the
+		// state-stored types, so a destroy-time self keeps them.
+		outputs = lowerTerraformDataOutputs(res.Type, outputs, opts)
+		selfCtx, err := selfBoundEvalCtx(hclSnapshot, outputs, id, urn, res.Type, resSchema, mapping, dryRun)
+		if err != nil {
+			return fmt.Errorf("provisioner %d for %s: %w", index, instance.Key, err)
 		}
-		onFailureContinue := prov.OnFailure == "continue"
-		useOldOutputs := when == "destroy"
+		if runErr := runtime.Run(hookCtx, spec, selfCtx); runErr != nil {
+			if prov.OnFailure == "continue" {
+				return nil
+			}
+			return fmt.Errorf("provisioner %d (%s) for %s: %w",
+				index, prov.Type, instance.Key, runErr)
+		}
+		return nil
+	}
+
+	destroy := false
+	for i, prov := range res.Provisioners {
+		prov, index := prov, i+1
+		if err := runtime.Validate(prov.Type); err != nil {
+			return fmt.Errorf("provisioner %d for %s: %w", index, instance.Key, err)
+		}
+		if prov.When == "destroy" {
+			destroy = true
+			continue
+		}
 		hookName := fmt.Sprintf("%s.%s:provisioner:%d", res.Type, resourceName, i)
-
 		callback := func(hookCtx context.Context, args *ResourceHookArgs) error {
-			outputs := args.NewOutputs
-			if useOldOutputs {
-				outputs = args.OldOutputs
-			}
-			// Hooks receive raw engine outputs, so terraform_data's surface
-			// is adapted the same way as on the registration path. This holds
-			// for old outputs too: their {type, value} wrappers carry the
-			// state-stored types, so a destroy-time self keeps them.
-			outputs = lowerTerraformDataOutputs(res.Type, outputs, opts)
-			selfCtx, err := selfBoundEvalCtx(hclSnapshot, outputs, args.ID, args.URN, res.Type, resSchema, mapping, dryRun)
-			if err != nil {
-				return fmt.Errorf("provisioner %d for %s: %w", index, instance.Key, err)
-			}
-			if runErr := runtime.Run(hookCtx, spec, selfCtx); runErr != nil {
-				if onFailureContinue {
-					return nil
-				}
-				return fmt.Errorf("provisioner %d (%s) for %s: %w",
-					index, prov.Type, instance.Key, runErr)
-			}
-			return nil
+			return runOne(hookCtx, prov, index, args.NewOutputs, args.ID, args.URN)
 		}
-
 		if err := e.resmon.RegisterResourceHook(ctx, hookName, callback, ResourceHookOptions{
 			OnDryRun: false, // TF doesn't run provisioners during plan.
 		}); err != nil {
 			return fmt.Errorf("registering provisioner hook: %w", err)
 		}
-
-		if useOldOutputs {
-			opts.Hooks.BeforeDelete = append(opts.Hooks.BeforeDelete, hookName)
-		} else {
-			opts.Hooks.AfterCreate = append(opts.Hooks.AfterCreate, hookName)
-		}
+		opts.Hooks.AfterCreate = append(opts.Hooks.AfterCreate, hookName)
 	}
+	if !destroy {
+		return nil
+	}
+
+	instanceURN, _ := e.resmon.ResolveURN(opts.Parent, resSchema.Token, resourceName)
+	e.dispatcher.putInstance(string(instanceURN),
+		func(hookCtx context.Context, args *ResourceHookArgs) error {
+			for i, prov := range res.Provisioners {
+				if prov.When != "destroy" {
+					continue
+				}
+				if err := runOne(hookCtx, prov, i+1, args.OldOutputs, args.ID, args.URN); err != nil {
+					return err
+				}
+			}
+			return nil
+		})
+	opts.Hooks.BeforeDelete = append(opts.Hooks.BeforeDelete, destroyProvisionerHook)
 	return nil
 }
 

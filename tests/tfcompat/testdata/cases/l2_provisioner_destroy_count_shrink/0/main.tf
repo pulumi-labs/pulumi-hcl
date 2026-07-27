@@ -1,4 +1,5 @@
 resource "simple_resource" "target" {
+  count     = 2
   input_one = "a"
 
   provisioner "local-exec" {

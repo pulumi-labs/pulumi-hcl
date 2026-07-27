@@ -1,0 +1,6 @@
+kind: bug-fixes
+body: Run destroy-time provisioners for instances orphaned by `count = 0`, a shrunk `count`, or a dropped `for_each` key
+time: 2026-07-27T15:11:03Z
+custom:
+    Component: runtime
+    PR: "462"

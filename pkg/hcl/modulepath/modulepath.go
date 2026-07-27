@@ -30,6 +30,7 @@
 package modulepath
 
 import (
+	"cmp"
 	"encoding/binary"
 	"fmt"
 	"strconv"
@@ -88,6 +89,21 @@ func (s Step) Key() (key string, ok bool) {
 		return "", false
 	}
 	return s.key, true
+}
+
+// Index returns the count index of this step. ok is false if the step is not
+// from a count expansion.
+func (s Step) Index() (index int, ok bool) {
+	if s.kind != stepKindIndex {
+		return 0, false
+	}
+	return int(s.idx), true
+}
+
+// Config returns s with its instance disambiguator stripped: the step that
+// names the static config block rather than one of its instances.
+func (s Step) Config() Step {
+	return Step{name: s.name, kind: stepKindBare}
 }
 
 // LogicalName returns the Pulumi logical name component for this single
@@ -165,6 +181,47 @@ func (p Path) Append(s Step) Path {
 	return Path{repr: b.String()}
 }
 
+// Config returns p with every step's instance disambiguator stripped: the
+// static config address of the block, shared by all of its instances.
+func (p Path) Config() Path {
+	config := Root()
+	for s := range p.Steps {
+		config = config.Append(s.Config())
+	}
+	return config
+}
+
+// Compare returns a deterministic total order over paths for stable sorting:
+// step-wise by (name, kind, index, key), with a shorter path ordering before
+// its extensions. Compare(p, q) == 0 iff p == q.
+func Compare(p, q Path) int {
+	pSteps, qSteps := p.stepSlice(), q.stepSlice()
+	for i := range min(len(pSteps), len(qSteps)) {
+		a, b := pSteps[i], qSteps[i]
+		if c := strings.Compare(a.name, b.name); c != 0 {
+			return c
+		}
+		if c := cmp.Compare(a.kind, b.kind); c != 0 {
+			return c
+		}
+		if c := cmp.Compare(a.idx, b.idx); c != 0 {
+			return c
+		}
+		if c := strings.Compare(a.key, b.key); c != 0 {
+			return c
+		}
+	}
+	return cmp.Compare(len(pSteps), len(qSteps))
+}
+
+func (p Path) stepSlice() []Step {
+	steps := make([]Step, 0, p.Len())
+	for s := range p.Steps {
+		steps = append(steps, s)
+	}
+	return steps
+}
+
 // Parent returns the path with the last step removed plus that last step.
 // ok is false if p is the root.
 func (p Path) Parent() (parent Path, last Step, ok bool) {
@@ -224,6 +281,73 @@ func (p Path) LogicalName() string {
 	return b.String()
 }
 
+// ParseLogicalName parses the [Path.LogicalName] encoding back into a Path.
+// The scan is quote-aware rather than a split on ".": for_each keys are
+// [strconv.Quote]-escaped and may contain dots and brackets.
+func ParseLogicalName(s string) (Path, error) {
+	p := Root()
+	for {
+		i := 0
+		for i < len(s) && s[i] != '[' && s[i] != '.' {
+			i++
+		}
+		if i == 0 {
+			return Path{}, fmt.Errorf("modulepath: empty name segment")
+		}
+		name := s[:i]
+		s = s[i:]
+		step := NewStep(name)
+		if strings.HasPrefix(s, "[") {
+			rest := s[1:]
+			switch {
+			case strings.HasPrefix(rest, `"`):
+				q, err := strconv.QuotedPrefix(rest)
+				if err != nil {
+					return Path{}, fmt.Errorf("modulepath: malformed key segment after %q: %w", name, err)
+				}
+				key, err := strconv.Unquote(q)
+				if err != nil {
+					return Path{}, fmt.Errorf("modulepath: malformed key segment after %q: %w", name, err)
+				}
+				// Reject non-canonical quoting so parse and render stay
+				// exact inverses.
+				if strconv.Quote(key) != q {
+					return Path{}, fmt.Errorf("modulepath: non-canonical key segment after %q", name)
+				}
+				step = NewKeyedStep(name, key)
+				rest = rest[len(q):]
+			default:
+				j := 0
+				for j < len(rest) && rest[j] >= '0' && rest[j] <= '9' {
+					j++
+				}
+				index, err := strconv.Atoi(rest[:j])
+				if err != nil {
+					return Path{}, fmt.Errorf("modulepath: malformed index segment after %q: %w", name, err)
+				}
+				if j > 1 && rest[0] == '0' {
+					return Path{}, fmt.Errorf("modulepath: non-canonical index segment after %q", name)
+				}
+				step = NewIndexedStep(name, index)
+				rest = rest[j:]
+			}
+			if !strings.HasPrefix(rest, "]") {
+				return Path{}, fmt.Errorf("modulepath: unterminated instance-key segment after %q", name)
+			}
+			s = rest[1:]
+		}
+		p = p.Append(step)
+		switch {
+		case s == "":
+			return p, nil
+		case strings.HasPrefix(s, "."):
+			s = s[1:]
+		default:
+			return Path{}, fmt.Errorf("modulepath: unexpected character after segment %q", name)
+		}
+	}
+}
+
 // String returns a diagnostic representation joining each step with ".".
 //
 // Don't parse this. Use [Path.Steps] or the typed accessors instead.
@@ -238,43 +362,54 @@ func (p Path) String() string {
 	return strings.Join(parts, ".")
 }
 
-// PrefixString returns a string suitable for prefixing bare element
-// identifiers (e.g. "var.foo", "aws_instance.web") to form a globally
-// unique identifier within an HCL configuration.
-//
-// The empty path returns "". Non-root paths return a string of the form
-// "module.<name>.module.<name>." so callers may concatenate directly:
-//
-//	p.PrefixString() + "var.foo"
-//
-// This format intentionally matches the dependency reference syntax used
-// by HCL itself (e.g. `module.<name>.<output>`), so a graph-time
-// dependency lookup performed by string concatenation matches the keys
-// stored when the prefixed nodes are added.
-//
-// Note that this is NOT a collision-free encoding: a label of the form
-// "a.module.b" would prefix-collide with the path ["a", "b"]. HCL
-// traversal syntax cannot reference such pathological labels in any case,
-// so the collision is benign in practice. Use the path itself
-// ([Path] equality / map-key) rather than this string when collision
-// safety is required.
-func (p Path) PrefixString() string {
-	if p.IsRoot() {
-		return ""
+// Address identifies a resource within the module tree: the enclosing module
+// path plus the leaf's own step. Like [Path] it is an immutable, comparable
+// value; keyless steps make it a config address, keyed steps an instance.
+type Address struct {
+	module   Path
+	resource Step
+}
+
+// NewAddress returns the address of resource within the module instance (or
+// config block) at module.
+func NewAddress(module Path, resource Step) Address {
+	return Address{module: module, resource: resource}
+}
+
+// Module returns the enclosing module path.
+func (a Address) Module() Path { return a.module }
+
+// Resource returns the leaf step.
+func (a Address) Resource() Step { return a.resource }
+
+// Config returns a with every instance disambiguator stripped: the static
+// config address shared by all of the block's instances.
+func (a Address) Config() Address {
+	return Address{module: a.module.Config(), resource: a.resource.Config()}
+}
+
+// InstanceOf reports whether a addresses an instance of the static config
+// block at config. Equivalent to a.Config() == config.
+func (a Address) InstanceOf(config Address) bool {
+	return a.Config() == config
+}
+
+// LogicalName renders a in the same injective encoding as
+// [Path.LogicalName]; ParseAddress is its inverse.
+func (a Address) LogicalName() string {
+	return a.module.Append(a.resource).LogicalName()
+}
+
+// ParseAddress parses the [Address.LogicalName] encoding back into an
+// Address: the last segment is the resource step, everything before it the
+// module path.
+func ParseAddress(s string) (Address, error) {
+	p, err := ParseLogicalName(s)
+	if err != nil {
+		return Address{}, err
 	}
-	var b strings.Builder
-	for s := range p.Steps {
-		b.WriteString("module.")
-		b.WriteString(s.Name())
-		switch s.kind {
-		case stepKindIndex:
-			fmt.Fprintf(&b, "[%d]", s.idx)
-		case stepKindForEach:
-			fmt.Fprintf(&b, "[%q]", s.key)
-		}
-		b.WriteByte('.')
-	}
-	return b.String()
+	module, resource, _ := p.Parent()
+	return Address{module: module, resource: resource}, nil
 }
 
 // --- internal encoding ---
