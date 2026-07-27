@@ -16,14 +16,35 @@ package graph
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"github.com/pulumi/pulumi/pkg/v3/util/pdag"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/pulumi-labs/pulumi-hcl/pkg/hcl/modulepath"
 	"github.com/pulumi-labs/pulumi-hcl/pkg/hcl/parser"
 )
+
+// nk parses a rendered node key ("module.m.output.o") back into its typed
+// form, so tests can keep asserting against reference-syntax strings.
+func nk(s string) NodeKey {
+	p := modulepath.Root()
+	for {
+		rest, ok := strings.CutPrefix(s, "module.")
+		if !ok {
+			break
+		}
+		name, id, ok := strings.Cut(rest, ".")
+		if !ok {
+			break
+		}
+		p = p.Append(modulepath.NewStep(name))
+		s = id
+	}
+	return NodeKey{Module: p, ID: s}
+}
 
 // walkOrder returns the DAG node keys in the single-worker Walk visitation
 // order, so a test can assert that one node is scheduled before another.
@@ -31,7 +52,7 @@ func walkOrder(t *testing.T, g *Graph) []string {
 	t.Helper()
 	var order []string
 	err := g.dag.Walk(t.Context(), func(_ context.Context, n dagNode) error {
-		order = append(order, n.key)
+		order = append(order, n.key.String())
 		return nil
 	}, pdag.MaxProcs(1))
 	require.NoError(t, err)
@@ -68,7 +89,7 @@ resource "simple_resource" "dependent" {
 	g, err := BuildFromConfig(config, nil, "")
 	require.NoError(t, err)
 
-	assert.True(t, g.HasDependents("simple_resource.upstream"))
+	assert.True(t, g.HasDependents(nk("simple_resource.upstream")))
 
 	order := walkOrder(t, g)
 	assert.Less(t, indexOf(order, "simple_resource.upstream"),
@@ -101,5 +122,5 @@ resource "simple_resource" "dependent" {
 	g, err := BuildFromConfig(config, nil, "")
 	require.NoError(t, err)
 
-	assert.True(t, g.HasDependents("simple_resource.upstream"))
+	assert.True(t, g.HasDependents(nk("simple_resource.upstream")))
 }

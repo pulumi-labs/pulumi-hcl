@@ -39,8 +39,8 @@ import (
 // is: create every cell of the scope, wire dependencies and gates, then arm —
 // so a gate is always created before its target's expansion runs.
 type expansionCell struct {
-	block string // graph node key, module-prefixed
-	mi    string // module instance path, "" at the root
+	block graph.NodeKey // graph node key
+	mi    string        // module instance path, "" at the root
 }
 
 func cellKey(node *graph.Node, mi *moduleInstance) expansionCell {
@@ -53,10 +53,10 @@ func cellKey(node *graph.Node, mi *moduleInstance) expansionCell {
 
 // cell returns the expansion cell for a block within one module instance ("" =
 // root), erroring when materialization never created it.
-func (e *Engine) cell(block, mi string) (*graph.BlockExpansion, error) {
+func (e *Engine) cell(block graph.NodeKey, mi string) (*graph.BlockExpansion, error) {
 	b, ok := e.expansions.Get(expansionCell{block: block, mi: mi})
 	if !ok {
-		return nil, fmt.Errorf("no expansion cell for %q in module instance %q", block, mi)
+		return nil, fmt.Errorf("no expansion cell for %q in module instance %q", block.String(), mi)
 	}
 	return b, nil
 }
@@ -136,9 +136,9 @@ func (e *Engine) materializeRootCells(g *graph.Graph) error {
 		// classified the data source as deferred — so this cannot cycle with
 		// the barrier gating resource expansion.)
 		if node.Type == graph.NodeTypeDataSource && node.PlanTimeRead {
-			init, ok := g.KeyNode(node.ModuleInfo.Prefix() + "__init__")
+			init, ok := g.KeyNode(graph.NodeKey{Module: node.ModuleInfo.Path, ID: "__init__"})
 			if !ok {
-				return fmt.Errorf("no init node for module %q", node.ModuleInfo.Prefix())
+				return fmt.Errorf("no init node for module %q", graph.ReferencePrefix(node.ModuleInfo.Path))
 			}
 			if err := g.Order(init, e.planBarrier); err != nil {
 				return err
@@ -162,7 +162,7 @@ func (e *Engine) wireRootLocals(g *graph.Graph, locals []*graph.Node) error {
 	for _, node := range locals {
 		ln, ok := g.KeyNode(node.Key)
 		if !ok {
-			return fmt.Errorf("no graph node for %q", node.Key)
+			return fmt.Errorf("no graph node for %q", node.Key.String())
 		}
 		for _, whole := range node.Deps.Whole {
 			target, err := e.cell(whole, "")
@@ -192,7 +192,7 @@ func (e *Engine) wireRootLocals(g *graph.Graph, locals []*graph.Node) error {
 func (e *Engine) materializeModuleCells(modInfo *graph.ModuleInfo, instances []*moduleInstance) error {
 	var blocks []*graph.Node
 	for _, node := range e.graph.ExpandableNodes() {
-		if node.ModuleInfo != nil && node.ModuleInfo.Prefix() == modInfo.Prefix() {
+		if node.ModuleInfo != nil && node.ModuleInfo.Path == modInfo.Path {
 			blocks = append(blocks, node)
 		}
 	}
@@ -288,7 +288,7 @@ func (e *Engine) wireCell(g *graph.Graph, node *graph.Node, mi *moduleInstance) 
 
 	blockNode, ok := g.KeyNode(node.Key)
 	if !ok {
-		return fmt.Errorf("no graph node for %q", node.Key)
+		return fmt.Errorf("no graph node for %q", node.Key.String())
 	}
 	return b.CompleteBefore(blockNode)
 }
@@ -370,10 +370,7 @@ func (e *Engine) expandResourceCell(
 		return err
 	}
 
-	baseKey := node.Key
-	if node.ModuleInfo != nil {
-		baseKey = strings.TrimPrefix(baseKey, node.ModuleInfo.Prefix())
-	}
+	baseKey := node.Key.ID
 
 	// A count/for_each that reads values this operation has not yet produced
 	// cannot be expanded. During preview, register no instances and bind the
@@ -411,7 +408,7 @@ func (e *Engine) expandResourceCell(
 
 	for _, instance := range result.Instances {
 		inst := instance
-		err := b.AddInstance(strings.TrimPrefix(inst.Key, node.Key), func(ctx context.Context) error {
+		err := b.AddInstance(inst.Suffix, func(ctx context.Context) error {
 			if e.hasFailedDependency(res) {
 				e.failedNodes.Set(inst.Key, fmt.Errorf("skipped: dependency failed"))
 				return nil
@@ -449,11 +446,7 @@ func (e *Engine) expandDataCell(
 		return fmt.Errorf("resolving data source type %s: %w", ds.Type, err)
 	}
 
-	dsKey := node.Key
-	if node.ModuleInfo != nil {
-		dsKey = strings.TrimPrefix(dsKey, node.ModuleInfo.Prefix())
-	}
-	dsKey = strings.TrimPrefix(dsKey, "data.")
+	dsKey := strings.TrimPrefix(node.Key.ID, "data.")
 
 	if ds.Count == nil && ds.ForEach == nil {
 		return b.AddInstance("", func(ctx context.Context) error {
@@ -495,7 +488,7 @@ func (e *Engine) expandDataCell(
 
 	for _, instance := range result.Instances {
 		inst := instance
-		err := b.AddInstance(strings.TrimPrefix(inst.Key, node.Key), func(ctx context.Context) error {
+		err := b.AddInstance(inst.Suffix, func(ctx context.Context) error {
 			instCtx := evalCtx.WithIteration(inst.Index, inst.EachKey, inst.EachValue)
 			ctyOut, err := e.invokeDataSourceOnce(ctx, node, ds, funcSchema, instCtx, mi)
 			if err != nil {

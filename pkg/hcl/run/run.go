@@ -485,7 +485,7 @@ type Engine struct {
 	// forcedCBD holds the resource node keys that must be created before their
 	// prior instance is destroyed because they, or a resource depending on
 	// them, declared create_before_destroy. Computed once from the graph.
-	forcedCBD map[string]bool
+	forcedCBD map[graph.NodeKey]bool
 
 	// alwaysRegisterProviders forces every `provider` block to be registered
 	// as a resource even when nothing references it, bypassing Terraform's
@@ -1112,7 +1112,7 @@ func (e *Engine) processLocal(ctx context.Context, node *graph.Node) error {
 
 	if node.ModuleInfo != nil {
 		return e.forEachModuleInstance(node, func(inst *moduleInstance) error {
-			localName := strings.TrimPrefix(node.Key, node.ModuleInfo.Prefix()+"local.")
+			localName := strings.TrimPrefix(node.Key.ID, "local.")
 			val, diags := local.Value.Value(inst.EvalCtx.HCLContext())
 			if diags.HasErrors() {
 				return fmt.Errorf("evaluating local value %s: %s", localName, diags.Error())
@@ -1127,7 +1127,7 @@ func (e *Engine) processLocal(ctx context.Context, node *graph.Node) error {
 		return fmt.Errorf("evaluating local value: %s", diags.Error())
 	}
 
-	localName := node.Key[6:] // Remove "local." prefix
+	localName := node.Key.ID[6:] // Remove "local." prefix
 	e.evaluator.Context().SetLocal(localName, val)
 
 	return nil
@@ -1199,11 +1199,7 @@ func (e *Engine) registerProvider(
 	// An empty for_each still binds the provider address so a reference
 	// evaluates to an empty collection rather than "no such attribute".
 	if len(forEach) == 0 {
-		baseKey := node.Key
-		if node.ModuleInfo != nil {
-			baseKey = strings.TrimPrefix(baseKey, node.ModuleInfo.Prefix())
-		}
-		evalCtx.SetResource(baseKey, "", cty.EmptyObjectVal)
+		evalCtx.SetResource(node.Key.ID, "", cty.EmptyObjectVal)
 	}
 
 	return nil
@@ -1237,7 +1233,7 @@ func (e *Engine) resolvePassThroughProvider(modInfo *graph.ModuleInfo, localKey 
 // parentModuleInfo returns the ModuleInfo of the module call enclosing
 // modInfo, or nil when the parent is the root config (or has no instances).
 func (e *Engine) parentModuleInfo(modInfo *graph.ModuleInfo) *graph.ModuleInfo {
-	if modInfo.ParentPrefix() == "" {
+	if modInfo.ParentPath().IsRoot() {
 		return nil
 	}
 	insts, ok := e.moduleInstances.Get(modInfo.ParentPath())
@@ -1319,7 +1315,7 @@ func (e *Engine) inheritedDefaultProvider(modInfo *graph.ModuleInfo, name string
 // parentEvalContext returns the eval.Context of the enclosing module
 // instance (or the root context when modInfo's parent is root).
 func (e *Engine) parentEvalContext(modInfo *graph.ModuleInfo) *eval.Context {
-	if modInfo.ParentPrefix() == "" {
+	if modInfo.ParentPath().IsRoot() {
 		return e.evaluator.Context()
 	}
 	parentInsts, ok := e.moduleInstances.Get(modInfo.ParentPath())
@@ -1514,7 +1510,7 @@ func (e *Engine) registerProviderInContext(
 	// into.
 	outputObj["urn"] = cty.StringVal(string(resp.URN))
 
-	outputsKey := node.Key
+	outputsKey := node.Key.String()
 	if inst != nil {
 		outputsKey = fmt.Sprintf("%s[%q]", node.Key, inst.key)
 	}
@@ -1527,11 +1523,7 @@ func (e *Engine) registerProviderInContext(
 	}
 
 	markedProviderOutputs := cty.ObjectVal(outputObj).Mark(eval.DepMark(resp.URN))
-	bareKey := node.Key
-	if node.ModuleInfo != nil {
-		// Strip prefix for module-internal references
-		bareKey = strings.TrimPrefix(node.Key, node.ModuleInfo.Prefix())
-	}
+	bareKey := node.Key.ID
 	if inst != nil {
 		// Instances assemble into an object keyed by each.key, so
 		// `<name>.<alias>["key"]` selects one through ordinary indexing.
@@ -1759,23 +1751,13 @@ func (e *Engine) registerResourceInstanceInContext(
 	iOpts.RetainOnDelete = opts.RetainOnDelete
 	e.resourceInheritableOpts.Set(instance.Key, iOpts)
 
+	baseKey := node.Key.ID
 	if instance.Index != nil {
-		baseKey := instance.OriginalKey
-		if node.ModuleInfo != nil {
-			baseKey = strings.TrimPrefix(baseKey, node.ModuleInfo.Prefix())
-		}
 		evalCtx.SetCountResource(baseKey, *instance.Index, urn, markedOutputs)
 	} else if instance.EachKey != nil {
-		baseKey := instance.OriginalKey
-		if node.ModuleInfo != nil {
-			baseKey = strings.TrimPrefix(baseKey, node.ModuleInfo.Prefix())
-		}
 		evalCtx.SetEachResource(baseKey, instance.EachKey.AsString(), urn, markedOutputs)
-	} else if node.ModuleInfo != nil {
-		bareKey := strings.TrimPrefix(instance.Key, node.ModuleInfo.Prefix())
-		evalCtx.SetResource(bareKey, urn, markedOutputs)
 	} else {
-		evalCtx.SetResource(instance.Key, urn, markedOutputs)
+		evalCtx.SetResource(baseKey, urn, markedOutputs)
 	}
 
 	return nil
@@ -1792,10 +1774,7 @@ func (e *Engine) buildResourceOptionsInContext(
 	opts := &ResourceOptions{}
 	opts.Parent = parentURN
 
-	resPrefix := ""
-	if modInfo != nil {
-		resPrefix = modInfo.Prefix()
-	}
+	resPrefix := graph.ReferencePrefix(node.Key.Module)
 
 	// depends_on records every registered instance of the target block,
 	// keyed or not — dependency metadata is resource-wide (see urnRegistry).
@@ -1810,7 +1789,8 @@ func (e *Engine) buildResourceOptionsInContext(
 		if depKey == "" {
 			continue
 		}
-		opts.DependsOn = append(opts.DependsOn, e.cellURNs.get(expansionCell{block: resPrefix + depKey, mi: miPath})...)
+		block := graph.ResolveRef(node.Key.Module, depKey)
+		opts.DependsOn = append(opts.DependsOn, e.cellURNs.get(expansionCell{block: block, mi: miPath})...)
 	}
 
 	hclCtx := evalCtx.HCLContext()
@@ -1865,7 +1845,7 @@ func (e *Engine) buildResourceOptionsInContext(
 	// ordering even when it does not declare it (forcedCBD, computed from the
 	// graph). This keeps every create in a replacement chain ahead of the deletes.
 	cbd := res.Lifecycle != nil && res.Lifecycle.CreateBeforeDestroy != nil && *res.Lifecycle.CreateBeforeDestroy
-	cbd = cbd || e.forcedCBD[instance.OriginalKey]
+	cbd = cbd || e.forcedCBD[node.Key]
 	opts.DeleteBeforeReplaceDef = true
 	opts.DeleteBeforeReplace = !cbd
 
@@ -3404,7 +3384,7 @@ func (e *Engine) invokeDataSourceOnce(
 	}
 
 	// Failed preconditions prevent the read; unknown conditions defer.
-	if err := evaluatePreconditions(ds.Preconditions, hclCtx, node.Key); err != nil {
+	if err := evaluatePreconditions(ds.Preconditions, hclCtx, node.Key.String()); err != nil {
 		return cty.NilVal, err
 	}
 
@@ -3470,7 +3450,7 @@ func (e *Engine) invokeDataSourceOnce(
 		}
 	} else if node.ModuleInfo != nil {
 		pkg := packageNameFromResourceType(ds.Type)
-		resPrefix := node.ModuleInfo.Prefix()
+		resPrefix := graph.ReferencePrefix(node.ModuleInfo.Path)
 		if ref := e.resolvePassThroughProvider(node.ModuleInfo, pkg); ref != "" {
 			invokeReq.Provider = ref
 		} else if outputs, ok := e.resourceOutputs.Get(resPrefix + pkg); ok {
@@ -3502,11 +3482,7 @@ func (e *Engine) invokeDataSourceOnce(
 		if depKey == "" {
 			continue
 		}
-		fullDepKey := depKey
-		if node.ModuleInfo != nil {
-			fullDepKey = node.ModuleInfo.Prefix() + depKey
-		}
-		cell := expansionCell{block: fullDepKey, mi: miPath}
+		cell := expansionCell{block: graph.ResolveRef(node.Key.Module, depKey), mi: miPath}
 		for _, urn := range e.cellURNs.get(cell) {
 			addURN(urn)
 		}
@@ -3556,7 +3532,7 @@ func (e *Engine) invokeDataSourceOnce(
 		return cty.NilVal, fmt.Errorf("converting function outputs to HCL types: %w", err)
 	}
 
-	if err := evaluatePostconditionValues(ds.Postconditions, hclCtx, ctyOutputs, node.Key); err != nil {
+	if err := evaluatePostconditionValues(ds.Postconditions, hclCtx, ctyOutputs, node.Key.String()); err != nil {
 		return cty.NilVal, err
 	}
 
@@ -3575,7 +3551,7 @@ func (e *Engine) moduleDependsOnPending(mi *moduleInstance) bool {
 				continue
 			}
 			// The targets are addressed from the calling module's scope.
-			cell := expansionCell{block: inst.ModuleInfo.ParentPrefix() + depKey, mi: parentMIPath(inst)}
+			cell := expansionCell{block: graph.ResolveRef(inst.ModuleInfo.ParentPath(), depKey), mi: parentMIPath(inst)}
 			if e.cellPending(cell) {
 				return true
 			}
@@ -3604,7 +3580,7 @@ func (e *Engine) cellPending(cell expansionCell) bool {
 // matching how a `depends_on` entry naming the call covers the whole call.
 func moduleCallCell(inst *moduleInstance) expansionCell {
 	return expansionCell{
-		block: inst.ModuleInfo.ParentPrefix() + "module." + inst.ModuleInfo.ModuleName(),
+		block: graph.NodeKey{Module: inst.ModuleInfo.ParentPath(), ID: "module." + inst.ModuleInfo.ModuleName()},
 		mi:    parentMIPath(inst),
 	}
 }
@@ -3864,7 +3840,7 @@ func (e *Engine) providerFunctionImpl(
 		if modInfo != nil {
 			if ref := e.resolvePassThroughProvider(modInfo, providerName); ref != "" {
 				req.Provider = ref
-			} else if outputs, ok := e.resourceOutputs.Get(modInfo.Prefix() + providerName); ok {
+			} else if outputs, ok := e.resourceOutputs.Get(graph.ReferencePrefix(modInfo.Path) + providerName); ok {
 				if ref, err := providerRefFromCty(outputs); err == nil {
 					req.Provider = ref
 				}
@@ -4018,11 +3994,11 @@ func (a *moduleLoaderAdapter) LoadModule(source, version, workDir string) (*grap
 	}, nil
 }
 
-// forEachModuleInstance iterates over all instances of the module identified by node.ModuleInfo.Prefix().
+// forEachModuleInstance iterates over all instances of the module identified by node.ModuleInfo.Path.
 func (e *Engine) forEachModuleInstance(node *graph.Node, fn func(inst *moduleInstance) error) error {
 	instances, ok := e.moduleInstances.Get(node.ModuleInfo.Path)
 	if !ok {
-		return fmt.Errorf("no module instances for prefix %q", node.ModuleInfo.Prefix())
+		return fmt.Errorf("no module instances for prefix %q", graph.ReferencePrefix(node.ModuleInfo.Path))
 	}
 	for _, inst := range instances {
 		if err := fn(inst); err != nil {
@@ -4127,7 +4103,7 @@ func (e *Engine) processModuleInit(ctx context.Context, node *graph.Node) error 
 	// slice lets downstream per-instance work (vars, locals, nested modules,
 	// resources) loop zero times instead of falling back to the root context.
 	parents := []*moduleInstance{nil}
-	if modInfo.ParentPrefix() != "" {
+	if !modInfo.ParentPath().IsRoot() {
 		parentInstances, ok := e.moduleInstances.Get(modInfo.ParentPath())
 		if !ok || len(parentInstances) == 0 {
 			e.moduleInstances.Set(modInfo.Path, nil)
@@ -4297,7 +4273,7 @@ func (e *Engine) initModuleCallIn(
 func (e *Engine) processModuleOutput(_ context.Context, node *graph.Node) error {
 	output := node.Output
 	modInfo := node.ModuleInfo
-	outputName := strings.TrimPrefix(node.Key, modInfo.Prefix()+"output.")
+	outputName := strings.TrimPrefix(node.Key.ID, "output.")
 
 	err := e.forEachModuleInstance(node, func(inst *moduleInstance) error {
 		if err := runOutputPreconditions(output, inst.EvalCtx.HCLContext(), outputName); err != nil {
@@ -4340,7 +4316,7 @@ func (e *Engine) processModuleOutput(_ context.Context, node *graph.Node) error 
 // enclosing instance sees only its own instances of the call.
 func (e *Engine) publishModuleValue(modInfo *graph.ModuleInfo, instances []*moduleInstance) {
 	parents := []*moduleInstance{nil}
-	if modInfo.ParentPrefix() != "" {
+	if !modInfo.ParentPath().IsRoot() {
 		parentInstances, ok := e.moduleInstances.Get(modInfo.ParentPath())
 		if !ok {
 			return
@@ -4413,7 +4389,7 @@ func (e *Engine) processModuleComplete(ctx context.Context, node *graph.Node) er
 
 	instances, ok := e.moduleInstances.Get(modInfo.Path)
 	if !ok {
-		return fmt.Errorf("no module instances for prefix %q", modInfo.Prefix())
+		return fmt.Errorf("no module instances for prefix %q", graph.ReferencePrefix(modInfo.Path))
 	}
 
 	// Register component outputs and collect per-instance output objects.
@@ -4928,7 +4904,7 @@ func (e *Engine) evaluateCheck(ctx context.Context, name string, check *ast.Chec
 // the expansion-cell machinery.
 func (e *Engine) readScopedDataSource(ctx context.Context, ds *ast.Resource, evalCtx *eval.Context) error {
 	node := &graph.Node{
-		Key:      "data." + ast.ResourceKey(ds.Type, ds.Name),
+		Key:      graph.NodeKey{ID: "data." + ast.ResourceKey(ds.Type, ds.Name)},
 		Type:     graph.NodeTypeDataSource,
 		Resource: ds,
 	}
