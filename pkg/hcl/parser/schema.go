@@ -31,6 +31,7 @@ var rootSchema = &hcl.BodySchema{
 		{Type: "output", LabelNames: []string{"name"}},
 		{Type: "module", LabelNames: []string{"name"}},
 		{Type: "moved"},
+		{Type: "removed"},
 		{Type: "import"},
 		{Type: "check", LabelNames: []string{"name"}},
 		{Type: "call", LabelNames: []string{"resource", "method"}},
@@ -296,6 +297,25 @@ var movedSchema = &hcl.BodySchema{
 	Attributes: []hcl.AttributeSchema{
 		{Name: "from", Required: true},
 		{Name: "to", Required: true},
+	},
+}
+
+// removedSchema defines the structure of a removed block.
+var removedSchema = &hcl.BodySchema{
+	Attributes: []hcl.AttributeSchema{
+		{Name: "from", Required: true},
+	},
+	Blocks: []hcl.BlockHeaderSchema{
+		{Type: "lifecycle"},
+		{Type: "provisioner", LabelNames: []string{"type"}},
+	},
+}
+
+// removedLifecycleSchema defines the structure of a removed block's lifecycle
+// block.
+var removedLifecycleSchema = &hcl.BodySchema{
+	Attributes: []hcl.AttributeSchema{
+		{Name: "destroy"},
 	},
 }
 

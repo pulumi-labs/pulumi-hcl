@@ -719,6 +719,12 @@ func (e *Engine) Run(ctx context.Context) error {
 		return err
 	}
 
+	// The engine deletes removed-block resources after the program exits;
+	// their destroy-time provisioners must be in the hook registry by then.
+	if err := e.registerRemovedProvisionerHooks(ctx); err != nil {
+		return err
+	}
+
 	// Collect errors from resources that failed to register but were not fatal
 	// (i.e., we continued processing to allow independent resources to proceed).
 	nodeErrs := slices.Collect(e.failedNodes.Values())

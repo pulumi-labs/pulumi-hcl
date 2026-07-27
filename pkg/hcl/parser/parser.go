@@ -129,6 +129,7 @@ func (p *Parser) parseFiles(primary, override map[string]*hcl.File) (*ast.Config
 		diags = append(diags, p.mergeParsedOverride(config, block)...)
 	}
 	config.ProviderFunctionCalls = slices.Sorted(maps.Keys(calls))
+	diags = append(diags, validateRemovedBlocks(config)...)
 
 	config.Diagnostics = diags
 	return config, diags
@@ -155,6 +156,8 @@ func (p *Parser) parseBlock(config *ast.Config, block *hcl.Block) hcl.Diagnostic
 		return p.parseModuleBlock(config, block)
 	case "moved":
 		return p.parseMovedBlock(config, block)
+	case "removed":
+		return p.parseRemovedBlock(config, block)
 	case "import":
 		return p.parseImportBlock(config, block)
 	case "check":
@@ -1408,6 +1411,216 @@ func (p *Parser) parseMovedBlock(config *ast.Config, block *hcl.Block) hcl.Diagn
 
 	config.Moved = append(config.Moved, moved)
 	return diags
+}
+
+// parseRemovedBlock parses a removed block. Only destroy = true is supported:
+// forgetting a resource (destroy = false, or an omitted lifecycle block) means
+// dropping it from state without destroying it, which has no Pulumi engine
+// mapping, so those forms are rejected rather than silently destroying or
+// retaining the resource.
+func (p *Parser) parseRemovedBlock(config *ast.Config, block *hcl.Block) hcl.Diagnostics {
+	content, diags := block.Body.Content(removedSchema)
+
+	removed := &ast.Removed{
+		DeclRange: block.DefRange,
+	}
+
+	isModuleAddr := false
+	if attr, ok := content.Attributes["from"]; ok {
+		traversal, travDiags := hcl.AbsTraversalForExpr(attr.Expr)
+		diags = append(diags, travDiags...)
+		for _, step := range traversal {
+			if _, isIndex := step.(hcl.TraverseIndex); isIndex {
+				diags = append(diags, &hcl.Diagnostic{
+					Severity: hcl.DiagError,
+					Summary:  "Resource instance keys not allowed",
+					Detail:   "A removed block's \"from\" address must not include instance keys; the block applies to every instance of the resource.",
+					Subject:  attr.Expr.Range().Ptr(),
+				})
+				return diags
+			}
+		}
+		if len(traversal) > 0 {
+			if root, ok := traversal[0].(hcl.TraverseRoot); ok {
+				switch root.Name {
+				case "data":
+					diags = append(diags, &hcl.Diagnostic{
+						Severity: hcl.DiagError,
+						Summary:  "Invalid \"from\" address",
+						Detail:   "Data sources are not tracked in state, so they cannot be used in a removed block; delete the data block instead.",
+						Subject:  attr.Expr.Range().Ptr(),
+					})
+					return diags
+				case "module":
+					isModuleAddr = len(traversal) == 2
+				}
+			}
+			// After stripping module.name prefixes, a valid address is either
+			// empty (a module address) or exactly type.name (a resource
+			// address).
+			rest := traversalNames(traversal)
+			for len(rest) >= 2 && rest[0] == "module" {
+				rest = rest[2:]
+			}
+			if len(traversal) < 2 || (len(rest) != 0 && len(rest) != 2) {
+				diags = append(diags, &hcl.Diagnostic{
+					Severity: hcl.DiagError,
+					Summary:  "Invalid \"from\" address",
+					Detail:   "A removed block's \"from\" address must be a resource address (type.name) or a module address (module.name).",
+					Subject:  attr.Expr.Range().Ptr(),
+				})
+				return diags
+			}
+		}
+		removed.From = traversal
+	}
+
+	destroy := false
+	var seenLifecycle *hcl.Block
+	for _, sub := range content.Blocks {
+		switch sub.Type {
+		case "lifecycle":
+			if seenLifecycle != nil {
+				diags = append(diags, &hcl.Diagnostic{
+					Severity: hcl.DiagError,
+					Summary:  "Duplicate lifecycle block",
+					Detail:   fmt.Sprintf("The removed block already has a lifecycle block at %s.", seenLifecycle.DefRange),
+					Subject:  &sub.DefRange,
+				})
+				continue
+			}
+			seenLifecycle = sub
+
+			lcContent, lcDiags := sub.Body.Content(removedLifecycleSchema)
+			diags = append(diags, lcDiags...)
+			if attr, ok := lcContent.Attributes["destroy"]; ok {
+				val, valDiags := attr.Expr.Value(nil)
+				diags = append(diags, valDiags...)
+				if !valDiags.HasErrors() {
+					if val.Type() != cty.Bool {
+						diags = append(diags, &hcl.Diagnostic{
+							Severity: hcl.DiagError,
+							Summary:  "Invalid \"destroy\" value",
+							Detail:   "The \"destroy\" argument must be a boolean constant.",
+							Subject:  attr.Expr.Range().Ptr(),
+						})
+						continue
+					}
+					destroy = val.True()
+				}
+			}
+		case "provisioner":
+			prov, provDiags := p.parseProvisionerBlock(sub)
+			diags = append(diags, provDiags...)
+			if prov == nil {
+				continue
+			}
+			if prov.When != "destroy" {
+				diags = append(diags, &hcl.Diagnostic{
+					Severity: hcl.DiagError,
+					Summary:  "Invalid \"removed.provisioner\" block",
+					Detail:   "Removed blocks can only contain destroy provisioners; \"when = destroy\" is required.",
+					Subject:  &sub.DefRange,
+				})
+				continue
+			}
+			removed.Provisioners = append(removed.Provisioners, prov)
+		}
+	}
+
+	if diags.HasErrors() {
+		return diags
+	}
+
+	removed.Destroy = destroy
+	if !removed.Destroy {
+		diags = append(diags, &hcl.Diagnostic{
+			Severity: hcl.DiagError,
+			Summary:  "Unsupported removed block",
+			Detail: "Removing a resource from state without destroying it is not supported; " +
+				"set `lifecycle { destroy = true }` to destroy the resource, or run " +
+				"`pulumi state delete <urn>` to remove it from state.",
+			Subject: &block.DefRange,
+		})
+	}
+
+	if len(removed.Provisioners) > 0 {
+		if isModuleAddr {
+			diags = append(diags, &hcl.Diagnostic{
+				Severity: hcl.DiagError,
+				Summary:  "Invalid removed block",
+				Detail:   "Removed blocks containing provisioners can only target resources, not modules.",
+				Subject:  &block.DefRange,
+			})
+			return diags
+		}
+		if root, ok := removed.From[0].(hcl.TraverseRoot); ok && root.Name == "module" {
+			diags = append(diags, &hcl.Diagnostic{
+				Severity: hcl.DiagError,
+				Summary:  "Unsupported removed block",
+				Detail:   "Provisioners in removed blocks targeting resources inside modules are not yet supported.",
+				Subject:  &block.DefRange,
+			})
+			return diags
+		}
+	}
+
+	config.Removed = append(config.Removed, removed)
+	return diags
+}
+
+// validateRemovedBlocks checks that no removed block targets a resource or
+// module that is still declared in the same configuration. Addresses inside
+// child modules (module.x.type.name) cannot be checked here because child
+// module configurations are not loaded at parse time.
+func validateRemovedBlocks(config *ast.Config) hcl.Diagnostics {
+	var diags hcl.Diagnostics
+	for _, removed := range config.Removed {
+		names := traversalNames(removed.From)
+		switch {
+		case len(names) == 2 && names[0] == "module":
+			if _, ok := config.Modules[names[1]]; ok {
+				diags = append(diags, &hcl.Diagnostic{
+					Severity: hcl.DiagError,
+					Summary:  "Removed module block still exists",
+					Detail: fmt.Sprintf(
+						"This removed block declares a removal of module.%s, but this module block still exists in the configuration. Please remove the module block.",
+						names[1],
+					),
+					Subject: &removed.DeclRange,
+				})
+			}
+		case len(names) == 2:
+			key := ast.ResourceKey(names[0], names[1])
+			if _, ok := config.Resources[key]; ok {
+				diags = append(diags, &hcl.Diagnostic{
+					Severity: hcl.DiagError,
+					Summary:  "Removed resource block still exists",
+					Detail: fmt.Sprintf(
+						"This removed block declares a removal of %s, but this resource block still exists in the configuration. Please remove the resource block.",
+						key,
+					),
+					Subject: &removed.DeclRange,
+				})
+			}
+		}
+	}
+	return diags
+}
+
+// traversalNames flattens a traversal's root and attribute steps into their
+// names, e.g. simple_resource.a -> ["simple_resource", "a"].
+func traversalNames(traversal hcl.Traversal) []string {
+	names := make([]string, 0, len(traversal))
+	for _, step := range traversal {
+		switch s := step.(type) {
+		case hcl.TraverseRoot:
+			names = append(names, s.Name)
+		case hcl.TraverseAttr:
+			names = append(names, s.Name)
+		}
+	}
+	return names
 }
 
 // parseCallBlock parses a call block.

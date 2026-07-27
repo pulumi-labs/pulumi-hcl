@@ -1451,6 +1451,9 @@ func (g *Graph) inlineModule(
 	}
 
 	path := parentPath.Append(modulepath.NewStep(name))
+	if len(loaded.Config.Removed) > 0 {
+		return fmt.Errorf("module %s: removed blocks inside child modules are not yet supported", name)
+	}
 	g.moved[path] = loaded.Config.Moved
 	scope := &moduleScope{
 		path:       path,
