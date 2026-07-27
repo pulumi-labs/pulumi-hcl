@@ -20,33 +20,21 @@ import (
 
 	"github.com/hashicorp/hcl/v2"
 
-	"github.com/pulumi-labs/pulumi-hcl/pkg/hcl/packages"
-	"github.com/pulumi-labs/pulumi-hcl/pkg/provisioner/runtime"
+	"github.com/pulumi-labs/pulumi-hcl/pkg/hcl/ast"
 )
 
-// registerRemovedProvisionerHooks registers the destroy-time provisioners
-// declared in removed blocks. The engine destroys a resource absent from the
-// program on its own; what it cannot do alone is resolve the BeforeDelete
-// hook names recorded in the resource's state — every recorded name must be
-// registered in this run's hook registry or the delete fails. Each
-// removed-block provisioner is therefore registered under the name the
-// resource bound while it was still declared:
-// "<type>.<name>:provisioner:<i>" (see bindProvisionerHooks).
-//
-// ponytail: names are matched by position — provisioner i in the removed
-// block must have been provisioner i on the resource, which holds when the
-// resource's provisioners were all destroy-time and moved over in order. A
-// resource that mixed create and destroy provisioners records shifted
-// indexes and needs state-aware naming to line up; its delete fails loudly
-// with "hook not registered". Instance-keyed names (count/for_each), custom
-// names (pulumi { name = ... }), and addresses renamed by a moved block are
-// similarly out of reach. The converse is silent: a provisioner the resource
-// never bound registers a hook no state entry references, so the engine
-// never invokes it — a provisioner first introduced in the removed block
-// does not run.
-func (e *Engine) registerRemovedProvisionerHooks(ctx context.Context) error {
-	hclSnapshot := e.evaluator.Context().HCLContext()
-	dryRun := e.dryRun
+// recordRemovedBlockEntries records a destroy-dispatcher entry for each
+// removed block that carries provisioners. The engine destroys a resource
+// absent from the program on its own and invokes the constant
+// [destroyProvisionerHook] recorded in its state; the dispatcher matches the
+// orphan to the removed block by config address (see [DestroyDispatcher]) and
+// runs the block's provisioners, instance keys included. A resource whose
+// state never recorded the hook — it had no destroy-time provisioners when
+// last registered — deletes without running the removed block's provisioners.
+func (e *Engine) recordRemovedBlockEntries(ctx context.Context) error {
+	if e.resmon == nil {
+		return nil
+	}
 	for _, rem := range e.config.Removed {
 		// A destroy = false block already carries a parse-time error
 		// diagnostic; its provisioners must not run.
@@ -61,51 +49,13 @@ func (e *Engine) registerRemovedProvisionerHooks(ctx context.Context) error {
 		if err != nil {
 			return fmt.Errorf("removed block for %s.%s: resolving resource type: %w", typ, name, err)
 		}
-		mapping := e.resolver.ResourceBodyMapping(ctx, typ)
-
-		for i, prov := range rem.Provisioners {
-			prov, index := prov, i+1
-			spec := &runtime.Spec{
-				Type:   prov.Type,
-				Config: prov.Config,
-			}
-			if prov.Connection != nil {
-				spec.Conn = prov.Connection.Config
-			}
-			onFailureContinue := prov.OnFailure == "continue"
-			hookName := fmt.Sprintf("%s.%s:provisioner:%d", typ, name, i)
-			errLabel := fmt.Sprintf("removed %s.%s", typ, name)
-
-			callback := func(hookCtx context.Context, args *ResourceHookArgs) error {
-				outputs := args.OldOutputs
-				// terraform_data's output mirrors input
-				// (lowerTerraformDataOutputs); its triggers_replace echo needs
-				// the registration-time trigger tuple, which a removed
-				// resource no longer has, so a reference to it fails to
-				// evaluate rather than reporting a fabricated value.
-				if typ == packages.TerraformDataType {
-					outputs = outputs.Set("output", outputs.Get("input"))
-				}
-				selfCtx, err := selfBoundEvalCtx(hclSnapshot, outputs, args.ID, args.URN, typ, resSchema, mapping, dryRun)
-				if err != nil {
-					return fmt.Errorf("provisioner %d for %s: %w", index, errLabel, err)
-				}
-				if runErr := runtime.Run(hookCtx, spec, selfCtx); runErr != nil {
-					if onFailureContinue {
-						return nil
-					}
-					return fmt.Errorf("provisioner %d (%s) for %s: %w",
-						index, prov.Type, errLabel, runErr)
-				}
-				return nil
-			}
-
-			if err := e.resmon.RegisterResourceHook(ctx, hookName, callback, ResourceHookOptions{
-				OnDryRun: false, // TF doesn't run provisioners during plan.
-			}); err != nil {
-				return fmt.Errorf("registering removed-block provisioner hook: %w", err)
-			}
+		res := &ast.Resource{
+			Type:         typ,
+			Name:         name,
+			Provisioners: rem.Provisioners,
+			DeclRange:    rem.DeclRange,
 		}
+		e.recordBlockEntry(ctx, res, resSchema, e.evaluator.Context(), e.stackURN, nil)
 	}
 	return nil
 }

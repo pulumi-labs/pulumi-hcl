@@ -1565,10 +1565,11 @@ func (p *Parser) parseRemovedBlock(config *ast.Config, block *hcl.Block) hcl.Dia
 
 // validateRemovedBlocks checks that no removed block targets a resource or
 // module that is still declared in the same configuration, and that at most
-// one removed block per address carries provisioners (their hook names are
-// positional, so a second set cannot be registered). Addresses inside child
-// modules (module.x.type.name) are checked later, during module inlining,
-// because child module configurations are not loaded at parse time.
+// one removed block per address carries provisioners (two provisioner sets
+// for one address would be ambiguous at destroy time). Addresses inside
+// child modules (module.x.type.name) are checked later, during module
+// inlining, because child module configurations are not loaded at parse
+// time.
 func validateRemovedBlocks(config *ast.Config) hcl.Diagnostics {
 	var diags hcl.Diagnostics
 	withProvisioners := map[string]hcl.Range{}

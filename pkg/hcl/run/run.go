@@ -720,8 +720,8 @@ func (e *Engine) Run(ctx context.Context) error {
 	}
 
 	// The engine deletes removed-block resources after the program exits;
-	// their destroy-time provisioners must be in the hook registry by then.
-	if err := e.registerRemovedProvisionerHooks(ctx); err != nil {
+	// their dispatcher entries must be recorded by then.
+	if err := e.recordRemovedBlockEntries(ctx); err != nil {
 		return err
 	}
 

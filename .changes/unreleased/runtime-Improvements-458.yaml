@@ -1,5 +1,5 @@
 kind: Improvements
-body: Support `removed` blocks with `lifecycle { destroy = true }`, re-running the destroy-time provisioners the removed resource declared
+body: Support `removed` blocks with `lifecycle { destroy = true }`, running the block's destroy-time provisioners when the resource is deleted
 time: 2026-07-27T15:00:00Z
 custom:
     Component: runtime
