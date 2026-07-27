@@ -28,6 +28,14 @@ GETMODULES_DIR="$VENDORED_DIR/getmodules"
 COPY_DIR="$VENDORED_DIR/copy"
 IPADDR_DIR="$VENDORED_DIR/ipaddr"
 HCL2SHIM_DIR="$VENDORED_DIR/hcl2shim"
+STATEFILE_DIR="$VENDORED_DIR/statefile"
+STATES_DIR="$VENDORED_DIR/states"
+ADDRS_DIR="$VENDORED_DIR/addrs"
+TFDIAGS_DIR="$VENDORED_DIR/tfdiags"
+MARKS_DIR="$VENDORED_DIR/marks"
+CHECKS_DIR="$VENDORED_DIR/checks"
+LEGACY_HCL2SHIM_DIR="$VENDORED_DIR/legacy/hcl2shim"
+VERSION_DIR="$VENDORED_DIR/version"
 
 MODULE="github.com/pulumi-labs/pulumi-hcl"
 UPSTREAM_MODULE="github.com/opentofu/opentofu"
@@ -55,6 +63,32 @@ SHIM_HTTPCLIENT_PKG="$MODULE/pkg/util/httpclient"
 SHIM_TRACING_TRACEATTRS_PKG="$MODULE/pkg/util/tracing/traceattrs"
 SHIM_TRACING_PKG="$MODULE/pkg/util/tracing"
 
+UPSTREAM_STATEFILE_PKG="$UPSTREAM_MODULE/internal/states/statefile"
+UPSTREAM_STATES_PKG="$UPSTREAM_MODULE/internal/states"
+UPSTREAM_ADDRS_PKG="$UPSTREAM_MODULE/internal/addrs"
+UPSTREAM_TFDIAGS_PKG="$UPSTREAM_MODULE/internal/tfdiags"
+UPSTREAM_MARKS_PKG="$UPSTREAM_MODULE/internal/lang/marks"
+UPSTREAM_CHECKS_PKG="$UPSTREAM_MODULE/internal/checks"
+UPSTREAM_LEGACY_HCL2SHIM_PKG="$UPSTREAM_MODULE/internal/legacy/hcl2shim"
+UPSTREAM_ENCRYPTION_PKG="$UPSTREAM_MODULE/internal/encryption"
+UPSTREAM_CONFIGS_PKG="$UPSTREAM_MODULE/internal/configs"
+UPSTREAM_VERSION_PKG="$UPSTREAM_MODULE/version"
+
+VENDORED_STATEFILE_PKG="$MODULE/vendored/statefile"
+VENDORED_STATES_PKG="$MODULE/vendored/states"
+VENDORED_ADDRS_PKG="$MODULE/vendored/addrs"
+VENDORED_TFDIAGS_PKG="$MODULE/vendored/tfdiags"
+VENDORED_MARKS_PKG="$MODULE/vendored/marks"
+VENDORED_CHECKS_PKG="$MODULE/vendored/checks"
+VENDORED_LEGACY_HCL2SHIM_PKG="$MODULE/vendored/legacy/hcl2shim"
+VENDORED_VERSION_PKG="$MODULE/vendored/version"
+# encryption/configs are in-tree shims (Apache-2.0): statefile only needs a
+# passthrough StateEncryption plus the encrypted-payload sigil check, and one
+# compact provider-address parser, and the upstream packages behind those
+# drag in the key-provider / configuration-loader dependency graphs.
+SHIM_ENCRYPTION_PKG="$MODULE/pkg/util/encryption"
+SHIM_CONFIGS_PKG="$MODULE/pkg/util/configs"
+
 # Stash the SHA we're regenerating against; useful for CI diagnostics.
 echo "regen: target SHA $SHA" >&2
 
@@ -76,14 +110,31 @@ tar -xzf "$TARBALL" -C "$EXTRACT_ROOT" --strip-components=1 \
   "opentofu-$SHA/internal/getmodules" \
   "opentofu-$SHA/internal/copy" \
   "opentofu-$SHA/internal/ipaddr" \
-  "opentofu-$SHA/internal/configs/hcl2shim"
+  "opentofu-$SHA/internal/configs/hcl2shim" \
+  "opentofu-$SHA/internal/states" \
+  "opentofu-$SHA/internal/addrs" \
+  "opentofu-$SHA/internal/tfdiags" \
+  "opentofu-$SHA/internal/lang/marks" \
+  "opentofu-$SHA/internal/checks" \
+  "opentofu-$SHA/internal/legacy/hcl2shim" \
+  "opentofu-$SHA/version"
 
 SRC="$EXTRACT_ROOT/internal/communicator"
 GETMODULES_SRC="$EXTRACT_ROOT/internal/getmodules"
 COPY_SRC="$EXTRACT_ROOT/internal/copy"
 IPADDR_SRC="$EXTRACT_ROOT/internal/ipaddr"
 HCL2SHIM_SRC="$EXTRACT_ROOT/internal/configs/hcl2shim"
-for d in "$SRC" "$GETMODULES_SRC" "$COPY_SRC" "$IPADDR_SRC" "$HCL2SHIM_SRC"; do
+STATES_SRC="$EXTRACT_ROOT/internal/states"
+STATEFILE_SRC="$EXTRACT_ROOT/internal/states/statefile"
+ADDRS_SRC="$EXTRACT_ROOT/internal/addrs"
+TFDIAGS_SRC="$EXTRACT_ROOT/internal/tfdiags"
+MARKS_SRC="$EXTRACT_ROOT/internal/lang/marks"
+CHECKS_SRC="$EXTRACT_ROOT/internal/checks"
+LEGACY_HCL2SHIM_SRC="$EXTRACT_ROOT/internal/legacy/hcl2shim"
+VERSION_SRC="$EXTRACT_ROOT/version"
+for d in "$SRC" "$GETMODULES_SRC" "$COPY_SRC" "$IPADDR_SRC" "$HCL2SHIM_SRC" \
+         "$STATES_SRC" "$STATEFILE_SRC" "$ADDRS_SRC" "$TFDIAGS_SRC" \
+         "$MARKS_SRC" "$CHECKS_SRC" "$LEGACY_HCL2SHIM_SRC" "$VERSION_SRC"; do
   if [[ ! -d "$d" ]]; then
     echo "error: expected $d to exist after extraction" >&2
     exit 1
@@ -237,6 +288,99 @@ find "$GETMODULES_DIR" -type f -name '*.go' -print0 \
 
 gofmt -w "$GETMODULES_DIR"
 
+
+# ---------------------------------------------------------------------------
+# vendored/{statefile,states,addrs,tfdiags,marks,checks,legacy/hcl2shim,version}:
+# OpenTofu's state-file parser and its dependency closure, with the heavy
+# tails cut:
+#   - internal/encryption and internal/configs become in-tree shims
+#     (pkg/util/encryption, pkg/util/configs): statefile only needs a
+#     passthrough StateEncryption + the encrypted-payload sigil, and one
+#     compact provider-address parser.
+#   - states loses its getproviders-facing ProviderRequirements method and
+#     the checks.State write-side helpers (NewCheckResults,
+#     RecordCheckResults), so internal/getproviders and the config-coupled
+#     parts of internal/checks stay out; checks keeps only its Status types.
+#   - legacy/hcl2shim loses values.go (configschema-coupled); flatmap.go's
+#     one dependency on it, UnknownVariableValue, moves to a stub.
+#   - state_string.go (debug rendering, legacy/hcl2shim-coupled) is dropped.
+# ---------------------------------------------------------------------------
+for d in "$STATEFILE_DIR" "$STATES_DIR" "$ADDRS_DIR" "$TFDIAGS_DIR" \
+         "$MARKS_DIR" "$CHECKS_DIR" "$LEGACY_HCL2SHIM_DIR" "$VERSION_DIR"; do
+  rm -rf "$d"
+  mkdir -p "$d"
+done
+
+# states: root files only (statefile/ and statemgr/ are subdirectories; only
+# statefile is vendored, separately below).
+find "$STATES_SRC" -maxdepth 1 -type f -name '*.go' -exec cp {} "$STATES_DIR"/ \;
+cp -R "$STATEFILE_SRC"/. "$STATEFILE_DIR"/
+cp -R "$ADDRS_SRC"/. "$ADDRS_DIR"/
+cp -R "$TFDIAGS_SRC"/. "$TFDIAGS_DIR"/
+cp -R "$MARKS_SRC"/. "$MARKS_DIR"/
+cp "$CHECKS_SRC/status.go" "$CHECKS_SRC/status_string.go" "$CHECKS_DIR"/
+cp "$LEGACY_HCL2SHIM_SRC/flatmap.go" "$LEGACY_HCL2SHIM_SRC/doc.go" "$LEGACY_HCL2SHIM_DIR"/
+cp "$VERSION_SRC/version.go" "$VERSION_SRC/VERSION" "$VERSION_DIR"/
+
+for d in "$STATEFILE_DIR" "$STATES_DIR" "$ADDRS_DIR" "$TFDIAGS_DIR" "$MARKS_DIR"; do
+  find "$d" -type f -name '*_test.go' -delete
+  rm -rf "$d/testdata"
+done
+
+# states surgery: drop the debug renderer and the two dependency tails.
+rm -f "$STATES_DIR/state_string.go"
+perl -i -0pe '
+  s|\n// ProviderRequirements[^\n]*\n(//[^\n]*\n)*func \(s \*State\) ProviderRequirements\(\) getproviders\.Requirements \{.*?\n\}\n||s;
+' "$STATES_DIR/state.go"
+perl -i -ne 'print unless m|"github\.com/opentofu/opentofu/internal/getproviders"|' "$STATES_DIR/state.go"
+perl -i -0pe '
+  s|\n// NewCheckResults[^\n]*\n(//[^\n]*\n)*func NewCheckResults\(source \*checks\.State\) \*CheckResults \{.*?\n\}\n||s;
+' "$STATES_DIR/checks.go"
+perl -i -0pe '
+  s|\n// RecordCheckResults[^\n]*\n(//[^\n]*\n)*func \(s \*SyncState\) RecordCheckResults\(checkState \*checks\.State\) \{.*?\n\}\n||s;
+' "$STATES_DIR/sync.go"
+perl -i -ne 'print unless m|"github\.com/opentofu/opentofu/internal/checks"|' "$STATES_DIR/sync.go"
+
+# legacy/hcl2shim: flatmap.go references UnknownVariableValue, declared in the
+# dropped values.go; restate the constant in a stub.
+cat > "$LEGACY_HCL2SHIM_DIR/values_stub.go" <<'EOF'
+// Copyright 2026, Pulumi Corporation.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+
+// Stub for the dropped values.go, whose remaining functions depend on
+// internal/configs/configschema; flatmap.go only needs this constant.
+
+package hcl2shim
+
+// UnknownVariableValue is a sentinel value that can be used to denote
+// that the value of a variable is unknown at this time, matching the
+// value and meaning of the constant of the same name upstream.
+const UnknownVariableValue = "74D93920-ED26-11E3-AC10-0800200C9A66"
+EOF
+
+# Rewrite import paths. Order matters: statefile before states (path prefix),
+# and the specific internal/... packages before any broader rewrites.
+find "$STATEFILE_DIR" "$STATES_DIR" "$ADDRS_DIR" "$TFDIAGS_DIR" "$MARKS_DIR" \
+     "$CHECKS_DIR" "$LEGACY_HCL2SHIM_DIR" -type f -name '*.go' -print0 \
+  | xargs -0 perl -pi \
+      -e "s|\"$UPSTREAM_STATEFILE_PKG\"|\"$VENDORED_STATEFILE_PKG\"|g;" \
+      -e "s|\"$UPSTREAM_STATES_PKG\"|\"$VENDORED_STATES_PKG\"|g;" \
+      -e "s|\"$UPSTREAM_ADDRS_PKG\"|\"$VENDORED_ADDRS_PKG\"|g;" \
+      -e "s|\"$UPSTREAM_TFDIAGS_PKG\"|\"$VENDORED_TFDIAGS_PKG\"|g;" \
+      -e "s|\"$UPSTREAM_MARKS_PKG\"|\"$VENDORED_MARKS_PKG\"|g;" \
+      -e "s|\"$UPSTREAM_CHECKS_PKG\"|\"$VENDORED_CHECKS_PKG\"|g;" \
+      -e "s|\"$UPSTREAM_LEGACY_HCL2SHIM_PKG\"|\"$VENDORED_LEGACY_HCL2SHIM_PKG\"|g;" \
+      -e "s|\"$UPSTREAM_GETMODULES_PKG\"|\"$VENDORED_GETMODULES_PKG\"|g;" \
+      -e "s|\"$UPSTREAM_ENCRYPTION_PKG\"|\"$SHIM_ENCRYPTION_PKG\"|g;" \
+      -e "s|\"$UPSTREAM_CONFIGS_PKG\"|\"$SHIM_CONFIGS_PKG\"|g;" \
+      -e "s|\"$UPSTREAM_VERSION_PKG\"|\"$VENDORED_VERSION_PKG\"|g;" \
+      -e "s|tfversion \"$UPSTREAM_VERSION_PKG\"|tfversion \"$VENDORED_VERSION_PKG\"|g;"
+
+gofmt -w "$STATEFILE_DIR" "$STATES_DIR" "$ADDRS_DIR" "$TFDIAGS_DIR" \
+         "$MARKS_DIR" "$CHECKS_DIR" "$LEGACY_HCL2SHIM_DIR" "$VERSION_DIR"
+
 # Sanity check: the vendored trees must build against their shims.
 echo "regen: go build ./vendored/..." >&2
 (cd "$VENDORED_DIR/.." && go build ./vendored/...)
@@ -247,4 +391,5 @@ gm_count=$(find "$GETMODULES_DIR" -type f | wc -l | tr -d ' ')
 copy_count=$(find "$COPY_DIR" -type f | wc -l | tr -d ' ')
 ipaddr_count=$(find "$IPADDR_DIR" -type f | wc -l | tr -d ' ')
 hcl2shim_count=$(find "$HCL2SHIM_DIR" -type f | wc -l | tr -d ' ')
-echo "regen: wrote $comm_count files under vendored/communicator/, $gm_count under vendored/getmodules/, $copy_count under vendored/copy/, $ipaddr_count under vendored/ipaddr/, $hcl2shim_count under vendored/hcl2shim/" >&2
+state_count=$(find "$STATEFILE_DIR" "$STATES_DIR" "$ADDRS_DIR" "$TFDIAGS_DIR" "$MARKS_DIR" "$CHECKS_DIR" "$LEGACY_HCL2SHIM_DIR" "$VERSION_DIR" -type f | wc -l | tr -d ' ')
+echo "regen: wrote $comm_count files under vendored/communicator/, $gm_count under vendored/getmodules/, $copy_count under vendored/copy/, $ipaddr_count under vendored/ipaddr/, $hcl2shim_count under vendored/hcl2shim/, $state_count under the state-file trees" >&2
