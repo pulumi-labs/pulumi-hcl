@@ -38,9 +38,15 @@ import (
 // resource's provisioners were all destroy-time and moved over in order. A
 // resource that mixed create and destroy provisioners records shifted
 // indexes and needs state-aware naming to line up; its delete fails loudly
-// with "hook not registered". Instance-keyed names (count/for_each) are
-// similarly out of reach.
+// with "hook not registered". Instance-keyed names (count/for_each), custom
+// names (pulumi { name = ... }), and addresses renamed by a moved block are
+// similarly out of reach. The converse is silent: a provisioner the resource
+// never bound registers a hook no state entry references, so the engine
+// never invokes it — a provisioner first introduced in the removed block
+// does not run.
 func (e *Engine) registerRemovedProvisionerHooks(ctx context.Context) error {
+	hclSnapshot := e.evaluator.Context().HCLContext()
+	dryRun := e.dryRun
 	for _, rem := range e.config.Removed {
 		// A destroy = false block already carries a parse-time error
 		// diagnostic; its provisioners must not run.
@@ -56,8 +62,6 @@ func (e *Engine) registerRemovedProvisionerHooks(ctx context.Context) error {
 			return fmt.Errorf("removed block for %s.%s: resolving resource type: %w", typ, name, err)
 		}
 		mapping := e.resolver.ResourceBodyMapping(ctx, typ)
-		hclSnapshot := e.evaluator.Context().HCLContext()
-		dryRun := e.dryRun
 
 		for i, prov := range rem.Provisioners {
 			prov, index := prov, i+1

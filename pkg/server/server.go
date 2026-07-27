@@ -490,6 +490,13 @@ func collectRequirementsRec(
 			pulumi[run.TerraformStatePackage] = run.TerraformStatePackageVersion
 		}
 	}
+	// A removed block's provisioners resolve the removed resource's schema at
+	// run time, so its provider is required even with no resource block left.
+	for _, rem := range config.Removed {
+		if len(rem.From) == 2 && rem.From.RootName() != "module" {
+			addType(rem.From.RootName())
+		}
+	}
 
 	if loader == nil {
 		return

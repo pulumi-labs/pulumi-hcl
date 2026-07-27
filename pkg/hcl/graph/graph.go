@@ -286,6 +286,12 @@ type Graph struct {
 	// module.
 	moved map[modulepath.Path][]*ast.Moved
 
+	// removed holds the root configuration's removed blocks (child modules
+	// cannot declare them). A removed address inside a child module can only
+	// be checked against that module's configuration once it is loaded for
+	// inlining.
+	removed []*ast.Removed
+
 	// scopes maps a module's path to its scope, so expression-level dependency
 	// extraction can resolve provider-defined function calls to the provider
 	// block they use.
@@ -521,6 +527,7 @@ func BuildFromConfig(config *ast.Config, moduleLoader ModuleLoader, workDir stri
 	g := NewGraph()
 	root := modulepath.Root()
 	g.moved[root] = config.Moved
+	g.removed = config.Removed
 	rootScope := &moduleScope{config: config}
 	g.scopes[root] = rootScope
 
@@ -1428,6 +1435,54 @@ func (g *Graph) Validate() []error {
 	return errs
 }
 
+// checkRemovedStillExists reports a removed block whose module-prefixed
+// address is still declared by the child module being inlined at path,
+// mirroring the parse-time check for root addresses. A target nested deeper
+// than this module is checked when its own module is inlined; a target whose
+// module is gone is never reached, which is exactly a valid removal.
+func checkRemovedStillExists(removed []*ast.Removed, path modulepath.Path, config *ast.Config) error {
+	var pathNames []string
+	for s := range path.Steps {
+		pathNames = append(pathNames, s.Name())
+	}
+	for _, rem := range removed {
+		// A valid removed address is module.name pairs then an optional
+		// type.name tail (the parser rejects other shapes).
+		names := traversalNames(rem.From)
+		var chain, rest []string
+		for rest = names; len(rest) >= 2 && rest[0] == "module"; rest = rest[2:] {
+			chain = append(chain, rest[1])
+		}
+		if !slices.Equal(chain, pathNames) {
+			continue
+		}
+		addr := strings.Join(names, ".")
+		if len(rest) == 0 {
+			return fmt.Errorf("removed block for %s: this module block still exists in the configuration", addr)
+		}
+		if _, exists := config.Resources[ast.ResourceKey(rest[0], rest[1])]; exists {
+			return fmt.Errorf("removed block for %s: this resource block still exists in the configuration", addr)
+		}
+	}
+	return nil
+}
+
+// traversalNames flattens a traversal's root and attribute steps into their
+// names, e.g. module.child.simple_resource.a -> ["module", "child",
+// "simple_resource", "a"].
+func traversalNames(traversal hcl.Traversal) []string {
+	names := make([]string, 0, len(traversal))
+	for _, step := range traversal {
+		switch s := step.(type) {
+		case hcl.TraverseRoot:
+			names = append(names, s.Name)
+		case hcl.TraverseAttr:
+			names = append(names, s.Name)
+		}
+	}
+	return names
+}
+
 // rangeLess orders ranges by filename, then start line, then start column.
 func rangeLess(a, b hcl.Range) bool {
 	if a.Filename != b.Filename {
@@ -1453,6 +1508,9 @@ func (g *Graph) inlineModule(
 	path := parentPath.Append(modulepath.NewStep(name))
 	if len(loaded.Config.Removed) > 0 {
 		return fmt.Errorf("module %s: removed blocks inside child modules are not yet supported", name)
+	}
+	if err := checkRemovedStillExists(g.removed, path, loaded.Config); err != nil {
+		return err
 	}
 	g.moved[path] = loaded.Config.Moved
 	scope := &moduleScope{

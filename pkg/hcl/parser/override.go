@@ -65,7 +65,7 @@ func applyOverrides(primary, override []*hcl.Block) (blocks, deferred []*hcl.Blo
 		case "locals", "terraform":
 			deferred = append(deferred, block)
 			continue
-		case "moved", "import":
+		case "moved", "import", "removed":
 			diags = append(diags, &hcl.Diagnostic{
 				Severity: hcl.DiagError,
 				Summary:  fmt.Sprintf("Cannot override %q blocks", block.Type),

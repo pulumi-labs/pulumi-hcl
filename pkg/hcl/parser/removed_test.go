@@ -209,6 +209,32 @@ removed {
 			wantSummary: "Unsupported removed block",
 		},
 		{
+			name: "duplicate provisioner-carrying blocks",
+			src: `
+removed {
+  from = simple_resource.a
+  lifecycle {
+    destroy = true
+  }
+  provisioner "local-exec" {
+    when    = destroy
+    command = "true"
+  }
+}
+
+removed {
+  from = simple_resource.a
+  lifecycle {
+    destroy = true
+  }
+  provisioner "local-exec" {
+    when    = destroy
+    command = "false"
+  }
+}`,
+			wantSummary: "Duplicate removed block",
+		},
+		{
 			name: "resource still declared",
 			src: `
 resource "simple_resource" "a" {}
@@ -246,4 +272,46 @@ removed {
 			assert.Equal(t, tt.wantSummary, diags[0].Summary)
 		})
 	}
+}
+
+// Duplicate removed blocks without provisioners are legal, matching OpenTofu.
+func TestParseRemovedBlockDuplicateWithoutProvisioners(t *testing.T) {
+	t.Parallel()
+	src := []byte(`
+removed {
+  from = simple_resource.a
+  lifecycle {
+    destroy = true
+  }
+}
+
+removed {
+  from = simple_resource.a
+  lifecycle {
+    destroy = true
+  }
+}
+`)
+
+	config, diags := NewParser().ParseSource("main.tf", src)
+	require.False(t, diags.HasErrors(), "diags: %v", diags)
+	assert.Len(t, config.Removed, 2)
+}
+
+func TestRemovedBlockInOverrideFileRejected(t *testing.T) {
+	t.Parallel()
+
+	_, diags := parseDir(t, map[string]string{
+		"main.tf": `resource "simple_resource" "r" { input_one = "base" }`,
+		"override.tf": `
+removed {
+  from = simple_resource.gone
+  lifecycle {
+    destroy = true
+  }
+}`,
+	})
+
+	require.Len(t, diags, 1)
+	assert.Equal(t, `Cannot override "removed" blocks`, diags[0].Summary)
 }

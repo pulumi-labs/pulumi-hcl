@@ -1425,7 +1425,7 @@ func (p *Parser) parseRemovedBlock(config *ast.Config, block *hcl.Block) hcl.Dia
 		DeclRange: block.DefRange,
 	}
 
-	isModuleAddr := false
+	var names []string
 	if attr, ok := content.Attributes["from"]; ok {
 		traversal, travDiags := hcl.AbsTraversalForExpr(attr.Expr)
 		diags = append(diags, travDiags...)
@@ -1440,29 +1440,25 @@ func (p *Parser) parseRemovedBlock(config *ast.Config, block *hcl.Block) hcl.Dia
 				return diags
 			}
 		}
-		if len(traversal) > 0 {
-			if root, ok := traversal[0].(hcl.TraverseRoot); ok {
-				switch root.Name {
-				case "data":
-					diags = append(diags, &hcl.Diagnostic{
-						Severity: hcl.DiagError,
-						Summary:  "Invalid \"from\" address",
-						Detail:   "Data sources are not tracked in state, so they cannot be used in a removed block; delete the data block instead.",
-						Subject:  attr.Expr.Range().Ptr(),
-					})
-					return diags
-				case "module":
-					isModuleAddr = len(traversal) == 2
-				}
+		names = traversalNames(traversal)
+		if len(names) > 0 {
+			if names[0] == "data" {
+				diags = append(diags, &hcl.Diagnostic{
+					Severity: hcl.DiagError,
+					Summary:  "Invalid \"from\" address",
+					Detail:   "Data sources are not tracked in state, so they cannot be used in a removed block; delete the data block instead.",
+					Subject:  attr.Expr.Range().Ptr(),
+				})
+				return diags
 			}
 			// After stripping module.name prefixes, a valid address is either
 			// empty (a module address) or exactly type.name (a resource
 			// address).
-			rest := traversalNames(traversal)
+			rest := names
 			for len(rest) >= 2 && rest[0] == "module" {
 				rest = rest[2:]
 			}
-			if len(traversal) < 2 || (len(rest) != 0 && len(rest) != 2) {
+			if len(names) < 2 || (len(rest) != 0 && len(rest) != 2) {
 				diags = append(diags, &hcl.Diagnostic{
 					Severity: hcl.DiagError,
 					Summary:  "Invalid \"from\" address",
@@ -1544,8 +1540,8 @@ func (p *Parser) parseRemovedBlock(config *ast.Config, block *hcl.Block) hcl.Dia
 		})
 	}
 
-	if len(removed.Provisioners) > 0 {
-		if isModuleAddr {
+	if len(removed.Provisioners) > 0 && len(names) > 0 && names[0] == "module" {
+		if len(names) == 2 {
 			diags = append(diags, &hcl.Diagnostic{
 				Severity: hcl.DiagError,
 				Summary:  "Invalid removed block",
@@ -1554,15 +1550,13 @@ func (p *Parser) parseRemovedBlock(config *ast.Config, block *hcl.Block) hcl.Dia
 			})
 			return diags
 		}
-		if root, ok := removed.From[0].(hcl.TraverseRoot); ok && root.Name == "module" {
-			diags = append(diags, &hcl.Diagnostic{
-				Severity: hcl.DiagError,
-				Summary:  "Unsupported removed block",
-				Detail:   "Provisioners in removed blocks targeting resources inside modules are not yet supported.",
-				Subject:  &block.DefRange,
-			})
-			return diags
-		}
+		diags = append(diags, &hcl.Diagnostic{
+			Severity: hcl.DiagError,
+			Summary:  "Unsupported removed block",
+			Detail:   "Provisioners in removed blocks targeting resources inside modules are not yet supported.",
+			Subject:  &block.DefRange,
+		})
+		return diags
 	}
 
 	config.Removed = append(config.Removed, removed)
@@ -1570,13 +1564,32 @@ func (p *Parser) parseRemovedBlock(config *ast.Config, block *hcl.Block) hcl.Dia
 }
 
 // validateRemovedBlocks checks that no removed block targets a resource or
-// module that is still declared in the same configuration. Addresses inside
-// child modules (module.x.type.name) cannot be checked here because child
-// module configurations are not loaded at parse time.
+// module that is still declared in the same configuration, and that at most
+// one removed block per address carries provisioners (their hook names are
+// positional, so a second set cannot be registered). Addresses inside child
+// modules (module.x.type.name) are checked later, during module inlining,
+// because child module configurations are not loaded at parse time.
 func validateRemovedBlocks(config *ast.Config) hcl.Diagnostics {
 	var diags hcl.Diagnostics
+	withProvisioners := map[string]hcl.Range{}
 	for _, removed := range config.Removed {
 		names := traversalNames(removed.From)
+		if len(removed.Provisioners) > 0 {
+			addr := strings.Join(names, ".")
+			if prev, ok := withProvisioners[addr]; ok {
+				diags = append(diags, &hcl.Diagnostic{
+					Severity: hcl.DiagError,
+					Summary:  "Duplicate removed block",
+					Detail: fmt.Sprintf(
+						"A removed block with provisioners for %s was already declared at %s; declare all of the address's provisioners in one removed block.",
+						addr, prev,
+					),
+					Subject: &removed.DeclRange,
+				})
+			} else {
+				withProvisioners[addr] = removed.DeclRange
+			}
+		}
 		switch {
 		case len(names) == 2 && names[0] == "module":
 			if _, ok := config.Modules[names[1]]; ok {
