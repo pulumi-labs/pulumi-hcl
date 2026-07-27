@@ -2600,6 +2600,56 @@ resource "aws_instance" "web" {
 	assert.Equal(t, "First\nSecond\n", string(got))
 }
 
+// An unknown provisioner type is rejected when its hook is bound, before the
+// resource is registered — not when the hook would first run at apply.
+func TestEngine_UnknownProvisionerType(t *testing.T) {
+	t.Parallel()
+
+	src := []byte(`
+resource "aws_instance" "web" {
+  ami = "ami-12345"
+
+  provisioner "habitat" {
+    command = "echo hi"
+  }
+}
+`)
+
+	p := parser.NewParser()
+	config, diags := p.ParseSource("test.hcl", src)
+	require.False(t, diags.HasErrors(), diags.Error())
+
+	mock := &testutil.MockResourceMonitor{}
+	engine := newTestEngine(t, config, &run.EngineOptions{
+		ModuleLoader:    testModuleLoader(t),
+		ProjectName:     "test-project",
+		StackName:       "dev",
+		ResourceMonitor: mock,
+		WorkDir:         t.TempDir(),
+		RootDir:         t.TempDir(),
+		SchemaLoader: schemaloader.New(t, schema.PackageSpec{
+			Name: "aws",
+			Resources: map[string]schema.ResourceSpec{
+				"aws:index:Instance": {
+					InputProperties: map[string]schema.PropertySpec{
+						"ami": {TypeSpec: schema.TypeSpec{Type: "string"}},
+					},
+					ObjectTypeSpec: schema.ObjectTypeSpec{
+						Properties: map[string]schema.PropertySpec{
+							"ami": {TypeSpec: schema.TypeSpec{Type: "string"}},
+						},
+					},
+				},
+			},
+		}),
+	})
+
+	err := engine.Run(t.Context())
+	require.ErrorContains(t, err, `unsupported provisioner type: "habitat"`)
+	require.False(t, hasRegisteredResource(mock, "aws:index:Instance"),
+		"resource must not be registered when a provisioner type is unknown")
+}
+
 // TestEngine_ProvisionerReference covers a provisioner whose command
 // interpolates another resource's outputs: the referent must be created
 // first, and its created value must reach the command.

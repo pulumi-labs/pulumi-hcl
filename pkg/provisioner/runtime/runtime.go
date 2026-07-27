@@ -30,15 +30,23 @@ type Spec struct {
 	Conn   hcl.Body // nil for local-exec
 }
 
-func Run(ctx context.Context, spec *Spec, hclCtx *hcl.EvalContext) error {
-	switch spec.Type {
-	case "local-exec":
-		return runLocalExec(ctx, spec, hclCtx)
-	case "remote-exec":
-		return runRemoteExec(ctx, spec, hclCtx)
-	case "file":
-		return runFile(ctx, spec, hclCtx)
-	default:
-		return fmt.Errorf("unsupported provisioner type: %q", spec.Type)
+var runners = map[string]func(context.Context, *Spec, *hcl.EvalContext) error{
+	"local-exec":  runLocalExec,
+	"remote-exec": runRemoteExec,
+	"file":        runFile,
+}
+
+// Validate rejects provisioner types this package cannot run.
+func Validate(typ string) error {
+	if _, ok := runners[typ]; !ok {
+		return fmt.Errorf("unsupported provisioner type: %q", typ)
 	}
+	return nil
+}
+
+func Run(ctx context.Context, spec *Spec, hclCtx *hcl.EvalContext) error {
+	if err := Validate(spec.Type); err != nil {
+		return err
+	}
+	return runners[spec.Type](ctx, spec, hclCtx)
 }
