@@ -48,6 +48,7 @@ import (
 	"github.com/pulumi/pulumi/sdk/v3/go/common/resource"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/resource/plugin"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/resource/urn"
+	"github.com/pulumi/pulumi/sdk/v3/go/common/tokens"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/util/contract"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/util/fsutil"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/util/logging"
@@ -542,6 +543,8 @@ func (host *LanguageHost) Run(
 		monitorClient: monitorClient,
 		engineClient:  host.engine,
 		ctx:           ctx,
+		stack:         req.Stack,
+		project:       req.Project,
 	}
 
 	// Parse the HCL program
@@ -614,6 +617,7 @@ func (host *LanguageHost) Run(
 		Organization:            req.Organization,
 		Config:                  configMap,
 		DryRun:                  req.DryRun,
+		DeploymentKey:           req.MonitorAddress,
 		ResourceMonitor:         resmon,
 		SchemaLoader:            loader,
 		ProviderInfoSource:      providerInfoSource,
@@ -1132,8 +1136,22 @@ type resourceMonitorAdapter struct {
 	engineClient  pulumirpc.EngineClient
 	ctx           context.Context
 
+	stack   string
+	project string
+
 	hookMu  sync.Mutex
 	hookCBS *callbackServer
+}
+
+// ResolveURN replicates the engine's URN generation (skip empty parents and
+// the root stack type; otherwise use the parent's qualified type). The
+// langhost path registers names verbatim.
+func (r *resourceMonitorAdapter) ResolveURN(parent urn.URN, token, name string) (urn.URN, string) {
+	parentType := tokens.Type("")
+	if parent != "" && parent.QualifiedType() != resource.RootStackType {
+		parentType = parent.QualifiedType()
+	}
+	return urn.New(tokens.QName(r.stack), tokens.PackageName(r.project), parentType, tokens.Type(token), name), name
 }
 
 // RegisterPackage registers a parameterized package with the engine.

@@ -90,6 +90,13 @@ type ResourceMonitor interface {
 	// resource registration that binds the hook by name via Hooks.
 	RegisterResourceHook(ctx context.Context, name string, callback ResourceHookFunction, opts ResourceHookOptions) error
 
+	// ResolveURN returns the URN the engine will assign to a resource
+	// registered with this (parent, token, name), and the name it will be
+	// registered under. It exists because this package cannot compute either
+	// by itself: the MLC monitor rewrites the name (component prefix) and the
+	// parent (component URN fallback) after this package sees them.
+	ResolveURN(parent urn.URN, token, name string) (urn.URN, string)
+
 	// LogWarning emits a non-fatal warning diagnostic to the engine.
 	LogWarning(ctx context.Context, message string) error
 }
@@ -416,6 +423,10 @@ type Engine struct {
 	// dryRun indicates if this is a preview operation.
 	dryRun bool
 
+	// deploymentKey scopes this engine's destroy-provisioner dispatch entries.
+	// See EngineOptions.DeploymentKey.
+	deploymentKey string
+
 	// workDir is the working directory.
 	workDir string
 
@@ -539,6 +550,14 @@ type EngineOptions struct {
 	// DryRun indicates this is a preview operation.
 	DryRun bool
 
+	// DeploymentKey identifies the deployment this engine registers into —
+	// the monitor address/endpoint. Several engines sharing a deployment (the
+	// MLC path spins one per Construct) must share the key so the constant
+	// destroy-provisioner hook registers exactly once per deployment and its
+	// dispatch entries stay visible to each other. Empty gets a process-unique
+	// fallback.
+	DeploymentKey string
+
 	// ResourceMonitor is the resource monitor for registering resources.
 	ResourceMonitor ResourceMonitor
 
@@ -605,8 +624,14 @@ func NewEngine(ctx context.Context, config *ast.Config, opts *EngineOptions) (*E
 		}
 	}
 
+	deploymentKey := opts.DeploymentKey
+	if deploymentKey == "" {
+		deploymentKey = fmt.Sprintf("engine-%d", engineCounter.Add(1))
+	}
+
 	return &Engine{
 		config:                  config,
+		deploymentKey:           deploymentKey,
 		evaluator:               eval.NewEvaluator(evalCtx),
 		pkgLoader:               opts.SchemaLoader,
 		providerInfoSource:      opts.ProviderInfoSource,
@@ -662,6 +687,11 @@ func (e *Engine) Run(ctx context.Context) error {
 	if err := e.registerStack(ctx); err != nil {
 		return fmt.Errorf("registering stack: %w", err)
 	}
+
+	// Before any resource registration: a delete-before-replace delete fires
+	// its BeforeDelete hooks while the registration that triggered it is
+	// still blocked.
+	e.registerDestroyDispatcher(ctx)
 
 	if err := e.warnUndeclaredTfvars(ctx); err != nil {
 		return err

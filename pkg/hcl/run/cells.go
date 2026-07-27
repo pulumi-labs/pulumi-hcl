@@ -387,6 +387,12 @@ func (e *Engine) expandResourceCell(
 		return nil
 	}
 
+	// The block's destroy provisioners must be reachable for orphaned
+	// instances whether or not the block expands to any instances this run.
+	if !e.hasFailedDependency(res) {
+		e.recordBlockEntry(ctx, res, resSchema, evalCtx, parentURN, modInst)
+	}
+
 	result := expander.Expand(node)
 
 	// Empty count/for_each still needs the resource address bound so

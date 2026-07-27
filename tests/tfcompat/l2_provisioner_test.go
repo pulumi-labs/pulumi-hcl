@@ -106,6 +106,21 @@ func TestL2Provisioner_WhenDestroyCountZero(t *testing.T) {
 	})
 }
 
+// Shrinking count from 2 to 1 orphans instance [1] while the block stays
+// live; its destroy provisioner must still run.
+func TestL2Provisioner_WhenDestroyCountShrink(t *testing.T) {
+	t.Parallel()
+	tfcompat.RunCase(t, "l2_provisioner_destroy_count_shrink", tfcompat.Case{
+		Providers: []tfcompat.Provider{
+			{Name: "simple", Factory: providers.SimpleProvider},
+		},
+		Stages: []tfcompat.Stage{
+			{},
+			{ExpectErr: "exit status 7"},
+		},
+	})
+}
+
 // The harness can't observe stdout suppression directly; if quiet broke
 // command invocation either runtime would fail.
 func TestL2Provisioner_Quiet(t *testing.T) {

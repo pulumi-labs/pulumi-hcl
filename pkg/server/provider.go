@@ -346,6 +346,7 @@ func (p *HCLProvider) Construct(ctx context.Context, req *pulumirpc.ConstructReq
 		StackName:          req.Stack,
 		Organization:       req.Organization,
 		DryRun:             req.DryRun,
+		DeploymentKey:      req.MonitorEndpoint,
 		WorkDir:            loaded.SourcePath,
 		RootDir:            loaded.SourcePath,
 		AbsolutePaths:      true,
@@ -777,3 +778,20 @@ var _ pulumirpc.ResourceProviderServer = (*HCLProvider)(nil)
 
 // Ensure constructResourceMonitor implements run.ResourceMonitor.
 var _ run.ResourceMonitor = (*constructResourceMonitor)(nil)
+
+// ResolveURN mirrors the rewrites RegisterResource applies before the engine
+// sees a registration — the component-URN parent fallback and the
+// component-name prefix — then replicates the engine's URN generation. The
+// component URN is set by the component's own registration, which strictly
+// precedes any resource the engine registers.
+func (m *constructResourceMonitor) ResolveURN(parent urn.URN, token, name string) (urn.URN, string) {
+	if parent == "" {
+		parent = m.componentURN
+	}
+	name = m.componentName + "-" + name
+	parentType := tokens.Type("")
+	if parent != "" && parent.QualifiedType() != resource.RootStackType {
+		parentType = parent.QualifiedType()
+	}
+	return urn.New(m.componentURN.Stack(), m.componentURN.Project(), parentType, tokens.Type(token), name), name
+}

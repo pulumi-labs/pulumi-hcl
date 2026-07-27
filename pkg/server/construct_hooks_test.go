@@ -75,7 +75,14 @@ func (s *hookInvokingMonitor) RegisterResourceHook(
 func (s *hookInvokingMonitor) RegisterResource(
 	ctx context.Context, req *pulumirpc.RegisterResourceRequest,
 ) (*pulumirpc.RegisterResourceResponse, error) {
-	urn := "urn:pulumi:test::proj::" + req.Type + "::" + req.Name
+	// URNs chain the parent's qualified type the way the engine's
+	// generateURN does; the destroy-provisioner dispatcher keys instance
+	// entries by the URN it computes with the same rule.
+	parentChain := ""
+	if p := resource.URN(req.Parent); p != "" && p.QualifiedType() != resource.RootStackType {
+		parentChain = string(p.QualifiedType()) + "$"
+	}
+	urn := "urn:pulumi:test::proj::" + parentChain + req.Type + "::" + req.Name
 
 	// The engine echoes checked inputs back as outputs for a resource with no
 	// provider diff; enough for a postcondition's `self` to resolve.
