@@ -27,15 +27,11 @@ import (
 )
 
 // recordRemovedBlockEntries records a destroy-dispatcher entry for each
-// removed block that carries provisioners, from the graph's merged list:
-// every block in the module tree, child-declared addresses rewritten to be
-// root-relative. The engine destroys a resource absent from the program on
-// its own and invokes the constant [destroyProvisionerHook] recorded in its
-// state; the dispatcher matches the orphan to the removed block by config
-// address (see [DestroyDispatcher]) and runs the block's provisioners,
-// instance keys included. A resource whose state never recorded the hook —
-// it had no destroy-time provisioners when last registered — deletes without
-// running the removed block's provisioners.
+// removed block in the module tree that carries provisioners, so the
+// provisioners run when the engine deletes the orphaned instances. A resource
+// whose state never recorded [destroyProvisionerHook] — it had no
+// destroy-time provisioners when last registered — deletes without running
+// the removed block's provisioners.
 func (e *Engine) recordRemovedBlockEntries(ctx context.Context) error {
 	if e.resmon == nil {
 		return nil
@@ -66,10 +62,9 @@ func (e *Engine) recordRemovedBlockEntries(ctx context.Context) error {
 }
 
 // recordRemovedEntry records the dispatch entry for a removed block's
-// resource address. Unlike a live block's entry it carries no module instance
-// scope — a module-qualified orphan evaluates its provisioners in TF's
-// destroy scope (self, count.index, each.key, path.*, terraform.*), which is
-// also all TF allows a removed block's provisioners to reference.
+// resource address. The entry carries no module instance scope: a
+// module-qualified orphan evaluates its provisioners in the strict destroy
+// scope (self, count.index, each.key, path.*, terraform.*).
 func (e *Engine) recordRemovedEntry(
 	ctx context.Context, res *ast.Resource, resSchema *schema.Resource, module modulepath.Path,
 ) {
@@ -91,9 +86,7 @@ func (e *Engine) recordRemovedEntry(
 }
 
 // removedResourceAddr splits a removed block's root-relative "from" traversal
-// into the enclosing module config path and the resource type and name. The
-// parser has already rejected the address shapes that cannot carry
-// provisioners (whole modules, instance keys, data sources).
+// into the enclosing module config path and the resource type and name.
 func removedResourceAddr(from hcl.Traversal) (module modulepath.Path, typ, name string, err error) {
 	var names []string
 	for _, step := range from {
