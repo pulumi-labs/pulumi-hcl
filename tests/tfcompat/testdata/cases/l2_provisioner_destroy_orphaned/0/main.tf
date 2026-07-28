@@ -3,7 +3,8 @@ resource "terraform_data" "r" {
   input = "a"
 
   provisioner "local-exec" {
-    when    = destroy
-    command = "true"
+    when = destroy
+    # This should never run, if it does it will fail.
+    command = "false"
   }
 }
