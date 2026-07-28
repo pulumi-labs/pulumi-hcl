@@ -54,6 +54,9 @@ type Config struct {
 	// Moved contains moved blocks for resource renaming.
 	Moved []*Moved
 
+	// Removed contains removed blocks for resource deletion.
+	Removed []*Removed
+
 	// Imports contains import blocks for importing existing resources.
 	Imports []*Import
 

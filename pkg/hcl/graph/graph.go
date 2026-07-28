@@ -286,6 +286,10 @@ type Graph struct {
 	// module.
 	moved map[modulepath.Path][]*ast.Moved
 
+	// removed holds every removed block in the module tree, child-declared
+	// addresses rewritten to be root-relative during inlining.
+	removed []*ast.Removed
+
 	// scopes maps a module's path to its scope, so expression-level dependency
 	// extraction can resolve provider-defined function calls to the provider
 	// block they use.
@@ -521,6 +525,10 @@ func BuildFromConfig(config *ast.Config, moduleLoader ModuleLoader, workDir stri
 	g := NewGraph()
 	root := modulepath.Root()
 	g.moved[root] = config.Moved
+	g.removed = slices.Clone(config.Removed)
+	if err := checkRemovedStillExists(g.removed, root, config); err != nil {
+		return nil, err
+	}
 	rootScope := &moduleScope{config: config}
 	g.scopes[root] = rootScope
 
@@ -618,6 +626,10 @@ func BuildFromConfig(config *ast.Config, moduleLoader ModuleLoader, workDir stri
 		if err := g.inlineModule(name, module, root, moduleLoader, workDir, rootScope); err != nil {
 			return nil, fmt.Errorf("inlining module %s: %w", name, err)
 		}
+	}
+
+	if err := checkDuplicateRemovedProvisioners(g.removed); err != nil {
+		return nil, err
 	}
 
 	if err := g.addCallNodes(config, root, nil); err != nil {
@@ -1428,6 +1440,49 @@ func (g *Graph) Validate() []error {
 	return errs
 }
 
+// checkRemovedStillExists reports a removed block whose root-relative address
+// is still declared by the configuration at path. A target nested deeper than
+// this module is checked when its own module is inlined; a target whose
+// module is gone is never reached, which is exactly a valid removal.
+func checkRemovedStillExists(removed []*ast.Removed, path modulepath.Path, config *ast.Config) error {
+	for _, rem := range removed {
+		if rem.From.Module != path {
+			continue
+		}
+		if rem.From.Type == "" {
+			return fmt.Errorf("removed block for %s: this module block still exists in the configuration", rem.From)
+		}
+		if _, exists := config.Resources[ast.ResourceKey(rem.From.Type, rem.From.Name)]; exists {
+			return fmt.Errorf("removed block for %s: this resource block still exists in the configuration", rem.From)
+		}
+	}
+	return nil
+}
+
+// checkDuplicateRemovedProvisioners rejects two provisioner-carrying removed
+// blocks for one root-relative address: two provisioner sets for one orphan
+// would be ambiguous at destroy time.
+func checkDuplicateRemovedProvisioners(removed []*ast.Removed) error {
+	withProvisioners := map[string]hcl.Range{}
+	for _, rem := range removed {
+		if len(rem.Provisioners) == 0 {
+			continue
+		}
+		addr := rem.From.String()
+		if prev, ok := withProvisioners[addr]; ok {
+			return fmt.Errorf(
+				"duplicate removed block for %s: a removed block with provisioners for this address was already declared at %s; declare all of the address's provisioners in one removed block",
+				addr, prev)
+		}
+		withProvisioners[addr] = rem.DeclRange
+	}
+	return nil
+}
+
+// Removed returns every removed block in the module tree, with child-declared
+// addresses rewritten to be root-relative.
+func (g *Graph) Removed() []*ast.Removed { return g.removed }
+
 // rangeLess orders ranges by filename, then start line, then start column.
 func rangeLess(a, b hcl.Range) bool {
 	if a.Filename != b.Filename {
@@ -1451,6 +1506,17 @@ func (g *Graph) inlineModule(
 	}
 
 	path := parentPath.Append(modulepath.NewStep(name))
+	// Rewrite child-declared removed addresses to root-relative before
+	// validating, so the child's own declarations are checked against its
+	// configuration along with any ancestor's.
+	for _, rem := range loaded.Config.Removed {
+		abs := *rem
+		abs.From.Module = path.Join(rem.From.Module)
+		g.removed = append(g.removed, &abs)
+	}
+	if err := checkRemovedStillExists(g.removed, path, loaded.Config); err != nil {
+		return err
+	}
 	g.moved[path] = loaded.Config.Moved
 	scope := &moduleScope{
 		path:       path,

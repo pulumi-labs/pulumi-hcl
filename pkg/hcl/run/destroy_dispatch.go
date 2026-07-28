@@ -162,6 +162,10 @@ type blockEntry struct {
 	// overridden: a live `pulumi { name = ... }` override makes the derived
 	// name shape non-invertible, so the entry never matches by shape.
 	overridden bool
+	// moduleTarget: the address descends into modules, so matching skips the
+	// parent-chain check — a gone module call's component type names its
+	// source, which is no longer in the configuration.
+	moduleTarget bool
 }
 
 // urnTypes returns u's own type and the qualified-type chain contributed by
@@ -176,7 +180,7 @@ func (b *blockEntry) matches(args *ResourceHookArgs) bool {
 		return false
 	}
 	typ, parentChain := urnTypes(args.URN)
-	if typ != b.token || parentChain != b.parentChain {
+	if typ != b.token || (!b.moduleTarget && parentChain != b.parentChain) {
 		return false
 	}
 	name := args.Name

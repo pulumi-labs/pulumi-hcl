@@ -172,6 +172,9 @@ func (p Path) Len() int {
 // IsRoot reports whether p has zero steps.
 func (p Path) IsRoot() bool { return p == Path{} }
 
+// Join returns p followed by all of q's steps.
+func (p Path) Join(q Path) Path { return Path{repr: p.repr + q.repr} }
+
 // Append returns a new Path with s added to the end. p is not mutated.
 func (p Path) Append(s Step) Path {
 	var b strings.Builder
