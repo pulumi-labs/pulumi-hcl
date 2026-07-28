@@ -1,6 +1,0 @@
-kind: bug-fixes
-body: Expose `backend`, `config`, `workspace` and `defaults` on `terraform_remote_state`
-time: 2026-07-21T13:40:00Z
-custom:
-    Component: runtime
-    PR: "442"

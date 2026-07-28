@@ -1,6 +1,0 @@
-kind: bug-fixes
-body: Defer a data source read with custom conditions when an indirect dependency has pending changes
-time: 2026-07-21T21:30:24Z
-custom:
-    Component: runtime
-    PR: "455"

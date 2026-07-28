@@ -1,6 +1,0 @@
-kind: Improvements
-body: Merge `override.tf` and `*_override.tf` files into the configuration they override
-time: 2026-07-21T13:30:00Z
-custom:
-    Component: runtime
-    PR: "445"

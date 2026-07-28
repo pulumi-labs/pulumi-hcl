@@ -1,6 +1,0 @@
-kind: bug-fixes
-body: Accept the pre-0.12 quoted reference form in `depends_on` and `ignore_changes`, with a deprecation warning
-time: 2026-07-21T13:30:00Z
-custom:
-    Component: runtime
-    PR: "447"
