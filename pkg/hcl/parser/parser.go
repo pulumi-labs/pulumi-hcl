@@ -129,7 +129,6 @@ func (p *Parser) parseFiles(primary, override map[string]*hcl.File) (*ast.Config
 		diags = append(diags, p.mergeParsedOverride(config, block)...)
 	}
 	config.ProviderFunctionCalls = slices.Sorted(maps.Keys(calls))
-	diags = append(diags, validateRemovedBlocks(config)...)
 
 	config.Diagnostics = diags
 	return config, diags
@@ -1425,7 +1424,6 @@ func (p *Parser) parseRemovedBlock(config *ast.Config, block *hcl.Block) hcl.Dia
 		DeclRange: block.DefRange,
 	}
 
-	var names []string
 	if attr, ok := content.Attributes["from"]; ok {
 		traversal, travDiags := hcl.AbsTraversalForExpr(attr.Expr)
 		diags = append(diags, travDiags...)
@@ -1440,9 +1438,8 @@ func (p *Parser) parseRemovedBlock(config *ast.Config, block *hcl.Block) hcl.Dia
 				return diags
 			}
 		}
-		names = traversalNames(traversal)
-		if len(names) > 0 {
-			if names[0] == "data" {
+		if len(traversal) > 0 {
+			if traversal.RootName() == "data" {
 				diags = append(diags, &hcl.Diagnostic{
 					Severity: hcl.DiagError,
 					Summary:  "Invalid \"from\" address",
@@ -1451,14 +1448,8 @@ func (p *Parser) parseRemovedBlock(config *ast.Config, block *hcl.Block) hcl.Dia
 				})
 				return diags
 			}
-			// After stripping module.name prefixes, a valid address is either
-			// empty (a module address) or exactly type.name (a resource
-			// address).
-			rest := names
-			for len(rest) >= 2 && rest[0] == "module" {
-				rest = rest[2:]
-			}
-			if len(names) < 2 || (len(rest) != 0 && len(rest) != 2) {
+			addr, ok := ast.ParseTargetAddr(traversal)
+			if !ok {
 				diags = append(diags, &hcl.Diagnostic{
 					Severity: hcl.DiagError,
 					Summary:  "Invalid \"from\" address",
@@ -1467,8 +1458,8 @@ func (p *Parser) parseRemovedBlock(config *ast.Config, block *hcl.Block) hcl.Dia
 				})
 				return diags
 			}
+			removed.From = addr
 		}
-		removed.From = traversal
 	}
 
 	destroy := false
@@ -1490,20 +1481,7 @@ func (p *Parser) parseRemovedBlock(config *ast.Config, block *hcl.Block) hcl.Dia
 			lcContent, lcDiags := sub.Body.Content(removedLifecycleSchema)
 			diags = append(diags, lcDiags...)
 			if attr, ok := lcContent.Attributes["destroy"]; ok {
-				val, valDiags := attr.Expr.Value(nil)
-				diags = append(diags, valDiags...)
-				if !valDiags.HasErrors() {
-					if val.Type() != cty.Bool {
-						diags = append(diags, &hcl.Diagnostic{
-							Severity: hcl.DiagError,
-							Summary:  "Invalid \"destroy\" value",
-							Detail:   "The \"destroy\" argument must be a boolean constant.",
-							Subject:  attr.Expr.Range().Ptr(),
-						})
-						continue
-					}
-					destroy = val.True()
-				}
+				diags = append(diags, gohcl.DecodeExpression(attr.Expr, nil, &destroy)...)
 			}
 		case "provisioner":
 			prov, provDiags := p.parseProvisionerBlock(sub)
@@ -1540,7 +1518,7 @@ func (p *Parser) parseRemovedBlock(config *ast.Config, block *hcl.Block) hcl.Dia
 		})
 	}
 
-	if len(removed.Provisioners) > 0 && len(names) == 2 && names[0] == "module" {
+	if len(removed.Provisioners) > 0 && removed.From.Type == "" {
 		diags = append(diags, &hcl.Diagnostic{
 			Severity: hcl.DiagError,
 			Summary:  "Invalid removed block",
@@ -1552,80 +1530,6 @@ func (p *Parser) parseRemovedBlock(config *ast.Config, block *hcl.Block) hcl.Dia
 
 	config.Removed = append(config.Removed, removed)
 	return diags
-}
-
-// validateRemovedBlocks checks that no removed block targets a resource or
-// module that is still declared in the same configuration, and that at most
-// one removed block per address carries provisioners (two provisioner sets
-// for one address would be ambiguous at destroy time). Addresses inside
-// child modules (module.x.type.name) are checked later, during module
-// inlining, because child module configurations are not loaded at parse
-// time.
-func validateRemovedBlocks(config *ast.Config) hcl.Diagnostics {
-	var diags hcl.Diagnostics
-	withProvisioners := map[string]hcl.Range{}
-	for _, removed := range config.Removed {
-		names := traversalNames(removed.From)
-		if len(removed.Provisioners) > 0 {
-			addr := strings.Join(names, ".")
-			if prev, ok := withProvisioners[addr]; ok {
-				diags = append(diags, &hcl.Diagnostic{
-					Severity: hcl.DiagError,
-					Summary:  "Duplicate removed block",
-					Detail: fmt.Sprintf(
-						"A removed block with provisioners for %s was already declared at %s; declare all of the address's provisioners in one removed block.",
-						addr, prev,
-					),
-					Subject: &removed.DeclRange,
-				})
-			} else {
-				withProvisioners[addr] = removed.DeclRange
-			}
-		}
-		switch {
-		case len(names) == 2 && names[0] == "module":
-			if _, ok := config.Modules[names[1]]; ok {
-				diags = append(diags, &hcl.Diagnostic{
-					Severity: hcl.DiagError,
-					Summary:  "Removed module block still exists",
-					Detail: fmt.Sprintf(
-						"This removed block declares a removal of module.%s, but this module block still exists in the configuration. Please remove the module block.",
-						names[1],
-					),
-					Subject: &removed.DeclRange,
-				})
-			}
-		case len(names) == 2:
-			key := ast.ResourceKey(names[0], names[1])
-			if _, ok := config.Resources[key]; ok {
-				diags = append(diags, &hcl.Diagnostic{
-					Severity: hcl.DiagError,
-					Summary:  "Removed resource block still exists",
-					Detail: fmt.Sprintf(
-						"This removed block declares a removal of %s, but this resource block still exists in the configuration. Please remove the resource block.",
-						key,
-					),
-					Subject: &removed.DeclRange,
-				})
-			}
-		}
-	}
-	return diags
-}
-
-// traversalNames flattens a traversal's root and attribute steps into their
-// names, e.g. simple_resource.a -> ["simple_resource", "a"].
-func traversalNames(traversal hcl.Traversal) []string {
-	names := make([]string, 0, len(traversal))
-	for _, step := range traversal {
-		switch s := step.(type) {
-		case hcl.TraverseRoot:
-			names = append(names, s.Name)
-		case hcl.TraverseAttr:
-			names = append(names, s.Name)
-		}
-	}
-	return names
 }
 
 // parseCallBlock parses a call block.

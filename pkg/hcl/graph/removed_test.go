@@ -17,6 +17,8 @@ package graph
 import (
 	"testing"
 
+	"github.com/pulumi-labs/pulumi-hcl/pkg/hcl/ast"
+	"github.com/pulumi-labs/pulumi-hcl/pkg/hcl/modulepath"
 	"github.com/pulumi-labs/pulumi-hcl/pkg/hcl/parser"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -97,9 +99,93 @@ removed {
 	require.NoError(t, err)
 
 	require.Len(t, g.Removed(), 1)
-	assert.Equal(t, []string{"module", "m", "simple_resource", "a"}, traversalNames(g.Removed()[0].From))
+	assert.Equal(t, ast.TargetAddr{
+		Modules: []modulepath.Step{modulepath.NewStep("m")},
+		Type:    "simple_resource",
+		Name:    "a",
+	}, g.Removed()[0].From)
 	assert.True(t, g.Removed()[0].Destroy)
 	require.Len(t, g.Removed()[0].Provisioners, 1)
+}
+
+// A removed block whose root-level target is still declared errors at graph
+// build.
+func TestRemovedRootTargetStillExists(t *testing.T) {
+	t.Parallel()
+
+	resourceConfig, diags := parser.NewParser().ParseSource("root.hcl", []byte(`
+resource "simple_resource" "a" {}
+
+removed {
+  from = simple_resource.a
+  lifecycle {
+    destroy = true
+  }
+}
+`))
+	require.False(t, diags.HasErrors(), diags.Error())
+
+	_, err := BuildFromConfig(resourceConfig, fakeModuleLoader{}, "")
+	assert.EqualError(t, err,
+		"removed block for simple_resource.a: this resource block still exists in the configuration")
+
+	moduleConfig, diags := parser.NewParser().ParseSource("root.hcl", []byte(`
+module "child" {
+  source = "./child"
+}
+
+removed {
+  from = module.child
+  lifecycle {
+    destroy = true
+  }
+}
+`))
+	require.False(t, diags.HasErrors(), diags.Error())
+
+	childConfig, diags := parser.NewParser().ParseSource("child.hcl", []byte(``))
+	require.False(t, diags.HasErrors(), diags.Error())
+
+	_, err = BuildFromConfig(moduleConfig, fakeModuleLoader{modules: map[string]*LoadedModule{
+		"./child": {Config: childConfig, SourcePath: "./child"},
+	}}, "")
+	assert.EqualError(t, err,
+		"inlining module child: removed block for module.child: this module block still exists in the configuration")
+}
+
+// Two provisioner-carrying removed blocks for one address in one
+// configuration are rejected at graph build.
+func TestRemovedDuplicateProvisionersSameConfig(t *testing.T) {
+	t.Parallel()
+
+	config, diags := parser.NewParser().ParseSource("root.hcl", []byte(`
+removed {
+  from = simple_resource.a
+  lifecycle {
+    destroy = true
+  }
+  provisioner "local-exec" {
+    when    = destroy
+    command = "true"
+  }
+}
+
+removed {
+  from = simple_resource.a
+  lifecycle {
+    destroy = true
+  }
+  provisioner "local-exec" {
+    when    = destroy
+    command = "false"
+  }
+}
+`))
+	require.False(t, diags.HasErrors(), diags.Error())
+
+	_, err := BuildFromConfig(config, fakeModuleLoader{}, "")
+	assert.EqualError(t, err,
+		"duplicate removed block for simple_resource.a: a removed block with provisioners for this address was already declared at root.hcl:2,1-8; declare all of the address's provisioners in one removed block")
 }
 
 // A child module's removed block targeting its own nested module errors when

@@ -34,8 +34,9 @@ import (
 // destroyed by the Pulumi engine on its own, while destroy = false (forget)
 // has no engine mapping and parses with an error diagnostic.
 type Removed struct {
-	// From is the address of the removed resource or module.
-	From hcl.Traversal
+	// From is the address of the removed resource or module. It carries no
+	// instance keys; a removed block applies to every instance.
+	From TargetAddr
 
 	// Destroy reports whether the block declares lifecycle { destroy = true }.
 	// A false value (explicit, or from an omitted lifecycle block) is

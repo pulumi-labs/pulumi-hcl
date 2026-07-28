@@ -19,6 +19,9 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/pulumi-labs/pulumi-hcl/pkg/hcl/ast"
+	"github.com/pulumi-labs/pulumi-hcl/pkg/hcl/modulepath"
 )
 
 func TestParseRemovedBlock(t *testing.T) {
@@ -50,15 +53,35 @@ removed {
 	require.False(t, diags.HasErrors(), "diags: %v", diags)
 	require.Len(t, config.Removed, 2)
 
-	assert.Equal(t, []string{"simple_resource", "a"}, traversalNames(config.Removed[0].From))
+	assert.Equal(t, ast.TargetAddr{Type: "simple_resource", Name: "a"}, config.Removed[0].From)
 	assert.True(t, config.Removed[0].Destroy)
 	require.Len(t, config.Removed[0].Provisioners, 1)
 	assert.Equal(t, "local-exec", config.Removed[0].Provisioners[0].Type)
 	assert.Equal(t, "destroy", config.Removed[0].Provisioners[0].When)
 
-	assert.Equal(t, []string{"module", "gone"}, traversalNames(config.Removed[1].From))
+	assert.Equal(t, ast.TargetAddr{Modules: []modulepath.Step{modulepath.NewStep("gone")}}, config.Removed[1].From)
 	assert.True(t, config.Removed[1].Destroy)
 	assert.Empty(t, config.Removed[1].Provisioners)
+}
+
+// The destroy argument converts like any other decoded attribute, so a
+// string boolean is accepted.
+func TestParseRemovedBlockDestroyStringBool(t *testing.T) {
+	t.Parallel()
+	src := []byte(`
+removed {
+  from = simple_resource.a
+
+  lifecycle {
+    destroy = "true"
+  }
+}
+`)
+
+	config, diags := NewParser().ParseSource("main.tf", src)
+	require.False(t, diags.HasErrors(), "diags: %v", diags)
+	require.Len(t, config.Removed, 1)
+	assert.True(t, config.Removed[0].Destroy)
 }
 
 // A provisioner-carrying removed block may target a resource inside a module.
@@ -82,7 +105,11 @@ removed {
 	config, diags := NewParser().ParseSource("main.tf", src)
 	require.False(t, diags.HasErrors(), "diags: %v", diags)
 	require.Len(t, config.Removed, 1)
-	assert.Equal(t, []string{"module", "child", "simple_resource", "a"}, traversalNames(config.Removed[0].From))
+	assert.Equal(t, ast.TargetAddr{
+		Modules: []modulepath.Step{modulepath.NewStep("child")},
+		Type:    "simple_resource",
+		Name:    "a",
+	}, config.Removed[0].From)
 	require.Len(t, config.Removed[0].Provisioners, 1)
 }
 
@@ -219,10 +246,10 @@ removed {
 			wantSummary: "Invalid removed block",
 		},
 		{
-			name: "duplicate provisioner-carrying blocks",
+			name: "nested module address with provisioner",
 			src: `
 removed {
-  from = simple_resource.a
+  from = module.gone.module.deeper
   lifecycle {
     destroy = true
   }
@@ -230,47 +257,8 @@ removed {
     when    = destroy
     command = "true"
   }
-}
-
-removed {
-  from = simple_resource.a
-  lifecycle {
-    destroy = true
-  }
-  provisioner "local-exec" {
-    when    = destroy
-    command = "false"
-  }
 }`,
-			wantSummary: "Duplicate removed block",
-		},
-		{
-			name: "resource still declared",
-			src: `
-resource "simple_resource" "a" {}
-
-removed {
-  from = simple_resource.a
-  lifecycle {
-    destroy = true
-  }
-}`,
-			wantSummary: "Removed resource block still exists",
-		},
-		{
-			name: "module still declared",
-			src: `
-module "child" {
-  source = "./child"
-}
-
-removed {
-  from = module.child
-  lifecycle {
-    destroy = true
-  }
-}`,
-			wantSummary: "Removed module block still exists",
+			wantSummary: "Invalid removed block",
 		},
 	}
 

@@ -19,9 +19,6 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/hashicorp/hcl/v2"
-	"github.com/pulumi/pulumi/pkg/v3/codegen/schema"
-
 	"github.com/pulumi-labs/pulumi-hcl/pkg/hcl/ast"
 	"github.com/pulumi-labs/pulumi-hcl/pkg/hcl/modulepath"
 )
@@ -42,68 +39,35 @@ func (e *Engine) recordRemovedBlockEntries(ctx context.Context) error {
 		if !rem.Destroy || len(rem.Provisioners) == 0 {
 			continue
 		}
-		module, typ, name, err := removedResourceAddr(rem.From)
+		resSchema, err := e.resolver.ResolveResource(ctx, rem.From.Type)
 		if err != nil {
-			return err
+			return fmt.Errorf("removed block for %s: resolving resource type: %w", rem.From, err)
 		}
-		resSchema, err := e.resolver.ResolveResource(ctx, typ)
-		if err != nil {
-			return fmt.Errorf("removed block for %s.%s: resolving resource type: %w", typ, name, err)
+		module := modulepath.Root()
+		for _, s := range rem.From.Modules {
+			module = module.Append(s)
 		}
 		res := &ast.Resource{
-			Type:         typ,
-			Name:         name,
+			Type:         rem.From.Type,
+			Name:         rem.From.Name,
 			Provisioners: rem.Provisioners,
 			DeclRange:    rem.DeclRange,
 		}
-		e.recordRemovedEntry(ctx, res, resSchema, module)
+		probeURN, probeName := e.resmon.ResolveURN(e.stackURN, resSchema.Token, "probe")
+		entry := &blockEntry{
+			resmon:       e.resmon,
+			dryRun:       e.dryRun,
+			res:          res,
+			resSchema:    resSchema,
+			mapping:      e.resolver.ResourceBodyMapping(ctx, rem.From.Type),
+			token:        resSchema.Token,
+			prefix:       strings.TrimSuffix(probeName, "probe"),
+			evalCtx:      e.evaluator.Context(),
+			config:       modulepath.NewAddress(module, modulepath.NewStep(rem.From.Name)),
+			moduleTarget: !module.IsRoot(),
+		}
+		_, entry.parentChain = urnTypes(string(probeURN))
+		e.dispatcher.putBlock(entry)
 	}
 	return nil
-}
-
-// recordRemovedEntry records the dispatch entry for a removed block's
-// resource address. The entry carries no module instance scope: a
-// module-qualified orphan evaluates its provisioners in the strict destroy
-// scope (self, count.index, each.key, path.*, terraform.*).
-func (e *Engine) recordRemovedEntry(
-	ctx context.Context, res *ast.Resource, resSchema *schema.Resource, module modulepath.Path,
-) {
-	probeURN, probeName := e.resmon.ResolveURN(e.stackURN, resSchema.Token, "probe")
-	entry := &blockEntry{
-		resmon:       e.resmon,
-		dryRun:       e.dryRun,
-		res:          res,
-		resSchema:    resSchema,
-		mapping:      e.resolver.ResourceBodyMapping(ctx, res.Type),
-		token:        resSchema.Token,
-		prefix:       strings.TrimSuffix(probeName, "probe"),
-		evalCtx:      e.evaluator.Context(),
-		config:       modulepath.NewAddress(module, modulepath.NewStep(res.Name)),
-		moduleTarget: !module.IsRoot(),
-	}
-	_, entry.parentChain = urnTypes(string(probeURN))
-	e.dispatcher.putBlock(entry)
-}
-
-// removedResourceAddr splits a removed block's root-relative "from" traversal
-// into the enclosing module config path and the resource type and name.
-func removedResourceAddr(from hcl.Traversal) (module modulepath.Path, typ, name string, err error) {
-	var names []string
-	for _, step := range from {
-		switch s := step.(type) {
-		case hcl.TraverseRoot:
-			names = append(names, s.Name)
-		case hcl.TraverseAttr:
-			names = append(names, s.Name)
-		}
-	}
-	module = modulepath.Root()
-	for len(names) >= 2 && names[0] == "module" {
-		module = module.Append(modulepath.NewStep(names[1]))
-		names = names[2:]
-	}
-	if len(names) != 2 {
-		return module, "", "", fmt.Errorf("removed block: expected a resource address (type.name)")
-	}
-	return module, names[0], names[1], nil
 }

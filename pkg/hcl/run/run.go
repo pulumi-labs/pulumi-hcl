@@ -2129,124 +2129,6 @@ func (e *Engine) buildResourceOptionsInContext(
 	return opts, nil
 }
 
-// targetAddr is a parsed `moved` or `import` block address: optional
-// module-call steps followed by an optional resource. A whole-module-call
-// address (e.g. `module.a`) has an empty Type.
-type targetAddr struct {
-	modules  []modulepath.Step // module-call steps, outermost first
-	Type     string            // resource type, or "" for a whole-module-call address
-	Name     string            // resource name
-	keyIndex *int              // count instance key, if the address is keyed by count
-	keyEach  *string           // for_each instance key, if the address is keyed by for_each
-}
-
-// keyed reports whether the address names a specific count/for_each instance.
-func (a targetAddr) keyed() bool { return a.keyIndex != nil || a.keyEach != nil }
-
-// parseTargetAddr decodes a `moved` or `import` address traversal into its
-// module-call steps and (optional) resource. It returns false for a traversal
-// it cannot model.
-func parseTargetAddr(t hcl.Traversal) (targetAddr, bool) {
-	var a targetAddr
-	head := func(step hcl.Traverser) (string, bool) {
-		switch s := step.(type) {
-		case hcl.TraverseRoot:
-			return s.Name, true
-		case hcl.TraverseAttr:
-			return s.Name, true
-		}
-		return "", false
-	}
-	i := 0
-	for i < len(t) {
-		name, ok := head(t[i])
-		if !ok || name != "module" {
-			break
-		}
-		i++
-		if i >= len(t) {
-			return a, false
-		}
-		modName, ok := head(t[i])
-		if !ok {
-			return a, false
-		}
-		i++
-		step := modulepath.NewStep(modName)
-		if i < len(t) {
-			if idx, ok := t[i].(hcl.TraverseIndex); ok {
-				keyed, ok := moduleStepFor(modName, idx.Key)
-				if !ok {
-					return a, false
-				}
-				step = keyed
-				i++
-			}
-		}
-		a.modules = append(a.modules, step)
-	}
-	if i >= len(t) {
-		// Whole-module-call address (no trailing resource).
-		return a, len(a.modules) > 0
-	}
-	typ, ok := head(t[i])
-	if !ok {
-		return a, false
-	}
-	i++
-	if i >= len(t) {
-		return a, false
-	}
-	name, ok := head(t[i])
-	if !ok {
-		return a, false
-	}
-	i++
-	a.Type, a.Name = typ, name
-	if i < len(t) {
-		if idx, ok := t[i].(hcl.TraverseIndex); ok {
-			a.keyIndex, a.keyEach = instanceKeyFromCty(idx.Key)
-			i++
-		}
-	}
-	return a, i == len(t)
-}
-
-// instanceKeyFromCty decodes an instance-key value into its typed components: a
-// count index for a number, a for_each key for a string. Both are nil for any
-// other type, which the caller treats as an unkeyed address.
-func instanceKeyFromCty(v cty.Value) (index *int, eachKey *string) {
-	switch v.Type() {
-	case cty.Number:
-		iv, _ := v.AsBigFloat().Int64()
-		n := int(iv)
-		return &n, nil
-	case cty.String:
-		s := v.AsString()
-		return nil, &s
-	default:
-		return nil, nil
-	}
-}
-
-// moduleStepFor builds a module-call path step for `module.<name>[<key>]`,
-// decoding the count index or for_each key. It returns false for a key that is
-// neither a non-negative integer nor a string.
-func moduleStepFor(name string, key cty.Value) (modulepath.Step, bool) {
-	switch key.Type() {
-	case cty.Number:
-		iv, _ := key.AsBigFloat().Int64()
-		if iv < 0 {
-			return modulepath.Step{}, false
-		}
-		return modulepath.NewIndexedStep(name, int(iv)), true
-	case cty.String:
-		return modulepath.NewKeyedStep(name, key.AsString()), true
-	default:
-		return modulepath.Step{}, false
-	}
-}
-
 // resolveMovedAliases finds the `moved` blocks that rename the resource instance
 // being registered and returns the aliases recording its prior addresses, so a
 // rename is treated as a move rather than a replacement.
@@ -2306,19 +2188,19 @@ func (e *Engine) resolveMovedAliases(
 		work = work[1:]
 		for _, scope := range ancestorPaths(cur.path) {
 			for _, moved := range e.graph.MovedBlocks(scope) {
-				to, ok := parseTargetAddr(moved.To)
+				to, ok := ast.ParseTargetAddr(moved.To)
 				if !ok || to.Type == "" { // skip whole-module-call moves
 					continue
 				}
-				toPath := appendModuleSteps(scope, to.modules)
+				toPath := appendModuleSteps(scope, to.Modules)
 				if toPath != cur.path || to.Type != cur.typ || to.Name != cur.name {
 					continue
 				}
-				from, ok := parseTargetAddr(moved.From)
+				from, ok := ast.ParseTargetAddr(moved.From)
 				if !ok || from.Type == "" {
 					continue
 				}
-				fromPath := appendModuleSteps(scope, from.modules)
+				fromPath := appendModuleSteps(scope, from.Modules)
 
 				// Determine the prior instance key. A keyed endpoint on either side
 				// makes this an instance move taking the prior key from `from` (an
@@ -2328,16 +2210,16 @@ func (e *Engine) resolveMovedAliases(
 				var priorIdx *int
 				var priorEach *string
 				switch {
-				case to.keyed():
-					if !instanceKeysEqual(cur.index, cur.eachKey, to.keyIndex, to.keyEach) {
+				case to.Keyed():
+					if !instanceKeysEqual(cur.index, cur.eachKey, to.KeyIndex, to.KeyEach) {
 						continue
 					}
-					priorIdx, priorEach = from.keyIndex, from.keyEach
-				case from.keyed():
+					priorIdx, priorEach = from.KeyIndex, from.KeyEach
+				case from.Keyed():
 					if cur.index != nil || cur.eachKey != nil {
 						continue
 					}
-					priorIdx, priorEach = from.keyIndex, from.keyEach
+					priorIdx, priorEach = from.KeyIndex, from.KeyEach
 				default:
 					priorIdx, priorEach = cur.index, cur.eachKey
 				}
@@ -2437,20 +2319,20 @@ func (e *Engine) oldModulePaths(path modulepath.Path) []modulepath.Path {
 func (e *Engine) priorModulePath(path modulepath.Path) (_ modulepath.Path, ok bool) {
 	for _, scope := range ancestorPaths(path) {
 		for _, moved := range e.graph.MovedBlocks(scope) {
-			to, ok := parseTargetAddr(moved.To)
-			if !ok || to.Type != "" || len(to.modules) == 0 {
+			to, ok := ast.ParseTargetAddr(moved.To)
+			if !ok || to.Type != "" || len(to.Modules) == 0 {
 				continue // not a whole-module-call address
 			}
-			from, ok := parseTargetAddr(moved.From)
-			if !ok || from.Type != "" || len(from.modules) == 0 {
+			from, ok := ast.ParseTargetAddr(moved.From)
+			if !ok || from.Type != "" || len(from.Modules) == 0 {
 				continue
 			}
-			toPath := appendModuleSteps(scope, to.modules)
+			toPath := appendModuleSteps(scope, to.Modules)
 			suffix, ok := stripModulePrefix(path, toPath)
 			if !ok {
 				continue
 			}
-			fromPath := appendModuleSteps(scope, from.modules)
+			fromPath := appendModuleSteps(scope, from.Modules)
 			for _, s := range suffix {
 				fromPath = fromPath.Append(s)
 			}
@@ -2657,15 +2539,15 @@ func (e *Engine) matchImport(
 	if diags.HasErrors() {
 		return "", false, diags
 	}
-	to, ok := parseTargetAddr(traversal)
+	to, ok := ast.ParseTargetAddr(traversal)
 	if !ok || to.Type != res.Type || to.Name != res.Name {
 		return "", false, nil
 	}
-	if appendModuleSteps(modulepath.Root(), to.modules) != resPath {
+	if appendModuleSteps(modulepath.Root(), to.Modules) != resPath {
 		return "", false, nil
 	}
-	if to.keyed() || index != nil || eachKey != nil {
-		if !instanceKeysEqual(index, eachKey, to.keyIndex, to.keyEach) {
+	if to.Keyed() || index != nil || eachKey != nil {
+		if !instanceKeysEqual(index, eachKey, to.KeyIndex, to.KeyEach) {
 			return "", false, nil
 		}
 	}

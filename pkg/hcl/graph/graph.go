@@ -526,6 +526,9 @@ func BuildFromConfig(config *ast.Config, moduleLoader ModuleLoader, workDir stri
 	root := modulepath.Root()
 	g.moved[root] = config.Moved
 	g.removed = slices.Clone(config.Removed)
+	if err := checkRemovedStillExists(g.removed, root, config); err != nil {
+		return nil, err
+	}
 	rootScope := &moduleScope{config: config}
 	g.scopes[root] = rootScope
 
@@ -1437,72 +1440,36 @@ func (g *Graph) Validate() []error {
 	return errs
 }
 
-// checkRemovedStillExists reports a removed block whose module-prefixed
-// address is still declared by the child module being inlined at path,
-// mirroring the parse-time check for root addresses. A target nested deeper
-// than this module is checked when its own module is inlined; a target whose
+// checkRemovedStillExists reports a removed block whose root-relative address
+// is still declared by the configuration at path. A target nested deeper than
+// this module is checked when its own module is inlined; a target whose
 // module is gone is never reached, which is exactly a valid removal.
 func checkRemovedStillExists(removed []*ast.Removed, path modulepath.Path, config *ast.Config) error {
-	var pathNames []string
-	for s := range path.Steps {
-		pathNames = append(pathNames, s.Name())
-	}
+	pathSteps := slices.Collect(path.Steps)
 	for _, rem := range removed {
-		// A valid removed address is module.name pairs then an optional
-		// type.name tail (the parser rejects other shapes).
-		names := traversalNames(rem.From)
-		var chain, rest []string
-		for rest = names; len(rest) >= 2 && rest[0] == "module"; rest = rest[2:] {
-			chain = append(chain, rest[1])
-		}
-		if !slices.Equal(chain, pathNames) {
+		if !slices.Equal(rem.From.Modules, pathSteps) {
 			continue
 		}
-		addr := strings.Join(names, ".")
-		if len(rest) == 0 {
-			return fmt.Errorf("removed block for %s: this module block still exists in the configuration", addr)
+		if rem.From.Type == "" {
+			return fmt.Errorf("removed block for %s: this module block still exists in the configuration", rem.From)
 		}
-		if _, exists := config.Resources[ast.ResourceKey(rest[0], rest[1])]; exists {
-			return fmt.Errorf("removed block for %s: this resource block still exists in the configuration", addr)
+		if _, exists := config.Resources[ast.ResourceKey(rem.From.Type, rem.From.Name)]; exists {
+			return fmt.Errorf("removed block for %s: this resource block still exists in the configuration", rem.From)
 		}
 	}
 	return nil
 }
 
-// absoluteTraversal prefixes a module-relative address with module.name pairs
-// for each step of path, yielding the root-relative form of the address.
-func absoluteTraversal(path modulepath.Path, from hcl.Traversal) hcl.Traversal {
-	rng := from.SourceRange()
-	abs := make(hcl.Traversal, 0, 2*path.Len()+len(from))
-	for s := range path.Steps {
-		abs = append(abs,
-			hcl.TraverseAttr{Name: "module", SrcRange: rng},
-			hcl.TraverseAttr{Name: s.Name(), SrcRange: rng})
-	}
-	for _, step := range from {
-		if root, ok := step.(hcl.TraverseRoot); ok {
-			abs = append(abs, hcl.TraverseAttr{Name: root.Name, SrcRange: root.SrcRange})
-		} else {
-			abs = append(abs, step)
-		}
-	}
-	if attr, ok := abs[0].(hcl.TraverseAttr); ok {
-		abs[0] = hcl.TraverseRoot{Name: attr.Name, SrcRange: attr.SrcRange}
-	}
-	return abs
-}
-
 // checkDuplicateRemovedProvisioners rejects two provisioner-carrying removed
 // blocks for one root-relative address: two provisioner sets for one orphan
-// would be ambiguous at destroy time. Declarations from different modules
-// only meet here; the parser catches the same-config case.
+// would be ambiguous at destroy time.
 func checkDuplicateRemovedProvisioners(removed []*ast.Removed) error {
 	withProvisioners := map[string]hcl.Range{}
 	for _, rem := range removed {
 		if len(rem.Provisioners) == 0 {
 			continue
 		}
-		addr := strings.Join(traversalNames(rem.From), ".")
+		addr := rem.From.String()
 		if prev, ok := withProvisioners[addr]; ok {
 			return fmt.Errorf(
 				"duplicate removed block for %s: a removed block with provisioners for this address was already declared at %s; declare all of the address's provisioners in one removed block",
@@ -1516,22 +1483,6 @@ func checkDuplicateRemovedProvisioners(removed []*ast.Removed) error {
 // Removed returns every removed block in the module tree, with child-declared
 // addresses rewritten to be root-relative.
 func (g *Graph) Removed() []*ast.Removed { return g.removed }
-
-// traversalNames flattens a traversal's root and attribute steps into their
-// names, e.g. module.child.simple_resource.a -> ["module", "child",
-// "simple_resource", "a"].
-func traversalNames(traversal hcl.Traversal) []string {
-	names := make([]string, 0, len(traversal))
-	for _, step := range traversal {
-		switch s := step.(type) {
-		case hcl.TraverseRoot:
-			names = append(names, s.Name)
-		case hcl.TraverseAttr:
-			names = append(names, s.Name)
-		}
-	}
-	return names
-}
 
 // rangeLess orders ranges by filename, then start line, then start column.
 func rangeLess(a, b hcl.Range) bool {
@@ -1556,15 +1507,16 @@ func (g *Graph) inlineModule(
 	}
 
 	path := parentPath.Append(modulepath.NewStep(name))
-	if err := checkRemovedStillExists(g.removed, path, loaded.Config); err != nil {
-		return err
-	}
-	// Rewrite child-declared removed addresses to root-relative before the
-	// nested modules they may target inline below.
+	// Rewrite child-declared removed addresses to root-relative before
+	// validating, so the child's own declarations are checked against its
+	// configuration along with any ancestor's.
 	for _, rem := range loaded.Config.Removed {
 		abs := *rem
-		abs.From = absoluteTraversal(path, rem.From)
+		abs.From.Modules = append(slices.Collect(path.Steps), rem.From.Modules...)
 		g.removed = append(g.removed, &abs)
+	}
+	if err := checkRemovedStillExists(g.removed, path, loaded.Config); err != nil {
+		return err
 	}
 	g.moved[path] = loaded.Config.Moved
 	scope := &moduleScope{
