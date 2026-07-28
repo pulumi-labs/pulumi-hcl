@@ -1,8 +1,0 @@
-kind: bug-fixes
-body: 'Root variable values: rank an explicitly supplied value above `TF_VAR_<name>`,
-    treat an empty `TF_VAR_<name>` as set, reject a value that does not fit the declared
-    type, and stop applying `TF_VAR_<name>` to module variables'
-time: 2026-07-21T15:30:00Z
-custom:
-    Component: runtime
-    PR: "446"

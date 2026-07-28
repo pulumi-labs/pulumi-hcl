@@ -1,6 +1,0 @@
-kind: bug-fixes
-body: Defer a data source read whose `depends_on` names a module call with pending changes
-time: 2026-07-21T21:29:44Z
-custom:
-    Component: runtime
-    PR: "455"

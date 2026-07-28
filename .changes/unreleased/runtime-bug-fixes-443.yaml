@@ -1,6 +1,0 @@
-kind: bug-fixes
-body: Accept a tuple in an `import` block's `for_each`
-time: 2026-07-21T13:30:00Z
-custom:
-    Component: runtime
-    PR: "443"
