@@ -53,3 +53,31 @@ removed {
 	assert.Equal(t, map[string]*ast.RequiredProvider{"simple": nil}, aliases)
 	assert.Empty(t, pulumiPkgs)
 }
+
+// A removed block whose target sits under a gone module call is the config's
+// only mention of the provider; the module-prefixed address still yields the
+// requirement.
+func TestCollectRequirementsRemovedBlockModulePrefixed(t *testing.T) {
+	t.Parallel()
+
+	config, diags := parser.NewParser().ParseSource("main.tf", []byte(`
+removed {
+  from = module.gone.simple_resource.a
+
+  lifecycle {
+    destroy = true
+  }
+
+  provisioner "local-exec" {
+    when    = destroy
+    command = "true"
+  }
+}
+`))
+	require.False(t, diags.HasErrors(), diags.Error())
+
+	tf, pulumiPkgs, aliases := collectRequirements(t.Context(), nil, config, "")
+	assert.Equal(t, []string{"hashicorp/simple"}, slices.Sorted(maps.Keys(tf)))
+	assert.Equal(t, map[string]*ast.RequiredProvider{"simple": nil}, aliases)
+	assert.Empty(t, pulumiPkgs)
+}

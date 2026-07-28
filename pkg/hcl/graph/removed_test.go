@@ -65,6 +65,127 @@ resource "simple_resource" "b" {}
 	assert.NoError(t, err)
 }
 
+// A child module's removed block inlines with its relative address rewritten
+// to be root-relative, provisioners intact.
+func TestRemovedDeclaredInChildModule(t *testing.T) {
+	t.Parallel()
+
+	rootConfig, diags := parser.NewParser().ParseSource("root.hcl", []byte(`
+module "m" {
+  source = "./child"
+}
+`))
+	require.False(t, diags.HasErrors(), diags.Error())
+
+	childConfig, diags := parser.NewParser().ParseSource("child.hcl", []byte(`
+removed {
+  from = simple_resource.a
+  lifecycle {
+    destroy = true
+  }
+  provisioner "local-exec" {
+    when    = destroy
+    command = "true"
+  }
+}
+`))
+	require.False(t, diags.HasErrors(), diags.Error())
+
+	g, err := BuildFromConfig(rootConfig, fakeModuleLoader{modules: map[string]*LoadedModule{
+		"./child": {Config: childConfig, SourcePath: "./child"},
+	}}, "")
+	require.NoError(t, err)
+
+	require.Len(t, g.Removed(), 1)
+	assert.Equal(t, []string{"module", "m", "simple_resource", "a"}, traversalNames(g.Removed()[0].From))
+	assert.True(t, g.Removed()[0].Destroy)
+	require.Len(t, g.Removed()[0].Provisioners, 1)
+}
+
+// A child module's removed block targeting its own nested module errors when
+// the grandchild config still declares the target.
+func TestRemovedDeclaredInChildModuleNestedStillExists(t *testing.T) {
+	t.Parallel()
+
+	rootConfig, diags := parser.NewParser().ParseSource("root.hcl", []byte(`
+module "m" {
+  source = "./child"
+}
+`))
+	require.False(t, diags.HasErrors(), diags.Error())
+
+	childConfig, diags := parser.NewParser().ParseSource("child.hcl", []byte(`
+module "n" {
+  source = "./grand"
+}
+
+removed {
+  from = module.n.simple_resource.a
+  lifecycle {
+    destroy = true
+  }
+}
+`))
+	require.False(t, diags.HasErrors(), diags.Error())
+
+	grandConfig, diags := parser.NewParser().ParseSource("grand.hcl", []byte(`
+resource "simple_resource" "a" {}
+`))
+	require.False(t, diags.HasErrors(), diags.Error())
+
+	_, err := BuildFromConfig(rootConfig, fakeModuleLoader{modules: map[string]*LoadedModule{
+		"./child": {Config: childConfig, SourcePath: "./child"},
+		"./grand": {Config: grandConfig, SourcePath: "./grand"},
+	}}, "")
+	assert.EqualError(t, err,
+		"inlining module m: inlining nested module n: removed block for module.m.module.n.simple_resource.a: this resource block still exists in the configuration")
+}
+
+// Provisioner-carrying removed blocks for one address declared in two
+// different configurations are rejected: two provisioner sets for one orphan
+// would be ambiguous at destroy time.
+func TestRemovedDuplicateProvisionersAcrossConfigs(t *testing.T) {
+	t.Parallel()
+
+	rootConfig, diags := parser.NewParser().ParseSource("root.hcl", []byte(`
+module "m" {
+  source = "./child"
+}
+
+removed {
+  from = module.m.simple_resource.a
+  lifecycle {
+    destroy = true
+  }
+  provisioner "local-exec" {
+    when    = destroy
+    command = "true"
+  }
+}
+`))
+	require.False(t, diags.HasErrors(), diags.Error())
+
+	childConfig, diags := parser.NewParser().ParseSource("child.hcl", []byte(`
+removed {
+  from = simple_resource.a
+  lifecycle {
+    destroy = true
+  }
+  provisioner "local-exec" {
+    when    = destroy
+    command = "false"
+  }
+}
+`))
+	require.False(t, diags.HasErrors(), diags.Error())
+
+	_, err := BuildFromConfig(rootConfig, fakeModuleLoader{modules: map[string]*LoadedModule{
+		"./child": {Config: childConfig, SourcePath: "./child"},
+	}}, "")
+	assert.EqualError(t, err,
+		"duplicate removed block for module.m.simple_resource.a: a removed block with provisioners for this address was already declared at root.hcl:6,1-8; declare all of the address's provisioners in one removed block")
+}
+
 // A removed block targeting a nested module errors when that module is still
 // declared; the depth-one case is already rejected at parse time.
 func TestRemovedNestedModuleStillExists(t *testing.T) {

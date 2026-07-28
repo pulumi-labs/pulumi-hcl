@@ -61,6 +61,31 @@ removed {
 	assert.Empty(t, config.Removed[1].Provisioners)
 }
 
+// A provisioner-carrying removed block may target a resource inside a module.
+func TestParseRemovedBlockModulePrefixedProvisioner(t *testing.T) {
+	t.Parallel()
+	src := []byte(`
+removed {
+  from = module.child.simple_resource.a
+
+  lifecycle {
+    destroy = true
+  }
+
+  provisioner "local-exec" {
+    when    = destroy
+    command = "true"
+  }
+}
+`)
+
+	config, diags := NewParser().ParseSource("main.tf", src)
+	require.False(t, diags.HasErrors(), "diags: %v", diags)
+	require.Len(t, config.Removed, 1)
+	assert.Equal(t, []string{"module", "child", "simple_resource", "a"}, traversalNames(config.Removed[0].From))
+	require.Len(t, config.Removed[0].Provisioners, 1)
+}
+
 // destroy = false is unsupported but still parses: the block lands in the AST
 // with Destroy false and the failure is an error diagnostic, not a dropped
 // block.
@@ -192,21 +217,6 @@ removed {
   }
 }`,
 			wantSummary: "Invalid removed block",
-		},
-		{
-			name: "module-prefixed resource with provisioner",
-			src: `
-removed {
-  from = module.child.simple_resource.a
-  lifecycle {
-    destroy = true
-  }
-  provisioner "local-exec" {
-    when    = destroy
-    command = "true"
-  }
-}`,
-			wantSummary: "Unsupported removed block",
 		},
 		{
 			name: "duplicate provisioner-carrying blocks",

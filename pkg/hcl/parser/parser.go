@@ -1540,20 +1540,11 @@ func (p *Parser) parseRemovedBlock(config *ast.Config, block *hcl.Block) hcl.Dia
 		})
 	}
 
-	if len(removed.Provisioners) > 0 && len(names) > 0 && names[0] == "module" {
-		if len(names) == 2 {
-			diags = append(diags, &hcl.Diagnostic{
-				Severity: hcl.DiagError,
-				Summary:  "Invalid removed block",
-				Detail:   "Removed blocks containing provisioners can only target resources, not modules.",
-				Subject:  &block.DefRange,
-			})
-			return diags
-		}
+	if len(removed.Provisioners) > 0 && len(names) == 2 && names[0] == "module" {
 		diags = append(diags, &hcl.Diagnostic{
 			Severity: hcl.DiagError,
-			Summary:  "Unsupported removed block",
-			Detail:   "Provisioners in removed blocks targeting resources inside modules are not yet supported.",
+			Summary:  "Invalid removed block",
+			Detail:   "Removed blocks containing provisioners can only target resources, not modules.",
 			Subject:  &block.DefRange,
 		})
 		return diags

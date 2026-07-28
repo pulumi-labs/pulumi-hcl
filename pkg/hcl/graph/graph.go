@@ -286,10 +286,11 @@ type Graph struct {
 	// module.
 	moved map[modulepath.Path][]*ast.Moved
 
-	// removed holds the root configuration's removed blocks (child modules
-	// cannot declare them). A removed address inside a child module can only
-	// be checked against that module's configuration once it is loaded for
-	// inlining.
+	// removed holds every removed block in the module tree with its address
+	// rewritten to be root-relative: a child-declared block's relative "from"
+	// gains the declaring module's path as a module.name prefix during
+	// inlining. A removed address inside a child module can only be checked
+	// against that module's configuration once it is loaded for inlining.
 	removed []*ast.Removed
 
 	// scopes maps a module's path to its scope, so expression-level dependency
@@ -527,7 +528,7 @@ func BuildFromConfig(config *ast.Config, moduleLoader ModuleLoader, workDir stri
 	g := NewGraph()
 	root := modulepath.Root()
 	g.moved[root] = config.Moved
-	g.removed = config.Removed
+	g.removed = slices.Clone(config.Removed)
 	rootScope := &moduleScope{config: config}
 	g.scopes[root] = rootScope
 
@@ -625,6 +626,10 @@ func BuildFromConfig(config *ast.Config, moduleLoader ModuleLoader, workDir stri
 		if err := g.inlineModule(name, module, root, moduleLoader, workDir, rootScope); err != nil {
 			return nil, fmt.Errorf("inlining module %s: %w", name, err)
 		}
+	}
+
+	if err := checkDuplicateRemovedProvisioners(g.removed); err != nil {
+		return nil, err
 	}
 
 	if err := g.addCallNodes(config, root, nil); err != nil {
@@ -1467,6 +1472,54 @@ func checkRemovedStillExists(removed []*ast.Removed, path modulepath.Path, confi
 	return nil
 }
 
+// absoluteTraversal prefixes a module-relative address with module.name pairs
+// for each step of path, yielding the root-relative form of the address.
+func absoluteTraversal(path modulepath.Path, from hcl.Traversal) hcl.Traversal {
+	rng := from.SourceRange()
+	abs := make(hcl.Traversal, 0, 2*path.Len()+len(from))
+	for s := range path.Steps {
+		abs = append(abs,
+			hcl.TraverseAttr{Name: "module", SrcRange: rng},
+			hcl.TraverseAttr{Name: s.Name(), SrcRange: rng})
+	}
+	for _, step := range from {
+		if root, ok := step.(hcl.TraverseRoot); ok {
+			abs = append(abs, hcl.TraverseAttr{Name: root.Name, SrcRange: root.SrcRange})
+		} else {
+			abs = append(abs, step)
+		}
+	}
+	if attr, ok := abs[0].(hcl.TraverseAttr); ok {
+		abs[0] = hcl.TraverseRoot{Name: attr.Name, SrcRange: attr.SrcRange}
+	}
+	return abs
+}
+
+// checkDuplicateRemovedProvisioners rejects two provisioner-carrying removed
+// blocks for one root-relative address. The parser catches the same-config
+// case; declarations from different modules only meet here. Two provisioner
+// sets for one orphan would be ambiguous at destroy time.
+func checkDuplicateRemovedProvisioners(removed []*ast.Removed) error {
+	withProvisioners := map[string]hcl.Range{}
+	for _, rem := range removed {
+		if len(rem.Provisioners) == 0 {
+			continue
+		}
+		addr := strings.Join(traversalNames(rem.From), ".")
+		if prev, ok := withProvisioners[addr]; ok {
+			return fmt.Errorf(
+				"duplicate removed block for %s: a removed block with provisioners for this address was already declared at %s; declare all of the address's provisioners in one removed block",
+				addr, prev)
+		}
+		withProvisioners[addr] = rem.DeclRange
+	}
+	return nil
+}
+
+// Removed returns every removed block in the module tree, with child-declared
+// addresses rewritten to be root-relative.
+func (g *Graph) Removed() []*ast.Removed { return g.removed }
+
 // traversalNames flattens a traversal's root and attribute steps into their
 // names, e.g. module.child.simple_resource.a -> ["module", "child",
 // "simple_resource", "a"].
@@ -1506,11 +1559,16 @@ func (g *Graph) inlineModule(
 	}
 
 	path := parentPath.Append(modulepath.NewStep(name))
-	if len(loaded.Config.Removed) > 0 {
-		return fmt.Errorf("module %s: removed blocks inside child modules are not yet supported", name)
-	}
 	if err := checkRemovedStillExists(g.removed, path, loaded.Config); err != nil {
 		return err
+	}
+	// A child-declared removed address is relative to its module; rewrite it
+	// to root-relative before nested modules (whose configs the address may
+	// target) inline below.
+	for _, rem := range loaded.Config.Removed {
+		abs := *rem
+		abs.From = absoluteTraversal(path, rem.From)
+		g.removed = append(g.removed, &abs)
 	}
 	g.moved[path] = loaded.Config.Moved
 	scope := &moduleScope{

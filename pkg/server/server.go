@@ -32,6 +32,7 @@ import (
 	"time"
 
 	"github.com/blang/semver"
+	"github.com/hashicorp/hcl/v2"
 	"github.com/pulumi-labs/pulumi-hcl/pkg/codegen"
 	"github.com/pulumi-labs/pulumi-hcl/pkg/hcl/ast"
 	"github.com/pulumi-labs/pulumi-hcl/pkg/hcl/bridge"
@@ -492,9 +493,23 @@ func collectRequirementsRec(
 	}
 	// A removed block's provisioners resolve the removed resource's schema at
 	// run time, so its provider is required even with no resource block left.
+	// A module-prefixed target may name a module call that is itself gone, so
+	// the type falls back to this config's provider names.
 	for _, rem := range config.Removed {
-		if len(rem.From) == 2 && rem.From.RootName() != "module" {
-			addType(rem.From.RootName())
+		names := make([]string, 0, len(rem.From))
+		for _, step := range rem.From {
+			switch s := step.(type) {
+			case hcl.TraverseRoot:
+				names = append(names, s.Name)
+			case hcl.TraverseAttr:
+				names = append(names, s.Name)
+			}
+		}
+		for len(names) >= 2 && names[0] == "module" {
+			names = names[2:]
+		}
+		if len(names) == 2 {
+			addType(names[0])
 		}
 	}
 
