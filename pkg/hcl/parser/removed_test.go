@@ -59,7 +59,7 @@ removed {
 	assert.Equal(t, "local-exec", config.Removed[0].Provisioners[0].Type)
 	assert.Equal(t, "destroy", config.Removed[0].Provisioners[0].When)
 
-	assert.Equal(t, ast.TargetAddr{Modules: []modulepath.Step{modulepath.NewStep("gone")}}, config.Removed[1].From)
+	assert.Equal(t, ast.TargetAddr{Module: modulepath.Root().Append(modulepath.NewStep("gone"))}, config.Removed[1].From)
 	assert.True(t, config.Removed[1].Destroy)
 	assert.Empty(t, config.Removed[1].Provisioners)
 }
@@ -106,9 +106,9 @@ removed {
 	require.False(t, diags.HasErrors(), "diags: %v", diags)
 	require.Len(t, config.Removed, 1)
 	assert.Equal(t, ast.TargetAddr{
-		Modules: []modulepath.Step{modulepath.NewStep("child")},
-		Type:    "simple_resource",
-		Name:    "a",
+		Module: modulepath.Root().Append(modulepath.NewStep("child")),
+		Type:   "simple_resource",
+		Name:   "a",
 	}, config.Removed[0].From)
 	require.Len(t, config.Removed[0].Provisioners, 1)
 }

@@ -43,10 +43,6 @@ func (e *Engine) recordRemovedBlockEntries(ctx context.Context) error {
 		if err != nil {
 			return fmt.Errorf("removed block for %s: resolving resource type: %w", rem.From, err)
 		}
-		module := modulepath.Root()
-		for _, s := range rem.From.Modules {
-			module = module.Append(s)
-		}
 		res := &ast.Resource{
 			Type:         rem.From.Type,
 			Name:         rem.From.Name,
@@ -63,8 +59,8 @@ func (e *Engine) recordRemovedBlockEntries(ctx context.Context) error {
 			token:        resSchema.Token,
 			prefix:       strings.TrimSuffix(probeName, "probe"),
 			evalCtx:      e.evaluator.Context(),
-			config:       modulepath.NewAddress(module, modulepath.NewStep(rem.From.Name)),
-			moduleTarget: !module.IsRoot(),
+			config:       modulepath.NewAddress(rem.From.Module, modulepath.NewStep(rem.From.Name)),
+			moduleTarget: !rem.From.Module.IsRoot(),
 		}
 		_, entry.parentChain = urnTypes(string(probeURN))
 		e.dispatcher.putBlock(entry)

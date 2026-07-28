@@ -27,8 +27,9 @@ import (
 // optional module-call steps followed by an optional resource. A
 // whole-module-call address (e.g. `module.a`) has an empty Type.
 type TargetAddr struct {
-	// Modules holds the module-call steps, outermost first.
-	Modules []modulepath.Step
+	// Module is the path of enclosing module calls; the root path for a
+	// top-level address.
+	Module modulepath.Path
 	// Type is the resource type, or "" for a whole-module-call address.
 	Type string
 	// Name is the resource name.
@@ -47,7 +48,7 @@ func (a TargetAddr) Keyed() bool { return a.KeyIndex != nil || a.KeyEach != nil 
 // module.a.simple_resource.b.
 func (a TargetAddr) String() string {
 	var parts []string
-	for _, s := range a.Modules {
+	for s := range a.Module.Steps {
 		parts = append(parts, "module", s.LogicalName())
 	}
 	if a.Type != "" {
@@ -95,11 +96,11 @@ func ParseTargetAddr(t hcl.Traversal) (TargetAddr, bool) {
 				i++
 			}
 		}
-		a.Modules = append(a.Modules, step)
+		a.Module = a.Module.Append(step)
 	}
 	if i >= len(t) {
 		// Whole-module-call address (no trailing resource).
-		return a, len(a.Modules) > 0
+		return a, !a.Module.IsRoot()
 	}
 	typ, ok := head(t[i])
 	if !ok {

@@ -2192,7 +2192,7 @@ func (e *Engine) resolveMovedAliases(
 				if !ok || to.Type == "" { // skip whole-module-call moves
 					continue
 				}
-				toPath := appendModuleSteps(scope, to.Modules)
+				toPath := scope.Join(to.Module)
 				if toPath != cur.path || to.Type != cur.typ || to.Name != cur.name {
 					continue
 				}
@@ -2200,7 +2200,7 @@ func (e *Engine) resolveMovedAliases(
 				if !ok || from.Type == "" {
 					continue
 				}
-				fromPath := appendModuleSteps(scope, from.Modules)
+				fromPath := scope.Join(from.Module)
 
 				// Determine the prior instance key. A keyed endpoint on either side
 				// makes this an instance move taking the prior key from `from` (an
@@ -2320,19 +2320,19 @@ func (e *Engine) priorModulePath(path modulepath.Path) (_ modulepath.Path, ok bo
 	for _, scope := range ancestorPaths(path) {
 		for _, moved := range e.graph.MovedBlocks(scope) {
 			to, ok := ast.ParseTargetAddr(moved.To)
-			if !ok || to.Type != "" || len(to.Modules) == 0 {
+			if !ok || to.Type != "" || to.Module.IsRoot() {
 				continue // not a whole-module-call address
 			}
 			from, ok := ast.ParseTargetAddr(moved.From)
-			if !ok || from.Type != "" || len(from.Modules) == 0 {
+			if !ok || from.Type != "" || from.Module.IsRoot() {
 				continue
 			}
-			toPath := appendModuleSteps(scope, to.Modules)
+			toPath := scope.Join(to.Module)
 			suffix, ok := stripModulePrefix(path, toPath)
 			if !ok {
 				continue
 			}
-			fromPath := appendModuleSteps(scope, from.Modules)
+			fromPath := scope.Join(from.Module)
 			for _, s := range suffix {
 				fromPath = fromPath.Append(s)
 			}
@@ -2428,14 +2428,6 @@ func ancestorPaths(p modulepath.Path) []modulepath.Path {
 	}
 	slices.Reverse(chain)
 	return chain
-}
-
-// appendModuleSteps extends base by the module-call steps of a moved address.
-func appendModuleSteps(base modulepath.Path, steps []modulepath.Step) modulepath.Path {
-	for _, s := range steps {
-		base = base.Append(s)
-	}
-	return base
 }
 
 // instanceKeysEqual reports whether two resource instance keys name the same
@@ -2543,7 +2535,7 @@ func (e *Engine) matchImport(
 	if !ok || to.Type != res.Type || to.Name != res.Name {
 		return "", false, nil
 	}
-	if appendModuleSteps(modulepath.Root(), to.Modules) != resPath {
+	if to.Module != resPath {
 		return "", false, nil
 	}
 	if to.Keyed() || index != nil || eachKey != nil {

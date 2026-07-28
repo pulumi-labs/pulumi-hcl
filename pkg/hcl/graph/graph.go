@@ -1445,9 +1445,8 @@ func (g *Graph) Validate() []error {
 // this module is checked when its own module is inlined; a target whose
 // module is gone is never reached, which is exactly a valid removal.
 func checkRemovedStillExists(removed []*ast.Removed, path modulepath.Path, config *ast.Config) error {
-	pathSteps := slices.Collect(path.Steps)
 	for _, rem := range removed {
-		if !slices.Equal(rem.From.Modules, pathSteps) {
+		if rem.From.Module != path {
 			continue
 		}
 		if rem.From.Type == "" {
@@ -1512,7 +1511,7 @@ func (g *Graph) inlineModule(
 	// configuration along with any ancestor's.
 	for _, rem := range loaded.Config.Removed {
 		abs := *rem
-		abs.From.Modules = append(slices.Collect(path.Steps), rem.From.Modules...)
+		abs.From.Module = path.Join(rem.From.Module)
 		g.removed = append(g.removed, &abs)
 	}
 	if err := checkRemovedStillExists(g.removed, path, loaded.Config); err != nil {

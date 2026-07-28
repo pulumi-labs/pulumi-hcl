@@ -100,9 +100,9 @@ removed {
 
 	require.Len(t, g.Removed(), 1)
 	assert.Equal(t, ast.TargetAddr{
-		Modules: []modulepath.Step{modulepath.NewStep("m")},
-		Type:    "simple_resource",
-		Name:    "a",
+		Module: modulepath.Root().Append(modulepath.NewStep("m")),
+		Type:   "simple_resource",
+		Name:   "a",
 	}, g.Removed()[0].From)
 	assert.True(t, g.Removed()[0].Destroy)
 	require.Len(t, g.Removed()[0].Provisioners, 1)
