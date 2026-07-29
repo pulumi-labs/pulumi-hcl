@@ -1,0 +1,6 @@
+kind: Improvements
+body: 'Providers resolve from the state''s per-resource provider addresses instead of a type-prefix heuristic'
+time: 2026-07-29T18:39:21.935338+02:00
+custom:
+    Component: converter
+    PR: "461"
