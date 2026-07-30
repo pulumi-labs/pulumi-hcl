@@ -135,6 +135,7 @@ var expectedFailures = map[string]string{
 		" - not compatible with block syntax",
 	"l2-resource-option-hooks":       "PCL pcl.Hook nodes not yet supported by HCL codegen",
 	"l2-resource-hook-after-failure": "PCL pcl.Hook nodes not yet supported by HCL codegen",
+	"l2-resource-hook-on-error":      "PCL pcl.Hook nodes not yet supported by HCL codegen",
 	"l2-resource-hook-ignore-errors": "PCL pcl.Hook nodes not yet supported by HCL codegen",
 	"l2-resource-read":               "PCL pcl.ReadResource nodes not yet supported by HCL codegen",
 	"l3-component-simple": "HCL runtime does not propagate resource dependencies from a" +
@@ -143,6 +144,10 @@ var expectedFailures = map[string]string{
 		" is reserved as the namespace for resource method calls in HCL",
 	"l2-config-default-from-invoke": "HCL codegen does not support a config variable whose" +
 		" default is sourced from an invoke result",
+	"l2-raw-string-bytes": "cty strings are sequences of unicode characters, so the HCL" +
+		" runtime cannot carry non-UTF8 bytes in a string property",
+	"l3-component-invoke": "the HCL runtime does not parent invokes inside a component to" +
+		" the component, so the invoke does not inherit the component's explicit provider",
 }
 
 // expectedEjectFailures lists tests whose eject (HCL→PCL conversion) step is
