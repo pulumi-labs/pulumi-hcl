@@ -52,6 +52,11 @@ type DataSource struct {
 	// It is evaluated at runtime; the resulting value supplies the provider URN/ID.
 	Provider hcl.Expression
 
+	// ResourceParent is the parent resource reference, if specified. The read
+	// itself registers nothing, but the reference orders it and is emitted by
+	// PCL codegen for the invoke `parent` option.
+	ResourceParent hcl.Traversal
+
 	// Version is the version of the provider plugin to use for this data source.
 	Version hcl.Expression
 

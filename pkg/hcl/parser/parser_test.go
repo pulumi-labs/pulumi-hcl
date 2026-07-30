@@ -1222,9 +1222,14 @@ data "simple_lookup" "d" {
 func TestParseDataPulumiOptions(t *testing.T) {
 	t.Parallel()
 	src := `
+resource "simple_resource" "r" {
+  input_one = "x"
+}
+
 data "simple_lookup" "d" {
   query = "x"
   pulumi {
+    parent              = simple_resource.r
     version             = "1.2.3"
     plugin_download_url = "https://example.com"
   }
@@ -1232,6 +1237,7 @@ data "simple_lookup" "d" {
 	cfg, diags := NewParser().ParseSource("test.hcl", []byte(src))
 	require.False(t, diags.HasErrors(), "unexpected parse errors: %v", diags)
 	ds := cfg.DataSources["simple_lookup.d"]
+	require.NotNil(t, ds.ResourceParent)
 	require.NotNil(t, ds.Version)
 	require.NotNil(t, ds.PluginDownloadURL)
 }

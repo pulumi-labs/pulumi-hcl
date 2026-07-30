@@ -1016,6 +1016,7 @@ func (g *Graph) dataSourceDeps(ds *ast.DataSource, path modulepath.Path) (*Block
 		c.classify(g.bodyDepRefs(ds.Config, path, nil))
 	}
 
+	c.addStaticRefs(g.traversalDepRefs(path, ds.ResourceParent))
 	g.classifyProviderRef(c, ds.Provider, path)
 
 	return c.finish()

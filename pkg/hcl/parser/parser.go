@@ -748,6 +748,13 @@ func (p *Parser) decodeDataBlock(block *hcl.Block) (*ast.DataSource, hcl.Diagnos
 		case "pulumi":
 			optContent, optDiags := subBlock.Body.Content(pulumiDataOptionsSchema)
 			diags = append(diags, optDiags...)
+			if attr, ok := optContent.Attributes["parent"]; ok {
+				traversal, travDiags := hcl.AbsTraversalForExpr(attr.Expr)
+				diags = append(diags, travDiags...)
+				if traversal != nil {
+					ds.ResourceParent = traversal
+				}
+			}
 			if attr, ok := optContent.Attributes["version"]; ok {
 				ds.Version = attr.Expr
 			}

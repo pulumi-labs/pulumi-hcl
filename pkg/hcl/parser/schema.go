@@ -196,6 +196,7 @@ var dataBlockSchema = &hcl.BodySchema{
 // honors.
 var pulumiDataOptionsSchema = &hcl.BodySchema{
 	Attributes: []hcl.AttributeSchema{
+		{Name: "parent"},
 		{Name: "version"},
 		{Name: "plugin_download_url"},
 	},
