@@ -52,12 +52,6 @@ func New() plugin.Converter { return &hclConverter{} }
 
 func (*hclConverter) Close() error { return nil }
 
-func (*hclConverter) ConvertState(
-	_ context.Context, _ *plugin.ConvertStateRequest,
-) (*plugin.ConvertStateResponse, error) {
-	return nil, plugin.ErrNotYetImplemented
-}
-
 func (*hclConverter) ConvertProgram(
 	ctx context.Context, req *plugin.ConvertProgramRequest,
 ) (*plugin.ConvertProgramResponse, error) {
