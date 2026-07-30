@@ -1,0 +1,6 @@
+kind: bug-fixes
+body: Support strings containing non-UTF8 bytes
+time: 2026-07-30T12:35:20.918723+02:00
+custom:
+    Component: runtime
+    PR: "268"

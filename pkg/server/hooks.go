@@ -84,8 +84,9 @@ func (s *callbackServer) register(fn callbackFunction) (*pulumirpc.Callback, err
 	s.functions[token] = fn
 	s.mu.Unlock()
 	return &pulumirpc.Callback{
-		Token:  token,
-		Target: "127.0.0.1:" + strconv.Itoa(s.handle.Port),
+		Token:             token,
+		Target:            "127.0.0.1:" + strconv.Itoa(s.handle.Port),
+		AcceptsByteString: true,
 	}, nil
 }
 
@@ -116,6 +117,7 @@ var hookMarshalOptions = plugin.MarshalOptions{
 	KeepSecrets:      true,
 	KeepResources:    true,
 	KeepOutputValues: true,
+	KeepByteString:   true,
 }
 
 // lazyCallbackServer is a callback server created on first use and shared for
