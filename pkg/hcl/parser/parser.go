@@ -926,6 +926,10 @@ func (p *Parser) parsePulumiResourceOptions(block *hcl.Block, resource *ast.Reso
 		}
 	}
 
+	if attr, ok := content.Attributes["protect"]; ok {
+		resource.Protect = attr.Expr
+	}
+
 	if attr, ok := content.Attributes["retain_on_delete"]; ok {
 		resource.RetainOnDelete = attr.Expr
 	}
@@ -1454,6 +1458,9 @@ func (p *Parser) parseModuleBlock(config *ast.Config, block *hcl.Block) hcl.Diag
 			diags = append(diags, optDiags...)
 			if attr, ok := optContent.Attributes["name"]; ok {
 				module.PulumiName = attr.Expr
+			}
+			if attr, ok := optContent.Attributes["protect"]; ok {
+				module.Protect = attr.Expr
 			}
 		}
 	}

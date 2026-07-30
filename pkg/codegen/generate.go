@@ -1341,6 +1341,14 @@ func (g *generator) genResourceOptions(body *hclwrite.Body, r *pcl.Resource) hcl
 		g.genPropertyPathTraversalList(pulumiBody(), "additional_secret_outputs", opts.AdditionalSecretOutputs)
 	}
 
+	if opts.Protect != nil {
+		tokens, d := g.exprTokens(opts.Protect, schema.BoolType)
+		diags = append(diags, d...)
+		if !d.HasErrors() {
+			pulumiBody().SetAttributeRaw("protect", tokens)
+		}
+	}
+
 	if opts.RetainOnDelete != nil {
 		tokens, d := g.exprTokens(opts.RetainOnDelete, schema.BoolType)
 		diags = append(diags, d...)
@@ -1746,13 +1754,6 @@ func (g *generator) genLifecycleBlock(body *hclwrite.Body, opts *pcl.ResourceOpt
 	var attrs []attr
 
 	if opts != nil {
-		if opts.Protect != nil {
-			tokens, d := g.exprTokens(opts.Protect, schema.BoolType)
-			*diags = append(*diags, d...)
-			if !d.HasErrors() {
-				attrs = append(attrs, attr{"prevent_destroy", tokens})
-			}
-		}
 		if opts.IgnoreChanges != nil {
 			tokens, d := g.exprTokens(opts.IgnoreChanges, schema.AnyType)
 			*diags = append(*diags, d...)
@@ -1969,11 +1970,27 @@ func (g *generator) genModule(body *hclwrite.Body, c *pcl.Component) hcl.Diagnos
 		naming, d = g.genRange(block.Body(), c.Options.Range)
 		diags = append(diags, d...)
 	}
+	var pulumiBlockBody *hclwrite.Body
+	pulumiBody := func() *hclwrite.Body {
+		if pulumiBlockBody == nil {
+			pulumiBlockBody = block.Body().AppendNewBlock("pulumi", nil).Body()
+		}
+		return pulumiBlockBody
+	}
+
 	// Pin the component instances' names the same way ranged resources are
 	// pinned, so nested components keep the "<parent>-<child>" names the
 	// other languages produce.
 	if tokens := pinnedNameTokens(g.insideComponent, c.LogicalName(), naming); tokens != nil {
-		block.Body().AppendNewBlock("pulumi", nil).Body().SetAttributeRaw("name", tokens)
+		pulumiBody().SetAttributeRaw("name", tokens)
+	}
+
+	if c.Options != nil && c.Options.Protect != nil {
+		tokens, d := g.exprTokens(c.Options.Protect, schema.BoolType)
+		diags = append(diags, d...)
+		if !d.HasErrors() {
+			pulumiBody().SetAttributeRaw("protect", tokens)
+		}
 	}
 
 	for _, attr := range c.Inputs {

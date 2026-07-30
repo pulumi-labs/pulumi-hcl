@@ -95,6 +95,12 @@ type Resource struct {
 	// secret. Each entry names a single top-level property.
 	AdditionalSecretOutputs []hcl.Traversal
 
+	// Protect if true marks the resource protected in the engine's state, so
+	// deleting it requires unprotecting first. Unlike lifecycle
+	// prevent_destroy, the guard persists in state after the resource leaves
+	// the program.
+	Protect hcl.Expression
+
 	// RetainOnDelete if true means the provider's Delete method will not be called for this resource.
 	RetainOnDelete hcl.Expression
 
