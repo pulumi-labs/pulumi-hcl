@@ -1301,6 +1301,7 @@ func (r *resourceMonitorAdapter) RegisterResource(
 		Aliases:                    aliases,
 		AcceptSecrets:              true,
 		AcceptResources:            true,
+		AcceptsByteString:          true,
 		SupportsPartialValues:      true,
 		DeleteBeforeReplace:        req.DeleteBeforeReplace,
 		DeleteBeforeReplaceDefined: req.DeleteBeforeReplaceDef,
@@ -1381,6 +1382,7 @@ func (r *resourceMonitorAdapter) ReadResource(
 		AcceptSecrets:           true,
 		AdditionalSecretOutputs: req.AdditionalSecretOutputs,
 		AcceptResources:         true,
+		AcceptsByteString:       true,
 		PluginDownloadURL:       req.PluginDownloadURL,
 		PackageRef:              string(req.PackageRef),
 	})
@@ -1419,6 +1421,7 @@ func (r *resourceMonitorAdapter) Invoke(
 		Version:           req.Version,
 		PluginDownloadURL: req.PluginDownloadURL,
 		AcceptResources:   true,
+		AcceptsByteString: true,
 		PackageRef:        string(req.PackageRef),
 	}
 
@@ -1499,9 +1502,10 @@ func (r *resourceMonitorAdapter) Call(
 	}
 
 	resp, err := r.monitorClient.Call(ctx, &pulumirpc.ResourceCallRequest{
-		Tok:        req.Token,
-		Args:       argsStruct,
-		PackageRef: string(req.PackageRef),
+		Tok:               req.Token,
+		Args:              argsStruct,
+		PackageRef:        string(req.PackageRef),
+		AcceptsByteString: true,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("calling method: %w", err)
@@ -1555,9 +1559,10 @@ func (r *resourceMonitorAdapter) RegisterResourceHook(
 
 func (*resourceMonitorAdapter) pluginOptions() plugin.MarshalOptions {
 	return plugin.MarshalOptions{
-		KeepUnknowns:  true,
-		KeepSecrets:   true,
-		KeepResources: true,
+		KeepUnknowns:   true,
+		KeepSecrets:    true,
+		KeepResources:  true,
+		KeepByteString: true,
 	}
 }
 

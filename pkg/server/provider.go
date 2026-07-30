@@ -206,6 +206,15 @@ func (a moduleLoaderAdapter) LoadModule(
 	return m.Config, m.SourcePath, nil
 }
 
+func (p *HCLProvider) Handshake(
+	ctx context.Context, req *pulumirpc.ProviderHandshakeRequest,
+) (*pulumirpc.ProviderHandshakeResponse, error) {
+	return &pulumirpc.ProviderHandshakeResponse{
+		AcceptSecrets:     true,
+		AcceptsByteString: true,
+	}, nil
+}
+
 // Attach configures the provider with a host callback.
 func (p *HCLProvider) Attach(ctx context.Context, req *pulumirpc.PluginAttach) (*emptypb.Empty, error) {
 	conn, err := grpc.NewClient(
@@ -451,6 +460,7 @@ func constructMarshalOptions() plugin.MarshalOptions {
 		KeepSecrets:      true,
 		KeepResources:    true,
 		KeepOutputValues: true,
+		KeepByteString:   true,
 	}
 }
 
@@ -479,6 +489,7 @@ func (m *constructResourceMonitor) RegisterResource(
 			ReplaceWith:             m.replaceWith,
 			AcceptSecrets:           true,
 			AcceptResources:         true,
+			AcceptsByteString:       true,
 		}
 		if m.deleteBeforeReplace != nil {
 			registerReq.DeleteBeforeReplace = *m.deleteBeforeReplace
@@ -545,6 +556,7 @@ func (m *constructResourceMonitor) RegisterResource(
 		Hooks:               hooksToProto(req.Hooks),
 		AcceptSecrets:       true,
 		AcceptResources:     true,
+		AcceptsByteString:   true,
 	})
 	if err != nil {
 		return nil, err
@@ -569,8 +581,9 @@ func (m *constructResourceMonitor) ReadResource(
 	req run.ReadResourceRequest,
 ) (*run.ReadResourceResponse, error) {
 	properties, err := plugin.MarshalProperties(resource.ToResourcePropertyMap(req.Inputs), plugin.MarshalOptions{
-		KeepSecrets:   true,
-		KeepResources: true,
+		KeepSecrets:    true,
+		KeepResources:  true,
+		KeepByteString: true,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("marshaling inputs: %w", err)
@@ -595,14 +608,16 @@ func (m *constructResourceMonitor) ReadResource(
 		PackageRef:              string(req.PackageRef),
 		AcceptSecrets:           true,
 		AcceptResources:         true,
+		AcceptsByteString:       true,
 	})
 	if err != nil {
 		return nil, err
 	}
 
 	outputs, err := plugin.UnmarshalProperties(resp.Properties, plugin.MarshalOptions{
-		KeepSecrets:   true,
-		KeepResources: true,
+		KeepSecrets:    true,
+		KeepResources:  true,
+		KeepByteString: true,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("unmarshaling outputs: %w", err)
@@ -660,6 +675,7 @@ func (m *constructResourceMonitor) Invoke(
 		PluginDownloadURL: req.PluginDownloadURL,
 		PackageRef:        string(req.PackageRef),
 		AcceptResources:   true,
+		AcceptsByteString: true,
 	})
 	if err != nil {
 		return nil, err
@@ -692,9 +708,10 @@ func (m *constructResourceMonitor) Call(
 	}
 
 	resp, err := m.client.Call(ctx, &pulumirpc.ResourceCallRequest{
-		Tok:        req.Token,
-		Args:       argsStruct,
-		PackageRef: string(req.PackageRef),
+		Tok:               req.Token,
+		Args:              argsStruct,
+		PackageRef:        string(req.PackageRef),
+		AcceptsByteString: true,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("calling method: %w", err)

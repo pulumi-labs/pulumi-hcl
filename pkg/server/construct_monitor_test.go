@@ -86,6 +86,7 @@ func TestConstructMonitorForwardsInvokeRouting(t *testing.T) {
 		PluginDownloadURL: "https://example.com/download",
 		PackageRef:        "package-ref-uuid",
 		AcceptResources:   true,
+		AcceptsByteString: true,
 	}, capture.invokeReq, protocmp.Transform()))
 }
 
@@ -107,9 +108,10 @@ func TestConstructMonitorForwardsCallRouting(t *testing.T) {
 	args, err := structpb.NewStruct(map[string]any{"name": "x"})
 	require.NoError(t, err)
 	assert.Empty(t, cmp.Diff(&pulumirpc.ResourceCallRequest{
-		Tok:        "aws:index:Module/getOutput",
-		Args:       args,
-		PackageRef: "package-ref-uuid",
+		Tok:               "aws:index:Module/getOutput",
+		Args:              args,
+		PackageRef:        "package-ref-uuid",
+		AcceptsByteString: true,
 	}, capture.callReq, protocmp.Transform()))
 }
 
