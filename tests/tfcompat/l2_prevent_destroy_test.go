@@ -82,7 +82,9 @@ func TestL2PreventDestroyCountRef(t *testing.T) {
 			{Name: "simple", Factory: providers.SimpleProvider},
 		},
 		Stages: []tfcompat.Stage{
-			{ExpectErr: "Invalid reference in prevent_destroy"},
+			// Case-neutral so it matches tofu's capitalized diagnostic and the
+			// runtime's lowercase error.
+			{ExpectErr: "reference in prevent_destroy"},
 		},
 	})
 }

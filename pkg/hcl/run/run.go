@@ -2138,7 +2138,7 @@ func evalPreventDestroy(res *ast.Resource, hclCtx *hcl.EvalContext) (bool, error
 	for _, trav := range res.Lifecycle.PreventDestroy.Variables() {
 		if root := trav.RootName(); root == "count" || root == "each" {
 			return false, fmt.Errorf(
-				"Invalid reference in prevent_destroy on %q: the argument cannot refer to %s.*, "+
+				"invalid reference in prevent_destroy on %q: the argument cannot refer to %s.*, "+
 					"because it must be evaluable for instances that have already been removed from the configuration",
 				res.Type+"."+res.Name, root)
 		}

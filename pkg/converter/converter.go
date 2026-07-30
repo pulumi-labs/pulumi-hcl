@@ -546,6 +546,7 @@ var resourceOptionHCLToPCL = map[string]string{
 	"import_id":                 "import",
 	"parent":                    "parent",
 	"plugin_download_url":       "pluginDownloadURL",
+	"protect":                   "protect",
 	"provider":                  "provider",
 	"providers":                 "providers",
 	"range":                     "range",

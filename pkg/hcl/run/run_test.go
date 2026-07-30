@@ -1071,7 +1071,7 @@ resource "aws_instance" "web" {
 	t.Run("per-instance reference", func(t *testing.T) {
 		t.Parallel()
 		_, err := runEngine(t, "count.index == 0")
-		require.ErrorContains(t, err, "Invalid reference in prevent_destroy")
+		require.ErrorContains(t, err, "invalid reference in prevent_destroy")
 	})
 }
 

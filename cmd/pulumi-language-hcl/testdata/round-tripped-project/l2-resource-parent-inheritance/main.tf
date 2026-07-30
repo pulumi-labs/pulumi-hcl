@@ -34,10 +34,10 @@ resource "simple_resource" "orphan1" {
 }
 resource "simple_resource" "parent2" {
   pulumi {
+    protect          = true
     retain_on_delete = true
   }
   lifecycle {
-    prevent_destroy       = true
     create_before_destroy = true
   }
   value = true
@@ -54,10 +54,10 @@ resource "simple_resource" "child2" {
 resource "simple_resource" "child3" {
   pulumi {
     parent           = simple_resource.parent2
+    protect          = false
     retain_on_delete = false
   }
   lifecycle {
-    prevent_destroy       = false
     create_before_destroy = true
   }
   value = true

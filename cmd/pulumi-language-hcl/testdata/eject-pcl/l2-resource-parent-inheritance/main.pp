@@ -22,8 +22,8 @@ resource "orphan1" "simple:index:Resource" {
 resource "parent2" "simple:index:Resource" {
   value = true
   options {
-    retainOnDelete = true
     protect        = true
+    retainOnDelete = true
   }
 }
 
@@ -38,8 +38,8 @@ resource "child3" "simple:index:Resource" {
   value = true
   options {
     parent         = parent2
-    retainOnDelete = false
     protect        = false
+    retainOnDelete = false
   }
 }
 

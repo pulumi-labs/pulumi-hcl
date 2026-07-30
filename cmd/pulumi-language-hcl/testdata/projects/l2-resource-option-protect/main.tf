@@ -8,15 +8,19 @@ terraform {
 }
 
 resource "simple_resource" "protected" {
+  pulumi {
+    protect = true
+  }
   lifecycle {
-    prevent_destroy       = true
     create_before_destroy = true
   }
   value = true
 }
 resource "simple_resource" "unprotected" {
+  pulumi {
+    protect = false
+  }
   lifecycle {
-    prevent_destroy       = false
     create_before_destroy = true
   }
   value = true
