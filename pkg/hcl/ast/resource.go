@@ -41,7 +41,8 @@ type Timeouts struct {
 	DeclRange hcl.Range
 }
 
-// Resource represents a resource or data block in HCL.
+// Resource represents a managed resource block in HCL; data blocks are
+// [DataSource].
 //
 // Terraform syntax:
 //
@@ -148,9 +149,6 @@ type Resource struct {
 
 	// TypeRange is the source range of the resource type.
 	TypeRange hcl.Range
-
-	// IsDataSource indicates if this is a data source (data block) vs managed resource.
-	IsDataSource bool
 }
 
 // Lifecycle contains lifecycle configuration for a resource.

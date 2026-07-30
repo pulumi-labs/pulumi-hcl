@@ -870,7 +870,6 @@ check "with_data" {
 	require.NotNil(t, check.DataResource)
 	assert.Equal(t, "http", check.DataResource.Type)
 	assert.Equal(t, "example", check.DataResource.Name)
-	assert.True(t, check.DataResource.IsDataSource)
 
 	// A check's scoped data source must not leak into the global data sources.
 	_, leaked := config.DataSources["http.example"]
@@ -1156,4 +1155,108 @@ func traversalStrings(traversals []hcl.Traversal) []string {
 		ret = append(ret, string(hclwrite.TokensForTraversal(t).Bytes()))
 	}
 	return ret
+}
+
+// TestParseDataRejectsLifecycleArgs: a data block's lifecycle carries only
+// conditions; every lifecycle argument is an error.
+func TestParseDataRejectsLifecycleArgs(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name string
+		attr string
+	}{
+		{"create_before_destroy", "create_before_destroy = true"},
+		{"prevent_destroy", "prevent_destroy = true"},
+		{"ignore_changes", "ignore_changes = [query]"},
+		{"replace_triggered_by", "replace_triggered_by = [simple_resource.r]"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			src := `
+data "simple_lookup" "d" {
+  query = "x"
+  lifecycle {
+    ` + tc.attr + `
+  }
+}`
+			_, diags := NewParser().ParseSource("test.hcl", []byte(src))
+			require.True(t, diags.HasErrors(), "expected parse errors, got %v", diags)
+			require.Equal(t, "Invalid data resource lifecycle argument", diags[0].Summary)
+		})
+	}
+}
+
+// TestParseDataRejectsResourceSurface: pulumi options outside the data
+// subset are schema-rejected, as are managed-resource blocks.
+func TestParseDataRejectsResourceSurface(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name    string
+		body    string
+		summary string
+	}{
+		{"protect", "pulumi {\n  protect = true\n}", "Unsupported argument"},
+		{"retain_on_delete", "pulumi {\n  retain_on_delete = true\n}", "Unsupported argument"},
+		{"name", "pulumi {\n  name = \"n\"\n}", "Unsupported argument"},
+		{"provisioner", "provisioner \"local-exec\" {\n  command = \"true\"\n}", "Unsupported block type"},
+		{"connection", "connection {\n  host = \"h\"\n}", "Unsupported block type"},
+		{"timeouts", "timeouts {\n  read = \"1m\"\n}", "Unsupported block type"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			src := `
+data "simple_lookup" "d" {
+  query = "x"
+  ` + tc.body + `
+}`
+			_, diags := NewParser().ParseSource("test.hcl", []byte(src))
+			require.True(t, diags.HasErrors(), "expected parse errors, got %v", diags)
+			require.Equal(t, tc.summary, diags[0].Summary)
+		})
+	}
+}
+
+// TestParseDataPulumiOptions: the data subset of pulumi options parses.
+func TestParseDataPulumiOptions(t *testing.T) {
+	t.Parallel()
+	src := `
+resource "simple_resource" "r" {
+  input_one = "x"
+}
+
+data "simple_lookup" "d" {
+  query = "x"
+  pulumi {
+    parent              = simple_resource.r
+    version             = "1.2.3"
+    plugin_download_url = "https://example.com"
+  }
+}`
+	cfg, diags := NewParser().ParseSource("test.hcl", []byte(src))
+	require.False(t, diags.HasErrors(), "unexpected parse errors: %v", diags)
+	ds := cfg.DataSources["simple_lookup.d"]
+	require.NotNil(t, ds.ResourceParent)
+	require.NotNil(t, ds.Version)
+	require.NotNil(t, ds.PluginDownloadURL)
+}
+
+// TestParseDataLifecycleConditionsStillParse: precondition/postcondition
+// blocks remain valid inside a data block's lifecycle.
+func TestParseDataLifecycleConditionsStillParse(t *testing.T) {
+	t.Parallel()
+	src := `
+data "simple_lookup" "d" {
+  query = "x"
+  lifecycle {
+    precondition {
+      condition     = true
+      error_message = "never"
+    }
+  }
+}`
+	cfg, diags := NewParser().ParseSource("test.hcl", []byte(src))
+	require.False(t, diags.HasErrors(), "unexpected parse errors: %v", diags)
+	require.Len(t, cfg.DataSources["simple_lookup.d"].Preconditions, 1)
 }

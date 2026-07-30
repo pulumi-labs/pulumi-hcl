@@ -40,7 +40,7 @@ type Config struct {
 	Resources map[string]*Resource
 
 	// DataSources maps "type.name" to data source definition.
-	DataSources map[string]*Resource
+	DataSources map[string]*DataSource
 
 	// Outputs maps output name to output definition.
 	Outputs map[string]*Output
@@ -88,7 +88,7 @@ func NewConfig() *Config {
 		Variables:   make(map[string]*Variable),
 		Locals:      make(map[string]*Local),
 		Resources:   make(map[string]*Resource),
-		DataSources: make(map[string]*Resource),
+		DataSources: make(map[string]*DataSource),
 		Outputs:     make(map[string]*Output),
 		Modules:     make(map[string]*Module),
 		Calls:       make(map[string]*Call),
