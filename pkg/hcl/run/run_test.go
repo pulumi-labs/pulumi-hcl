@@ -979,10 +979,12 @@ resource "aws_instance" "web" {
 
 	req := mock.RegisteredResources[1]
 
-	// prevent_destroy maps to Protect
-	if !req.Protect {
-		t.Error("expected Protect=true from prevent_destroy")
-	}
+	// prevent_destroy binds the destroy dispatcher hook rather than the
+	// engine's Protect option, so the guard lifts when the block leaves the
+	// configuration.
+	assert.False(t, req.Protect)
+	require.NotNil(t, req.Hooks)
+	assert.Equal(t, []string{"pulumi-hcl:provisioner:before-delete"}, req.Hooks.BeforeDelete)
 
 	assert.Equal(t, []property.Glob{property.GlobFromSegments(property.NewSegment("tags"))}, req.IgnoreChanges)
 }
@@ -1044,7 +1046,10 @@ resource "aws_instance" "web" {
 		mock, err := runEngine(t, "var.flag")
 		require.NoError(t, err)
 		require.Len(t, mock.RegisteredResources, 2)
-		assert.True(t, mock.RegisteredResources[1].Protect)
+		req := mock.RegisteredResources[1]
+		assert.False(t, req.Protect)
+		require.NotNil(t, req.Hooks)
+		assert.Equal(t, []string{"pulumi-hcl:provisioner:before-delete"}, req.Hooks.BeforeDelete)
 	})
 
 	t.Run("negated variable", func(t *testing.T) {
@@ -1052,13 +1057,126 @@ resource "aws_instance" "web" {
 		mock, err := runEngine(t, "!var.flag")
 		require.NoError(t, err)
 		require.Len(t, mock.RegisteredResources, 2)
-		assert.False(t, mock.RegisteredResources[1].Protect)
+		req := mock.RegisteredResources[1]
+		assert.False(t, req.Protect)
+		assert.Nil(t, req.Hooks)
 	})
 
 	t.Run("invalid type", func(t *testing.T) {
 		t.Parallel()
 		_, err := runEngine(t, "[true]")
 		require.ErrorContains(t, err, `invalid prevent_destroy value on "aws_instance.web"`)
+	})
+
+	t.Run("per-instance reference", func(t *testing.T) {
+		t.Parallel()
+		_, err := runEngine(t, "count.index == 0")
+		require.ErrorContains(t, err, "Invalid reference in prevent_destroy")
+	})
+}
+
+// TestEngine_PulumiProtect verifies that a resource or module `pulumi {
+// protect = ... }` maps to the engine's Protect option.
+func TestEngine_PulumiProtect(t *testing.T) {
+	t.Parallel()
+
+	awsSchema := func(t *testing.T) schema.ReferenceLoader {
+		return schemaloader.New(t, schema.PackageSpec{
+			Name: "aws",
+			Resources: map[string]schema.ResourceSpec{
+				"aws:index:Instance": {
+					InputProperties: map[string]schema.PropertySpec{
+						"ami": {TypeSpec: schema.TypeSpec{Type: "string"}},
+					},
+					ObjectTypeSpec: schema.ObjectTypeSpec{
+						Properties: map[string]schema.PropertySpec{
+							"ami": {TypeSpec: schema.TypeSpec{Type: "string"}},
+						},
+					},
+				},
+			},
+		})
+	}
+
+	t.Run("resource", func(t *testing.T) {
+		t.Parallel()
+		src := []byte(`
+resource "aws_instance" "web" {
+  ami = "ami-12345"
+
+  pulumi {
+    protect = true
+  }
+}
+`)
+		p := parser.NewParser()
+		config, diags := p.ParseSource("test.hcl", src)
+		require.False(t, diags.HasErrors(), "parse error: %s", diags.Error())
+
+		mock := &testutil.MockResourceMonitor{}
+		engine := newTestEngine(t, config, &run.EngineOptions{
+			ModuleLoader:    testModuleLoader(t),
+			ProjectName:     "test-project",
+			StackName:       "dev",
+			ResourceMonitor: mock,
+			WorkDir:         t.TempDir(),
+			RootDir:         t.TempDir(),
+			SchemaLoader:    awsSchema(t),
+		})
+		require.NoError(t, engine.Run(t.Context()))
+
+		require.Len(t, mock.RegisteredResources, 2)
+		req := mock.RegisteredResources[1]
+		assert.True(t, req.Protect)
+		assert.Nil(t, req.Hooks)
+	})
+
+	t.Run("module", func(t *testing.T) {
+		t.Parallel()
+		tmpDir := t.TempDir()
+		moduleDir := tmpDir + "/modules/child"
+		require.NoError(t, os.MkdirAll(moduleDir, 0o755))
+		require.NoError(t, os.WriteFile(moduleDir+"/main.tf", []byte(`
+resource "aws_instance" "r" {
+  ami = "ami-r"
+}
+`), 0o644))
+		require.NoError(t, os.WriteFile(tmpDir+"/main.tf", []byte(`
+module "a" {
+  source = "./modules/child"
+
+  pulumi {
+    protect = true
+  }
+}
+`), 0o644))
+
+		p := parser.NewParser()
+		config, diags := p.ParseDirectory(tmpDir)
+		require.False(t, diags.HasErrors(), "parse error: %s", diags.Error())
+
+		mock := &testutil.MockResourceMonitor{}
+		engine := newTestEngine(t, config, &run.EngineOptions{
+			ModuleLoader:    testLiveModuleLoader(t),
+			ProjectName:     "test-project",
+			StackName:       "dev",
+			ResourceMonitor: mock,
+			WorkDir:         tmpDir,
+			RootDir:         tmpDir,
+			SchemaLoader:    awsSchema(t),
+		})
+		require.NoError(t, engine.Run(t.Context()))
+
+		protects := map[string]bool{}
+		for _, req := range mock.RegisteredResources {
+			if req.Type != "pulumi:pulumi:Stack" {
+				protects[req.Type] = req.Protect
+			}
+		}
+		assert.Equal(t, map[string]bool{
+			"components:index:Child": true,
+			"aws:index:Instance":     false,
+		}, protects)
 	})
 }
 

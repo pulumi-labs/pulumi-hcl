@@ -1629,7 +1629,7 @@ func (e *Engine) registerResourceInstanceInContext(
 		}
 	}
 
-	opts, err := e.buildResourceOptionsInContext(ctx, node, res, instance, evalCtx, parentURN, modInst, resourceMapping, resSchema.InputProperties, resSchema.Properties, resourceInputs)
+	opts, err := e.buildResourceOptions(ctx, node, res, instance, evalCtx, parentURN, modInst, resourceMapping, resSchema.InputProperties, resSchema.Properties, resourceInputs)
 	if err != nil {
 		return err
 	}
@@ -1705,8 +1705,8 @@ func (e *Engine) registerResourceInstanceInContext(
 		}
 	}
 
-	if len(res.Provisioners) > 0 {
-		if err := e.bindProvisionerHooks(ctx, res, resSchema, resourceMapping, instance, evalCtx, opts, resourceName); err != nil {
+	if len(res.Provisioners) > 0 || opts.PreventDestroy {
+		if err := e.bindGlobalHooks(ctx, res, resSchema, resourceMapping, instance, evalCtx, opts, resourceName); err != nil {
 			return err
 		}
 	}
@@ -1770,8 +1770,8 @@ func (e *Engine) registerResourceInstanceInContext(
 	return nil
 }
 
-// buildResourceOptionsInContext builds resource options using the provided eval context and parent URN.
-func (e *Engine) buildResourceOptionsInContext(
+// buildResourceOptions builds resource options using the provided eval context and parent URN.
+func (e *Engine) buildResourceOptions(
 	ctx context.Context, node *graph.Node, res *ast.Resource, instance *graph.ExpandedResource,
 	evalCtx *eval.Context, parentURN urn.URN,
 	modInst *moduleInstance, resourceMapping *bridge.BodyMapping,
@@ -1801,22 +1801,11 @@ func (e *Engine) buildResourceOptionsInContext(
 
 	// Handle lifecycle options
 	if res.Lifecycle != nil {
-		if res.Lifecycle.PreventDestroy != nil {
-			val, diags := res.Lifecycle.PreventDestroy.Value(hclCtx)
-			if diags.HasErrors() {
-				return nil, fmt.Errorf("evaluating prevent_destroy on %q: %s",
-					res.Type+"."+res.Name, diags.Error())
-			}
-			val, _ = val.Unmark()
-			val, err := ctyconvert.Convert(val, cty.Bool)
-			if err != nil {
-				return nil, fmt.Errorf("invalid prevent_destroy value on %q: %w",
-					res.Type+"."+res.Name, err)
-			}
-			if cty.True.RawEquals(val) {
-				opts.Protect = true
-			}
+		guarded, err := evalPreventDestroy(res, hclCtx)
+		if err != nil {
+			return nil, err
 		}
+		opts.PreventDestroy = guarded
 		// ignore_changes maps to ignoreChanges. The traversal names are TF
 		// (snake_case) attribute names; the Pulumi engine matches ignoreChanges
 		// paths against Pulumi (camelCase) property names, so they must be
@@ -1986,6 +1975,14 @@ func (e *Engine) buildResourceOptionsInContext(
 		}
 	}
 
+	if res.Protect != nil {
+		val, diags := res.Protect.Value(hclCtx)
+		val, _ = val.Unmark()
+		if !diags.HasErrors() && val.Type() == cty.Bool && !val.IsNull() && val.IsKnown() {
+			opts.Protect = val.True()
+		}
+	}
+
 	if res.RetainOnDelete != nil {
 		val, diags := res.RetainOnDelete.Value(hclCtx)
 		val, _ = val.Unmark()
@@ -2117,8 +2114,7 @@ func (e *Engine) buildResourceOptionsInContext(
 
 	if key, ok := graph.TraversalKey(node.Key.Module, res.ResourceParent); ok {
 		if parentOpts, ok := e.resourceInheritableOpts.Get(graph.InstanceKey{Node: key}); ok {
-			if (res.Lifecycle == nil || res.Lifecycle.PreventDestroy == nil) &&
-				parentOpts.Protect != nil && *parentOpts.Protect {
+			if res.Protect == nil && parentOpts.Protect != nil && *parentOpts.Protect {
 				opts.Protect = true
 			}
 			if res.RetainOnDelete == nil && parentOpts.RetainOnDelete != nil {
@@ -2128,6 +2124,46 @@ func (e *Engine) buildResourceOptionsInContext(
 	}
 
 	return opts, nil
+}
+
+// evalPreventDestroy evaluates res's lifecycle.prevent_destroy in hclCtx. An
+// unknown value (a computed reference during preview) counts as unset.
+// References to per-instance symbols are rejected statically: the guard must
+// be evaluable for instances that have already been removed from the
+// configuration, whose per-instance data is gone.
+func evalPreventDestroy(res *ast.Resource, hclCtx *hcl.EvalContext) (bool, error) {
+	if res.Lifecycle == nil || res.Lifecycle.PreventDestroy == nil {
+		return false, nil
+	}
+	for _, trav := range res.Lifecycle.PreventDestroy.Variables() {
+		if root := trav.RootName(); root == "count" || root == "each" {
+			return false, fmt.Errorf(
+				"Invalid reference in prevent_destroy on %q: the argument cannot refer to %s.*, "+
+					"because it must be evaluable for instances that have already been removed from the configuration",
+				res.Type+"."+res.Name, root)
+		}
+	}
+	val, diags := res.Lifecycle.PreventDestroy.Value(hclCtx)
+	if diags.HasErrors() {
+		return false, fmt.Errorf("evaluating prevent_destroy on %q: %s",
+			res.Type+"."+res.Name, diags.Error())
+	}
+	val, _ = val.Unmark()
+	val, err := ctyconvert.Convert(val, cty.Bool)
+	if err != nil {
+		return false, fmt.Errorf("invalid prevent_destroy value on %q: %w",
+			res.Type+"."+res.Name, err)
+	}
+
+	return val.True(), nil
+}
+
+// preventDestroyRefusal is returned from the destroy dispatcher for a guarded
+// instance; tfcompat tests compare the wording across runtimes.
+func preventDestroyRefusal(addr string) error {
+	return fmt.Errorf(
+		"resource instance %s has prevent_destroy set, but the plan calls for it to be destroyed. "+
+			"To proceed, disable prevent_destroy for this resource", addr)
 }
 
 // resolveMovedAliases finds the `moved` blocks that rename the resource instance
@@ -3140,6 +3176,12 @@ type ResourceOptions struct {
 	PluginDownloadURL       string
 	PackageRef              PackageRef
 	Hooks                   *ResourceHookBinding
+
+	// PreventDestroy is enforced by the destroy dispatcher hook, not the
+	// engine: the guard must be re-evaluated from current configuration on
+	// every run, while an engine option would persist in state. Never
+	// forwarded to RegisterResource.
+	PreventDestroy bool
 }
 
 // registerResource registers a resource with the Pulumi engine. tfType is the
@@ -3346,7 +3388,7 @@ func (e *Engine) invokeDataSourceOnce(
 
 	// depends_on marks the outputs with every registered instance URN of the
 	// target block, keyed or not — dependency metadata is resource-wide (see
-	// buildResourceOptionsInContext).
+	// buildResourceOptions).
 	dependsOnPending := e.moduleDependsOnPending(mi)
 	for _, dep := range ds.DependsOn {
 		block, ok := graph.TraversalKey(node.Key.Module, dep)
@@ -4053,6 +4095,14 @@ func (e *Engine) initModuleCallIn(
 		}
 		componentOpts := &ResourceOptions{Parent: parentURN}
 		componentOpts.Aliases = e.moduleComponentAliases(instPath)
+		if mod.Protect != nil {
+			hclCtx := parentEvalCtx.HCLContextWithIteration(index, eachKey, eachVal)
+			val, diags := mod.Protect.Value(hclCtx)
+			val, _ = val.Unmark()
+			if !diags.HasErrors() && val.Type() == cty.Bool && !val.IsNull() && val.IsKnown() {
+				componentOpts.Protect = val.True()
+			}
+		}
 		componentURN, _, _, err := e.registerComponentResource(ctx, componentType, instName, property.NewMap(inputs), componentOpts)
 		if err != nil {
 			return nil, fmt.Errorf("registering module component %s: %w", instPath.String(), err)
@@ -4316,6 +4366,7 @@ func (e *Engine) registerComponentResource(
 		Inputs:       inputs,
 		Dependencies: deps,
 		Parent:       opts.Parent,
+		Protect:      opts.Protect,
 	})
 	if err != nil {
 		return "", "", property.Map{}, err

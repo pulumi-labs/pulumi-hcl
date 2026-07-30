@@ -209,6 +209,7 @@ var pulumiResourceOptionsSchema = &hcl.BodySchema{
 		{Name: "name"},
 		{Name: "additional_secret_outputs"},
 		{Name: "parent"},
+		{Name: "protect"},
 		{Name: "retain_on_delete"},
 		{Name: "deleted_with"},
 		{Name: "replace_with"},
@@ -303,6 +304,7 @@ var moduleSchema = &hcl.BodySchema{
 var pulumiModuleOptionsSchema = &hcl.BodySchema{
 	Attributes: []hcl.AttributeSchema{
 		{Name: "name"},
+		{Name: "protect"},
 	},
 }
 

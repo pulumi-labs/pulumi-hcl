@@ -31,17 +31,14 @@ import (
 	"github.com/pulumi-labs/pulumi-hcl/pkg/provisioner/runtime"
 )
 
-// bindProvisionerHooks binds AfterCreate (when=create) or BeforeDelete
-// (when=destroy). TF does not re-run provisioners on update — no AfterUpdate
-// binding. The HCL eval context is snapshotted now since the callback fires
-// asynchronously, after processing has moved past this resource.
+// bindGlobalHooks binds the instance's hook machinery.
 //
-// Destroy-time provisioners bind the constant [destroyProvisionerHook]: a
-// per-instance name recorded in state would be unregistered on a later run
-// that no longer declares the instance, bricking its delete. The runner is
-// keyed by a URN computed before registration, because a delete-before-replace
-// delete fires while RegisterResource is still blocked.
-func (e *Engine) bindProvisionerHooks(
+// The constant hook is used because a per-instance name recorded in state
+// would be unregistered on a later run that no longer declares the instance,
+// breaking its delete. The entry is keyed by a URN computed before
+// registration, because a delete-before-replace delete fires while
+// RegisterResource is still blocked.
+func (e *Engine) bindGlobalHooks(
 	ctx context.Context,
 	res *ast.Resource,
 	resSchema *schema.Resource,
@@ -51,12 +48,70 @@ func (e *Engine) bindProvisionerHooks(
 	opts *ResourceOptions,
 	resourceName string,
 ) error {
-	if len(res.Provisioners) == 0 {
+	if len(res.Provisioners) == 0 && !opts.PreventDestroy {
 		return nil
 	}
 	if opts.Hooks == nil {
 		opts.Hooks = &ResourceHookBinding{}
 	}
+
+	destroyProvisioners, err := e.bindProvisionerHooks(ctx, res, resSchema, mapping, instance, evalCtx, opts, resourceName)
+	if err != nil {
+		return err
+	}
+	guard := preventDestroyHook(opts, instance)
+	if guard == nil && destroyProvisioners == nil {
+		return nil
+	}
+
+	dryRun := e.dryRun
+	instanceURN, _ := e.resmon.ResolveURN(opts.Parent, resSchema.Token, resourceName)
+	e.dispatcher.putInstance(string(instanceURN),
+		func(hookCtx context.Context, args *ResourceHookArgs) error {
+			if guard != nil {
+				return guard(hookCtx, args)
+			}
+			if dryRun {
+				// Provisioners never run during plan.
+				return nil
+			}
+			if destroyProvisioners != nil {
+				return destroyProvisioners(hookCtx, args)
+			}
+			return nil
+		})
+	opts.Hooks.BeforeDelete = append(opts.Hooks.BeforeDelete, destroyProvisionerHook)
+	return nil
+}
+
+// preventDestroyHook returns the hook refusing this instance's delete, or nil
+// when the lifecycle guard is not set.
+func preventDestroyHook(opts *ResourceOptions, instance *graph.ExpandedResource) ResourceHookFunction {
+	if !opts.PreventDestroy {
+		return nil
+	}
+	addr := instance.Key.String()
+	return func(context.Context, *ResourceHookArgs) error {
+		return preventDestroyRefusal(addr)
+	}
+}
+
+// bindProvisionerHooks validates res's provisioners, registers and binds the
+// create-time (AfterCreate) hooks, and returns the destroy-time runner for
+// the dispatcher entry — nil when there are no destroy-time provisioners. TF
+// does not re-run provisioners on update — no AfterUpdate binding. The HCL
+// eval context is snapshotted now since the callbacks fire asynchronously,
+// after processing has moved past this resource.
+func (e *Engine) bindProvisionerHooks(
+	ctx context.Context,
+	res *ast.Resource,
+	resSchema *schema.Resource,
+	mapping *bridge.BodyMapping,
+	instance *graph.ExpandedResource,
+	evalCtx *eval.Context,
+	opts *ResourceOptions,
+	resourceName string,
+) (ResourceHookFunction, error) {
 	hclSnapshot := evalCtx.HCLContext()
 	dryRun := e.dryRun
 
@@ -89,7 +144,7 @@ func (e *Engine) bindProvisionerHooks(
 	for i, prov := range res.Provisioners {
 		prov, index := prov, i+1
 		if err := runtime.Validate(prov.Type); err != nil {
-			return fmt.Errorf("provisioner %d for %s: %w", index, instance.Key, err)
+			return nil, fmt.Errorf("provisioner %d for %s: %w", index, instance.Key, err)
 		}
 		if prov.When == "destroy" {
 			destroy = true
@@ -102,29 +157,25 @@ func (e *Engine) bindProvisionerHooks(
 		if err := e.resmon.RegisterResourceHook(ctx, hookName, callback, ResourceHookOptions{
 			OnDryRun: false, // TF doesn't run provisioners during plan.
 		}); err != nil {
-			return fmt.Errorf("registering provisioner hook: %w", err)
+			return nil, fmt.Errorf("registering provisioner hook: %w", err)
 		}
 		opts.Hooks.AfterCreate = append(opts.Hooks.AfterCreate, hookName)
 	}
 	if !destroy {
-		return nil
+		return nil, nil
 	}
 
-	instanceURN, _ := e.resmon.ResolveURN(opts.Parent, resSchema.Token, resourceName)
-	e.dispatcher.putInstance(string(instanceURN),
-		func(hookCtx context.Context, args *ResourceHookArgs) error {
-			for i, prov := range res.Provisioners {
-				if prov.When != "destroy" {
-					continue
-				}
-				if err := runOne(hookCtx, prov, i+1, args.OldOutputs, args.ID, args.URN); err != nil {
-					return err
-				}
+	return func(hookCtx context.Context, args *ResourceHookArgs) error {
+		for i, prov := range res.Provisioners {
+			if prov.When != "destroy" {
+				continue
 			}
-			return nil
-		})
-	opts.Hooks.BeforeDelete = append(opts.Hooks.BeforeDelete, destroyProvisionerHook)
-	return nil
+			if err := runOne(hookCtx, prov, i+1, args.OldOutputs, args.ID, args.URN); err != nil {
+				return err
+			}
+		}
+		return nil
+	}, nil
 }
 
 // effectiveConnectionBody: provisioner-level overrides resource-level.

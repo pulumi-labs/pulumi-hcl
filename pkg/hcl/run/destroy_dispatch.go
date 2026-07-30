@@ -130,7 +130,10 @@ func (e *Engine) registerDestroyDispatcher(ctx context.Context) {
 		return
 	}
 	if err := e.resmon.RegisterResourceHook(ctx, destroyProvisionerHook, e.dispatcher.dispatch, ResourceHookOptions{
-		OnDryRun: false, // TF doesn't run provisioners during plan.
+		// The prevent_destroy guard must refuse at plan time, so the hook
+		// fires during previews; provisioner entries gate themselves on the
+		// deployment's dry-run flag instead.
+		OnDryRun: true,
 	}); err != nil {
 		_ = e.resmon.LogWarning(ctx, fmt.Sprintf(
 			"registering the destroy-time provisioner hook: %v", err))
@@ -166,6 +169,14 @@ type blockEntry struct {
 	// parent-chain check — a gone module call's component type names its
 	// source, which is no longer in the configuration.
 	moduleTarget bool
+	// preventDestroy refuses the orphan's delete: the block is still in
+	// configuration with its lifecycle guard set (a count shrink or dropped
+	// for_each key), so its instances may not be destroyed.
+	preventDestroy bool
+	// guardErr is a prevent_destroy evaluation failure, surfaced when an
+	// orphan of this block is actually deleted: a guard that cannot be
+	// evaluated must refuse the delete, not silently allow it.
+	guardErr error
 }
 
 // urnTypes returns u's own type and the qualified-type chain contributed by
@@ -204,6 +215,16 @@ func (b *blockEntry) matches(args *ResourceHookArgs) bool {
 // error would make the resource undeletable.
 func (b *blockEntry) run(ctx context.Context, args *ResourceHookArgs) error {
 	name := strings.TrimPrefix(args.Name, b.prefix)
+	if b.guardErr != nil {
+		return b.guardErr
+	}
+	if b.preventDestroy {
+		return preventDestroyRefusal(name)
+	}
+	if b.dryRun {
+		// Provisioners never run during plan.
+		return nil
+	}
 	addr, err := modulepath.ParseAddress(name)
 	if err != nil {
 		return nil
@@ -314,7 +335,10 @@ func (e *Engine) recordBlockEntry(
 	ctx context.Context, res *ast.Resource, resSchema *schema.Resource,
 	evalCtx *eval.Context, parentURN urn.URN, modInst *moduleInstance,
 ) {
-	if e.resmon == nil || !hasDestroyProvisioners(res) {
+	// Per-instance symbols are rejected by evalPreventDestroy, so the block's
+	// module scope evaluates the guard the same way the live-instance path does.
+	guarded, guardErr := evalPreventDestroy(res, evalCtx.HCLContext())
+	if guardErr == nil && !guarded && !hasDestroyProvisioners(res) {
 		return
 	}
 
@@ -322,14 +346,16 @@ func (e *Engine) recordBlockEntry(
 	prefix := strings.TrimSuffix(probeName, "probe")
 
 	entry := &blockEntry{
-		resmon:    e.resmon,
-		dryRun:    e.dryRun,
-		res:       res,
-		resSchema: resSchema,
-		mapping:   e.resolver.ResourceBodyMapping(ctx, res.Type),
-		token:     resSchema.Token,
-		prefix:    prefix,
-		evalCtx:   evalCtx,
+		resmon:         e.resmon,
+		dryRun:         e.dryRun,
+		res:            res,
+		resSchema:      resSchema,
+		mapping:        e.resolver.ResourceBodyMapping(ctx, res.Type),
+		token:          resSchema.Token,
+		prefix:         prefix,
+		evalCtx:        evalCtx,
+		preventDestroy: guarded,
+		guardErr:       guardErr,
 	}
 	_, entry.parentChain = urnTypes(string(probeURN))
 	modConfig := modulepath.Root()

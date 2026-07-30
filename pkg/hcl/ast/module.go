@@ -73,6 +73,11 @@ type Module struct {
 	// calling scope, with count.index/each.key in scope.
 	PulumiName hcl.Expression
 
+	// Protect if true marks each instance's component resource protected in
+	// the engine's state. It is evaluated per instance in the calling scope,
+	// with count.index/each.key in scope.
+	Protect hcl.Expression
+
 	// DeclRange is the source range of the module block.
 	DeclRange hcl.Range
 }

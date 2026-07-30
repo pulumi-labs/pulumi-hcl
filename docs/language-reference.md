@@ -184,7 +184,7 @@ resource "aws_instance" "web" {
 | Attribute               | Type | Description                                                              |
 |-------------------------|------|--------------------------------------------------------------------------|
 | `create_before_destroy` | bool | When `true`, creates the replacement before destroying the old resource. |
-| `prevent_destroy`       | bool | Protect resource from accidental deletion (maps to Pulumi `protect`)     |
+| `prevent_destroy`       | bool | Refuse plans that would destroy this resource                            |
 | `ignore_changes`        | list | Property paths to exclude from diff detection                            |
 | `replace_triggered_by`  | list | Replace this resource when any referenced resource or attribute changes  |
 
@@ -328,6 +328,7 @@ resource "aws_instance" "web" {
     name                       = "web-primary"
     parent                     = module.my_component
     additional_secret_outputs  = ["password"]
+    protect                    = true
     retain_on_delete           = true
     deleted_with               = aws_vpc.main
     replace_on_changes         = ["ami"]
@@ -341,21 +342,22 @@ resource "aws_instance" "web" {
 }
 ```
 
-| Attribute                   | Type         | Description                                                  |
-|-----------------------------|--------------|--------------------------------------------------------------|
-| `name`                      | string       | Override the Pulumi logical name                             |
-| `parent`                    | reference    | Parent resource for component hierarchy                      |
-| `additional_secret_outputs` | list(string) | Output properties to encrypt in state                        |
-| `retain_on_delete`          | bool         | Keep the cloud resource when removed from the program        |
-| `deleted_with`              | reference    | Cascade deletion when the referenced resource is deleted     |
-| `replace_with`              | list         | Resources whose replacement triggers replacement of this one |
-| `hide_diffs`                | list(string) | Property paths whose diffs should not be displayed           |
-| `replace_on_changes`        | list(string) | Property paths that force replacement when changed           |
-| `import_id`                 | string       | Cloud resource ID to import                                  |
-| `aliases`                   | list         | Alternative names for this resource (used during renames)    |
-| `version`                   | string       | Provider plugin version                                      |
-| `plugin_download_url`       | string       | URL to download the provider plugin from                     |
-| `env_var_mappings`          | expression   | Environment variable remappings for the provider             |
+| Attribute                   | Type         | Description                                                                   |
+|-----------------------------|--------------|-------------------------------------------------------------------------------|
+| `name`                      | string       | Override the Pulumi logical name                                              |
+| `parent`                    | reference    | Parent resource for component hierarchy                                       |
+| `additional_secret_outputs` | list(string) | Output properties to encrypt in state                                         |
+| `protect`                   | bool         | Mark the resource protected in state; deleting it requires unprotecting first |
+| `retain_on_delete`          | bool         | Keep the cloud resource when removed from the program                         |
+| `deleted_with`              | reference    | Cascade deletion when the referenced resource is deleted                      |
+| `replace_with`              | list         | Resources whose replacement triggers replacement of this one                  |
+| `hide_diffs`                | list(string) | Property paths whose diffs should not be displayed                            |
+| `replace_on_changes`        | list(string) | Property paths that force replacement when changed                            |
+| `import_id`                 | string       | Cloud resource ID to import                                                   |
+| `aliases`                   | list         | Alternative names for this resource (used during renames)                     |
+| `version`                   | string       | Provider plugin version                                                       |
+| `plugin_download_url`       | string       | URL to download the provider plugin from                                      |
+| `env_var_mappings`          | expression   | Environment variable remappings for the provider                              |
 
 To trigger replacement when another resource or attribute changes, use the
 standard Terraform [`replace_triggered_by`](#lifecycle-block) lifecycle
@@ -578,7 +580,9 @@ Like resources, a module block accepts a nested `pulumi` block; its `name`
 attribute overrides the Pulumi logical name of each module instance
 (evaluated per instance, with `count.index`/`each.key` in scope). The
 overridden name also prefixes the derived names of everything inside the
-instance, and is visible to the module source as `pulumi.module.name`.
+instance, and is visible to the module source as `pulumi.module.name`. Its
+`protect` attribute marks each instance's component resource protected in
+state.
 
 ```hcl
 module "vpc" {
@@ -929,17 +933,17 @@ Differences from Terraform to be aware of:
 
 ### Feature Mappings
 
-| Terraform Feature       | Pulumi Equivalent      | Notes                                    |
-|-------------------------|------------------------|------------------------------------------|
-| `prevent_destroy`       | `protect`              | Same behavior                            |
-| `ignore_changes`        | `ignoreChanges`        | Same behavior                            |
-| `create_before_destroy` | `deleteBeforeReplace`  | Inverted; defaults to TF delete-first    |
-| `replace_triggered_by`  | `replacementTrigger`   | Replaces when a referenced value changes |
-| `moved` blocks          | `aliases`              | Renames without recreation               |
-| `import` blocks         | Import resource option | Imports existing resources               |
-| `timeouts`              | `customTimeouts`       | Same duration format                     |
-| Modules                 | Component resources    | All source types supported               |
-| Provisioners            | Command provider       | `local-exec`, `remote-exec`, `file`      |
+| Terraform Feature       | Pulumi Equivalent      | Notes                                     |
+|-------------------------|------------------------|-------------------------------------------|
+| `prevent_destroy`       | (native)               | Guard lifts when removed from the program |
+| `ignore_changes`        | `ignoreChanges`        | Same behavior                             |
+| `create_before_destroy` | `deleteBeforeReplace`  | Inverted; defaults to TF delete-first     |
+| `replace_triggered_by`  | `replacementTrigger`   | Replaces when a referenced value changes  |
+| `moved` blocks          | `aliases`              | Renames without recreation                |
+| `import` blocks         | Import resource option | Imports existing resources                |
+| `timeouts`              | `customTimeouts`       | Same duration format                      |
+| Modules                 | Component resources    | All source types supported                |
+| Provisioners            | Command provider       | `local-exec`, `remote-exec`, `file`       |
 
 ### Unsupported Features
 

@@ -1,0 +1,6 @@
+kind: bug-fixes
+body: Enforce `lifecycle { prevent_destroy }` from current configuration, so removing the resource block destroys the instance in one apply
+time: 2026-07-30T00:00:00Z
+custom:
+    Component: runtime
+    PR: "344"
