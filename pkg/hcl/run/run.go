@@ -3245,7 +3245,7 @@ func (e *Engine) readResource(
 // and explicit depends_on, so downstream reads of data.X.Y carry them
 // without a separate dependency map.
 func (e *Engine) invokeDataSourceOnce(
-	ctx context.Context, node *graph.Node, ds *ast.Resource, funcSchema *schema.Function,
+	ctx context.Context, node *graph.Node, ds *ast.DataSource, funcSchema *schema.Function,
 	evalCtx *eval.Context, mi *moduleInstance,
 ) (cty.Value, error) {
 	hclCtx := evalCtx.HCLContext()
@@ -4783,11 +4783,11 @@ func (e *Engine) evaluateCheck(ctx context.Context, name string, check *ast.Chec
 // it available as data.<type>.<name> within that context only. Scoped data
 // sources are single reads: they run after the walk, synchronously, outside
 // the expansion-cell machinery.
-func (e *Engine) readScopedDataSource(ctx context.Context, ds *ast.Resource, evalCtx *eval.Context) error {
+func (e *Engine) readScopedDataSource(ctx context.Context, ds *ast.DataSource, evalCtx *eval.Context) error {
 	node := &graph.Node{
-		Key:      graph.NodeKey{ID: "data." + ast.ResourceKey(ds.Type, ds.Name)},
-		Type:     graph.NodeTypeDataSource,
-		Resource: ds,
+		Key:        graph.NodeKey{ID: "data." + ast.ResourceKey(ds.Type, ds.Name)},
+		Type:       graph.NodeTypeDataSource,
+		DataSource: ds,
 	}
 	funcSchema, err := e.resolver.ResolveFunction(ctx, ds.Type)
 	if err != nil {

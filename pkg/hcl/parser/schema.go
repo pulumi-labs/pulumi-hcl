@@ -145,7 +145,7 @@ var outputSchema = &hcl.BodySchema{
 	},
 }
 
-// resourceSchema defines the structure of a resource/data block. Only the
+// resourceSchema defines the structure of a resource block. Only the
 // Terraform-standard meta-arguments live at the top level; Pulumi-specific
 // options go in the nested `pulumi` block so they cannot collide with a
 // resource's own provider-specific attributes (which may be named e.g.
@@ -170,8 +170,39 @@ var resourceSchema = &hcl.BodySchema{
 	},
 }
 
+// dataBlockSchema defines the structure of a data block. Data sources are
+// provider reads: the managed-resource blocks (connection, provisioner,
+// timeouts) are listed only so the parser can reject them with a diagnostic
+// rather than passing them through as data source attributes.
+var dataBlockSchema = &hcl.BodySchema{
+	Attributes: []hcl.AttributeSchema{
+		{Name: "count"},
+		{Name: "for_each"},
+		{Name: "depends_on"},
+		{Name: "provider"},
+	},
+	Blocks: []hcl.BlockHeaderSchema{
+		{Type: "pulumi"},
+		{Type: "lifecycle"},
+		{Type: "connection"},
+		{Type: "provisioner", LabelNames: []string{"type"}},
+		{Type: "timeouts"},
+		{Type: "_"}, // meta-argument escaping block
+	},
+}
+
+// pulumiDataOptionsSchema defines the Pulumi-specific options allowed inside
+// a data block's nested `pulumi` block: only the options the invoke path
+// honors.
+var pulumiDataOptionsSchema = &hcl.BodySchema{
+	Attributes: []hcl.AttributeSchema{
+		{Name: "version"},
+		{Name: "plugin_download_url"},
+	},
+}
+
 // pulumiResourceOptionsSchema defines the Pulumi-specific options allowed
-// inside a resource or data block's nested `pulumi` block.
+// inside a resource block's nested `pulumi` block.
 var pulumiResourceOptionsSchema = &hcl.BodySchema{
 	Attributes: []hcl.AttributeSchema{
 		{Name: "name"},

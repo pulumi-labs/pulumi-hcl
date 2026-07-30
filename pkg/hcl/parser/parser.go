@@ -146,9 +146,9 @@ func (p *Parser) parseBlock(config *ast.Config, block *hcl.Block) hcl.Diagnostic
 	case "locals":
 		return p.parseLocalsBlock(config, block)
 	case "resource":
-		return p.parseResourceBlock(config, block, false)
+		return p.parseResourceBlock(config, block)
 	case "data":
-		return p.parseResourceBlock(config, block, true)
+		return p.parseDataBlock(config, block)
 	case "output":
 		return p.parseOutputBlock(config, block)
 	case "module":
@@ -660,38 +660,151 @@ func countForEachConflict(count, forEach hcl.Expression) *hcl.Diagnostic {
 	}
 }
 
-// parseResourceBlock parses a resource or data block and records it in the
-// config's Resources or DataSources map.
-func (p *Parser) parseResourceBlock(config *ast.Config, block *hcl.Block, isDataSource bool) hcl.Diagnostics {
+// parseResourceBlock parses a resource block and records it in the config's
+// Resources map.
+func (p *Parser) parseResourceBlock(config *ast.Config, block *hcl.Block) hcl.Diagnostics {
 	resourceType := block.Labels[0]
 	name := block.Labels[1]
 	key := ast.ResourceKey(resourceType, name)
 
-	targetMap := config.Resources
-	blockType := "resource"
-	if isDataSource {
-		targetMap = config.DataSources
-		blockType = "data source"
-	}
-
-	if _, exists := targetMap[key]; exists {
+	if _, exists := config.Resources[key]; exists {
 		return hcl.Diagnostics{{
 			Severity: hcl.DiagError,
-			Summary:  fmt.Sprintf("Duplicate %s", blockType),
-			Detail:   fmt.Sprintf("A %s %q %q was already declared.", blockType, resourceType, name),
+			Summary:  "Duplicate resource",
+			Detail:   fmt.Sprintf("A resource %q %q was already declared.", resourceType, name),
 			Subject:  &block.DefRange,
 		}}
 	}
 
-	resource, diags := p.decodeResourceBlock(block, isDataSource)
-	targetMap[key] = resource
+	resource, diags := p.decodeResourceBlock(block)
+	config.Resources[key] = resource
 	return diags
 }
 
-// decodeResourceBlock decodes a resource or data block body into a Resource
-// without recording it in the config, so callers that scope the block
-// elsewhere (e.g. a check's data source) can reuse the same decoding.
-func (p *Parser) decodeResourceBlock(block *hcl.Block, isDataSource bool) (*ast.Resource, hcl.Diagnostics) {
+// parseDataBlock parses a data block and records it in the config's
+// DataSources map.
+func (p *Parser) parseDataBlock(config *ast.Config, block *hcl.Block) hcl.Diagnostics {
+	dataType := block.Labels[0]
+	name := block.Labels[1]
+	key := ast.ResourceKey(dataType, name)
+
+	if _, exists := config.DataSources[key]; exists {
+		return hcl.Diagnostics{{
+			Severity: hcl.DiagError,
+			Summary:  "Duplicate data source",
+			Detail:   fmt.Sprintf("A data source %q %q was already declared.", dataType, name),
+			Subject:  &block.DefRange,
+		}}
+	}
+
+	ds, diags := p.decodeDataBlock(block)
+	config.DataSources[key] = ds
+	return diags
+}
+
+// decodeDataBlock decodes a data block body into a DataSource without
+// recording it in the config, so callers that scope the block elsewhere
+// (e.g. a check's data source) can reuse the same decoding. A data source is
+// a provider read, so the managed-resource surface is rejected: lifecycle
+// arguments with a dedicated diagnostic, everything else by schema.
+func (p *Parser) decodeDataBlock(block *hcl.Block) (*ast.DataSource, hcl.Diagnostics) {
+	content, remain, diags := block.Body.PartialContent(dataBlockSchema)
+
+	config, escDiags := mergeEscapeBlock(remain, content.Blocks, "resource-type-specific", "data")
+	diags = append(diags, escDiags...)
+
+	ds := &ast.DataSource{
+		Type:      block.Labels[0],
+		Name:      block.Labels[1],
+		Config:    config,
+		DeclRange: block.DefRange,
+		TypeRange: block.LabelRanges[0],
+	}
+
+	if attr, ok := content.Attributes["count"]; ok {
+		ds.Count = attr.Expr
+	}
+
+	if attr, ok := content.Attributes["for_each"]; ok {
+		ds.ForEach = attr.Expr
+	}
+
+	if d := countForEachConflict(ds.Count, ds.ForEach); d != nil {
+		diags = append(diags, d)
+	}
+
+	if attr, ok := content.Attributes["depends_on"]; ok {
+		deps, depsDiags := decodeDependsOn(attr)
+		diags = append(diags, depsDiags...)
+		ds.DependsOn = append(ds.DependsOn, deps...)
+	}
+
+	if attr, ok := content.Attributes["provider"]; ok {
+		ds.Provider = attr.Expr
+	}
+
+	for _, subBlock := range content.Blocks {
+		switch subBlock.Type {
+		case "pulumi":
+			optContent, optDiags := subBlock.Body.Content(pulumiDataOptionsSchema)
+			diags = append(diags, optDiags...)
+			if attr, ok := optContent.Attributes["version"]; ok {
+				ds.Version = attr.Expr
+			}
+			if attr, ok := optContent.Attributes["plugin_download_url"]; ok {
+				ds.PluginDownloadURL = attr.Expr
+			}
+		case "lifecycle":
+			lcResult, lcDiags := p.parseLifecycleBlock(subBlock)
+			diags = append(diags, lcDiags...)
+			diags = append(diags, dataLifecycleArgDiags(lcResult.Lifecycle, subBlock)...)
+			ds.Preconditions = append(ds.Preconditions, lcResult.Preconditions...)
+			ds.Postconditions = append(ds.Postconditions, lcResult.Postconditions...)
+		case "connection", "provisioner", "timeouts":
+			diags = append(diags, &hcl.Diagnostic{
+				Severity: hcl.DiagError,
+				Summary:  "Unsupported block type",
+				Detail:   fmt.Sprintf("Blocks of type %q are not valid for data resources.", subBlock.Type),
+				Subject:  &subBlock.DefRange,
+			})
+		}
+	}
+
+	return ds, diags
+}
+
+// dataLifecycleArgDiags rejects every lifecycle argument on a data block;
+// only precondition/postcondition blocks apply to data resources.
+func dataLifecycleArgDiags(lc *ast.Lifecycle, block *hcl.Block) hcl.Diagnostics {
+	if lc == nil {
+		return nil
+	}
+	var diags hcl.Diagnostics
+	for _, arg := range []struct {
+		name string
+		set  bool
+	}{
+		{"create_before_destroy", lc.CreateBeforeDestroy != nil},
+		{"prevent_destroy", lc.PreventDestroy != nil},
+		{"ignore_changes", len(lc.IgnoreChanges) > 0 || lc.IgnoreAllChanges},
+		{"replace_triggered_by", len(lc.ReplaceTriggeredBy) > 0},
+	} {
+		if arg.set {
+			diags = append(diags, &hcl.Diagnostic{
+				Severity: hcl.DiagError,
+				Summary:  "Invalid data resource lifecycle argument",
+				Detail: fmt.Sprintf("The lifecycle argument %q is defined only for managed resources "+
+					"(\"resource\" blocks), and is not valid for data resources.", arg.name),
+				Subject: block.DefRange.Ptr(),
+			})
+		}
+	}
+	return diags
+}
+
+// decodeResourceBlock decodes a resource block body into a Resource without
+// recording it in the config.
+func (p *Parser) decodeResourceBlock(block *hcl.Block) (*ast.Resource, hcl.Diagnostics) {
 	var diags hcl.Diagnostics
 
 	resourceType := block.Labels[0]
@@ -700,20 +813,15 @@ func (p *Parser) decodeResourceBlock(block *hcl.Block, isDataSource bool) (*ast.
 	content, remain, contentDiags := block.Body.PartialContent(resourceSchema)
 	diags = append(diags, contentDiags...)
 
-	blockKind := "resource"
-	if isDataSource {
-		blockKind = "data"
-	}
-	config, escDiags := mergeEscapeBlock(remain, content.Blocks, "resource-type-specific", blockKind)
+	config, escDiags := mergeEscapeBlock(remain, content.Blocks, "resource-type-specific", "resource")
 	diags = append(diags, escDiags...)
 
 	resource := &ast.Resource{
-		Type:         resourceType,
-		Name:         name,
-		Config:       config,
-		DeclRange:    block.DefRange,
-		TypeRange:    block.LabelRanges[0],
-		IsDataSource: isDataSource,
+		Type:      resourceType,
+		Name:      name,
+		Config:    config,
+		DeclRange: block.DefRange,
+		TypeRange: block.LabelRanges[0],
 	}
 
 	// Parse meta-arguments
@@ -1222,7 +1330,7 @@ func (p *Parser) parseCheckBlock(config *ast.Config, block *hcl.Block) hcl.Diagn
 				})
 				continue
 			}
-			ds, dsDiags := p.decodeResourceBlock(subBlock, true)
+			ds, dsDiags := p.decodeDataBlock(subBlock)
 			diags = append(diags, dsDiags...)
 			check.DataResource = ds
 		}

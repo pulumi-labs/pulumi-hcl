@@ -21,6 +21,8 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/hashicorp/hcl/v2"
+
 	"github.com/pulumi-labs/pulumi-hcl/pkg/hcl/eval"
 	"github.com/pulumi-labs/pulumi-hcl/pkg/hcl/graph"
 	"github.com/pulumi-labs/pulumi-hcl/pkg/hcl/modulepath"
@@ -312,12 +314,14 @@ type metaArgs struct {
 	unknownArg string
 }
 
-func evalMetaArgs(evalCtx *eval.Context, node *graph.Node, expander *graph.ResourceExpander) (metaArgs, error) {
-	res := node.Resource
+func evalMetaArgs(
+	evalCtx *eval.Context, node *graph.Node, expander *graph.ResourceExpander,
+	countExpr, forEachExpr hcl.Expression,
+) (metaArgs, error) {
 	tempEvaluator := eval.NewEvaluator(evalCtx)
 	var m metaArgs
-	if res.Count != nil {
-		count, isBool, unknown, deps, diags := tempEvaluator.EvaluateCount(res.Count)
+	if countExpr != nil {
+		count, isBool, unknown, deps, diags := tempEvaluator.EvaluateCount(countExpr)
 		if diags.HasErrors() {
 			return m, fmt.Errorf("evaluating count: %s", diags.Error())
 		}
@@ -331,8 +335,8 @@ func evalMetaArgs(evalCtx *eval.Context, node *graph.Node, expander *graph.Resou
 			expander.SetCount(node.Key, count)
 		}
 	}
-	if res.ForEach != nil {
-		forEach, unknown, deps, diags := tempEvaluator.EvaluateForEach(res.ForEach)
+	if forEachExpr != nil {
+		forEach, unknown, deps, diags := tempEvaluator.EvaluateForEach(forEachExpr)
 		if diags.HasErrors() {
 			return m, fmt.Errorf("evaluating for_each: %s", diags.Error())
 		}
@@ -366,7 +370,7 @@ func (e *Engine) expandResourceCell(
 	}
 
 	expander := graph.NewResourceExpander()
-	meta, err := evalMetaArgs(evalCtx, node, expander)
+	meta, err := evalMetaArgs(evalCtx, node, expander, res.Count, res.ForEach)
 	if err != nil {
 		return err
 	}
@@ -433,9 +437,9 @@ func (e *Engine) expandResourceCell(
 func (e *Engine) expandDataCell(
 	ctx context.Context, node *graph.Node, b *graph.BlockExpansion, mi *moduleInstance,
 ) error {
-	ds := node.Resource
+	ds := node.DataSource
 	if ds == nil {
-		return fmt.Errorf("data source node missing Resource field")
+		return fmt.Errorf("data source node missing DataSource field")
 	}
 	evalCtx, _, _ := cellEvalState(e, mi)
 
@@ -461,7 +465,7 @@ func (e *Engine) expandDataCell(
 	}
 
 	expander := graph.NewResourceExpander()
-	meta, err := evalMetaArgs(evalCtx, node, expander)
+	meta, err := evalMetaArgs(evalCtx, node, expander, ds.Count, ds.ForEach)
 	if err != nil {
 		return err
 	}

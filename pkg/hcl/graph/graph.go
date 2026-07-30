@@ -165,8 +165,11 @@ type Node struct {
 	// Type indicates what kind of node this is
 	Type NodeType
 
-	// Resource is set for resource/data nodes
+	// Resource is set for resource nodes
 	Resource *ast.Resource
+
+	// DataSource is set for data-source nodes
+	DataSource *ast.DataSource
 
 	// Local is set for local value nodes
 	Local *ast.Local
@@ -590,7 +593,7 @@ func BuildFromConfig(config *ast.Config, moduleLoader ModuleLoader, workDir stri
 	// Add resource nodes
 	for key, resource := range config.Resources {
 		bd, deps := g.resourceDeps(resource, root)
-		provDeps := g.defaultProviderDeps(resource, config, root)
+		provDeps := g.defaultProviderDeps(resource.Provider, resource.Type, config, root)
 		bd.Static = append(bd.Static, provDeps...)
 		deps = append(deps, provDeps...)
 		err := g.AddNode(&Node{
@@ -606,15 +609,15 @@ func BuildFromConfig(config *ast.Config, moduleLoader ModuleLoader, workDir stri
 
 	// Add data source nodes
 	for key, dataSource := range config.DataSources {
-		bd, deps := g.resourceDeps(dataSource, root)
-		provDeps := g.defaultProviderDeps(dataSource, config, root)
+		bd, deps := g.dataSourceDeps(dataSource, root)
+		provDeps := g.defaultProviderDeps(dataSource.Provider, dataSource.Type, config, root)
 		bd.Static = append(bd.Static, provDeps...)
 		deps = append(deps, provDeps...)
 		err := g.AddNode(&Node{
-			Key:      NodeKey{ID: "data." + key},
-			Type:     NodeTypeDataSource,
-			Resource: dataSource,
-			Deps:     bd,
+			Key:        NodeKey{ID: "data." + key},
+			Type:       NodeTypeDataSource,
+			DataSource: dataSource,
+			Deps:       bd,
 		}, deps)
 		if err != nil {
 			return nil, err
@@ -713,11 +716,11 @@ func (g *Graph) Order(from, to pdag.Node) error {
 // don't set `provider` explicitly. Without this the engine could process the
 // resource before the default provider finishes registering — the provider
 // block's config would then never make it into the resource.
-func (g *Graph) defaultProviderDeps(resource *ast.Resource, config *ast.Config, path modulepath.Path) []pdag.Node {
-	if resource.Provider != nil {
+func (g *Graph) defaultProviderDeps(provider hcl.Expression, typ string, config *ast.Config, path modulepath.Path) []pdag.Node {
+	if provider != nil {
 		return nil
 	}
-	pkgName := packageNameFromResourceType(resource.Type)
+	pkgName := packageNameFromResourceType(typ)
 	if pkgName == "" {
 		return nil
 	}
@@ -745,11 +748,11 @@ type moduleScope struct {
 // `<pkg>` configuration (see defaultProviderNode) for an in-module
 // resource/data source with no `provider`, no own-module block, and no
 // pass-through, forcing that configuration to register before the resource.
-func (g *Graph) inheritedProviderDeps(resource *ast.Resource, parent *moduleScope) []pdag.Node {
-	if resource.Provider != nil {
+func (g *Graph) inheritedProviderDeps(provider hcl.Expression, typ string, parent *moduleScope) []pdag.Node {
+	if provider != nil {
 		return nil
 	}
-	pkgName := packageNameFromResourceType(resource.Type)
+	pkgName := packageNameFromResourceType(typ)
 	if pkgName == "" {
 		return nil
 	}
@@ -768,7 +771,7 @@ func (g *Graph) inheritedProviderDeps(resource *ast.Resource, parent *moduleScop
 // declare the provider in `required_providers`, which stands for the implicit
 // empty default configuration. Anything else is a missing provider, reported
 // by Validate.
-func (g *Graph) passThroughProviderDeps(resource *ast.Resource, scope *moduleScope) []pdag.Node {
+func (g *Graph) passThroughProviderDeps(provider hcl.Expression, typ string, scope *moduleScope) []pdag.Node {
 	mod := scope.mod
 	if mod == nil || len(mod.Providers) == 0 {
 		return nil
@@ -777,10 +780,10 @@ func (g *Graph) passThroughProviderDeps(resource *ast.Resource, scope *moduleSco
 	//   explicit `provider = simple.foo` → "simple.foo"
 	//   implicit default                  → "simple"
 	var key string
-	if resource.Provider != nil {
-		key = providerExprKey(resource.Provider)
+	if provider != nil {
+		key = providerExprKey(provider)
 	} else {
-		key = packageNameFromResourceType(resource.Type)
+		key = packageNameFromResourceType(typ)
 	}
 	if key == "" {
 		return nil
@@ -987,21 +990,7 @@ func (g *Graph) resourceDeps(resource *ast.Resource, path modulepath.Path) (*Blo
 	}
 
 	c.addStaticRefs(g.traversalDepRefs(path, resource.ResourceParent))
-	c.addStaticRefs(g.exprDepRefs(resource.Provider, path, nil))
-	// A bare `provider = name` reference (no alias) is a single-segment
-	// traversal, which exprDepRefs drops because it carries no attribute after
-	// the root. It names the default configuration, which resolves through
-	// inheritance and may be implicit, so order the resource after whichever
-	// node registers it (if any). Aliased (`name.alias`) and call-based
-	// (`call.x.y`) provider expressions have further segments and are already
-	// resolved by exprDepRefs above.
-	if resource.Provider != nil {
-		if vars := resource.Provider.Variables(); len(vars) == 1 && len(vars[0]) == 1 {
-			for _, dep := range g.defaultProviderNode(vars[0].RootName(), g.scopes[path]) {
-				c.addStatic(dep)
-			}
-		}
-	}
+	g.classifyProviderRef(c, resource.Provider, path)
 	c.addStaticRefs(g.traversalDepRefs(path, resource.Providers...))
 	c.addStaticRefs(g.traversalDepRefs(path, resource.DeletedWith))
 	c.addStaticRefs(g.traversalDepRefs(path, resource.ReplaceWith...))
@@ -1013,6 +1002,43 @@ func (g *Graph) resourceDeps(resource *ast.Resource, path modulepath.Path) (*Blo
 	c.addStaticRefs(g.exprDepRefs(resource.Aliases, path, nil))
 
 	return c.finish()
+}
+
+// dataSourceDeps classifies a data block's dependencies: its meta-arguments,
+// config body, and provider reference.
+func (g *Graph) dataSourceDeps(ds *ast.DataSource, path modulepath.Path) (*BlockDeps, []pdag.Node) {
+	c := g.newDepClassifier(path, true)
+
+	c.classify(g.exprDepRefs(ds.Count, path, nil))
+	c.classify(g.exprDepRefs(ds.ForEach, path, nil))
+	c.classify(g.traversalDepRefs(path, ds.DependsOn...))
+	if ds.Config != nil {
+		c.classify(g.bodyDepRefs(ds.Config, path, nil))
+	}
+
+	g.classifyProviderRef(c, ds.Provider, path)
+
+	return c.finish()
+}
+
+// classifyProviderRef adds the static dependencies of a block's `provider`
+// attribute. A bare `provider = name` reference (no alias) is a
+// single-segment traversal, which exprDepRefs drops because it carries no
+// attribute after the root. It names the default configuration, which
+// resolves through inheritance and may be implicit, so order the block after
+// whichever node registers it (if any). Aliased (`name.alias`) and call-based
+// (`call.x.y`) provider expressions have further segments and are resolved by
+// exprDepRefs.
+func (g *Graph) classifyProviderRef(c *depClassifier, provider hcl.Expression, path modulepath.Path) {
+	c.addStaticRefs(g.exprDepRefs(provider, path, nil))
+	if provider == nil {
+		return
+	}
+	if vars := provider.Variables(); len(vars) == 1 && len(vars[0]) == 1 {
+		for _, dep := range g.defaultProviderNode(vars[0].RootName(), g.scopes[path]) {
+			c.addStatic(dep)
+		}
+	}
 }
 
 // localDeps classifies a local value's dependencies. Unlike resourceDeps, the
@@ -1626,11 +1652,11 @@ func (g *Graph) inlineModule(
 	// Resources
 	for key, resource := range loaded.Config.Resources {
 		bd, deps := g.resourceDeps(resource, path)
-		provDeps := g.defaultProviderDeps(resource, loaded.Config, path)
-		passDeps := g.passThroughProviderDeps(resource, scope)
+		provDeps := g.defaultProviderDeps(resource.Provider, resource.Type, loaded.Config, path)
+		passDeps := g.passThroughProviderDeps(resource.Provider, resource.Type, scope)
 		provDeps = append(provDeps, passDeps...)
 		if len(provDeps) == 0 {
-			provDeps = g.inheritedProviderDeps(resource, parent)
+			provDeps = g.inheritedProviderDeps(resource.Provider, resource.Type, parent)
 		}
 		bd.Static = append(bd.Static, initIdx)
 		bd.Static = append(bd.Static, provDeps...)
@@ -1649,12 +1675,12 @@ func (g *Graph) inlineModule(
 
 	// Data sources
 	for key, ds := range loaded.Config.DataSources {
-		bd, deps := g.resourceDeps(ds, path)
-		provDeps := g.defaultProviderDeps(ds, loaded.Config, path)
-		passDeps := g.passThroughProviderDeps(ds, scope)
+		bd, deps := g.dataSourceDeps(ds, path)
+		provDeps := g.defaultProviderDeps(ds.Provider, ds.Type, loaded.Config, path)
+		passDeps := g.passThroughProviderDeps(ds.Provider, ds.Type, scope)
 		provDeps = append(provDeps, passDeps...)
 		if len(provDeps) == 0 {
-			provDeps = g.inheritedProviderDeps(ds, parent)
+			provDeps = g.inheritedProviderDeps(ds.Provider, ds.Type, parent)
 		}
 		bd.Static = append(bd.Static, initIdx)
 		bd.Static = append(bd.Static, provDeps...)
@@ -1663,7 +1689,7 @@ func (g *Graph) inlineModule(
 		if err := g.AddNode(&Node{
 			Key:        NodeKey{Module: path, ID: "data." + key},
 			Type:       NodeTypeDataSource,
-			Resource:   ds,
+			DataSource: ds,
 			ModuleInfo: modInfo,
 			Deps:       bd,
 		}, deps); err != nil {

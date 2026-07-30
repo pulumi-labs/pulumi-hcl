@@ -40,9 +40,8 @@ type Check struct {
 
 	// DataResource is the check's optional scoped data source, read fresh on
 	// every operation and visible only to this check's assertions. A check may
-	// declare at most one. It is modelled as a Resource with IsDataSource set,
-	// matching data sources elsewhere in the config.
-	DataResource *Resource
+	// declare at most one.
+	DataResource *DataSource
 
 	// DeclRange is the source range of the check block.
 	DeclRange hcl.Range
