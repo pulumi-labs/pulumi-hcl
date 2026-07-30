@@ -1,0 +1,6 @@
+kind: Bug Fixes
+body: Fix preview of provider references with a not-yet-known id and of resource-reference properties (`ref.value`)
+time: 2026-07-30T12:00:00Z
+custom:
+    Component: runtime
+    PR: "467"
