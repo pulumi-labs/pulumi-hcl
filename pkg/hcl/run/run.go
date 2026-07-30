@@ -44,6 +44,7 @@ import (
 	"github.com/pulumi/pulumi/pkg/v3/codegen/schema"
 	"github.com/pulumi/pulumi/pkg/v3/util/pdag"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/resource"
+	"github.com/pulumi/pulumi/sdk/v3/go/common/resource/plugin"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/resource/urn"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/tokens"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/util/contract"
@@ -3787,7 +3788,7 @@ func (e *Engine) resolveResourceRefsInOutputs(
 		}
 		ref := v.AsResourceReference()
 		refMap := property.NewMap(map[string]property.Value{"__ref": property.New(ref)})
-		if e.resmon != nil && !ref.ID.IsComputed() && resType.Resource != nil {
+		if e.resmon != nil && resType.Resource != nil {
 			if state, err := e.getResourceState(ctx, ref); err == nil {
 				for _, sp := range resType.Resource.Properties {
 					if sv, ok := state.GetOk(sp.Name); ok {
@@ -3805,8 +3806,8 @@ func (e *Engine) resolveResourceRefsInOutputs(
 // typed config value with the referenced resource's state, so a program
 // consuming this module as a component can read the resource's fields, not just
 // its id. The referenced resource lives in the calling program, so its state is
-// fetched through the monitor. Best-effort: an unfetchable or preview-unknown
-// reference is returned unchanged.
+// fetched through the monitor, keyed on the URN; this works even when the
+// reference's id is still unknown during preview.
 func (e *Engine) resolveConfigResourceReference(ctx context.Context, val cty.Value, u urn.URN) (cty.Value, error) {
 	contract.Requiref(e.resmon != nil, "e.resmon", "cannot resolve a resource reference without a resource monitor")
 	unmarked, marks := val.Unmark()
@@ -3814,15 +3815,11 @@ func (e *Engine) resolveConfigResourceReference(ctx context.Context, val cty.Val
 		"a resource reference must be an object with an id attribute, got %s", unmarked.Type().FriendlyName())
 
 	idAttr, _ := unmarked.GetAttr("id").Unmark()
-	if !idAttr.IsKnown() {
-		// During preview the referenced resource's id is unknown and its state
-		// cannot be fetched; the bare reference flows through unchanged.
-		return val, nil
-	}
 	ref := property.ResourceReference{URN: u, ID: property.New(property.Null)}
 	switch {
-	case idAttr.IsNull():
-		// A component reference has a null id; getResource keys on the URN.
+	case !idAttr.IsKnown() || idAttr.IsNull():
+		// A preview-unknown or component reference has no usable id;
+		// getResource keys on the URN.
 	case idAttr.Type() == cty.String:
 		ref.ID = property.New(idAttr.AsString())
 	default:
@@ -4389,7 +4386,7 @@ func providerRefFromCty(val cty.Value) (string, error) {
 	}
 	if val.Type().HasAttribute("urn") && val.Type().HasAttribute("id") {
 		urn := ctyAsString(val.GetAttr("urn"))
-		id := ctyAsString(val.GetAttr("id"))
+		id := providerIDFromCty(val.GetAttr("id"))
 		if urn == "" || id == "" {
 			return "", fmt.Errorf("provider value urn/id must be non-empty strings, got urn=%q id=%q", urn, id)
 		}
@@ -4398,13 +4395,27 @@ func providerRefFromCty(val cty.Value) (string, error) {
 	if isRef {
 		id := ""
 		if val.Type().HasAttribute("id") {
-			if idAttr, _ := val.GetAttr("id").Unmark(); idAttr.Type() == cty.String && idAttr.IsKnown() && !idAttr.IsNull() {
-				id = idAttr.AsString()
-			}
+			id = providerIDFromCty(val.GetAttr("id"))
 		}
 		return string(refURN) + "::" + id, nil
 	}
 	return "", errors.New("provider value is not a resource reference")
+}
+
+// providerIDFromCty renders a provider id attribute for use in a provider
+// reference. A preview-unknown id becomes the engine's unknown-id sentinel,
+// matching how the SDKs reference providers whose id is not yet known.
+func providerIDFromCty(v cty.Value) string {
+	if v.IsMarked() {
+		v, _ = v.Unmark()
+	}
+	if !v.IsKnown() {
+		return plugin.UnknownStringValue
+	}
+	if v.IsNull() || v.Type() != cty.String {
+		return ""
+	}
+	return v.AsString()
 }
 
 // Validate validates an HCL configuration without executing it.

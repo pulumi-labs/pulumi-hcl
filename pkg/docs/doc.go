@@ -52,6 +52,12 @@ func (d DocLanguageHelper) GetMethodName(m *schema.Method) string {
 	return ""
 }
 
+// ResolveDocRef always reports the ref as unresolved so callers fall back to
+// their default rendering; HCL-specific resolution is not implemented.
+func (d DocLanguageHelper) ResolveDocRef(schema.PackageReference, schema.DocRef, schema.DocRef) (string, bool, error) {
+	return "", false, nil
+}
+
 func (d DocLanguageHelper) GetModuleName(_ schema.PackageReference, modName string) string {
 	if modName == "index" {
 		return ""
