@@ -375,7 +375,8 @@ func TestConvertTFState_SuppliesValues(t *testing.T) {
 						"acl": "private",
 						"secret_sauce": "hunter2",
 						"arn": "arn:aws:s3:::my-bucket",
-						"versioning": [ { "enabled": true } ]
+						"versioning": [ { "enabled": true } ],
+						"timeouts": { "create": "10m" }
 					},
 					"sensitive_attributes": [
 						[ { "type": "get_attr", "value": "acl" } ],
@@ -403,6 +404,7 @@ func TestConvertTFState_SuppliesValues(t *testing.T) {
 		"schema-sensitive field")
 	assert.Equal(t, resource.NewStringProperty("arn:aws:s3:::my-bucket"), outs["arn"])
 	require.True(t, outs["versioning"].IsObject(), "MaxItemsOne block flattens to an object")
+	assert.NotContains(t, outs, resource.PropertyKey("timeouts"), "SDKv2's timeouts state attribute is dropped")
 	assert.Equal(t, resource.MakeSecret(resource.NewBoolProperty(true)), outs["versioning"].ObjectValue()["enabled"],
 		"the sensitive path's index step drops with the MaxItemsOne flattening")
 

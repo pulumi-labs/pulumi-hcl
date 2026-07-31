@@ -687,11 +687,15 @@ func ctyToResourceInputs(val cty.Value, r *schema.Resource, attrExprs map[string
 
 // CtyToResourceOutputs converts a TF-shaped attributes object (e.g. decoded
 // state attributes) into the resource's Pulumi output property map, dropping
-// `id`, which Pulumi resources carry outside their schema properties.
+// what TF stores but Pulumi does not project: `id` lives outside a Pulumi
+// resource's schema properties, and SDKv2 keeps the resource's `timeouts`
+// block in state attributes (the name is reserved, so it is never a real
+// schema field).
 func CtyToResourceOutputs(val cty.Value, r *schema.Resource, mapping *bridge.BodyMapping) (property.Map, error) {
-	if val.Type().IsObjectType() && val.Type().HasAttribute("id") {
+	if ty := val.Type(); ty.IsObjectType() && (ty.HasAttribute("id") || ty.HasAttribute("timeouts")) {
 		attrs := val.AsValueMap()
 		delete(attrs, "id")
+		delete(attrs, "timeouts")
 		val = cty.ObjectVal(attrs)
 	}
 	return ctyToObject(r.Token, val, r.Properties, nil, false /* already in a secret */, mapping)
