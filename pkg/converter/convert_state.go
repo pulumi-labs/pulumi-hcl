@@ -26,12 +26,12 @@ import (
 	"slices"
 
 	"github.com/hashicorp/hcl/v2"
-	"github.com/pulumi-labs/pulumi-hcl/pkg/hcl/bridge"
-	"github.com/pulumi-labs/pulumi-hcl/pkg/hcl/modulepath"
-	"github.com/pulumi-labs/pulumi-hcl/pkg/util/encryption"
-	"github.com/pulumi-labs/pulumi-hcl/vendored/addrs"
-	"github.com/pulumi-labs/pulumi-hcl/vendored/statefile"
-	"github.com/pulumi-labs/pulumi-hcl/vendored/states"
+	"github.com/pulumi/pulumi-hcl/pkg/hcl/bridge"
+	"github.com/pulumi/pulumi-hcl/pkg/hcl/modulepath"
+	"github.com/pulumi/pulumi-hcl/pkg/util/encryption"
+	"github.com/pulumi/pulumi-hcl/vendored/addrs"
+	"github.com/pulumi/pulumi-hcl/vendored/statefile"
+	"github.com/pulumi/pulumi-hcl/vendored/states"
 	"github.com/pulumi/pulumi/pkg/v3/codegen/convert"
 	"github.com/pulumi/pulumi/pkg/v3/resource/plugin"
 )
@@ -146,7 +146,7 @@ func convertTFState(
 // order. Module-nested resources are skipped with a warning: core can import
 // components (pulumi/pulumi#15199), but mapping module instances to the
 // component names the HCL runtime registers is not built yet
-// (pulumi-labs/pulumi-hcl#167).
+// (pulumi/pulumi-hcl#167).
 func managedResources(state *states.State, warn func(summary, detail string)) iter.Seq[*states.Resource] {
 	return func(yield func(*states.Resource) bool) {
 		for _, modKey := range slices.Sorted(maps.Keys(state.Modules)) {
@@ -203,7 +203,7 @@ func resourceName(name string, key addrs.InstanceKey) string {
 
 // importID extracts the `id` attribute verbatim.
 //
-// TODO(pulumi-labs/pulumi-hcl#167): resources whose importer needs a
+// TODO(pulumi/pulumi-hcl#167): resources whose importer needs a
 // composite or derived import string (e.g. aws_iam_role_policy_attachment's
 // role/policy-arn) import under the wrong ID; deriving the import string
 // needs per-resource knowledge the schema does not carry.

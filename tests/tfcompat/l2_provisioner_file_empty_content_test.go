@@ -17,9 +17,9 @@ package tfcompat_test
 import (
 	"testing"
 
-	"github.com/pulumi-labs/pulumi-hcl/tests/testutil/sshd"
-	"github.com/pulumi-labs/pulumi-hcl/tests/testutil/tfcompat"
-	"github.com/pulumi-labs/pulumi-hcl/tests/testutil/tfcompat/providers"
+	"github.com/pulumi/pulumi-hcl/tests/testutil/sshd"
+	"github.com/pulumi/pulumi-hcl/tests/testutil/tfcompat"
+	"github.com/pulumi/pulumi-hcl/tests/testutil/tfcompat/providers"
 )
 
 // TestL2Provisioner_FileEmptyContent exercises provisioner attributes that are

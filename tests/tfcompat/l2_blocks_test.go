@@ -17,8 +17,8 @@ package tfcompat_test
 import (
 	"testing"
 
-	"github.com/pulumi-labs/pulumi-hcl/tests/testutil/tfcompat"
-	"github.com/pulumi-labs/pulumi-hcl/tests/testutil/tfcompat/providers"
+	"github.com/pulumi/pulumi-hcl/tests/testutil/tfcompat"
+	"github.com/pulumi/pulumi-hcl/tests/testutil/tfcompat/providers"
 )
 
 // TestL2BlockSingular exercises a TF block whose schema is MaxItems=1 with an

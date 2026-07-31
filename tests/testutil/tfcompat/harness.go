@@ -51,8 +51,8 @@ import (
 
 	pfprovider "github.com/hashicorp/terraform-plugin-framework/provider"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
-	"github.com/pulumi-labs/pulumi-hcl/tests/testutil/pulexec"
-	"github.com/pulumi-labs/pulumi-hcl/tests/testutil/tfexec"
+	"github.com/pulumi/pulumi-hcl/tests/testutil/pulexec"
+	"github.com/pulumi/pulumi-hcl/tests/testutil/tfexec"
 	"github.com/pulumi/pulumi-terraform-bridge/v3/pkg/tfbridge"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/apitype"
 	"github.com/stretchr/testify/require"

@@ -17,7 +17,7 @@ package tfcompat_test
 import (
 	"testing"
 
-	"github.com/pulumi-labs/pulumi-hcl/tests/testutil/tfcompat"
+	"github.com/pulumi/pulumi-hcl/tests/testutil/tfcompat"
 )
 
 // `lookup(map, key, null)` is a common idiom in published community modules

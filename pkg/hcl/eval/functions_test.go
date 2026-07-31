@@ -1593,7 +1593,7 @@ func TestYAMLFunctions(t *testing.T) {
 	})
 }
 
-// Regression for https://github.com/pulumi-labs/pulumi-hcl/issues/143:
+// Regression for https://github.com/pulumi/pulumi-hcl/issues/143:
 // functions that recurse into argument collections must lift nested unknowns
 // to an unknown result, not panic when ctyToGo or similar helpers reach an
 // unknown leaf. go-cty's AllowUnknown:false only auto-lifts shallow unknowns,

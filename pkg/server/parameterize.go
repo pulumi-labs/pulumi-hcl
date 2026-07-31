@@ -40,14 +40,14 @@ import (
 	"github.com/pulumi/pulumi/sdk/v3/go/common/workspace"
 	"google.golang.org/grpc/codes"
 
-	"github.com/pulumi-labs/pulumi-hcl/pkg/grpcerr"
-	"github.com/pulumi-labs/pulumi-hcl/pkg/hcl/ast"
-	"github.com/pulumi-labs/pulumi-hcl/pkg/hcl/modules"
-	"github.com/pulumi-labs/pulumi-hcl/pkg/hcl/packages"
-	"github.com/pulumi-labs/pulumi-hcl/pkg/hcl/resolve"
-	"github.com/pulumi-labs/pulumi-hcl/pkg/hcl/schema"
-	"github.com/pulumi-labs/pulumi-hcl/pkg/potel"
-	"github.com/pulumi-labs/pulumi-hcl/vendored/getmodules"
+	"github.com/pulumi/pulumi-hcl/pkg/grpcerr"
+	"github.com/pulumi/pulumi-hcl/pkg/hcl/ast"
+	"github.com/pulumi/pulumi-hcl/pkg/hcl/modules"
+	"github.com/pulumi/pulumi-hcl/pkg/hcl/packages"
+	"github.com/pulumi/pulumi-hcl/pkg/hcl/resolve"
+	"github.com/pulumi/pulumi-hcl/pkg/hcl/schema"
+	"github.com/pulumi/pulumi-hcl/pkg/potel"
+	"github.com/pulumi/pulumi-hcl/vendored/getmodules"
 )
 
 // parameterizedModule is the state of a moduleProvider that has been

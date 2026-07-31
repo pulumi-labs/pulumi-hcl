@@ -40,15 +40,15 @@ in-tree packages:
 
 | Upstream import | Rewritten to |
 | --------------- | ------------ |
-| `github.com/opentofu/opentofu/internal/communicator/...` | `github.com/pulumi-labs/pulumi-hcl/vendored/communicator/...` |
-| `github.com/opentofu/opentofu/internal/provisioners` | `github.com/pulumi-labs/pulumi-hcl/pkg/provisioner/provisioners` |
-| `github.com/opentofu/opentofu/internal/states...` | `github.com/pulumi-labs/pulumi-hcl/vendored/states...` (statefile likewise) |
-| `github.com/opentofu/opentofu/internal/{addrs,tfdiags,checks}` | `github.com/pulumi-labs/pulumi-hcl/vendored/{addrs,tfdiags,checks}` |
-| `github.com/opentofu/opentofu/internal/lang/marks` | `github.com/pulumi-labs/pulumi-hcl/vendored/marks` |
-| `github.com/opentofu/opentofu/internal/legacy/hcl2shim` | `github.com/pulumi-labs/pulumi-hcl/vendored/legacy/hcl2shim` |
-| `github.com/opentofu/opentofu/internal/encryption` | `github.com/pulumi-labs/pulumi-hcl/pkg/util/encryption` (shim) |
-| `github.com/opentofu/opentofu/internal/configs` | `github.com/pulumi-labs/pulumi-hcl/pkg/util/configs` (shim) |
-| `github.com/opentofu/opentofu/version` | `github.com/pulumi-labs/pulumi-hcl/vendored/version` |
+| `github.com/opentofu/opentofu/internal/communicator/...` | `github.com/pulumi/pulumi-hcl/vendored/communicator/...` |
+| `github.com/opentofu/opentofu/internal/provisioners` | `github.com/pulumi/pulumi-hcl/pkg/provisioner/provisioners` |
+| `github.com/opentofu/opentofu/internal/states...` | `github.com/pulumi/pulumi-hcl/vendored/states...` (statefile likewise) |
+| `github.com/opentofu/opentofu/internal/{addrs,tfdiags,checks}` | `github.com/pulumi/pulumi-hcl/vendored/{addrs,tfdiags,checks}` |
+| `github.com/opentofu/opentofu/internal/lang/marks` | `github.com/pulumi/pulumi-hcl/vendored/marks` |
+| `github.com/opentofu/opentofu/internal/legacy/hcl2shim` | `github.com/pulumi/pulumi-hcl/vendored/legacy/hcl2shim` |
+| `github.com/opentofu/opentofu/internal/encryption` | `github.com/pulumi/pulumi-hcl/pkg/util/encryption` (shim) |
+| `github.com/opentofu/opentofu/internal/configs` | `github.com/pulumi/pulumi-hcl/pkg/util/configs` (shim) |
+| `github.com/opentofu/opentofu/version` | `github.com/pulumi/pulumi-hcl/vendored/version` |
 
 The second target is an in-tree shim (Apache-2.0) that defines the small
 `UIOutput` interface the vendored SSH package needs.

@@ -18,9 +18,9 @@ import (
 	"strconv"
 	"testing"
 
-	"github.com/pulumi-labs/pulumi-hcl/tests/testutil/sshd"
-	"github.com/pulumi-labs/pulumi-hcl/tests/testutil/tfcompat"
-	"github.com/pulumi-labs/pulumi-hcl/tests/testutil/tfcompat/providers"
+	"github.com/pulumi/pulumi-hcl/tests/testutil/sshd"
+	"github.com/pulumi/pulumi-hcl/tests/testutil/tfcompat"
+	"github.com/pulumi/pulumi-hcl/tests/testutil/tfcompat/providers"
 )
 
 // OpenTofu validates a connection block against a superset schema that

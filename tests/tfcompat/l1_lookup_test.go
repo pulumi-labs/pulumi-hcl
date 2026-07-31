@@ -17,7 +17,7 @@ package tfcompat_test
 import (
 	"testing"
 
-	"github.com/pulumi-labs/pulumi-hcl/tests/testutil/tfcompat"
+	"github.com/pulumi/pulumi-hcl/tests/testutil/tfcompat"
 )
 
 // OpenTofu's `lookup(map, key, default)` returns the map's element type, so a

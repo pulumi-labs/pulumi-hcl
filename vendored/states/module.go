@@ -8,7 +8,7 @@ package states
 import (
 	"github.com/zclconf/go-cty/cty"
 
-	"github.com/pulumi-labs/pulumi-hcl/vendored/addrs"
+	"github.com/pulumi/pulumi-hcl/vendored/addrs"
 )
 
 // Module is a container for the states of objects within a particular module.

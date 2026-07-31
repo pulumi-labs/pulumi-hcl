@@ -17,7 +17,7 @@ package tfcompat_test
 import (
 	"testing"
 
-	"github.com/pulumi-labs/pulumi-hcl/tests/testutil/tfcompat"
+	"github.com/pulumi/pulumi-hcl/tests/testutil/tfcompat"
 )
 
 // TestL1SumNull asserts that both runtimes reject a null element passed to

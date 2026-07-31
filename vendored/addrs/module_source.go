@@ -11,7 +11,7 @@ import (
 	"strings"
 
 	regaddr "github.com/opentofu/registry-address/v2"
-	"github.com/pulumi-labs/pulumi-hcl/vendored/getmodules"
+	"github.com/pulumi/pulumi-hcl/vendored/getmodules"
 )
 
 // ModuleSource is the general type for all three of the possible module source

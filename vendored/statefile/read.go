@@ -14,9 +14,9 @@ import (
 
 	version "github.com/hashicorp/go-version"
 
-	"github.com/pulumi-labs/pulumi-hcl/pkg/util/encryption"
-	"github.com/pulumi-labs/pulumi-hcl/vendored/tfdiags"
-	tfversion "github.com/pulumi-labs/pulumi-hcl/vendored/version"
+	"github.com/pulumi/pulumi-hcl/pkg/util/encryption"
+	"github.com/pulumi/pulumi-hcl/vendored/tfdiags"
+	tfversion "github.com/pulumi/pulumi-hcl/vendored/version"
 )
 
 // ErrNoState is returned by ReadState when the state file is empty.

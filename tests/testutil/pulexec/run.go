@@ -22,8 +22,8 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/pulumi-labs/pulumi-hcl/pkg/server"
-	"github.com/pulumi-labs/pulumi-hcl/tests/testutil/tfexec"
+	"github.com/pulumi/pulumi-hcl/pkg/server"
+	"github.com/pulumi/pulumi-hcl/tests/testutil/tfexec"
 	"github.com/pulumi/providertest/providers"
 	"github.com/pulumi/providertest/pulumitest"
 	"github.com/pulumi/providertest/pulumitest/optnewstack"

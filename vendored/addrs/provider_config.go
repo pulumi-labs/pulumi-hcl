@@ -9,7 +9,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/pulumi-labs/pulumi-hcl/vendored/tfdiags"
+	"github.com/pulumi/pulumi-hcl/vendored/tfdiags"
 	"github.com/zclconf/go-cty/cty"
 
 	"github.com/hashicorp/hcl/v2"

@@ -17,7 +17,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/pulumi-labs/pulumi-hcl/pkg/provisioner/communicator/shared"
+	"github.com/pulumi/pulumi-hcl/pkg/provisioner/communicator/shared"
 	sshagent "github.com/xanzy/ssh-agent"
 	"github.com/zclconf/go-cty/cty"
 	"github.com/zclconf/go-cty/cty/gocty"

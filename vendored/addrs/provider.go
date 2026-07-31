@@ -10,7 +10,7 @@ import (
 	regaddr "github.com/opentofu/registry-address/v2"
 	"github.com/opentofu/svchost"
 
-	"github.com/pulumi-labs/pulumi-hcl/vendored/tfdiags"
+	"github.com/pulumi/pulumi-hcl/vendored/tfdiags"
 )
 
 // Provider encapsulates a single provider type. In the future this will be

@@ -15,12 +15,12 @@ import (
 	"github.com/zclconf/go-cty/cty"
 	ctyjson "github.com/zclconf/go-cty/cty/json"
 
-	"github.com/pulumi-labs/pulumi-hcl/pkg/util/encryption"
-	"github.com/pulumi-labs/pulumi-hcl/vendored/addrs"
-	"github.com/pulumi-labs/pulumi-hcl/vendored/checks"
-	"github.com/pulumi-labs/pulumi-hcl/vendored/marks"
-	"github.com/pulumi-labs/pulumi-hcl/vendored/states"
-	"github.com/pulumi-labs/pulumi-hcl/vendored/tfdiags"
+	"github.com/pulumi/pulumi-hcl/pkg/util/encryption"
+	"github.com/pulumi/pulumi-hcl/vendored/addrs"
+	"github.com/pulumi/pulumi-hcl/vendored/checks"
+	"github.com/pulumi/pulumi-hcl/vendored/marks"
+	"github.com/pulumi/pulumi-hcl/vendored/states"
+	"github.com/pulumi/pulumi-hcl/vendored/tfdiags"
 )
 
 func readStateV4(src []byte) (*File, tfdiags.Diagnostics) {

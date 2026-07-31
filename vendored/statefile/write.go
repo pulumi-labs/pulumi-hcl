@@ -8,8 +8,8 @@ package statefile
 import (
 	"io"
 
-	"github.com/pulumi-labs/pulumi-hcl/pkg/util/encryption"
-	tfversion "github.com/pulumi-labs/pulumi-hcl/vendored/version"
+	"github.com/pulumi/pulumi-hcl/pkg/util/encryption"
+	tfversion "github.com/pulumi/pulumi-hcl/vendored/version"
 )
 
 // Write writes the given state to the given writer in the current state

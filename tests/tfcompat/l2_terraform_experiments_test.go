@@ -17,7 +17,7 @@ package tfcompat_test
 import (
 	"testing"
 
-	"github.com/pulumi-labs/pulumi-hcl/tests/testutil/tfcompat"
+	"github.com/pulumi/pulumi-hcl/tests/testutil/tfcompat"
 )
 
 // TestL2TerraformExperiments proves pulumi-hcl's terraform-block parser rejects

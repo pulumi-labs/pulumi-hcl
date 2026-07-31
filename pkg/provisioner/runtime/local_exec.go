@@ -26,7 +26,7 @@ import (
 	"github.com/zclconf/go-cty/cty"
 	"github.com/zclconf/go-cty/cty/convert"
 
-	"github.com/pulumi-labs/pulumi-hcl/pkg/hcl/eval"
+	"github.com/pulumi/pulumi-hcl/pkg/hcl/eval"
 )
 
 // when and on_failure are stripped by the parser before this body reaches us.

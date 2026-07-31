@@ -10,7 +10,7 @@ import (
 	"strings"
 
 	"github.com/hashicorp/hcl/v2"
-	"github.com/pulumi-labs/pulumi-hcl/vendored/tfdiags"
+	"github.com/pulumi/pulumi-hcl/vendored/tfdiags"
 )
 
 // Resource is an address for a resource block within configuration, which

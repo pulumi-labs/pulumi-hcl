@@ -69,16 +69,16 @@ func moduleResourceSchema(version string) pulumischema.PackageSpec {
 		Version:           version,
 		Description:       "Instantiate a Terraform/OpenTofu module as a Pulumi component.",
 		License:           "Apache-2.0",
-		Repository:        "https://github.com/pulumi-labs/pulumi-hcl",
-		LogoURL:           "https://raw.githubusercontent.com/pulumi-labs/pulumi-hcl/master/assets/logo.svg",
-		PluginDownloadURL: "github://api.github.com/pulumi-labs/pulumi-hcl",
+		Repository:        "https://github.com/pulumi/pulumi-hcl",
+		LogoURL:           "https://raw.githubusercontent.com/pulumi/pulumi-hcl/master/assets/logo.svg",
+		PluginDownloadURL: "github://api.github.com/pulumi/pulumi-hcl",
 		Meta:              &pulumischema.MetadataSpec{SupportPack: true},
 		Language: map[string]pulumischema.RawMessage{
 			"go": pulumischema.RawMessage(
-				`{"importBasePath":"github.com/pulumi-labs/pulumi-hcl/sdk/go/hcl","respectSchemaVersion":true}`),
-			"nodejs": pulumischema.RawMessage(`{"packageName":"@pulumi-labs/hcl"}`),
-			"python": pulumischema.RawMessage(`{"packageName":"pulumi_labs_hcl"}`),
-			"csharp": pulumischema.RawMessage(`{"rootNamespace":"Pulumi.Labs"}`),
+				`{"importBasePath":"github.com/pulumi/pulumi-hcl/sdk/go/hcl","respectSchemaVersion":true}`),
+			"nodejs": pulumischema.RawMessage(`{"packageName":"@pulumi/hcl"}`),
+			"python": pulumischema.RawMessage(`{"packageName":"pulumi_hcl"}`),
+			"csharp": pulumischema.RawMessage(`{"rootNamespace":"Pulumi"}`),
 		},
 		Resources: map[string]pulumischema.ResourceSpec{
 			moduleResourceToken: {

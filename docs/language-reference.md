@@ -897,7 +897,7 @@ terraform {
 ## Terraform Compatibility
 
 Pulumi HCL aims to run valid Terraform configuration unchanged. This section covers the behavioral differences and the
-few unsupported features. If you find a case where `tofu` works and `pulumi` does not, please [open an issue](https://github.com/pulumi-labs/pulumi-hcl/issues/new).
+few unsupported features. If you find a case where `tofu` works and `pulumi` does not, please [open an issue](https://github.com/pulumi/pulumi-hcl/issues/new).
 
 ### Behavioral Differences
 

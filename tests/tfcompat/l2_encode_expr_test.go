@@ -17,13 +17,13 @@ package tfcompat_test
 import (
 	"testing"
 
-	"github.com/pulumi-labs/pulumi-hcl/tests/testutil/tfcompat"
-	"github.com/pulumi-labs/pulumi-hcl/tests/testutil/tfcompat/providers"
+	"github.com/pulumi/pulumi-hcl/tests/testutil/tfcompat"
+	"github.com/pulumi/pulumi-hcl/tests/testutil/tfcompat/providers"
 )
 
 // TestL2EncodeExpr covers the builtin `terraform` provider's
 // provider::terraform::encode_expr function
-// (https://github.com/pulumi-labs/pulumi-hcl/issues/193): both runtimes must
+// (https://github.com/pulumi/pulumi-hcl/issues/193): both runtimes must
 // render values — literals and data-source outputs alike — as identical HCL
 // expression text, with no plugin to install.
 func TestL2EncodeExpr(t *testing.T) {

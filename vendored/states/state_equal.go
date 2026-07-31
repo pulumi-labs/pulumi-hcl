@@ -8,7 +8,7 @@ package states
 import (
 	"reflect"
 
-	"github.com/pulumi-labs/pulumi-hcl/vendored/addrs"
+	"github.com/pulumi/pulumi-hcl/vendored/addrs"
 )
 
 // Equal returns true if the receiver is functionally equivalent to other,

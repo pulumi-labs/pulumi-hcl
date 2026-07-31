@@ -11,7 +11,7 @@ import (
 	"github.com/hashicorp/hcl/v2"
 	"github.com/hashicorp/hcl/v2/hclsyntax"
 
-	"github.com/pulumi-labs/pulumi-hcl/vendored/tfdiags"
+	"github.com/pulumi/pulumi-hcl/vendored/tfdiags"
 )
 
 // OutputValue is the address of an output value, in the context of the module

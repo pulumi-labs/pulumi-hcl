@@ -20,8 +20,8 @@ import (
 	"testing"
 
 	"github.com/blang/semver"
-	"github.com/pulumi-labs/pulumi-hcl/pkg/hcl/parser"
-	"github.com/pulumi-labs/pulumi-hcl/pkg/hcl/run"
+	"github.com/pulumi/pulumi-hcl/pkg/hcl/parser"
+	"github.com/pulumi/pulumi-hcl/pkg/hcl/run"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/apitype"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/workspace"
 	pulumirpc "github.com/pulumi/pulumi/sdk/v3/proto/go"
@@ -225,7 +225,7 @@ resource "subpackage_hello_world" "example" {}
 }
 
 // TestGetRequiredPackages_TransitiveModuleSource reproduces
-// https://github.com/pulumi-labs/pulumi-hcl/issues/184: a provider declared in
+// https://github.com/pulumi/pulumi-hcl/issues/184: a provider declared in
 // a child module's required_providers with a non-hashicorp source must be
 // resolved from that source, not defaulted to "hashicorp/<name>".
 //

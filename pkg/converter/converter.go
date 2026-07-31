@@ -32,10 +32,10 @@ import (
 	"github.com/hashicorp/hcl/v2"
 	"github.com/hashicorp/hcl/v2/hclsyntax"
 	"github.com/hashicorp/hcl/v2/hclwrite"
-	"github.com/pulumi-labs/pulumi-hcl/pkg/hcl/ast"
-	"github.com/pulumi-labs/pulumi-hcl/pkg/hcl/comments"
-	"github.com/pulumi-labs/pulumi-hcl/pkg/hcl/packages"
-	"github.com/pulumi-labs/pulumi-hcl/pkg/hcl/transform"
+	"github.com/pulumi/pulumi-hcl/pkg/hcl/ast"
+	"github.com/pulumi/pulumi-hcl/pkg/hcl/comments"
+	"github.com/pulumi/pulumi-hcl/pkg/hcl/packages"
+	"github.com/pulumi/pulumi-hcl/pkg/hcl/transform"
 	"github.com/pulumi/pulumi/pkg/v3/codegen"
 	"github.com/pulumi/pulumi/pkg/v3/codegen/schema"
 	"github.com/pulumi/pulumi/pkg/v3/resource/plugin"
@@ -198,7 +198,7 @@ func (*hclConverter) ConvertProgram(
 }
 
 func (*hclConverter) ConvertSnippet(ctx context.Context, req *plugin.ConvertSnippetRequest) (*plugin.ConvertSnippetResponse, error) {
-	// TODO[https://github.com/pulumi-labs/pulumi-hcl/issues/151]: Implement
+	// TODO[https://github.com/pulumi/pulumi-hcl/issues/151]: Implement
 	return nil, plugin.ErrNotYetImplemented
 }
 

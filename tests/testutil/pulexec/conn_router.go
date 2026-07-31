@@ -18,7 +18,7 @@ import (
 	"context"
 	"sync"
 
-	"github.com/pulumi-labs/pulumi-hcl/tests/testutil/tfexec"
+	"github.com/pulumi/pulumi-hcl/tests/testutil/tfexec"
 	pulumirpc "github.com/pulumi/pulumi/sdk/v3/proto/go"
 	"google.golang.org/grpc"
 	"google.golang.org/protobuf/types/known/emptypb"

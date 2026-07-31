@@ -37,15 +37,15 @@ import (
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/protobuf/types/known/structpb"
 
-	"github.com/pulumi-labs/pulumi-hcl/pkg/grpcerr"
-	"github.com/pulumi-labs/pulumi-hcl/pkg/hcl/ast"
-	"github.com/pulumi-labs/pulumi-hcl/pkg/hcl/bridge"
-	"github.com/pulumi-labs/pulumi-hcl/pkg/hcl/modules"
-	"github.com/pulumi-labs/pulumi-hcl/pkg/hcl/packages"
-	"github.com/pulumi-labs/pulumi-hcl/pkg/hcl/resolve"
-	"github.com/pulumi-labs/pulumi-hcl/pkg/hcl/run"
-	"github.com/pulumi-labs/pulumi-hcl/pkg/hcl/transform"
-	"github.com/pulumi-labs/pulumi-hcl/pkg/potel"
+	"github.com/pulumi/pulumi-hcl/pkg/grpcerr"
+	"github.com/pulumi/pulumi-hcl/pkg/hcl/ast"
+	"github.com/pulumi/pulumi-hcl/pkg/hcl/bridge"
+	"github.com/pulumi/pulumi-hcl/pkg/hcl/modules"
+	"github.com/pulumi/pulumi-hcl/pkg/hcl/packages"
+	"github.com/pulumi/pulumi-hcl/pkg/hcl/resolve"
+	"github.com/pulumi/pulumi-hcl/pkg/hcl/run"
+	"github.com/pulumi/pulumi-hcl/pkg/hcl/transform"
+	"github.com/pulumi/pulumi-hcl/pkg/potel"
 )
 
 // moduleProvider is the fully dynamic HCL provider. It serves the single

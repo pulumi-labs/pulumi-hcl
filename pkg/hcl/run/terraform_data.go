@@ -18,9 +18,9 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/pulumi-labs/pulumi-hcl/pkg/hcl/eval"
-	"github.com/pulumi-labs/pulumi-hcl/pkg/hcl/packages"
-	"github.com/pulumi-labs/pulumi-hcl/pkg/hcl/transform"
+	"github.com/pulumi/pulumi-hcl/pkg/hcl/eval"
+	"github.com/pulumi/pulumi-hcl/pkg/hcl/packages"
+	"github.com/pulumi/pulumi-hcl/pkg/hcl/transform"
 	"github.com/pulumi/pulumi/sdk/v3/go/property"
 	"github.com/zclconf/go-cty/cty"
 	"github.com/zclconf/go-cty/cty/convert"

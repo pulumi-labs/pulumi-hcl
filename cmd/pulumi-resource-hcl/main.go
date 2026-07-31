@@ -26,8 +26,8 @@ import (
 
 	p "github.com/pulumi/pulumi-go-provider"
 
-	"github.com/pulumi-labs/pulumi-hcl/pkg/server"
-	"github.com/pulumi-labs/pulumi-hcl/pkg/version"
+	"github.com/pulumi/pulumi-hcl/pkg/server"
+	"github.com/pulumi/pulumi-hcl/pkg/version"
 )
 
 func main() {

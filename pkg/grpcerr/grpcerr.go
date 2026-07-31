@@ -29,8 +29,8 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
-	"github.com/pulumi-labs/pulumi-hcl/pkg/hcl/modules"
-	"github.com/pulumi-labs/pulumi-hcl/pkg/hcl/packages"
+	"github.com/pulumi/pulumi-hcl/pkg/hcl/modules"
+	"github.com/pulumi/pulumi-hcl/pkg/hcl/packages"
 )
 
 // statusError attaches a gRPC status code to err without altering its message.

@@ -23,8 +23,8 @@ import (
 	"github.com/hashicorp/hcl/v2"
 	"github.com/zclconf/go-cty/cty"
 
-	"github.com/pulumi-labs/pulumi-hcl/pkg/provisioner/provisioners"
-	"github.com/pulumi-labs/pulumi-hcl/vendored/communicator"
+	"github.com/pulumi/pulumi-hcl/pkg/provisioner/provisioners"
+	"github.com/pulumi/pulumi-hcl/vendored/communicator"
 )
 
 var fileSchema = &hcl.BodySchema{

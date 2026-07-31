@@ -21,7 +21,7 @@ import (
 
 	"pgregory.net/rapid"
 
-	"github.com/pulumi-labs/pulumi-hcl/pkg/hcl/modulepath"
+	"github.com/pulumi/pulumi-hcl/pkg/hcl/modulepath"
 )
 
 func labelGen() *rapid.Generator[string] {

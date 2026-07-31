@@ -15,7 +15,7 @@ import (
 
 	getter "github.com/hashicorp/go-getter"
 
-	"github.com/pulumi-labs/pulumi-hcl/vendored/copy"
+	"github.com/pulumi/pulumi-hcl/vendored/copy"
 )
 
 // We configure our own go-getter detector and getter sets here, because

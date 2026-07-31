@@ -29,9 +29,9 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/protobuf/types/known/structpb"
 
-	"github.com/pulumi-labs/pulumi-hcl/pkg/hcl/modules"
-	"github.com/pulumi-labs/pulumi-hcl/pkg/hcl/parser"
-	"github.com/pulumi-labs/pulumi-hcl/pkg/hcl/resolve"
+	"github.com/pulumi/pulumi-hcl/pkg/hcl/modules"
+	"github.com/pulumi/pulumi-hcl/pkg/hcl/parser"
+	"github.com/pulumi/pulumi-hcl/pkg/hcl/resolve"
 )
 
 // stubResolver is a non-nil PackageResolverClient whose methods are never

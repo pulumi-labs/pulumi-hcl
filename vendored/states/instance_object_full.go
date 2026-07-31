@@ -12,8 +12,8 @@ import (
 	"github.com/zclconf/go-cty/cty"
 	ctyjson "github.com/zclconf/go-cty/cty/json"
 
-	"github.com/pulumi-labs/pulumi-hcl/vendored/addrs"
-	"github.com/pulumi-labs/pulumi-hcl/vendored/marks"
+	"github.com/pulumi/pulumi-hcl/vendored/addrs"
+	"github.com/pulumi/pulumi-hcl/vendored/marks"
 )
 
 // The definitions in this file are currently for use only by the new runtime

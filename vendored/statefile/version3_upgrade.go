@@ -15,10 +15,10 @@ import (
 	"github.com/zclconf/go-cty/cty"
 	ctyjson "github.com/zclconf/go-cty/cty/json"
 
-	"github.com/pulumi-labs/pulumi-hcl/pkg/util/configs"
-	"github.com/pulumi-labs/pulumi-hcl/vendored/addrs"
-	"github.com/pulumi-labs/pulumi-hcl/vendored/states"
-	"github.com/pulumi-labs/pulumi-hcl/vendored/tfdiags"
+	"github.com/pulumi/pulumi-hcl/pkg/util/configs"
+	"github.com/pulumi/pulumi-hcl/vendored/addrs"
+	"github.com/pulumi/pulumi-hcl/vendored/states"
+	"github.com/pulumi/pulumi-hcl/vendored/tfdiags"
 )
 
 func upgradeStateV3ToV4(old *stateV3) (*stateV4, error) {

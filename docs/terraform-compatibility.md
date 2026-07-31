@@ -55,5 +55,5 @@ The `provider::terraform::*` provider functions and `terraform.applying` are Ter
 
 ## Getting Help
 
-- [GitHub repository](https://github.com/pulumi-labs/pulumi-hcl) for issues and source
+- [GitHub repository](https://github.com/pulumi/pulumi-hcl) for issues and source
 - [Pulumi Community Slack](https://slack.pulumi.com/) for questions

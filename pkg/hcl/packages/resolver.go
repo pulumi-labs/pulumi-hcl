@@ -18,7 +18,7 @@ import (
 	"context"
 	"strings"
 
-	"github.com/pulumi-labs/pulumi-hcl/pkg/hcl/bridge"
+	"github.com/pulumi/pulumi-hcl/pkg/hcl/bridge"
 	"github.com/pulumi/pulumi-terraform-bridge/v3/pkg/tfbridge"
 	shim "github.com/pulumi/pulumi-terraform-bridge/v3/pkg/tfshim"
 	"github.com/pulumi/pulumi/pkg/v3/codegen/schema"

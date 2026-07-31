@@ -23,13 +23,13 @@ import (
 	"testing"
 
 	"github.com/hashicorp/hcl/v2"
-	"github.com/pulumi-labs/pulumi-hcl/pkg/codegen"
-	"github.com/pulumi-labs/pulumi-hcl/pkg/hcl/ast"
-	"github.com/pulumi-labs/pulumi-hcl/pkg/hcl/modules"
-	"github.com/pulumi-labs/pulumi-hcl/pkg/hcl/parser"
-	hclrun "github.com/pulumi-labs/pulumi-hcl/pkg/hcl/run"
-	"github.com/pulumi-labs/pulumi-hcl/tests/testutil"
-	"github.com/pulumi-labs/pulumi-hcl/tests/testutil/schemaloader"
+	"github.com/pulumi/pulumi-hcl/pkg/codegen"
+	"github.com/pulumi/pulumi-hcl/pkg/hcl/ast"
+	"github.com/pulumi/pulumi-hcl/pkg/hcl/modules"
+	"github.com/pulumi/pulumi-hcl/pkg/hcl/parser"
+	hclrun "github.com/pulumi/pulumi-hcl/pkg/hcl/run"
+	"github.com/pulumi/pulumi-hcl/tests/testutil"
+	"github.com/pulumi/pulumi-hcl/tests/testutil/schemaloader"
 	"github.com/pulumi/pulumi/pkg/v3/codegen/hcl2/syntax"
 	"github.com/pulumi/pulumi/pkg/v3/codegen/pcl"
 	"github.com/pulumi/pulumi/pkg/v3/codegen/schema"
@@ -1881,7 +1881,7 @@ output "instance_ami" {
 	assert.Equal(t, "ami-12345", ami.AsString())
 }
 
-// TestModuleVariableResolution reproduces https://github.com/pulumi-labs/pulumi-hcl/issues/77:
+// TestModuleVariableResolution reproduces https://github.com/pulumi/pulumi-hcl/issues/77:
 // module variable references don't resolve inside module scope.
 //
 // The bug is that processDataSource always evaluates expressions in the root
@@ -2076,7 +2076,7 @@ resource "counted" "test:index:Item" {
 
 // TestNestedModuleVariableResolution verifies that a nested module (a module
 // called from within another module) can receive inputs from its parent module's
-// scope. This reproduces https://github.com/pulumi-labs/pulumi-hcl/issues/78.
+// scope. This reproduces https://github.com/pulumi/pulumi-hcl/issues/78.
 func TestNestedModuleVariableResolution(t *testing.T) {
 	t.Parallel()
 

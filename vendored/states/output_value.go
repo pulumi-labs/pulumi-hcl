@@ -6,7 +6,7 @@
 package states
 
 import (
-	"github.com/pulumi-labs/pulumi-hcl/vendored/addrs"
+	"github.com/pulumi/pulumi-hcl/vendored/addrs"
 	"github.com/zclconf/go-cty/cty"
 )
 

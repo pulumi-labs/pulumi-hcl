@@ -139,7 +139,7 @@ jobs:
           (cd "$warmdir" && go mod init warm &&
             go get "github.com/${{ github.repository }}/sdk/go@${VERSION}")
 
-  # Publish the TypeScript SDK to npm as @pulumi-labs/hcl.
+  # Publish the TypeScript SDK to npm as @pulumi/hcl.
   #
   # publish-go-sdk regenerates every language's SDK onto the sdk-releases branch
   # (it runs `pulumi package gen-sdk` with no --language filter), so by the time
@@ -147,7 +147,7 @@ jobs:
   #
   # Publishing uses npm trusted publishing (OIDC): the id-token permission plus
   # the publish-npm environment stand in for an npm token. This requires a
-  # trusted publisher for @pulumi-labs/hcl configured on npmjs.org, bound to this
+  # trusted publisher for @pulumi/hcl configured on npmjs.org, bound to this
   # repository, workflow file, and environment.
   publish-nodejs:
     needs: publish-go-sdk
@@ -190,7 +190,7 @@ jobs:
         working-directory: sdk/nodejs/bin
         run: npm publish --access public
 
-  # Publish the Python SDK to PyPI as pulumi_labs_hcl.
+  # Publish the Python SDK to PyPI as pulumi_hcl.
   #
   # As with nodejs, publish-go-sdk has already regenerated the versioned Python
   # source onto sdk-releases. The generated setup.py reads README.md relative to
@@ -200,7 +200,7 @@ jobs:
   #
   # Publishing uses PyPI trusted publishing (OIDC) via the id-token permission
   # and the publish-pypi environment. This requires a trusted publisher for
-  # pulumi_labs_hcl configured on pypi.org (a pending publisher can be created
+  # pulumi_hcl configured on pypi.org (a pending publisher can be created
   # before the project exists), bound to this repository, workflow file, and
   # environment. skip-existing makes re-runs idempotent.
   publish-python:
@@ -220,7 +220,7 @@ jobs:
       - name: Build distributions
         working-directory: sdk/python
         run: |
-          cp pulumi_labs_hcl/README.md README.md
+          cp pulumi_hcl/README.md README.md
           python -m pip install --upgrade build
           python -m build --sdist --wheel
       - uses: pypa/gh-action-pypi-publish@release/v1
@@ -228,7 +228,7 @@ jobs:
           packages-dir: sdk/python/dist
           skip-existing: true
 
-  # Publish the .NET SDK to NuGet as Pulumi.Labs.Hcl.
+  # Publish the .NET SDK to NuGet as Pulumi.Hcl.
   #
   # As with the other SDKs, publish-go-sdk has already regenerated the versioned
   # dotnet source onto sdk-releases. The codegen pins the library to net6.0 for

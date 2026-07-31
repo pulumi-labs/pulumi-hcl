@@ -24,9 +24,9 @@ import (
 	"github.com/hashicorp/hcl/v2"
 	"github.com/zclconf/go-cty/cty"
 
-	"github.com/pulumi-labs/pulumi-hcl/pkg/provisioner/provisioners"
-	"github.com/pulumi-labs/pulumi-hcl/vendored/communicator"
-	"github.com/pulumi-labs/pulumi-hcl/vendored/communicator/remote"
+	"github.com/pulumi/pulumi-hcl/pkg/provisioner/provisioners"
+	"github.com/pulumi/pulumi-hcl/vendored/communicator"
+	"github.com/pulumi/pulumi-hcl/vendored/communicator/remote"
 )
 
 var remoteExecSchema = &hcl.BodySchema{

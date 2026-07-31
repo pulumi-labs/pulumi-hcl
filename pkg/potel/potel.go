@@ -21,7 +21,7 @@ import (
 	"go.opentelemetry.io/otel/trace"
 )
 
-var tracer = otel.Tracer("github.com/pulumi-labs/pulumi-hcl/pkg/server")
+var tracer = otel.Tracer("github.com/pulumi/pulumi-hcl/pkg/server")
 
 func Start(ctx context.Context, spanName string, opts ...trace.SpanStartOption) (context.Context, trace.Span) {
 	return tracer.Start(ctx, spanName, opts...)
