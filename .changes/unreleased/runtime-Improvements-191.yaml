@@ -1,0 +1,6 @@
+kind: Improvements
+body: Add `provider::terraform::encode_tfvars`
+time: 2026-07-31T10:23:52Z
+custom:
+    Component: runtime
+    PR: "191"
