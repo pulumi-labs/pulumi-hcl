@@ -149,9 +149,8 @@ func testLoader(t *testing.T, specs ...schema.PackageSpec) fakeLoader {
 	return fakeLoader{pkgs: pkgs}
 }
 
-// awsPackageSpec is the Pulumi-side schema matching awsInfoSource's TF schema:
-// the projection the bridge would generate (renames, MaxItemsOne flattening,
-// Sensitive → Secret).
+// awsPackageSpec is the Pulumi projection of awsInfoSource's TF schema
+// (renames, MaxItemsOne flattening, Sensitive → Secret).
 func awsPackageSpec() schema.PackageSpec {
 	str := schema.TypeSpec{Type: "string"}
 	versioning := schema.TypeSpec{Ref: "#/types/aws:s3/BucketVersioning:BucketVersioning"}

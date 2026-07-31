@@ -75,7 +75,7 @@ func (*hclConverter) ConvertState(
 		return nil, fmt.Errorf("dial loader at %s: %w", req.LoaderTarget, err)
 	}
 	defer contract.IgnoreClose(loaderClient)
-	loader := schema.ReferenceLoader(schema.NewCachedLoader(loaderClient))
+	loader := schema.NewCachedLoader(loaderClient)
 
 	state, err := readTFStateFile(statePath)
 	if err != nil {
@@ -228,12 +228,10 @@ func resourceName(name string, key addrs.InstanceKey) string {
 	}
 }
 
-// translateInstanceValues turns an instance's raw TF attributes into the
-// Pulumi property maps an outputs-supplied import needs, converting through
-// the same schema and codec the runtime uses for programs: the loader-supplied
-// Pulumi schema and the transform package (renames, MaxItemsOne flattening,
-// schema-declared secrets). With Outputs supplied the engine skips the
-// provider's Read entirely.
+// translateInstanceValues converts an instance's raw TF attributes into
+// Pulumi Outputs/Inputs through the loader-supplied Pulumi schema and the
+// transform codec — the same pair the runtime uses for programs. With
+// Outputs supplied the engine skips the provider's Read.
 func translateInstanceValues(
 	ctx context.Context,
 	loader schema.ReferenceLoader,
@@ -251,9 +249,8 @@ func translateInstanceValues(
 	if !ok {
 		return nil, nil, fmt.Errorf("provider schema has no resource %q", tfType)
 	}
-	// The attributes were written at the instance's schema version; without a
-	// live provider there is no UpgradeResourceState, so drifted values
-	// project as-is.
+	// Without a live provider there is no UpgradeResourceState, so
+	// version-drifted attributes cannot be translated.
 	if int(current.SchemaVersion) != shimRes.SchemaVersion() {
 		return nil, nil, fmt.Errorf(
 			"state attributes have schema version %d but the provider maps version %d",
@@ -281,10 +278,8 @@ func translateInstanceValues(
 	v := applySensitivePaths(property.New(m), current.AttrSensitivePaths, mapping)
 
 	outs = resource.ToResourcePropertyValue(v).ObjectValue()
-	// Inputs are the outputs' input-property subset, mirroring how the CLI
-	// projects an imported resource's state onto its program. Computed leaves
-	// nested inside input properties are not stripped; revisit if the
-	// import round-trip check flags diffs on them.
+	// Inputs are the outputs' input-property subset. Nested computed leaves
+	// are not stripped; revisit if the round-trip check flags diffs.
 	ins = make(resource.PropertyMap, len(res.InputProperties))
 	for _, p := range res.InputProperties {
 		if pv, has := outs[resource.PropertyKey(p.Name)]; has {
@@ -295,8 +290,7 @@ func translateInstanceValues(
 	return outs, ins, nil
 }
 
-// resourceSchema loads the Pulumi schema for token's resource through the
-// engine-provided loader.
+// resourceSchema loads token's resource schema through the engine's loader.
 func resourceSchema(
 	ctx context.Context, loader schema.ReferenceLoader, token string,
 ) (*schema.Resource, error) {
@@ -312,11 +306,9 @@ func resourceSchema(
 	return res, nil
 }
 
-// applySensitivePaths returns v with the values at the state's
-// dynamically-sensitive paths marked as secrets. Schema-declared sensitivity
-// is already handled during translation; these are the residual marks (e.g.
-// TF's sensitive() function). A path that does not translate or resolve is
-// skipped — better an unmarked value than a failed import.
+// applySensitivePaths marks the state's dynamically-sensitive paths (e.g.
+// TF's sensitive()) as secrets; schema-declared sensitivity is already
+// applied. Untranslatable paths are skipped rather than failing the import.
 func applySensitivePaths(
 	v property.Value, paths []cty.PathValueMarks, mapping *bridge.BodyMapping,
 ) property.Value {
