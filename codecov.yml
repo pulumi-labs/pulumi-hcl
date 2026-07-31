@@ -1,6 +1,4 @@
-# Notifications (statuses, PR comment) are sent by the ci.yml codecov-notify
-# job after every test shard has uploaded; automatic per-upload notification
-# would compute statuses from partial coverage and post false failures.
+# Don't trigger until asked by CI
 codecov:
   notify:
     manual_trigger: true

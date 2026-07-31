@@ -114,15 +114,12 @@ jobs:
             ~/.cache/go-build
           key: ${{ matrix.cache-key }}-${{ hashFiles('go.sum') }}
 
+  # Tests are done, trigger codecov
   codecov-notify:
-    # The shards upload coverage with notifications held back
-    # (notify.manual_trigger in codecov.yml), so codecov computes its
-    # status exactly once, from complete coverage, instead of posting a
-    # false failure after each partial upload.
+    if: always()
     needs: test
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
       - uses: codecov/codecov-action@v7
         with:
           run_command: send-notifications
