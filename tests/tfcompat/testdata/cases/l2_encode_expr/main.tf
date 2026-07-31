@@ -40,3 +40,23 @@ output "nested" {
 output "data_attr" {
   value = provider::terraform::encode_expr(data.simple_lookup.d.prefix_result)
 }
+
+# Sensitive marks pass through: the result is sensitive, and the encoded text
+# is the unmarked content — both for a wholly sensitive argument and for a
+# composite with a sensitive part.
+output "sens" {
+  value     = provider::terraform::encode_expr(sensitive("secret"))
+  sensitive = true
+}
+
+output "sens_inner" {
+  value = provider::terraform::encode_expr({
+    pw    = sensitive("secret")
+    plain = 1
+  })
+  sensitive = true
+}
+
+output "is_sensitive" {
+  value = issensitive(provider::terraform::encode_expr(sensitive("secret")))
+}
