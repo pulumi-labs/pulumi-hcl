@@ -1,0 +1,6 @@
+kind: bug-fixes
+body: Stop converting `lifecycle.prevent_destroy` to the `protect` resource option
+time: 2026-07-31T12:51:09.27111+02:00
+custom:
+    Component: converter
+    PR: "477"

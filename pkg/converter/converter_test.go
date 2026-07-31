@@ -390,6 +390,51 @@ resource "test_item" "inbound" {
 	assert.Equal(t, expected, string(out.Bytes()))
 }
 
+// TestEjectPreventDestroyUnsupported locks in that `lifecycle.prevent_destroy`
+// no longer converts to the `protect` resource option: since the runtime
+// enforces prevent_destroy as a before-destroy guard rather than state-level
+// protect, the converter has no PCL equivalent and must report it as
+// unsupported.
+func TestEjectPreventDestroyUnsupported(t *testing.T) {
+	t.Parallel()
+
+	testSchema := schema.PackageSpec{
+		Name:    "test",
+		Version: "1.0.0",
+		Resources: map[string]schema.ResourceSpec{
+			"test:index:Item": {
+				InputProperties: map[string]schema.PropertySpec{
+					"value": {TypeSpec: schema.TypeSpec{Type: "string"}},
+				},
+			},
+		},
+	}
+	loader := schemaloader.New(t, testSchema)
+
+	src := []byte(`terraform {
+  required_providers {
+    test = {
+      source  = "pulumi/test"
+      version = "1.0.0"
+    }
+  }
+}
+
+resource "test_item" "guarded" {
+  value = "hello"
+  lifecycle {
+    prevent_destroy = true
+  }
+}
+`)
+
+	out := hclwrite.NewEmptyFile()
+	diags := transformSingleFile(t, src, "main.tf", out.Body(), loader, nil)
+	require.True(t, diags.HasErrors())
+	assert.Contains(t, diags.Error(), `lifecycle attribute "prevent_destroy" is not supported`)
+	assert.NotContains(t, string(out.Bytes()), "protect")
+}
+
 // TestEjectInvokeInListComprehension feeds in the HCL shape produced by the
 // codegen when a PCL invoke inside a list comprehension is hoisted: a data
 // block with for_each over the comprehension's collection, plus a

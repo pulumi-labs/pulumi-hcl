@@ -800,8 +800,6 @@ func (ft *fileTransformer) emitFile(
 				case "lifecycle":
 					for _, attr := range sortedAttributes(subBlock.Body.Attributes) {
 						switch attr.Name {
-						case "prevent_destroy":
-							opts = append(opts, optEntry{"protect", ft.transformExpr(attr.Expr)})
 						case "ignore_changes":
 							opts = append(opts, optEntry{"ignoreChanges", ft.transformPropertyPathList(attr.Expr, res.InputProperties)})
 						case "create_before_destroy":

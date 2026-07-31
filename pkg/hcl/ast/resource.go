@@ -167,7 +167,8 @@ type Lifecycle struct {
 	CreateBeforeDestroy *bool
 
 	// PreventDestroy indicates whether destruction of the resource should be prevented.
-	// In Pulumi, this maps to the "protect" resource option.
+	// Enforced by the runtime as a before-destroy guard; unlike the "protect"
+	// resource option, it does not persist in state.
 	// The expression is evaluated at runtime, so it may reference variables,
 	// locals, or other resources. nil means not explicitly set (may inherit
 	// from parent).
