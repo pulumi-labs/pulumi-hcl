@@ -390,11 +390,6 @@ resource "test_item" "inbound" {
 	assert.Equal(t, expected, string(out.Bytes()))
 }
 
-// TestEjectPreventDestroyUnsupported locks in that `lifecycle.prevent_destroy`
-// no longer converts to the `protect` resource option: since the runtime
-// enforces prevent_destroy as a before-destroy guard rather than state-level
-// protect, the converter has no PCL equivalent and must report it as
-// unsupported.
 func TestEjectPreventDestroyUnsupported(t *testing.T) {
 	t.Parallel()
 
