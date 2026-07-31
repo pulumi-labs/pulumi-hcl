@@ -114,3 +114,103 @@ func TestEncodeExpr(t *testing.T) {
 		})
 	}
 }
+
+// Expected strings and error texts match OpenTofu v1.12.3's encode_tfvars
+// byte for byte, including sorted keys and the trailing newline.
+func TestEncodeTFVars(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		arg  cty.Value
+		want cty.Value
+	}{
+		{
+			name: "basic",
+			arg: cty.ObjectVal(map[string]cty.Value{
+				"foo": cty.StringVal("bar"),
+				"baz": cty.NumberIntVal(1),
+			}),
+			want: cty.StringVal("baz = 1\nfoo = \"bar\"\n"),
+		},
+		{
+			name: "nested",
+			arg: cty.ObjectVal(map[string]cty.Value{
+				"list": cty.TupleVal([]cty.Value{cty.NumberIntVal(1), cty.StringVal("two"), cty.True}),
+				"obj":  cty.ObjectVal(map[string]cty.Value{"a": cty.NumberIntVal(1)}),
+			}),
+			want: cty.StringVal("list = [1, \"two\", true]\nobj = {\n  a = 1\n}\n"),
+		},
+		{
+			name: "empty object",
+			arg:  cty.EmptyObjectVal,
+			want: cty.StringVal(""),
+		},
+		{
+			name: "wholly unknown defers",
+			arg:  cty.UnknownVal(cty.EmptyObject),
+			want: cty.UnknownVal(cty.String),
+		},
+		{
+			name: "sensitive attribute marks result",
+			arg: cty.ObjectVal(map[string]cty.Value{
+				"pw": cty.StringVal("secret").Mark(SensitiveMark),
+			}),
+			want: cty.StringVal("pw = \"secret\"\n").Mark(SensitiveMark),
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got, err := encodeTFVarsFunc.Call([]cty.Value{tt.arg})
+			require.NoError(t, err)
+			assert.Equal(t, tt.want, got)
+		})
+	}
+
+	errTests := []struct {
+		name    string
+		arg     cty.Value
+		wantErr string
+	}{
+		{
+			name:    "null",
+			arg:     cty.NullVal(cty.DynamicPseudoType),
+			wantErr: "argument must not be null",
+		},
+		{
+			name:    "tuple",
+			arg:     cty.TupleVal([]cty.Value{cty.NumberIntVal(1), cty.NumberIntVal(2)}),
+			wantErr: "invalid input: must be an object",
+		},
+		{
+			name:    "string",
+			arg:     cty.StringVal("hello"),
+			wantErr: "invalid input: must be an object",
+		},
+		{
+			name:    "map",
+			arg:     cty.MapVal(map[string]cty.Value{"a": cty.StringVal("x")}),
+			wantErr: "invalid input: must be an object",
+		},
+		{
+			name:    "invalid identifier key",
+			arg:     cty.ObjectVal(map[string]cty.Value{"not valid!": cty.NumberIntVal(1)}),
+			wantErr: "invalid input: object key: not valid! - must be a valid identifier",
+		},
+		{
+			name: "unknown attribute value",
+			arg: cty.ObjectVal(map[string]cty.Value{
+				"v": cty.UnknownVal(cty.String),
+			}),
+			wantErr: "cannot produce tokens for unknown value",
+		},
+	}
+	for _, tt := range errTests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			_, err := encodeTFVarsFunc.Call([]cty.Value{tt.arg})
+			assert.ErrorContains(t, err, tt.wantErr)
+		})
+	}
+}

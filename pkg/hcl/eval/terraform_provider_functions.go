@@ -16,7 +16,9 @@ package eval
 
 import (
 	"errors"
+	"fmt"
 
+	"github.com/hashicorp/hcl/v2/hclsyntax"
 	"github.com/hashicorp/hcl/v2/hclwrite"
 	"github.com/zclconf/go-cty/cty"
 	"github.com/zclconf/go-cty/cty/function"
@@ -28,7 +30,8 @@ import (
 // from the eval function table instead of being projected into invokes.
 func TerraformProviderFunctions() map[string]function.Function {
 	return map[string]function.Function{
-		"encode_expr": encodeExprFunc,
+		"encode_expr":   encodeExprFunc,
+		"encode_tfvars": encodeTFVarsFunc,
 	}
 }
 
@@ -50,6 +53,41 @@ var encodeExprFunc = function.New(&function.Spec{
 		}
 		f := hclwrite.NewEmptyFile()
 		f.Body().AppendUnstructuredTokens(hclwrite.TokensForValue(v))
+		return cty.StringVal(string(f.Bytes())), nil
+	},
+})
+
+// encodeTFVarsFunc renders an object as .tfvars file text, one attribute per
+// key in cty's sorted iteration order. Only object types are accepted — maps
+// are rejected like any other non-object. A wholly unknown argument
+// short-circuits to an unknown result, while a known object with unknown
+// attribute values errors (matching the error text of the hclwrite panic this
+// causes upstream).
+var encodeTFVarsFunc = function.New(&function.Spec{
+	Params: []function.Parameter{{
+		Name: "input",
+		Type: cty.DynamicPseudoType,
+	}},
+	Type: function.StaticReturnType(cty.String),
+	Impl: func(args []cty.Value, _ cty.Type) (cty.Value, error) {
+		v := args[0]
+		if !v.Type().IsObjectType() {
+			return cty.NullVal(cty.String), errors.New("invalid input: must be an object")
+		}
+		f := hclwrite.NewEmptyFile()
+		body := f.Body()
+		for it := v.ElementIterator(); it.Next(); {
+			key, val := it.Element()
+			name := key.AsString()
+			if !hclsyntax.ValidIdentifier(name) {
+				return cty.NullVal(cty.String),
+					fmt.Errorf("invalid input: object key: %s - must be a valid identifier", name)
+			}
+			if !val.IsWhollyKnown() {
+				return cty.NullVal(cty.String), errors.New("cannot produce tokens for unknown value")
+			}
+			body.SetAttributeValue(name, val)
+		}
 		return cty.StringVal(string(f.Bytes())), nil
 	},
 })
