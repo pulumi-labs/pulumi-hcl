@@ -64,12 +64,12 @@ jobs:
       registry-sha: ${{ steps.commit.outputs.registry-sha }}
     env:
       VERSION: ${{ needs.release.outputs.version }}
-      GH_TOKEN: ${{ secrets.RELEASE_TOKEN }}
+      GH_TOKEN: ${{ secrets.PULUMI_BOT_TOKEN }}
     steps:
       - uses: actions/checkout@v7
         with:
           ref: sdk-releases
-          token: ${{ secrets.RELEASE_TOKEN }}
+          token: ${{ secrets.PULUMI_BOT_TOKEN }}
       - name: Read the Go toolchain from the released source
         run: |
           git fetch --depth 1 origin "refs/tags/${VERSION}"
@@ -82,7 +82,7 @@ jobs:
         with:
           pulumi-version: "latest"
         env:
-          GITHUB_TOKEN: ${{ secrets.RELEASE_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.PULUMI_BOT_TOKEN }}
       - name: Check if the Go SDK tag already exists
         id: already-tagged
         run: |
