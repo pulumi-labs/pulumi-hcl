@@ -114,6 +114,17 @@ jobs:
             ~/.cache/go-build
           key: ${{ matrix.cache-key }}-${{ hashFiles('go.sum') }}
 
+  # Tests are done, trigger codecov
+  codecov-notify:
+    if: always()
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: codecov/codecov-action@v7
+        with:
+          run_command: send-notifications
+          token: ${{ secrets.CODECOV_TOKEN }}
+
   build-sdk:
     # Generate every SDK and confirm each one builds with its native toolchain.
     runs-on: ubuntu-latest
