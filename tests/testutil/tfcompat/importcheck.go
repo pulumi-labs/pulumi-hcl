@@ -16,23 +16,22 @@ package tfcompat
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 
 	"github.com/pulumi-labs/pulumi-hcl/tests/testutil/pulexec"
 	"github.com/pulumi-labs/pulumi-hcl/tests/testutil/tfexec"
-	"github.com/pulumi/pulumi/sdk/v3/go/common/resource"
 	"github.com/stretchr/testify/require"
 )
 
 // runImportCheck re-runs the case through the TF-state import flow: the
 // terraform state produced by the tofu-side apply is fed to
 // `pulumi import --from hcl` against a fresh Pulumi stack, and the next
-// preview of the case's program must propose no changes — mirroring the
-// promise that if `tofu plan` is clean after `tofu apply`, then `pulumi
-// preview` is clean after `pulumi import --from hcl`.
+// preview and up of the case's program must touch no resource — mirroring the
+// promise that if `tofu plan` is clean after `tofu apply`, then Pulumi
+// operations are no-ops after `pulumi import --from hcl`.
 //
 // The CLI drives the whole flow: it spawns the converter (an in-process server
 // behind a PATH shim) and resolves mappings through its own engine-side
@@ -92,24 +91,18 @@ func runImportCheck(
 		out, err := d.Import(t, files, statePath)
 		require.NoErrorf(t, err, "pulumi import --from hcl failed:\n%s", out)
 
-		steps, err := d.PreviewSteps(t)
-		require.NoError(t, err)
-		for _, step := range steps {
-			if step.Op == "same" {
-				continue
-			}
-			// The stack shell, providers, and module component shells are not
-			// imported and carry no provider state, so their creates are
-			// benign. Matched via the URN: plan steps do not always populate
-			// the type field.
-			leaf := resource.URN(step.URN).Type().String()
-			if step.Op == "create" &&
-				(leaf == "pulumi:pulumi:Stack" ||
-					strings.HasPrefix(leaf, "pulumi:providers:") ||
-					strings.HasPrefix(leaf, "components:")) {
-				continue
-			}
-			t.Errorf("unexpected %q step for %s in the preview after import", step.Op, step.URN)
-		}
+		// A clean import means the next operations plan and perform no
+		// resource changes, observed at the provider RPC boundary: a preview
+		// surfaces planned creates and updates as Create/Update with
+		// preview=true, and planned deletes — invisible to a preview at that
+		// boundary — would execute on the real up. The stack shell, default
+		// providers, and module component shells are still created, but none
+		// of those reach a resource provider's mutating RPCs.
+		require.NoError(t, d.Preview(t, files))
+		require.Empty(t, d.Mutations(), "preview after import proposed resource changes")
+
+		res, err := d.TryApply(t, files)
+		require.NoErrorf(t, err, "up after import failed:\n%s", res.Output)
+		require.Empty(t, d.Mutations(), "up after import performed resource changes")
 	})
 }
