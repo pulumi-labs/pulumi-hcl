@@ -18,6 +18,7 @@ import (
 	"errors"
 	"fmt"
 
+	"github.com/hashicorp/hcl/v2"
 	"github.com/hashicorp/hcl/v2/hclsyntax"
 	"github.com/hashicorp/hcl/v2/hclwrite"
 	"github.com/zclconf/go-cty/cty"
@@ -30,6 +31,7 @@ import (
 // from the eval function table instead of being projected into invokes.
 func TerraformProviderFunctions() map[string]function.Function {
 	return map[string]function.Function{
+		"decode_tfvars": decodeTFVarsFunc,
 		"encode_expr":   encodeExprFunc,
 		"encode_tfvars": encodeTFVarsFunc,
 	}
@@ -56,6 +58,45 @@ var encodeExprFunc = function.New(&function.Spec{
 		return cty.StringVal(string(f.Bytes())), nil
 	},
 })
+
+// decodeTFVarsFunc parses .tfvars file text into an object. Attribute
+// expressions are evaluated with no eval context, so constants (including
+// operators) evaluate while variable references and function calls error.
+// Every failure — parse errors, blocks, duplicate or non-attribute content —
+// wraps errFailedToDecode with the HCL diagnostics joined on. The content is
+// parsed at position 0,0 so diagnostic positions match upstream's.
+var decodeTFVarsFunc = function.New(&function.Spec{
+	Params: []function.Parameter{{
+		Name: "content",
+		Type: cty.String,
+	}},
+	Type: function.StaticReturnType(cty.DynamicPseudoType),
+	Impl: func(args []cty.Value, _ cty.Type) (cty.Value, error) {
+		f, diag := hclsyntax.ParseConfig([]byte(args[0].AsString()), "", hcl.Pos{Line: 0, Column: 0})
+		if f == nil || diag.HasErrors() {
+			return cty.NullVal(cty.DynamicPseudoType), wrapDiagErrors(errFailedToDecode, diag)
+		}
+		attrs, diag := f.Body.JustAttributes()
+		if attrs == nil || diag.HasErrors() {
+			return cty.NullVal(cty.DynamicPseudoType), wrapDiagErrors(errFailedToDecode, diag)
+		}
+		vals := make(map[string]cty.Value, len(attrs))
+		for name, attr := range attrs {
+			val, diag := attr.Expr.Value(nil)
+			if diag.HasErrors() {
+				return cty.NullVal(cty.DynamicPseudoType), wrapDiagErrors(errFailedToDecode, diag)
+			}
+			vals[name] = val
+		}
+		return cty.ObjectVal(vals), nil
+	},
+})
+
+var errFailedToDecode = errors.New("failed to decode tfvars content")
+
+func wrapDiagErrors(m error, diag hcl.Diagnostics) error {
+	return errors.Join(append([]error{m}, diag.Errs()...)...)
+}
 
 // encodeTFVarsFunc renders an object as .tfvars file text, one attribute per
 // key in cty's sorted iteration order. Only object types are accepted — maps
