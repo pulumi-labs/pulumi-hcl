@@ -30,16 +30,30 @@ import (
 func TestL2PFMaxItemsOneAttr(t *testing.T) {
 	t.Parallel()
 	tfcompat.RunCase(t, "l2_pf_max_items_one_attr", tfcompat.Case{
-		Providers: []tfcompat.Provider{
-			{
-				Name:      "pfx",
-				PFFactory: providers.PFXProvider,
-				Customize: func(_ *testing.T, info *tfbridge.ProviderInfo) {
-					info.Resources["pfx_flat"].Fields = map[string]*tfbridge.SchemaInfo{
-						"settings": {MaxItemsOne: tfbridge.True()},
-					}
-				},
-			},
-		},
+		Providers: []tfcompat.Provider{pfxFlatMaxItemsOne()},
 	})
+}
+
+// TestL2PFMaxItemsOneAttrOutput reads the flattened field back: in TF the
+// attribute stays a list, so `settings` must re-expand to a single-element
+// list on output and `settings[0]` / `length(settings)` must resolve.
+func TestL2PFMaxItemsOneAttrOutput(t *testing.T) {
+	t.Parallel()
+	tfcompat.RunCase(t, "l2_pf_max_items_one_attr_output", tfcompat.Case{
+		Providers: []tfcompat.Provider{pfxFlatMaxItemsOne()},
+	})
+}
+
+// pfxFlatMaxItemsOne is the PFX provider with pfx_flat's `settings`
+// list-nested attribute flattened to a single Pulumi object.
+func pfxFlatMaxItemsOne() tfcompat.Provider {
+	return tfcompat.Provider{
+		Name:      "pfx",
+		PFFactory: providers.PFXProvider,
+		Customize: func(_ *testing.T, info *tfbridge.ProviderInfo) {
+			info.Resources["pfx_flat"].Fields = map[string]*tfbridge.SchemaInfo{
+				"settings": {MaxItemsOne: tfbridge.True()},
+			}
+		},
+	}
 }

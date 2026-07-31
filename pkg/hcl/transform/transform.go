@@ -1235,11 +1235,11 @@ func propertyObjectToCtyMap(path string, m property.Map, properties []*schema.Pr
 	for _, p := range properties {
 		hclName := tfNameForPulumi(p.Name, mapping)
 		nested := nestedMappingFor(p.Name, mapping)
-		// In TF, a block (even MaxItems=1) is always a list. The bridge
-		// flattens MaxItemsOne blocks to objects on the Pulumi side; we
-		// re-wrap them as singleton lists on output so HCL source like
+		// In TF, a MaxItems=1 field — block or list/set attribute — is still
+		// list-shaped. The bridge flattens it to a single Pulumi value; we
+		// re-wrap it as a singleton list on output so HCL source like
 		// `r.settings[0].x` resolves the same way as in TF.
-		singularBlock := mapping != nil && fieldIsSingularBlock(mapping, p.Name)
+		singular := mapping != nil && fieldIsSingular(mapping, p.Name)
 		// A TF TypeSet field (set block or set attribute) materializes as a
 		// cty set, so set semantics — content-based, order-independent
 		// equality — match TF. The Pulumi wire encoding carries it as an
@@ -1253,7 +1253,7 @@ func propertyObjectToCtyMap(path string, m property.Map, properties []*schema.Pr
 		// legitimately be null, we safely treat null-during-preview as unknown.
 		if !ok || (dryRun && v.IsNull() && p.IsRequired()) {
 			t := ctyTypeFromType(p.Type, nested)
-			if singularBlock && !t.IsListType() && !t.IsTupleType() {
+			if singular && !t.IsListType() && !t.IsTupleType() {
 				t = cty.List(t)
 			}
 			if setField && t.IsListType() {
@@ -1282,14 +1282,18 @@ func propertyObjectToCtyMap(path string, m property.Map, properties []*schema.Pr
 		if err != nil {
 			return nil, err
 		}
-		if singularBlock && !convertedV.Type().IsListType() && !convertedV.Type().IsTupleType() {
+		if singular && !convertedV.Type().IsListType() && !convertedV.Type().IsTupleType() {
 			if convertedV.IsNull() {
-				if fieldIsComputed(mapping, p.Name) && !setField {
+				switch {
+				case !fieldIsBlock(mapping, p.Name):
+					// An unset list/set attribute is null, not empty.
+					convertedV = cty.NullVal(cty.List(convertedV.Type()))
+				case fieldIsComputed(mapping, p.Name) && !setField:
 					// An unset Computed list block is provider-controlled:
 					// absence means null, so `r.block == null` holds. Unset
 					// set blocks materialize as empty either way.
 					convertedV = cty.NullVal(cty.List(convertedV.Type()))
-				} else {
+				default:
 					// An omitted MaxItems=1 block is an empty list of blocks, not a
 					// single-element list holding null, so `length(r.block)` is 0.
 					convertedV = cty.ListValEmpty(convertedV.Type())
@@ -1320,11 +1324,19 @@ func fieldIsQuery[T any](mapping *bridge.BodyMapping, pulumiName string, query f
 	return t
 }
 
-// fieldIsSingularBlock reports whether the Pulumi property is a TF
-// MaxItemsOne block per the bridge mapping.
-func fieldIsSingularBlock(mapping *bridge.BodyMapping, pulumiName string) bool {
+// fieldIsSingular reports whether the Pulumi property is a MaxItemsOne
+// flattening of a TF list/set field per the bridge mapping.
+func fieldIsSingular(mapping *bridge.BodyMapping, pulumiName string) bool {
 	return fieldIsQuery(mapping, pulumiName, func(fm *bridge.FieldMapping) bool {
-		return fm.TFBlock && fm.MaxItemsOne
+		return fm.MaxItemsOne
+	})
+}
+
+// fieldIsBlock reports whether the Pulumi property is a TF block per the
+// bridge mapping.
+func fieldIsBlock(mapping *bridge.BodyMapping, pulumiName string) bool {
+	return fieldIsQuery(mapping, pulumiName, func(fm *bridge.FieldMapping) bool {
+		return fm.TFBlock
 	})
 }
 
@@ -1516,10 +1528,11 @@ func ctyObjectTypeRec(
 			optional = append(optional, key)
 		}
 		t := ctyTypeFromTypeRec(p.Type, nestedMappingFor(p.Name, mapping), seen)
-		// The bridge flattens a MaxItems=1 block to an object, but TF models it
-		// as a list; re-wrap it as a list so a reference like `r.settings[0].x`
-		// types the same way it resolves at runtime (see propertyObjectToCtyMap).
-		if fieldIsSingularBlock(mapping, p.Name) && !t.IsListType() && !t.IsTupleType() {
+		// The bridge flattens a MaxItems=1 field to a single value, but TF
+		// models it as a list; re-wrap it as a list so a reference like
+		// `r.settings[0].x` types the same way it resolves at runtime (see
+		// propertyObjectToCtyMap).
+		if fieldIsSingular(mapping, p.Name) && !t.IsListType() && !t.IsTupleType() {
 			t = cty.List(t)
 		}
 		// A TF TypeSet field is set-typed; see propertyObjectToCtyMap.
