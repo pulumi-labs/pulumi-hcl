@@ -137,7 +137,7 @@ jobs:
         run: |
           warmdir="$(mktemp -d)"
           (cd "$warmdir" && go mod init warm &&
-            go get "github.com/pulumi-labs/pulumi-hcl/sdk/go@${VERSION}")
+            go get "github.com/${{ github.repository }}/sdk/go@${VERSION}")
 
   # Publish the TypeScript SDK to npm as @pulumi-labs/hcl.
   #
@@ -306,7 +306,7 @@ jobs:
         uses: pulumi/esc-action@v3
       - name: Dispatch a registry docs build
         run: |
-          base="https://raw.githubusercontent.com/pulumi-labs/pulumi-hcl/${SHA}/registry"
+          base="https://raw.githubusercontent.com/${{ github.repository }}/${SHA}/registry"
           jq -n \
             --arg schema "${base}/schema.json" \
             --arg index "${base}/_index.md" \
