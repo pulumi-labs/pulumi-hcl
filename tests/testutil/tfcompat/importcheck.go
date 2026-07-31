@@ -15,14 +15,17 @@
 package tfcompat
 
 import (
-	"encoding/json"
+	"bytes"
 	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
 
-	"github.com/pulumi-labs/pulumi-hcl/tests/testutil/pulexec"
-	"github.com/pulumi-labs/pulumi-hcl/tests/testutil/tfexec"
+	"github.com/pulumi/pulumi-hcl/pkg/util/encryption"
+	"github.com/pulumi/pulumi-hcl/tests/testutil/pulexec"
+	"github.com/pulumi/pulumi-hcl/tests/testutil/tfexec"
+	"github.com/pulumi/pulumi-hcl/vendored/addrs"
+	"github.com/pulumi/pulumi-hcl/vendored/statefile"
 	"github.com/stretchr/testify/require"
 )
 
@@ -54,33 +57,29 @@ func runImportCheck(
 		}
 		for _, p := range c.Providers {
 			if p.PFFactory != nil {
-				t.Skip("TODO[github.com/pulumi-labs/pulumi-hcl#167]: state-import check does not support plugin-framework providers yet")
+				t.Skip("TODO[github.com/pulumi/pulumi-hcl#167]: state-import check does not support plugin-framework providers yet")
 			}
 		}
 		statePath := filepath.Join(tfStateDir, "terraform.tfstate")
 		stateJSON, err := os.ReadFile(statePath)
 		require.NoError(t, err)
 
-		var state struct {
-			Resources []struct {
-				Mode   string `json:"mode"`
-				Type   string `json:"type"`
-				Module string `json:"module"`
-			} `json:"resources"`
-		}
-		require.NoError(t, json.Unmarshal(stateJSON, &state))
+		f, err := statefile.Read(bytes.NewReader(stateJSON), encryption.StateEncryptionDisabled())
+		require.NoError(t, err)
 		// Module-nested resources and terraform_data cannot import completely
-		// yet (pulumi-labs/pulumi-hcl#167), so their previews would propose
+		// yet (pulumi/pulumi-hcl#167), so their previews would propose
 		// creates.
-		for _, r := range state.Resources {
-			if r.Mode != "managed" {
-				continue
-			}
-			if r.Module != "" {
-				t.Skip("state has module-nested resources; import does not support modules yet")
-			}
-			if r.Type == "terraform_data" {
-				t.Skip("state has terraform_data resources; import does not support the builtin yet")
+		for _, mod := range f.State.Modules {
+			for _, res := range mod.Resources {
+				if res.Addr.Resource.Mode != addrs.ManagedResourceMode {
+					continue
+				}
+				if !mod.Addr.IsRoot() {
+					t.Skip("state has module-nested resources; import does not support modules yet")
+				}
+				if res.Addr.Resource.Type == "terraform_data" {
+					t.Skip("state has terraform_data resources; import does not support the builtin yet")
+				}
 			}
 		}
 
