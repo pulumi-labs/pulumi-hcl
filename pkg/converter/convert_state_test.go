@@ -15,6 +15,7 @@
 package converter
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -24,6 +25,10 @@ import (
 
 	"github.com/blang/semver"
 	"github.com/hashicorp/hcl/v2"
+	"github.com/pulumi-labs/pulumi-hcl/pkg/util/encryption"
+	"github.com/pulumi-labs/pulumi-hcl/vendored/addrs"
+	"github.com/pulumi-labs/pulumi-hcl/vendored/statefile"
+	"github.com/pulumi-labs/pulumi-hcl/vendored/states"
 	"github.com/pulumi/pulumi-terraform-bridge/v3/pkg/tfbridge"
 	"github.com/pulumi/pulumi/pkg/v3/codegen/convert"
 	"github.com/pulumi/pulumi/pkg/v3/resource/plugin"
@@ -76,11 +81,26 @@ func awsInfoSource() fakeInfoSource {
 	}
 }
 
-func parseState(t *testing.T, stateJSON string) tfState {
+// stateV4 wraps a `{"resources": [...]}` fragment in the v4 envelope the
+// state-file parser requires.
+func stateV4(t *testing.T, fragment string) []byte {
 	t.Helper()
-	var state tfState
-	require.NoError(t, json.Unmarshal([]byte(stateJSON), &state))
-	return state
+	var doc map[string]json.RawMessage
+	require.NoError(t, json.Unmarshal([]byte(fragment), &doc))
+	doc["version"] = json.RawMessage(`4`)
+	doc["terraform_version"] = json.RawMessage(`"1.12.0"`)
+	doc["lineage"] = json.RawMessage(`"00000000-0000-0000-0000-000000000000"`)
+	doc["serial"] = json.RawMessage(`1`)
+	full, err := json.Marshal(doc)
+	require.NoError(t, err)
+	return full
+}
+
+func parseState(t *testing.T, fragment string) *states.State {
+	t.Helper()
+	f, err := statefile.Read(bytes.NewReader(stateV4(t, fragment)), encryption.StateEncryptionDisabled())
+	require.NoError(t, err)
+	return f.State
 }
 
 func TestConvertTFState_EmitsParameterizedImport(t *testing.T) {
@@ -125,18 +145,22 @@ func TestConvertTFState_SkipsUnimportable(t *testing.T) {
 		"resources": [
 			{
 				"mode": "data", "type": "aws_ami", "name": "ubuntu",
+				"provider": "provider[\"registry.terraform.io/hashicorp/aws\"]",
 				"instances": [ { "attributes": { "id": "ami-123" } } ]
 			},
 			{
 				"module": "module.vpc", "mode": "managed", "type": "aws_s3_bucket", "name": "nested",
+				"provider": "provider[\"registry.terraform.io/hashicorp/aws\"]",
 				"instances": [ { "attributes": { "id": "nested-bucket" } } ]
 			},
 			{
 				"mode": "managed", "type": "gcp_storage_bucket", "name": "g",
+				"provider": "provider[\"registry.terraform.io/hashicorp/gcp\"]",
 				"instances": [ { "attributes": { "id": "gcp-bucket" } } ]
 			},
 			{
 				"mode": "managed", "type": "aws_s3_bucket", "name": "no_id",
+				"provider": "provider[\"registry.terraform.io/hashicorp/aws\"]",
 				"instances": [ { "attributes": { "acl": "private" } } ]
 			}
 		]
@@ -161,6 +185,7 @@ func TestConvertTFState_CountAndForEach(t *testing.T) {
 		"resources": [
 			{
 				"mode": "managed", "type": "aws_s3_bucket", "name": "counted",
+				"provider": "provider[\"registry.terraform.io/hashicorp/aws\"]",
 				"instances": [
 					{ "index_key": 0, "attributes": { "id": "bucket-0" } },
 					{ "index_key": 1, "attributes": { "id": "bucket-1" } }
@@ -168,6 +193,7 @@ func TestConvertTFState_CountAndForEach(t *testing.T) {
 			},
 			{
 				"mode": "managed", "type": "aws_s3_bucket", "name": "byregion",
+				"provider": "provider[\"registry.terraform.io/hashicorp/aws\"]",
 				"instances": [
 					{ "index_key": "east", "attributes": { "id": "bucket-east" } }
 				]
@@ -190,28 +216,24 @@ func TestConvertTFState_CountAndForEach(t *testing.T) {
 	}, names)
 }
 
-// TestConvertTFState_UnderscoreProviderName documents the resolution limit
-// for providers whose local name itself contains an underscore: the resource
-// type "confounding_provider_resource" resolves to provider "confounding",
-// not "confounding_provider", so its resources warn and skip. This mirrors
-// the runtime resolver (packages.Resolver.providerInfoForType splits on the
-// first underscore), which cannot run such programs either — import and
-// runtime fail together rather than diverge.
-func TestConvertTFState_UnderscoreProviderName(t *testing.T) {
+// A provider whose name does not prefix its resource types (google-beta
+// owning google_* resources) must resolve via the state's provider address.
+func TestConvertTFState_ProviderNamePrefixMismatch(t *testing.T) {
 	t.Parallel()
 
 	state := parseState(t, `{
 		"resources": [
 			{
 				"mode": "managed", "type": "confounding_provider_resource", "name": "sadness",
+				"provider": "provider[\"registry.terraform.io/example/confounding-beta\"]",
 				"instances": [ { "attributes": { "id": "c-1" } } ]
 			}
 		]
 	}`)
 
 	src := fakeInfoSource{infos: map[string]*tfbridge.ProviderInfo{
-		"confounding_provider": {
-			Name: "confounding_provider",
+		"confounding-beta": {
+			Name: "confounding-beta",
 			Resources: map[string]*tfbridge.ResourceInfo{
 				"confounding_provider_resource": {Tok: "confounding:index/resource:Resource"},
 			},
@@ -219,42 +241,39 @@ func TestConvertTFState_UnderscoreProviderName(t *testing.T) {
 	}}
 	resp := convertTFState(t.Context(), src, nil, state)
 
-	assert.Empty(t, resp.Resources)
-	require.Len(t, resp.Diagnostics, 1)
-	assert.Equal(t, "Failed to resolve provider", resp.Diagnostics[0].Summary)
-	assert.Contains(t, resp.Diagnostics[0].Detail, `"confounding"`)
-}
-
-func TestProviderLocalName(t *testing.T) {
-	t.Parallel()
-	assert.Equal(t, "aws", providerLocalName("aws_s3_bucket"))
-	assert.Equal(t, "aws", providerLocalName("aws_s3_bucket_object"))
-	assert.Equal(t, "external", providerLocalName("external"))
+	require.Empty(t, resp.Diagnostics)
+	require.Len(t, resp.Resources, 1)
+	assert.Equal(t, "confounding:index/resource:Resource", resp.Resources[0].Type)
+	assert.Equal(t, "c-1", resp.Resources[0].ID)
 }
 
 func TestResourceName(t *testing.T) {
 	t.Parallel()
-	assert.Equal(t, "b", resourceName("b", nil))
-	assert.Equal(t, "b[0]", resourceName("b", float64(0)))
-	assert.Equal(t, "b[2]", resourceName("b", float64(2)))
-	assert.Equal(t, `b["east"]`, resourceName("b", "east"))
-	assert.Equal(t, "my-bucket.v2", resourceName("my-bucket.v2", nil), "no sanitisation")
+	assert.Equal(t, "b", resourceName("b", addrs.NoKey))
+	assert.Equal(t, "b[0]", resourceName("b", addrs.IntKey(0)))
+	assert.Equal(t, "b[2]", resourceName("b", addrs.IntKey(2)))
+	assert.Equal(t, `b["east"]`, resourceName("b", addrs.StringKey("east")))
+	assert.Equal(t, "my-bucket.v2", resourceName("my-bucket.v2", addrs.NoKey), "no sanitisation")
 }
 
 func TestImportID(t *testing.T) {
 	t.Parallel()
-	id, ok := importID(tfStateInstance{Attributes: map[string]json.RawMessage{"id": json.RawMessage(`"x"`)}})
+	id, ok := importID(&states.ResourceInstanceObjectSrc{AttrsJSON: []byte(`{"id": "x"}`)})
 	assert.True(t, ok)
 	assert.Equal(t, "x", id)
 
-	_, ok = importID(tfStateInstance{Attributes: map[string]json.RawMessage{"acl": json.RawMessage(`"private"`)}})
+	_, ok = importID(&states.ResourceInstanceObjectSrc{AttrsJSON: []byte(`{"acl": "private"}`)})
 	assert.False(t, ok, "no id attribute")
 
-	_, ok = importID(tfStateInstance{Attributes: map[string]json.RawMessage{"id": json.RawMessage(`""`)}})
+	_, ok = importID(&states.ResourceInstanceObjectSrc{AttrsJSON: []byte(`{"id": ""}`)})
 	assert.False(t, ok, "empty id")
 
-	_, ok = importID(tfStateInstance{Attributes: map[string]json.RawMessage{"id": json.RawMessage(`123`)}})
+	_, ok = importID(&states.ResourceInstanceObjectSrc{AttrsJSON: []byte(`{"id": 123}`)})
 	assert.False(t, ok, "non-string id")
+
+	id, ok = importID(&states.ResourceInstanceObjectSrc{AttrsFlat: map[string]string{"id": "flat"}})
+	assert.True(t, ok, "pre-0.12 flatmap attributes")
+	assert.Equal(t, "flat", id)
 }
 
 func TestConvertStateArgValidation(t *testing.T) {
@@ -325,10 +344,11 @@ func TestConvertStateViaMapper(t *testing.T) {
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "sdks", "random", "hcl.sdk.json"), descJSON, 0o600))
 
 	statePath := filepath.Join(dir, "terraform.tfstate")
-	require.NoError(t, os.WriteFile(statePath, []byte(`{
+	require.NoError(t, os.WriteFile(statePath, stateV4(t, `{
 		"resources": [
 			{
 				"mode": "managed", "type": "random_uuid", "name": "example",
+				"provider": "provider[\"registry.opentofu.org/hashicorp/random\"]",
 				"instances": [ { "attributes": { "id": "aabbccdd-0011-2233-4455-66778899aabb" } } ]
 			}
 		]

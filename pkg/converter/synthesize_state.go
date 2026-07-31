@@ -18,14 +18,17 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
-	"os"
-	"sort"
+	"maps"
+	"slices"
 	"strconv"
 	"strings"
 
 	"github.com/google/uuid"
 	"github.com/hashicorp/hcl/v2"
+	"github.com/pulumi-labs/pulumi-hcl/vendored/addrs"
+	"github.com/pulumi-labs/pulumi-hcl/vendored/states"
 	"github.com/pulumi/pulumi-terraform-bridge/v3/pkg/tfbridge"
 	shim "github.com/pulumi/pulumi-terraform-bridge/v3/pkg/tfshim"
 	pkgresource "github.com/pulumi/pulumi/pkg/v3/resource"
@@ -63,13 +66,9 @@ func SynthesizeStateDeployment(
 	if err != nil {
 		return nil, nil, fmt.Errorf("reading parameterization infos: %w", err)
 	}
-	data, err := os.ReadFile(statePath)
+	state, err := readTFStateFile(statePath)
 	if err != nil {
-		return nil, nil, fmt.Errorf("reading state file %q: %w", statePath, err)
-	}
-	var state tfState
-	if err := json.Unmarshal(data, &state); err != nil {
-		return nil, nil, fmt.Errorf("parsing state file %q: %w", statePath, err)
+		return nil, nil, err
 	}
 
 	var diagnostics hcl.Diagnostics
@@ -81,74 +80,72 @@ func SynthesizeStateDeployment(
 		})
 	}
 
+	managed := slices.Collect(managedResources(state, warn))
+
 	// Parameterized providers must be written into the deployment explicitly:
 	// the engine injects default providers for resources without a provider
 	// reference on the next load, but without parameterization, so it would
 	// try to boot the parameterized package name as a plugin. Plain providers
 	// are left to that injection. VerifyIntegrity requires providers to
 	// precede the resources referencing them.
-	var states []*pkgresource.State
+	var entries []*pkgresource.State
 	providerRefs := map[string]string{}
-	for _, provider := range usedProviders(state) {
+	for _, provider := range usedProviders(managed) {
 		desc, ok := descriptors[provider]
 		if !ok || desc.Parameterization == nil {
 			continue
 		}
 		st, ref := synthesizeProviderState(desc, project, stackName)
-		states = append(states, st)
+		entries = append(entries, st)
 		providerRefs[provider] = ref
 	}
 
-	for _, res := range state.Resources {
-		if res.Mode != "managed" {
-			continue
-		}
-		if res.Module != "" {
-			warn("Skipped module resource", fmt.Sprintf(
-				"resource %q is nested in %q; module import is not yet supported", res.Name, res.Module))
-			continue
-		}
-
-		provider := providerLocalName(res.Type)
+	for _, res := range managed {
+		provider := res.ProviderConfig.Provider.Type
+		tfType := res.Addr.Resource.Type
 		info, ok := infos[provider]
 		if !ok {
 			warn("Failed to resolve provider", fmt.Sprintf(
 				"no bridged provider info supplied for provider %q", provider))
 			continue
 		}
-		resInfo, ok := info.Resources[res.Type]
+		resInfo, ok := info.Resources[tfType]
 		if !ok || resInfo == nil || resInfo.Tok == "" {
 			warn("Failed to resolve resource type", fmt.Sprintf(
-				"provider %q has no mapping for TF type %q", provider, res.Type))
+				"provider %q has no mapping for TF type %q", provider, tfType))
 			continue
 		}
-		shimRes, ok := info.P.ResourcesMap().GetOk(res.Type)
+		shimRes, ok := info.P.ResourcesMap().GetOk(tfType)
 		if !ok {
 			warn("Failed to resolve resource schema", fmt.Sprintf(
-				"provider %q has no schema for TF type %q", provider, res.Type))
+				"provider %q has no schema for TF type %q", provider, tfType))
 			continue
 		}
 
-		for _, inst := range res.Instances {
-			id, ok := importID(inst)
+		for _, key := range sortedInstanceKeys(res) {
+			current := res.Instances[key].Current
+			if current == nil {
+				continue
+			}
+			id, ok := importID(current)
 			if !ok {
 				warn("Skipped resource without id", fmt.Sprintf(
-					"an instance of %s.%s has no string `id` attribute", res.Type, res.Name))
+					"an instance of %s has no string `id` attribute", res.Addr))
 				continue
 			}
 			st, err := synthesizeResourceState(
-				ctx, info, resInfo, shimRes, res, inst, id, project, stackName, providerRefs[provider])
+				ctx, info, resInfo, shimRes, res, key, current, id, project, stackName, providerRefs[provider])
 			if err != nil {
 				warn("Failed to synthesize resource state", fmt.Sprintf(
-					"instance %q of %s.%s: %v", id, res.Type, res.Name, err))
+					"instance %q of %s: %v", id, res.Addr, err))
 				continue
 			}
-			states = append(states, st)
+			entries = append(entries, st)
 		}
 	}
 
-	resources := make([]apitype.ResourceV3, 0, len(states))
-	for _, st := range states {
+	resources := make([]apitype.ResourceV3, 0, len(entries))
+	for _, st := range entries {
 		// showSecrets serializes secrets as plaintext; `pulumi stack import`
 		// re-encrypts them under the target stack's secrets manager.
 		v3, _, err := stack.SerializeResource(ctx, st, config.NopEncrypter, true)
@@ -175,27 +172,28 @@ func synthesizeResourceState(
 	info tfbridge.ProviderInfo,
 	resInfo *tfbridge.ResourceInfo,
 	shimRes shim.Resource,
-	res tfStateResource,
-	inst tfStateInstance,
+	res *states.Resource,
+	key addrs.InstanceKey,
+	current *states.ResourceInstanceObjectSrc,
 	id, project, stackName, providerRef string,
 ) (*pkgresource.State, error) {
-	attrs, err := decodeAttributes(inst.Attributes)
+	attrs, err := decodeAttributes(current)
 	if err != nil {
 		return nil, err
 	}
 	// The bridge reads schema_version back from __meta as a decimal string;
 	// without it, synthesized state would be upgraded from version 0.
 	meta := map[string]any{}
-	if inst.SchemaVersion > 0 {
-		meta["schema_version"] = strconv.FormatUint(inst.SchemaVersion, 10)
+	if current.SchemaVersion > 0 {
+		meta["schema_version"] = strconv.FormatUint(current.SchemaVersion, 10)
 	}
-	tfState, err := shimRes.InstanceState(id, attrs, meta)
+	instState, err := shimRes.InstanceState(id, attrs, meta)
 	if err != nil {
 		return nil, fmt.Errorf("building instance state: %w", err)
 	}
 
 	outs, err := tfbridge.MakeTerraformResult(
-		ctx, info.P, tfState, shimRes.Schema(), resInfo.Fields, nil, true)
+		ctx, info.P, instState, shimRes.Schema(), resInfo.Fields, nil, true)
 	if err != nil {
 		return nil, fmt.Errorf("translating outputs: %w", err)
 	}
@@ -204,7 +202,7 @@ func synthesizeResourceState(
 		return nil, fmt.Errorf("deriving inputs: %w", err)
 	}
 
-	name := resourceName(res.Name, inst.IndexKey)
+	name := resourceName(res.Addr.Resource.Name, key)
 	urn := resource.NewURN(tokens.QName(stackName), tokens.PackageName(project), "", resInfo.Tok, name)
 	return &pkgresource.State{
 		Type:     resInfo.Tok,
@@ -217,21 +215,13 @@ func synthesizeResourceState(
 	}, nil
 }
 
-// usedProviders returns the sorted provider local names of the state's
-// importable resources.
-func usedProviders(state tfState) []string {
+// usedProviders returns the sorted provider names of the given resources.
+func usedProviders(managed []*states.Resource) []string {
 	set := map[string]bool{}
-	for _, res := range state.Resources {
-		if res.Mode == "managed" && res.Module == "" {
-			set[providerLocalName(res.Type)] = true
-		}
+	for _, res := range managed {
+		set[res.ProviderConfig.Provider.Type] = true
 	}
-	providers := make([]string, 0, len(set))
-	for p := range set {
-		providers = append(providers, p)
-	}
-	sort.Strings(providers)
-	return providers
+	return slices.Sorted(maps.Keys(set))
 }
 
 // synthesizeProviderState builds the state entry for a parameterized default
@@ -275,17 +265,16 @@ func synthesizeProviderState(
 	return st, string(urn) + "::" + id
 }
 
-// decodeAttributes decodes the instance's raw attribute values. Numbers
-// decode as float64: the shim's InstanceState coercion accepts those but
-// panics on json.Number.
-func decodeAttributes(raw map[string]json.RawMessage) (map[string]any, error) {
-	attrs := make(map[string]any, len(raw))
-	for k, v := range raw {
-		var out any
-		if err := json.Unmarshal(v, &out); err != nil {
-			return nil, fmt.Errorf("decoding attribute %q: %w", k, err)
-		}
-		attrs[k] = out
+// decodeAttributes decodes the instance's attribute object. Numbers decode
+// as float64: the shim's InstanceState coercion accepts those but panics on
+// json.Number.
+func decodeAttributes(current *states.ResourceInstanceObjectSrc) (map[string]any, error) {
+	if current.AttrsJSON == nil {
+		return nil, errors.New("pre-0.12 flatmap attributes are not supported")
+	}
+	var attrs map[string]any
+	if err := json.Unmarshal(current.AttrsJSON, &attrs); err != nil {
+		return nil, fmt.Errorf("decoding attributes: %w", err)
 	}
 	return attrs, nil
 }

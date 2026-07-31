@@ -54,10 +54,10 @@ func synInfos() map[string]tfbridge.ProviderInfo {
 	}
 }
 
-func writeStateFile(t *testing.T, stateJSON string) string {
+func writeStateFile(t *testing.T, fragment string) string {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "terraform.tfstate")
-	require.NoError(t, os.WriteFile(path, []byte(stateJSON), 0o600))
+	require.NoError(t, os.WriteFile(path, stateV4(t, fragment), 0o600))
 	return path
 }
 
@@ -80,6 +80,7 @@ func TestSynthesizeState_TranslatesAttributes(t *testing.T) {
 		"resources": [
 			{
 				"mode": "managed", "type": "syn_thing", "name": "a",
+				"provider": "provider[\"registry.opentofu.org/pulumi/syn\"]",
 				"instances": [ { "schema_version": 2, "attributes": {
 					"id": "thing-1", "name": "x", "secret_val": "hunter2", "computed_val": "out"
 				} } ]
@@ -124,6 +125,7 @@ func TestSynthesizeState_ParameterizedProvider(t *testing.T) {
 		"resources": [
 			{
 				"mode": "managed", "type": "syn_thing", "name": "a",
+				"provider": "provider[\"registry.opentofu.org/pulumi/syn\"]",
 				"instances": [ { "attributes": { "id": "thing-1", "name": "x" } } ]
 			}
 		]
@@ -155,22 +157,27 @@ func TestSynthesizeState_SkipsAndWarns(t *testing.T) {
 		"resources": [
 			{
 				"mode": "managed", "type": "syn_thing", "name": "nested", "module": "module.m",
+				"provider": "provider[\"registry.opentofu.org/pulumi/syn\"]",
 				"instances": [ { "attributes": { "id": "thing-1" } } ]
 			},
 			{
 				"mode": "managed", "type": "syn_thing", "name": "no_id",
+				"provider": "provider[\"registry.opentofu.org/pulumi/syn\"]",
 				"instances": [ { "attributes": { "name": "x" } } ]
 			},
 			{
 				"mode": "managed", "type": "syn_unmapped", "name": "unmapped",
+				"provider": "provider[\"registry.opentofu.org/pulumi/syn\"]",
 				"instances": [ { "attributes": { "id": "thing-2" } } ]
 			},
 			{
 				"mode": "managed", "type": "other_thing", "name": "unknown_provider",
+				"provider": "provider[\"registry.opentofu.org/pulumi/other\"]",
 				"instances": [ { "attributes": { "id": "thing-3" } } ]
 			},
 			{
 				"mode": "data", "type": "syn_thing", "name": "datasource",
+				"provider": "provider[\"registry.opentofu.org/pulumi/syn\"]",
 				"instances": [ { "attributes": { "id": "thing-4" } } ]
 			}
 		]
@@ -181,6 +188,7 @@ func TestSynthesizeState_SkipsAndWarns(t *testing.T) {
 	require.NoError(t, json.Unmarshal(dep.Deployment, &deployment))
 	assert.Empty(t, deployment.Resources)
 
+	// Warnings arrive in module-then-resource address order.
 	summaries := make([]string, len(diags))
 	for i, d := range diags {
 		require.Equal(t, hcl.DiagWarning, d.Severity)
@@ -188,9 +196,9 @@ func TestSynthesizeState_SkipsAndWarns(t *testing.T) {
 	}
 	assert.Equal(t, []string{
 		"Skipped module resource",
+		"Failed to resolve provider",
 		"Skipped resource without id",
 		"Failed to resolve resource type",
-		"Failed to resolve provider",
 	}, summaries)
 }
 
@@ -201,7 +209,9 @@ func TestSynthesizeState_FileErrors(t *testing.T) {
 		t.Context(), synInfos(), filepath.Join(t.TempDir(), "missing.tfstate"), t.TempDir(), "proj", "stack")
 	assert.ErrorContains(t, err, "reading state file")
 
+	badPath := filepath.Join(t.TempDir(), "terraform.tfstate")
+	require.NoError(t, os.WriteFile(badPath, []byte("not json"), 0o600))
 	_, _, err = SynthesizeStateDeployment(
-		t.Context(), synInfos(), writeStateFile(t, "not json"), t.TempDir(), "proj", "stack")
+		t.Context(), synInfos(), badPath, t.TempDir(), "proj", "stack")
 	assert.ErrorContains(t, err, "parsing state file")
 }
