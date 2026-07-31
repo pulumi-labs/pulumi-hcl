@@ -2905,19 +2905,19 @@ func translateAttrPathTraversal(
 		return property.Glob{}, nil
 	}
 	segments := make([]property.GlobSegment, 0, len(traversal))
-	resolver := attrPathNameResolver{mapping: mapping, props: props}
+	resolver := transform.AttrPathResolver{Mapping: mapping, Props: props}
 	prevSingularBlock := false
 	for _, step := range traversal {
 		switch s := step.(type) {
 		case hcl.TraverseRoot:
-			name, singularBlock, err := resolver.next(s.Name)
+			name, singularBlock, err := resolver.Next(s.Name)
 			if err != nil {
 				return property.Glob{}, err
 			}
 			segments = append(segments, property.NewSegment(name))
 			prevSingularBlock = singularBlock
 		case hcl.TraverseAttr:
-			name, singularBlock, err := resolver.next(s.Name)
+			name, singularBlock, err := resolver.Next(s.Name)
 			if err != nil {
 				return property.Glob{}, err
 			}
@@ -2974,7 +2974,7 @@ func ignoreChangesApplies(
 			traversal = traversal[:len(traversal)-1]
 		}
 	}
-	resolver := attrPathNameResolver{mapping: mapping, props: props}
+	resolver := transform.AttrPathResolver{Mapping: mapping, Props: props}
 	v := property.New(inputs)
 	prevSingularBlock := false
 	for i, step := range traversal {
@@ -3010,7 +3010,7 @@ func ignoreChangesApplies(
 			}
 			continue
 		}
-		name, singularBlock, err := resolver.next(tfName)
+		name, singularBlock, err := resolver.Next(tfName)
 		if err != nil {
 			return false
 		}
@@ -3065,8 +3065,8 @@ func translateSecretOutputName(
 	default:
 		return "", fmt.Errorf("invalid additional_secret_outputs entry: expected a property name")
 	}
-	resolver := attrPathNameResolver{mapping: mapping, props: props}
-	pulumiName, _, err := resolver.next(name)
+	resolver := transform.AttrPathResolver{Mapping: mapping, Props: props}
+	pulumiName, _, err := resolver.Next(name)
 	return pulumiName, err
 }
 
@@ -3094,58 +3094,6 @@ func formatAttrTraversal(t hcl.Traversal) string {
 		}
 	}
 	return b.String()
-}
-
-// attrPathNameResolver walks an attribute path, translating each attribute
-// segment from its TF name to its Pulumi name and descending into the nested
-// schema for the next segment.
-type attrPathNameResolver struct {
-	mapping *bridge.BodyMapping
-	props   []*schema.Property
-}
-
-// next translates one TF (snake_case) attribute-name segment to its Pulumi name
-// and advances the resolver into the nested schema for the following segment. It
-// reports whether the resolved field is a MaxItems=1 field flattened to a single
-// Pulumi value, so the caller can drop the TF list index that follows it.
-func (r *attrPathNameResolver) next(tfName string) (name string, singular bool, err error) {
-	if fm := r.mapping.Lookup(tfName); fm != nil {
-		if fm.Nested != nil {
-			r.mapping, r.props = fm.Nested, nil
-		} else {
-			r.mapping, r.props = nil, nil
-		}
-		return fm.PulumiName, fm.MaxItemsOne, nil
-	}
-	pulumiName, prop := transform.PulumiCaseFromSnakeCase(tfName, r.props)
-	if prop != nil {
-		r.mapping, r.props = nil, objectProperties(prop.Type)
-		_, isObject := codegen.UnwrapType(prop.Type).(*schema.ObjectType)
-		return pulumiName, isObject, nil
-	}
-	if r.mapping != nil || len(r.props) > 0 {
-		return "", false, fmt.Errorf("unknown property %q", tfName)
-	}
-	r.mapping, r.props = nil, nil
-	return tfName, false, nil
-}
-
-// objectProperties returns the nested properties of an object-typed schema,
-// unwrapping array/map element types and optional wrappers, or nil when the
-// type has no named properties.
-func objectProperties(t schema.Type) []*schema.Property {
-	switch tt := t.(type) {
-	case *schema.ObjectType:
-		return tt.Properties
-	case *schema.ArrayType:
-		return objectProperties(tt.ElementType)
-	case *schema.MapType:
-		return objectProperties(tt.ElementType)
-	case *schema.OptionalType:
-		return objectProperties(tt.ElementType)
-	default:
-		return nil
-	}
 }
 
 // ResourceOptions contains resource registration options.

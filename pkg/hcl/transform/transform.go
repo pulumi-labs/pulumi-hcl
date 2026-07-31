@@ -2323,3 +2323,93 @@ func valueMatchesType(v property.Value, typ schema.Type) bool {
 	}
 	return false
 }
+
+// AttrPathResolver walks an attribute path, translating each attribute
+// segment from its TF name to its Pulumi name and descending into the nested
+// schema for the next segment.
+type AttrPathResolver struct {
+	Mapping *bridge.BodyMapping
+	Props   []*schema.Property
+}
+
+// Next translates one TF (snake_case) attribute-name segment to its Pulumi name
+// and advances the resolver into the nested schema for the following segment. It
+// reports whether the resolved field is a MaxItems=1 field flattened to a single
+// Pulumi value, so the caller can drop the TF list index that follows it.
+func (r *AttrPathResolver) Next(tfName string) (name string, singular bool, err error) {
+	if fm := r.Mapping.Lookup(tfName); fm != nil {
+		if fm.Nested != nil {
+			r.Mapping, r.Props = fm.Nested, nil
+		} else {
+			r.Mapping, r.Props = nil, nil
+		}
+		return fm.PulumiName, fm.MaxItemsOne, nil
+	}
+	pulumiName, prop := PulumiCaseFromSnakeCase(tfName, r.Props)
+	if prop != nil {
+		r.Mapping, r.Props = nil, objectProperties(prop.Type)
+		_, isObject := codegen.UnwrapType(prop.Type).(*schema.ObjectType)
+		return pulumiName, isObject, nil
+	}
+	if r.Mapping != nil || len(r.Props) > 0 {
+		return "", false, fmt.Errorf("unknown property %q", tfName)
+	}
+	r.Mapping, r.Props = nil, nil
+	return tfName, false, nil
+}
+
+// objectProperties returns the nested properties of an object-typed schema,
+// unwrapping array/map element types and optional wrappers, or nil when the
+// type has no named properties.
+func objectProperties(t schema.Type) []*schema.Property {
+	switch tt := t.(type) {
+	case *schema.ObjectType:
+		return tt.Properties
+	case *schema.ArrayType:
+		return objectProperties(tt.ElementType)
+	case *schema.MapType:
+		return objectProperties(tt.ElementType)
+	case *schema.OptionalType:
+		return objectProperties(tt.ElementType)
+	default:
+		return nil
+	}
+}
+
+// TranslateAttrPath translates a TF-attribute-space cty path into a Pulumi
+// property path: attribute names resolve through the body mapping (falling
+// back to the schema properties and the naming convention), and the index
+// step following a MaxItems=1 block is dropped with the flattening.
+func TranslateAttrPath(
+	path cty.Path, mapping *bridge.BodyMapping, props []*schema.Property,
+) (property.Path, error) {
+	resolver := AttrPathResolver{Mapping: mapping, Props: props}
+	segments := make([]property.PathSegment, 0, len(path))
+	singularBlock := false
+	for _, step := range path {
+		switch s := step.(type) {
+		case cty.GetAttrStep:
+			name, singular, err := resolver.Next(s.Name)
+			if err != nil {
+				return property.Path{}, err
+			}
+			segments = append(segments, property.NewSegment(name))
+			singularBlock = singular
+		case cty.IndexStep:
+			if singularBlock {
+				singularBlock = false
+				continue
+			}
+			switch {
+			case s.Key.Type() == cty.Number:
+				i, _ := s.Key.AsBigFloat().Int64()
+				segments = append(segments, property.NewSegment(int(i)))
+			case s.Key.Type() == cty.String:
+				segments = append(segments, property.NewSegment(s.Key.AsString()))
+			default:
+				return property.Path{}, fmt.Errorf("unsupported index key type %s", s.Key.Type().FriendlyName())
+			}
+		}
+	}
+	return property.PathFromSegments(segments...), nil
+}

@@ -24,13 +24,16 @@ import (
 	"testing"
 
 	"github.com/hashicorp/hcl/v2"
+	sdkschema "github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
 	"github.com/pulumi/pulumi-hcl/pkg/util/encryption"
 	"github.com/pulumi/pulumi-hcl/vendored/addrs"
 	"github.com/pulumi/pulumi-hcl/vendored/statefile"
 	"github.com/pulumi/pulumi-hcl/vendored/states"
 	"github.com/pulumi/pulumi-terraform-bridge/v3/pkg/tfbridge"
+	shimv2 "github.com/pulumi/pulumi-terraform-bridge/v3/pkg/tfshim/sdk-v2"
 	"github.com/pulumi/pulumi/pkg/v3/codegen/convert"
 	"github.com/pulumi/pulumi/pkg/v3/resource/plugin"
+	"github.com/pulumi/pulumi/sdk/v3/go/common/resource"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/util/rpcutil"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/workspace"
 	"github.com/stretchr/testify/assert"
@@ -41,27 +44,54 @@ import (
 // fakeInfoSource is an in-memory bridge.ProviderInfoSource.
 type fakeInfoSource struct {
 	infos map[string]*tfbridge.ProviderInfo
-	errs  map[string]error
 }
 
 func (f fakeInfoSource) GetProviderInfo(
 	_ context.Context, tfProvider string, _ *workspace.PackageDescriptor,
 ) (*tfbridge.ProviderInfo, error) {
-	if err, ok := f.errs[tfProvider]; ok {
-		return nil, err
-	}
 	return f.infos[tfProvider], nil
 }
 
-func awsInfoSource() fakeInfoSource {
+// roundtrip mirrors what the mapper delivers in production: the info is
+// marshalled with its schema-only shim and unmarshalled back, so value
+// translation runs against the same ProviderShim it would in the CLI.
+func roundtrip(t *testing.T, info tfbridge.ProviderInfo) *tfbridge.ProviderInfo {
+	t.Helper()
+	b, err := json.Marshal(tfbridge.MarshalProviderInfo(&info))
+	require.NoError(t, err)
+	var m tfbridge.MarshallableProviderInfo
+	require.NoError(t, json.Unmarshal(b, &m))
+	return m.Unmarshal()
+}
+
+func awsInfoSource(t *testing.T) fakeInfoSource {
+	t.Helper()
+	p := &sdkschema.Provider{
+		ResourcesMap: map[string]*sdkschema.Resource{
+			"aws_s3_bucket": {
+				Schema: map[string]*sdkschema.Schema{
+					"acl":          {Type: sdkschema.TypeString, Optional: true},
+					"secret_sauce": {Type: sdkschema.TypeString, Optional: true, Sensitive: true},
+					"arn":          {Type: sdkschema.TypeString, Computed: true},
+					"versioning": {
+						Type: sdkschema.TypeList, MaxItems: 1, Optional: true,
+						Elem: &sdkschema.Resource{Schema: map[string]*sdkschema.Schema{
+							"enabled": {Type: sdkschema.TypeBool, Optional: true},
+						}},
+					},
+				},
+			},
+		},
+	}
 	return fakeInfoSource{
 		infos: map[string]*tfbridge.ProviderInfo{
-			"aws": {
+			"aws": roundtrip(t, tfbridge.ProviderInfo{
+				P:    shimv2.NewProvider(p),
 				Name: "aws",
 				Resources: map[string]*tfbridge.ResourceInfo{
 					"aws_s3_bucket": {Tok: "aws:s3/bucket:Bucket"},
 				},
-			},
+			}),
 		},
 	}
 }
@@ -101,7 +131,7 @@ func TestConvertTFState_EmitsImport(t *testing.T) {
 		]
 	}`)
 
-	resp := convertTFState(t.Context(), awsInfoSource(), state)
+	resp := convertTFState(t.Context(), awsInfoSource(t), state)
 
 	require.Empty(t, resp.Diagnostics)
 	require.Len(t, resp.Resources, 1)
@@ -140,7 +170,7 @@ func TestConvertTFState_SkipsUnimportable(t *testing.T) {
 		]
 	}`)
 
-	resp := convertTFState(t.Context(), awsInfoSource(), state)
+	resp := convertTFState(t.Context(), awsInfoSource(t), state)
 
 	// The data source skips silently; the other three each warn.
 	assert.Empty(t, resp.Resources)
@@ -174,7 +204,7 @@ func TestConvertTFState_CountAndForEach(t *testing.T) {
 		]
 	}`)
 
-	resp := convertTFState(t.Context(), awsInfoSource(), state)
+	resp := convertTFState(t.Context(), awsInfoSource(t), state)
 
 	require.Empty(t, resp.Diagnostics)
 	names := make(map[string]string, len(resp.Resources))
@@ -204,12 +234,19 @@ func TestConvertTFState_ProviderNamePrefixMismatch(t *testing.T) {
 	}`)
 
 	src := fakeInfoSource{infos: map[string]*tfbridge.ProviderInfo{
-		"confounding-beta": {
+		"confounding-beta": roundtrip(t, tfbridge.ProviderInfo{
+			P: shimv2.NewProvider(&sdkschema.Provider{
+				ResourcesMap: map[string]*sdkschema.Resource{
+					"confounding_provider_resource": {Schema: map[string]*sdkschema.Schema{
+						"name": {Type: sdkschema.TypeString, Optional: true},
+					}},
+				},
+			}),
 			Name: "confounding-beta",
 			Resources: map[string]*tfbridge.ResourceInfo{
 				"confounding_provider_resource": {Tok: "confounding:index/resource:Resource"},
 			},
-		},
+		}),
 	}}
 	resp := convertTFState(t.Context(), src, state)
 
@@ -217,6 +254,95 @@ func TestConvertTFState_ProviderNamePrefixMismatch(t *testing.T) {
 	require.Len(t, resp.Resources, 1)
 	assert.Equal(t, "confounding:index/resource:Resource", resp.Resources[0].Type)
 	assert.Equal(t, "c-1", resp.Resources[0].ID)
+}
+
+// TestConvertTFState_SuppliesValues pins the outputs-supplied import shape:
+// bridge renames and MaxItemsOne flattening, schema-sensitive fields and
+// dynamically-marked paths as secrets, and inputs reduced to the schema's
+// input subset.
+func TestConvertTFState_SuppliesValues(t *testing.T) {
+	t.Parallel()
+
+	state := parseState(t, `{
+		"resources": [
+			{
+				"mode": "managed", "type": "aws_s3_bucket", "name": "b",
+				"provider": "provider[\"registry.terraform.io/hashicorp/aws\"]",
+				"instances": [ {
+					"attributes": {
+						"id": "my-bucket",
+						"acl": "private",
+						"secret_sauce": "hunter2",
+						"arn": "arn:aws:s3:::my-bucket",
+						"versioning": [ { "enabled": true } ]
+					},
+					"sensitive_attributes": [
+						[ { "type": "get_attr", "value": "acl" } ],
+						[
+							{ "type": "get_attr", "value": "versioning" },
+							{ "type": "index", "value": { "value": 0, "type": "number" } },
+							{ "type": "get_attr", "value": "enabled" }
+						]
+					]
+				} ]
+			}
+		]
+	}`)
+
+	resp := convertTFState(t.Context(), awsInfoSource(t), state)
+	require.Empty(t, resp.Diagnostics)
+	require.Len(t, resp.Resources, 1)
+	got := resp.Resources[0]
+
+	outs := got.Outputs
+	assert.Equal(t, resource.NewStringProperty("my-bucket"), outs["id"])
+	assert.Equal(t, resource.MakeSecret(resource.NewStringProperty("private")), outs["acl"],
+		"dynamically-marked sensitive path")
+	assert.Equal(t, resource.MakeSecret(resource.NewStringProperty("hunter2")), outs["secretSauce"],
+		"schema-sensitive field")
+	assert.Equal(t, resource.NewStringProperty("arn:aws:s3:::my-bucket"), outs["arn"])
+	require.True(t, outs["versioning"].IsObject(), "MaxItemsOne block flattens to an object")
+	assert.Equal(t, resource.MakeSecret(resource.NewBoolProperty(true)), outs["versioning"].ObjectValue()["enabled"],
+		"the sensitive path's index step drops with the MaxItemsOne flattening")
+
+	ins := got.Inputs
+	assert.Contains(t, ins, resource.PropertyKey("acl"))
+	assert.Contains(t, ins, resource.PropertyKey("secretSauce"))
+	assert.Contains(t, ins, resource.PropertyKey("versioning"))
+	assert.NotContains(t, ins, resource.PropertyKey("arn"), "computed-only fields are not inputs")
+	assert.NotContains(t, ins, resource.PropertyKey("id"))
+}
+
+// TestConvertTFState_ValueFallbacks pins the degradations: instances whose
+// values cannot be translated still import by id, with a warning.
+func TestConvertTFState_ValueFallbacks(t *testing.T) {
+	t.Parallel()
+
+	state := parseState(t, `{
+		"resources": [
+			{
+				"mode": "managed", "type": "aws_s3_bucket", "name": "drifted",
+				"provider": "provider[\"registry.terraform.io/hashicorp/aws\"]",
+				"instances": [ { "schema_version": 5, "attributes": { "id": "old-schema" } } ]
+			},
+			{
+				"mode": "managed", "type": "aws_s3_bucket", "name": "legacy",
+				"provider": "provider[\"registry.terraform.io/hashicorp/aws\"]",
+				"instances": [ { "attributes_flat": { "id": "flatmap" } } ]
+			}
+		]
+	}`)
+
+	resp := convertTFState(t.Context(), awsInfoSource(t), state)
+	require.Len(t, resp.Resources, 2)
+	for _, r := range resp.Resources {
+		assert.Nil(t, r.Outputs, "%s should import by id only", r.ID)
+		assert.Nil(t, r.Inputs)
+	}
+	require.Len(t, resp.Diagnostics, 2)
+	for _, d := range resp.Diagnostics {
+		assert.Equal(t, "Importing without values", d.Summary)
+	}
 }
 
 func TestResourceName(t *testing.T) {
@@ -278,6 +404,13 @@ func (staticMapper) GetMapping(
 		return nil, nil
 	}
 	return json.Marshal(tfbridge.MarshalProviderInfo(&tfbridge.ProviderInfo{
+		P: shimv2.NewProvider(&sdkschema.Provider{
+			ResourcesMap: map[string]*sdkschema.Resource{
+				"random_uuid": {Schema: map[string]*sdkschema.Schema{
+					"result": {Type: sdkschema.TypeString, Computed: true},
+				}},
+			},
+		}),
 		Name: "random",
 		Resources: map[string]*tfbridge.ResourceInfo{
 			"random_uuid": {Tok: "random:index/randomUuid:RandomUuid"},

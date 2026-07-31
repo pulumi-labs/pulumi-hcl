@@ -28,12 +28,17 @@ import (
 	"github.com/hashicorp/hcl/v2"
 	"github.com/pulumi/pulumi-hcl/pkg/hcl/bridge"
 	"github.com/pulumi/pulumi-hcl/pkg/hcl/modulepath"
+	"github.com/pulumi/pulumi-hcl/pkg/hcl/transform"
 	"github.com/pulumi/pulumi-hcl/pkg/util/encryption"
 	"github.com/pulumi/pulumi-hcl/vendored/addrs"
 	"github.com/pulumi/pulumi-hcl/vendored/statefile"
 	"github.com/pulumi/pulumi-hcl/vendored/states"
+	"github.com/pulumi/pulumi-terraform-bridge/v3/pkg/tfbridge"
 	"github.com/pulumi/pulumi/pkg/v3/codegen/convert"
 	"github.com/pulumi/pulumi/pkg/v3/resource/plugin"
+	"github.com/pulumi/pulumi/sdk/v3/go/common/resource"
+	"github.com/pulumi/pulumi/sdk/v3/go/property"
+	"github.com/zclconf/go-cty/cty"
 )
 
 // ConvertState reads a Terraform/OpenTofu state file and emits a
@@ -131,10 +136,17 @@ func convertTFState(
 					"an instance of %s has no string `id` attribute to import by", res.Addr))
 				continue
 			}
+			outs, ins, err := translateInstanceValues(ctx, info, tfType, current)
+			if err != nil {
+				warn("Importing without values", fmt.Sprintf(
+					"an instance of %s imports by id only: %v", res.Addr, err))
+			}
 			resources = append(resources, plugin.ResourceImport{
-				Type: token,
-				Name: resourceName(res.Addr.Resource.Name, key),
-				ID:   id,
+				Type:    token,
+				Name:    resourceName(res.Addr.Resource.Name, key),
+				ID:      id,
+				Inputs:  ins,
+				Outputs: outs,
 			})
 		}
 	}
@@ -199,6 +211,89 @@ func resourceName(name string, key addrs.InstanceKey) string {
 	default:
 		return name
 	}
+}
+
+// translateInstanceValues turns an instance's raw TF attributes into the
+// Pulumi property maps an outputs-supplied import needs, using the bridge's
+// own translation over the mapper-provided schema-only shim — so Outputs are
+// exactly what the bridged provider would have written (renames, MaxItemsOne
+// flattening, schema-sensitive fields as secrets) and Inputs are derived the
+// way the bridge's import path derives them. With Outputs supplied the engine
+// skips the provider's Read entirely.
+func translateInstanceValues(
+	ctx context.Context,
+	info *tfbridge.ProviderInfo,
+	tfType string,
+	current *states.ResourceInstanceObjectSrc,
+) (outs, ins resource.PropertyMap, err error) {
+	if current.AttrsJSON == nil {
+		return nil, nil, errors.New("pre-0.12 flatmap attributes are not translatable")
+	}
+	if info.P == nil {
+		return nil, nil, errors.New("the mapping carries no provider schema")
+	}
+	shimRes, ok := info.P.ResourcesMap().GetOk(tfType)
+	if !ok {
+		return nil, nil, fmt.Errorf("provider schema has no resource %q", tfType)
+	}
+	// The attributes were written at the instance's schema version; without a
+	// live provider there is no UpgradeResourceState, so drifted values
+	// project as-is.
+	if int(current.SchemaVersion) != shimRes.SchemaVersion() {
+		return nil, nil, fmt.Errorf(
+			"state attributes have schema version %d but the provider maps version %d",
+			current.SchemaVersion, shimRes.SchemaVersion())
+	}
+	var attrs map[string]any
+	if err := json.Unmarshal(current.AttrsJSON, &attrs); err != nil {
+		return nil, nil, fmt.Errorf("decoding attributes: %w", err)
+	}
+
+	var fields map[string]*tfbridge.SchemaInfo
+	if resInfo := info.Resources[tfType]; resInfo != nil {
+		fields = resInfo.Fields
+	}
+	outs = tfbridge.MakeTerraformOutputs(ctx, jsonSetChecker{}, attrs, shimRes.Schema(), fields, nil, true)
+	applySensitivePaths(outs, current.AttrSensitivePaths, bridge.ResourceBodyMapping(info, tfType))
+	ins, err = tfbridge.ExtractInputsFromOutputs(nil, outs, shimRes.Schema(), fields, false)
+	if err != nil {
+		return nil, nil, fmt.Errorf("deriving inputs: %w", err)
+	}
+	return outs, ins, nil
+}
+
+// jsonSetChecker satisfies tfbridge's SetChecker for JSON-decoded attribute
+// values, which never contain live *schema.Set instances — set-typed
+// attributes arrive as plain arrays. (The mapper-delivered schema-only shim
+// panics on IsSet.)
+type jsonSetChecker struct{}
+
+func (jsonSetChecker) IsSet(context.Context, any) ([]any, bool) { return nil, false }
+
+// applySensitivePaths marks the values at the state's dynamically-sensitive
+// paths as secrets. Schema-declared sensitivity is already handled during
+// translation; these are the residual marks (e.g. TF's sensitive() function).
+// A path that does not translate or resolve is skipped — better an unmarked
+// value than a failed import.
+func applySensitivePaths(outs resource.PropertyMap, paths []cty.PathValueMarks, mapping *bridge.BodyMapping) {
+	if len(paths) == 0 {
+		return
+	}
+	v := resource.FromResourcePropertyValue(resource.NewObjectProperty(outs))
+	for _, pvm := range paths {
+		pp, err := transform.TranslateAttrPath(pvm.Path, mapping, nil)
+		if err != nil {
+			continue
+		}
+		if altered, err := pp.Alter(v, func(e property.Value) property.Value {
+			return e.WithSecret(true)
+		}); err == nil {
+			v = altered
+		}
+	}
+	marked := resource.ToResourcePropertyValue(v).ObjectValue()
+	clear(outs)
+	maps.Copy(outs, marked)
 }
 
 // importID extracts the `id` attribute verbatim.
