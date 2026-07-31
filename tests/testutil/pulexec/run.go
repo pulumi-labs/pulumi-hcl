@@ -28,11 +28,12 @@ import (
 	"github.com/pulumi/providertest/pulumitest"
 	"github.com/pulumi/providertest/pulumitest/optnewstack"
 	"github.com/pulumi/providertest/pulumitest/opttest"
+	"github.com/pulumi/pulumi-hcl/pkg/converter"
 	"github.com/pulumi/pulumi-hcl/pkg/server"
 	"github.com/pulumi/pulumi-hcl/tests/testutil/tfexec"
+	"github.com/pulumi/pulumi/pkg/v3/resource/plugin"
 	"github.com/pulumi/pulumi/sdk/v3/go/auto"
 	"github.com/pulumi/pulumi/sdk/v3/go/auto/optdestroy"
-	"github.com/pulumi/pulumi/sdk/v3/go/auto/optimport"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/apitype"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/util/contract"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/util/rpcutil"
@@ -320,33 +321,81 @@ func startProvider(
 	return &handle, nil
 }
 
+func serveConverter(t *testing.T) int {
+	t.Helper()
+	cancel := make(chan bool)
+	t.Cleanup(func() { close(cancel) })
+	handle, err := rpcutil.ServeWithOptions(rpcutil.ServeOptions{
+		Cancel: cancel,
+		Init: func(srv *grpc.Server) error {
+			pulumirpc.RegisterConverterServer(srv, plugin.NewConverterServer(converter.New()))
+			return nil
+		},
+	})
+	require.NoError(t, err)
+	return handle.Port
+}
+
+// converterShim writes a pulumi-converter-hcl executable into a fresh temp dir
+// and returns that dir. Converter plugins have no PULUMI_DEBUG_* attach path,
+// but the CLI prefers an ambient plugin found on PATH and its only handshake
+// is the port printed on stdout — so a script that prints the in-process
+// server's port and blocks stands in for the real binary. The CLI kills the
+// shim when it closes the plugin; the in-process server outlives it.
+func converterShim(t *testing.T, port int) string {
+	t.Helper()
+	dir := t.TempDir()
+	shim := fmt.Sprintf("#!/bin/sh\necho %d\nexec tail -f /dev/null\n", port)
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "pulumi-converter-hcl"), []byte(shim), 0o755))
+	return dir
+}
+
+// Import writes programFiles and runs `pulumi import --from hcl` with the
+// given converter arguments. The converter is served in-process behind a PATH
+// shim, and PULUMI_DEBUG_PROVIDERS points the CLI's mapper — and the
+// import-time Reads — at the attached in-process providers. Imports are
+// unprotected for the same reason as ImportFromFile.
+//
+// TODO[https://github.com/pulumi/pulumi/issues/24144]: This is a raw CLI invocation: the
+// Automation API's ImportResources appends `--stack` after the `--` separator, which the
+// CLI then hands to the converter as arguments.
+func (d *Driver) Import(t *testing.T, programFiles map[string]string, converterArgs ...string) (string, error) {
+	t.Helper()
+	d.writeFiles(t, programFiles)
+	stack := d.pt.CurrentStack()
+	require.NotNil(t, stack, "driver has no stack")
+
+	args := append([]string{
+		"import", "--from", "hcl",
+		"--yes", "--skip-preview", "--protect=false", "--generate-code=false",
+		"--stack", stack.Name(), "--non-interactive", "--",
+	}, converterArgs...)
+	cmd := exec.Command("pulumi", args...)
+	cmd.Dir = d.dir
+	env := os.Environ()
+	envPath := os.Getenv("PATH")
+	for k, v := range stack.Workspace().GetEnvVars() {
+		env = append(env, k+"="+v)
+		if k == "PATH" {
+			envPath = v
+		}
+	}
+	shimDir := converterShim(t, serveConverter(t))
+	env = append(env,
+		"PATH="+shimDir+string(os.PathListSeparator)+envPath,
+		"PULUMI_DEBUG_PROVIDERS="+d.rawDebugProvidersEnv(t),
+	)
+	cmd.Env = env
+	out, err := cmd.CombinedOutput()
+	return string(out), err
+}
+
 // PreviewStep is the subset of a `pulumi preview --json` plan step callers
 // assert on.
 type PreviewStep struct {
 	Op   string `json:"op"`
 	URN  string `json:"urn"`
 	Type string `json:"type"`
-}
-
-// ImportFromFile writes programFiles and imports the resources listed in the
-// given `pulumi import --file` JSON. Imports are unprotected: HCL programs
-// cannot express the protect option, so protected imports would always diff.
-// The Automation API import runs with the workspace's environment, outside
-// pulumitest's per-operation provider lifecycle, so the attached providers
-// are supplied for the duration of the call.
-func (d *Driver) ImportFromFile(t *testing.T, programFiles map[string]string, importFilePath string) (string, error) {
-	t.Helper()
-	d.writeFiles(t, programFiles)
-	stack := d.pt.CurrentStack()
-	require.NotNil(t, stack, "driver has no stack")
-	ws := stack.Workspace()
-	ws.SetEnvVar("PULUMI_DEBUG_PROVIDERS", d.rawDebugProvidersEnv(t))
-	defer ws.UnsetEnvVar("PULUMI_DEBUG_PROVIDERS")
-	res, err := stack.ImportResources(t.Context(),
-		optimport.ImportFile(importFilePath),
-		optimport.Protect(false),
-	)
-	return res.StdOut + res.StdErr, err
 }
 
 // PreviewSteps runs `pulumi preview --json` and returns the planned steps.
