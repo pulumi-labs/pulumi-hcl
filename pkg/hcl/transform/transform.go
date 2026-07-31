@@ -513,10 +513,8 @@ func tooManySingularBlocks(name string, rng hcl.Range) *hcl.Diagnostic {
 // through untouched.
 func unwrapSingular(path string, val cty.Value) (cty.Value, error) {
 	unmarked, marks := val.Unmark()
-	if ty := unmarked.Type(); !ty.IsTupleType() && !ty.IsListType() && !ty.IsSetType() {
-		return val, nil
-	}
-	if unmarked.IsNull() || !unmarked.IsKnown() {
+	if ty := unmarked.Type(); (!ty.IsTupleType() && !ty.IsListType() && !ty.IsSetType()) ||
+		unmarked.IsNull() || !unmarked.IsKnown() {
 		return val, nil
 	}
 	switch n := unmarked.LengthInt(); n {
@@ -736,14 +734,12 @@ func ctyToObject(path string, val cty.Value, properties []*schema.Property, attr
 		// flattened value. An explicit empty collection becomes a present-null
 		// property — the encoding the bridge maps back to an empty TF list —
 		// where an unset field stays absent entirely.
+		var err error
 		if fieldIsSingular(mapping, puField) {
-			var err error
-			v, err = unwrapSingular(keyStr, v)
-			if err != nil {
+			if v, err = unwrapSingular(keyStr, v); err != nil {
 				return property.Map{}, err
 			}
 		}
-		var err error
 		result[puField], err = ctyToResourceProperty(keyStr, v, prop.Type, attrExprs[keyStr],
 			prop.Secret || alreadyInSecret, nestedMappingFor(prop.Name, mapping))
 		if err != nil {
@@ -1279,12 +1275,12 @@ func propertyObjectToCtyMap(
 		// list-shaped. The bridge flattens it to a single Pulumi value; we
 		// re-wrap it as a singleton list on output so HCL source like
 		// `r.settings[0].x` resolves the same way as in TF.
-		singular := mapping != nil && fieldIsSingular(mapping, p.Name)
+		singular := fieldIsSingular(mapping, p.Name)
 		// A TF TypeSet field (set block or set attribute) materializes as a
 		// cty set, so set semantics — content-based, order-independent
 		// equality — match TF. The Pulumi wire encoding carries it as an
 		// ordered array; re-type it on the way back out.
-		setField := mapping != nil && fieldIsSet(mapping, p.Name)
+		setField := fieldIsSet(mapping, p.Name)
 		v, ok := m.GetOk(p.Name)
 		// During preview, required properties that are null are treated as unknown.
 		// This is because resource.Computed{} (the SDK's representation of an unknown value)
