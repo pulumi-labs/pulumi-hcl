@@ -24,7 +24,6 @@ import (
 	"maps"
 	"os"
 	"slices"
-	"strings"
 
 	"github.com/hashicorp/hcl/v2"
 	"github.com/pulumi/pulumi-hcl/pkg/hcl/bridge"
@@ -40,6 +39,7 @@ import (
 	"github.com/pulumi/pulumi/pkg/v3/codegen/schema"
 	"github.com/pulumi/pulumi/pkg/v3/resource/plugin"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/resource"
+	"github.com/pulumi/pulumi/sdk/v3/go/common/tokens"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/util/contract"
 	"github.com/pulumi/pulumi/sdk/v3/go/property"
 	"github.com/zclconf/go-cty/cty"
@@ -303,7 +303,7 @@ func translateInstanceValues(
 func resourceSchema(
 	ctx context.Context, loader schema.ReferenceLoader, token string,
 ) (*schema.Resource, error) {
-	pkgName, _, _ := strings.Cut(token, ":")
+	pkgName := string(tokens.Type(token).Module().Package())
 	ref, err := loader.LoadPackageReferenceV2(ctx, &schema.PackageDescriptor{Name: pkgName})
 	if err != nil {
 		return nil, fmt.Errorf("loading schema for package %q: %w", pkgName, err)
