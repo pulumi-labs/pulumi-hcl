@@ -214,3 +214,106 @@ func TestEncodeTFVars(t *testing.T) {
 		})
 	}
 }
+
+// Expected values and error texts match OpenTofu v1.12.3's decode_tfvars,
+// including the 0-based diagnostic positions from parsing at position 0,0.
+func TestDecodeTFVars(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		arg  cty.Value
+		want cty.Value
+	}{
+		{
+			name: "basic",
+			arg:  cty.StringVal("foo = \"bar\"\nbaz = 1\n"),
+			want: cty.ObjectVal(map[string]cty.Value{
+				"foo": cty.StringVal("bar"),
+				"baz": cty.NumberIntVal(1),
+			}),
+		},
+		{
+			name: "nested",
+			arg:  cty.StringVal("list = [1, \"two\", true]\nobj = {\n  a = 1\n}\n"),
+			want: cty.ObjectVal(map[string]cty.Value{
+				"list": cty.TupleVal([]cty.Value{cty.NumberIntVal(1), cty.StringVal("two"), cty.True}),
+				"obj":  cty.ObjectVal(map[string]cty.Value{"a": cty.NumberIntVal(1)}),
+			}),
+		},
+		{
+			name: "empty",
+			arg:  cty.StringVal(""),
+			want: cty.EmptyObjectVal,
+		},
+		{
+			name: "constant expressions evaluate",
+			arg:  cty.StringVal("sum = 1 + 2"),
+			want: cty.ObjectVal(map[string]cty.Value{"sum": cty.NumberIntVal(3)}),
+		},
+		{
+			name: "unknown defers",
+			arg:  cty.UnknownVal(cty.String),
+			want: cty.DynamicVal,
+		},
+		{
+			name: "sensitive input marks result",
+			arg:  cty.StringVal("a = 1").Mark(SensitiveMark),
+			want: cty.ObjectVal(map[string]cty.Value{"a": cty.NumberIntVal(1)}).Mark(SensitiveMark),
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got, err := decodeTFVarsFunc.Call([]cty.Value{tt.arg})
+			require.NoError(t, err)
+			// Parsed numbers differ from NumberIntVal in big.Float
+			// representation, so compare with cty's own equality.
+			assert.True(t, tt.want.RawEquals(got), "got %#v, want %#v", got, tt.want)
+		})
+	}
+
+	errTests := []struct {
+		name    string
+		arg     cty.Value
+		wantErr string
+	}{
+		{
+			name:    "null",
+			arg:     cty.NullVal(cty.String),
+			wantErr: "argument must not be null",
+		},
+		{
+			name:    "syntax error",
+			arg:     cty.StringVal("not valid {{{"),
+			wantErr: "failed to decode tfvars content",
+		},
+		{
+			name:    "variable reference",
+			arg:     cty.StringVal("a = var.x"),
+			wantErr: "failed to decode tfvars content\n:0,4-7: Variables not allowed; Variables may not be used here.",
+		},
+		{
+			name:    "function call",
+			arg:     cty.StringVal(`a = upper("x")`),
+			wantErr: "failed to decode tfvars content",
+		},
+		{
+			name:    "block",
+			arg:     cty.StringVal("block \"x\" {\n}\n"),
+			wantErr: "failed to decode tfvars content",
+		},
+		{
+			name:    "duplicate attribute",
+			arg:     cty.StringVal("a = 1\na = 2"),
+			wantErr: "failed to decode tfvars content",
+		},
+	}
+	for _, tt := range errTests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			_, err := decodeTFVarsFunc.Call([]cty.Value{tt.arg})
+			assert.ErrorContains(t, err, tt.wantErr)
+		})
+	}
+}
