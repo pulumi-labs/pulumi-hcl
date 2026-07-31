@@ -506,6 +506,20 @@ func tooManySingularBlocks(name string, rng hcl.Range) *hcl.Diagnostic {
 	}
 }
 
+// flattenedTarget reports whether prop is a type a MaxItemsOne field
+// flattens to — one that cannot itself hold a collection value.
+func flattenedTarget(prop schema.Type) bool {
+	switch prop {
+	case schema.BoolType, schema.IntType, schema.NumberType, schema.StringType:
+		return true
+	}
+	switch prop.(type) {
+	case *schema.ObjectType, *schema.MapType, *schema.EnumType:
+		return true
+	}
+	return false
+}
+
 // schemaToCtyPrimitive returns the cty primitive type corresponding to a
 // Pulumi schema type, if applicable.
 func schemaToCtyPrimitive(typ schema.Type) (cty.Type, bool) {
@@ -811,6 +825,21 @@ func ctyToResourceProperty(path string, val cty.Value, prop schema.Type, expr hc
 		return property.New(property.Computed), nil
 	}
 
+	// A MaxItemsOne field still in TF shape (attribute-syntax assignment,
+	// state attributes) is a single-element collection; when the schema
+	// flattened the field to a non-collection type, unwrap it.
+	if ty := val.Type(); (ty.IsTupleType() || ty.IsListType() || ty.IsSetType()) && flattenedTarget(prop) {
+		switch val.LengthInt() {
+		case 0:
+			return property.Value{}, nil
+		case 1:
+			it := val.ElementIterator()
+			it.Next()
+			_, elem := it.Element()
+			return ctyToResourceProperty(path, elem, prop, expr, alreadyInSecret, mapping)
+		}
+	}
+
 	// Coerce the value to match the expected schema type when possible.
 	// This handles cases like boolean = "true" where the HCL literal is a
 	// string but the schema expects a boolean.
@@ -864,18 +893,6 @@ func ctyToResourceProperty(path string, val cty.Value, prop schema.Type, expr hc
 		}
 		return property.New(property.Computed), nil
 	case *schema.ObjectType:
-		// A MaxItemsOne field still in TF shape (attribute-syntax assignment,
-		// state attributes) is a single-element collection; unwrap it.
-		if ty := val.Type(); ty.IsTupleType() || ty.IsListType() || ty.IsSetType() {
-			switch val.LengthInt() {
-			case 0:
-				return property.Value{}, nil
-			case 1:
-				it := val.ElementIterator()
-				it.Next()
-				_, val = it.Element()
-			}
-		}
 		if !val.Type().IsObjectType() {
 			return property.Value{}, fmt.Errorf("expected object at %q, found %#v", path, val.Type())
 		}
