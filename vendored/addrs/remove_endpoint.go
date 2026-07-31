@@ -7,7 +7,7 @@ package addrs
 
 import (
 	"github.com/hashicorp/hcl/v2"
-	"github.com/pulumi-labs/pulumi-hcl/vendored/tfdiags"
+	"github.com/pulumi/pulumi-hcl/vendored/tfdiags"
 )
 
 // RemoveEndpoint is to ConfigRemovable what Target is to Targetable:

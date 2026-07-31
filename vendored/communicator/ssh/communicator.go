@@ -23,8 +23,8 @@ import (
 	"time"
 
 	"github.com/apparentlymart/go-shquot/shquot"
-	"github.com/pulumi-labs/pulumi-hcl/pkg/provisioner/provisioners"
-	"github.com/pulumi-labs/pulumi-hcl/vendored/communicator/remote"
+	"github.com/pulumi/pulumi-hcl/pkg/provisioner/provisioners"
+	"github.com/pulumi/pulumi-hcl/vendored/communicator/remote"
 	"github.com/zclconf/go-cty/cty"
 	"golang.org/x/crypto/ssh"
 	"golang.org/x/crypto/ssh/agent"

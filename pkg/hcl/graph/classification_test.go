@@ -19,7 +19,7 @@ import (
 	"slices"
 	"testing"
 
-	"github.com/pulumi-labs/pulumi-hcl/pkg/hcl/parser"
+	"github.com/pulumi/pulumi-hcl/pkg/hcl/parser"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )

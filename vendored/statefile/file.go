@@ -8,9 +8,9 @@ package statefile
 import (
 	version "github.com/hashicorp/go-version"
 
-	"github.com/pulumi-labs/pulumi-hcl/pkg/util/encryption"
-	"github.com/pulumi-labs/pulumi-hcl/vendored/states"
-	tfversion "github.com/pulumi-labs/pulumi-hcl/vendored/version"
+	"github.com/pulumi/pulumi-hcl/pkg/util/encryption"
+	"github.com/pulumi/pulumi-hcl/vendored/states"
+	tfversion "github.com/pulumi/pulumi-hcl/vendored/version"
 )
 
 // File is the in-memory representation of a state file. It includes the state

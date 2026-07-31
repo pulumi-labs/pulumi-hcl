@@ -5,7 +5,7 @@
 
 package addrs
 
-import "github.com/pulumi-labs/pulumi-hcl/vendored/tfdiags"
+import "github.com/pulumi/pulumi-hcl/vendored/tfdiags"
 
 // DiagnosticExtraCheckRule provides an interface for diagnostic ExtraInfo to
 // retrieve an embedded CheckRule from within a tfdiags.Diagnostic.

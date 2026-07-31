@@ -17,13 +17,13 @@ package tfcompat_test
 import (
 	"testing"
 
-	"github.com/pulumi-labs/pulumi-hcl/tests/testutil/tfcompat"
+	"github.com/pulumi/pulumi-hcl/tests/testutil/tfcompat"
 )
 
 // A child module declares `items` with `nullable = false` and a default. The
 // caller passes `items = null`, which Terraform/OpenTofu replace with the
 // variable's default, so `length(var.items)` evaluates to 2. Both paths must
-// agree. See https://github.com/pulumi-labs/pulumi-hcl/issues/183.
+// agree. See https://github.com/pulumi/pulumi-hcl/issues/183.
 func TestL1NullableFalseDefault(t *testing.T) {
 	t.Parallel()
 	tfcompat.RunCase(t, "l1_nullable_false_default", tfcompat.Case{})

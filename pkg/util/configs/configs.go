@@ -21,8 +21,8 @@ package configs
 import (
 	"github.com/hashicorp/hcl/v2"
 	"github.com/hashicorp/hcl/v2/hclsyntax"
-	"github.com/pulumi-labs/pulumi-hcl/vendored/addrs"
-	"github.com/pulumi-labs/pulumi-hcl/vendored/tfdiags"
+	"github.com/pulumi/pulumi-hcl/vendored/addrs"
+	"github.com/pulumi/pulumi-hcl/vendored/tfdiags"
 )
 
 // ParseProviderConfigCompactStr parses a compact provider-configuration

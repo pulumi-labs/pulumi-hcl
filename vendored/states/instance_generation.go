@@ -5,7 +5,7 @@
 
 package states
 
-import "github.com/pulumi-labs/pulumi-hcl/vendored/addrs"
+import "github.com/pulumi/pulumi-hcl/vendored/addrs"
 
 // Generation is used to represent multiple objects in a succession of objects
 // represented by a single resource instance address. A resource instance can

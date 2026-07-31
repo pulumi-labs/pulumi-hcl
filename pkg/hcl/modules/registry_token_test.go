@@ -24,7 +24,7 @@ import (
 	"github.com/opentofu/svchost"
 	"github.com/opentofu/svchost/disco"
 	"github.com/opentofu/svchost/svcauth"
-	"github.com/pulumi-labs/pulumi-hcl/vendored/getmodules"
+	"github.com/pulumi/pulumi-hcl/vendored/getmodules"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )

@@ -17,12 +17,12 @@ package tfcompat_test
 import (
 	"testing"
 
-	"github.com/pulumi-labs/pulumi-hcl/tests/testutil/tfcompat"
+	"github.com/pulumi/pulumi-hcl/tests/testutil/tfcompat"
 )
 
 // TestL2DecodeTfvars covers the builtin `terraform` provider's
 // provider::terraform::decode_tfvars function
-// (https://github.com/pulumi-labs/pulumi-hcl/issues/190): both runtimes must
+// (https://github.com/pulumi/pulumi-hcl/issues/190): both runtimes must
 // parse .tfvars text — literal and resource-produced alike — into identical
 // objects, with no plugin to install.
 func TestL2DecodeTfvars(t *testing.T) {

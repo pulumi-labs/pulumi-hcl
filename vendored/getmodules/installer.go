@@ -11,9 +11,9 @@ import (
 
 	getter "github.com/hashicorp/go-getter"
 
-	"github.com/pulumi-labs/pulumi-hcl/pkg/util/httpclient"
-	"github.com/pulumi-labs/pulumi-hcl/pkg/util/tracing"
-	"github.com/pulumi-labs/pulumi-hcl/pkg/util/tracing/traceattrs"
+	"github.com/pulumi/pulumi-hcl/pkg/util/httpclient"
+	"github.com/pulumi/pulumi-hcl/pkg/util/tracing"
+	"github.com/pulumi/pulumi-hcl/pkg/util/tracing/traceattrs"
 )
 
 // PackageFetcher is a low-level utility for fetching remote module packages

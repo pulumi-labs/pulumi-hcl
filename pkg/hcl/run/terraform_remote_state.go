@@ -21,7 +21,7 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/pulumi-labs/pulumi-hcl/pkg/hcl/packages"
+	"github.com/pulumi/pulumi-hcl/pkg/hcl/packages"
 	"github.com/pulumi/pulumi/sdk/v3/go/property"
 )
 

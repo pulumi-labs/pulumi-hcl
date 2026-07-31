@@ -24,13 +24,13 @@ import (
 	"testing"
 
 	"github.com/blang/semver"
-	"github.com/pulumi-labs/pulumi-hcl/pkg/hcl/ast"
-	"github.com/pulumi-labs/pulumi-hcl/pkg/hcl/modules"
-	"github.com/pulumi-labs/pulumi-hcl/pkg/hcl/parser"
-	"github.com/pulumi-labs/pulumi-hcl/pkg/hcl/run"
-	"github.com/pulumi-labs/pulumi-hcl/pkg/hcl/transform"
-	"github.com/pulumi-labs/pulumi-hcl/tests/testutil"
-	"github.com/pulumi-labs/pulumi-hcl/tests/testutil/schemaloader"
+	"github.com/pulumi/pulumi-hcl/pkg/hcl/ast"
+	"github.com/pulumi/pulumi-hcl/pkg/hcl/modules"
+	"github.com/pulumi/pulumi-hcl/pkg/hcl/parser"
+	"github.com/pulumi/pulumi-hcl/pkg/hcl/run"
+	"github.com/pulumi/pulumi-hcl/pkg/hcl/transform"
+	"github.com/pulumi/pulumi-hcl/tests/testutil"
+	"github.com/pulumi/pulumi-hcl/tests/testutil/schemaloader"
 	"github.com/pulumi/pulumi/pkg/v3/codegen/schema"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/resource/urn"
 	"github.com/pulumi/pulumi/sdk/v3/go/property"
@@ -2952,7 +2952,7 @@ resource "aws_instance" "web" {
 // from its bundle into numbered directories, so the resolved source path carries
 // no name. The component type token must come from the declared source address.
 //
-// https://github.com/pulumi-labs/pulumi-hcl/issues/451
+// https://github.com/pulumi/pulumi-hcl/issues/451
 func TestEngine_ComponentTypeFromDeclaredSource(t *testing.T) {
 	t.Parallel()
 
@@ -3667,7 +3667,7 @@ output "all" {
 
 // TestEngine_ModuleOutputRace verifies that concurrent processing of multiple
 // module outputs does not trigger a data race on moduleInstance.Outputs.
-// This is a regression test for https://github.com/pulumi-labs/pulumi-hcl/issues/60.
+// This is a regression test for https://github.com/pulumi/pulumi-hcl/issues/60.
 func TestEngine_ModuleOutputRace(t *testing.T) {
 	t.Parallel()
 

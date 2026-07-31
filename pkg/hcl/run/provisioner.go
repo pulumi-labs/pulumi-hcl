@@ -23,12 +23,12 @@ import (
 	"github.com/pulumi/pulumi/sdk/v3/go/property"
 	"github.com/zclconf/go-cty/cty"
 
-	"github.com/pulumi-labs/pulumi-hcl/pkg/hcl/ast"
-	"github.com/pulumi-labs/pulumi-hcl/pkg/hcl/bridge"
-	"github.com/pulumi-labs/pulumi-hcl/pkg/hcl/eval"
-	"github.com/pulumi-labs/pulumi-hcl/pkg/hcl/graph"
-	"github.com/pulumi-labs/pulumi-hcl/pkg/hcl/transform"
-	"github.com/pulumi-labs/pulumi-hcl/pkg/provisioner/runtime"
+	"github.com/pulumi/pulumi-hcl/pkg/hcl/ast"
+	"github.com/pulumi/pulumi-hcl/pkg/hcl/bridge"
+	"github.com/pulumi/pulumi-hcl/pkg/hcl/eval"
+	"github.com/pulumi/pulumi-hcl/pkg/hcl/graph"
+	"github.com/pulumi/pulumi-hcl/pkg/hcl/transform"
+	"github.com/pulumi/pulumi-hcl/pkg/provisioner/runtime"
 )
 
 // bindGlobalHooks binds the instance's hook machinery.

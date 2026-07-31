@@ -6,8 +6,8 @@
 package states
 
 import (
-	"github.com/pulumi-labs/pulumi-hcl/vendored/addrs"
-	"github.com/pulumi-labs/pulumi-hcl/vendored/checks"
+	"github.com/pulumi/pulumi-hcl/vendored/addrs"
+	"github.com/pulumi/pulumi-hcl/vendored/checks"
 )
 
 // CheckResults represents a summary snapshot of the status of a set of checks

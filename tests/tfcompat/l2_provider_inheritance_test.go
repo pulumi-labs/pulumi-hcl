@@ -17,8 +17,8 @@ package tfcompat_test
 import (
 	"testing"
 
-	"github.com/pulumi-labs/pulumi-hcl/tests/testutil/tfcompat"
-	"github.com/pulumi-labs/pulumi-hcl/tests/testutil/tfcompat/providers"
+	"github.com/pulumi/pulumi-hcl/tests/testutil/tfcompat"
+	"github.com/pulumi/pulumi-hcl/tests/testutil/tfcompat/providers"
 )
 
 // TestL2ProviderInheritance pins TF's default-provider inheritance for child
@@ -31,7 +31,7 @@ import (
 //   - p4_grandchild: inheritance is recursive through a nested module.
 //   - p6_data_source: a data source inherits the root config.
 //
-// All four reproduce https://github.com/pulumi-labs/pulumi-hcl/issues/236:
+// All four reproduce https://github.com/pulumi/pulumi-hcl/issues/236:
 // pulumi-hcl synthesizes a fresh, unconfigured default provider per module
 // instead of inheriting the root's, dropping the prefix.
 func TestL2ProviderInheritance(t *testing.T) {

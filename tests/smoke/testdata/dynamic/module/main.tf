@@ -19,7 +19,7 @@ terraform {
 }
 
 # A file next to the module, read through a bridged provider data source
-# (https://github.com/pulumi-labs/pulumi-hcl/issues/305).
+# (https://github.com/pulumi/pulumi-hcl/issues/305).
 data "local_file" "version" {
   filename = "${path.module}/VERSION"
 }

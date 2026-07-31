@@ -29,7 +29,7 @@ import (
 	"google.golang.org/protobuf/testing/protocmp"
 	"google.golang.org/protobuf/types/known/structpb"
 
-	"github.com/pulumi-labs/pulumi-hcl/pkg/hcl/run"
+	"github.com/pulumi/pulumi-hcl/pkg/hcl/run"
 )
 
 // routingCaptureMonitorServer records the raw Invoke/Call requests so tests can

@@ -12,7 +12,7 @@ kinds:
     auto: patch
     key: bug-fixes
 fragmentFileFormat: '{{.Custom.Component}}-{{.Kind}}-{{.Custom.PR}}'
-changeFormat: '- [{{.Custom.Component}}] {{.Body}} [#{{.Custom.PR}}](https://github.com/pulumi-labs/pulumi-hcl/pull/{{.Custom.PR}})'
+changeFormat: '- [{{.Custom.Component}}] {{.Body}} [#{{.Custom.PR}}](https://github.com/pulumi/pulumi-hcl/pull/{{.Custom.PR}})'
 custom:
   - key: Component
     label: Component

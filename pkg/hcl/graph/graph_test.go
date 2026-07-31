@@ -19,8 +19,8 @@ import (
 	"testing"
 
 	"github.com/hashicorp/hcl/v2"
-	"github.com/pulumi-labs/pulumi-hcl/pkg/hcl/modulepath"
-	"github.com/pulumi-labs/pulumi-hcl/pkg/hcl/parser"
+	"github.com/pulumi/pulumi-hcl/pkg/hcl/modulepath"
+	"github.com/pulumi/pulumi-hcl/pkg/hcl/parser"
 	"github.com/pulumi/pulumi/pkg/v3/util/pdag"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -264,7 +264,7 @@ func TestValidate(t *testing.T) {
 }
 
 // TestValidateUnknownNodeReportsSourceLocation covers
-// https://github.com/pulumi-labs/pulumi-hcl/issues/153: a reference to a
+// https://github.com/pulumi/pulumi-hcl/issues/153: a reference to a
 // node that does not exist must report the source location of the offending
 // traversal, not just the unknown key.
 func TestValidateUnknownNodeReportsSourceLocation(t *testing.T) {

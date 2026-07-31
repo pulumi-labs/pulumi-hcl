@@ -29,7 +29,7 @@ import (
 	"go.opentelemetry.io/otel/trace"
 	"golang.org/x/sync/errgroup"
 
-	"github.com/pulumi-labs/pulumi-hcl/pkg/potel"
+	"github.com/pulumi/pulumi-hcl/pkg/potel"
 )
 
 // Request names one provider to resolve. Alias is the provider's local name in

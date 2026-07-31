@@ -37,7 +37,7 @@ CHECKS_DIR="$VENDORED_DIR/checks"
 LEGACY_HCL2SHIM_DIR="$VENDORED_DIR/legacy/hcl2shim"
 VERSION_DIR="$VENDORED_DIR/version"
 
-MODULE="github.com/pulumi-labs/pulumi-hcl"
+MODULE="github.com/pulumi/pulumi-hcl"
 UPSTREAM_MODULE="github.com/opentofu/opentofu"
 UPSTREAM_COMMUNICATOR_PKG="$UPSTREAM_MODULE/internal/communicator"
 UPSTREAM_PROVISIONERS_PKG="$UPSTREAM_MODULE/internal/provisioners"

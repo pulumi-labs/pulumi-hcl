@@ -8,8 +8,8 @@ package statefile
 import (
 	"bytes"
 
-	"github.com/pulumi-labs/pulumi-hcl/pkg/util/encryption"
-	"github.com/pulumi-labs/pulumi-hcl/vendored/states"
+	"github.com/pulumi/pulumi-hcl/pkg/util/encryption"
+	"github.com/pulumi/pulumi-hcl/vendored/states"
 )
 
 // StatesMarshalEqual returns true if and only if the two given states have

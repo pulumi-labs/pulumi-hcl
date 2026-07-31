@@ -18,7 +18,7 @@ import (
 	"slices"
 	"testing"
 
-	"github.com/pulumi-labs/pulumi-hcl/pkg/hcl/modulepath"
+	"github.com/pulumi/pulumi-hcl/pkg/hcl/modulepath"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )

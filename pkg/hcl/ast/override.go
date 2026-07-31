@@ -19,7 +19,7 @@ import (
 
 	"github.com/hashicorp/hcl/v2"
 	"github.com/hashicorp/hcl/v2/hclsyntax"
-	"github.com/pulumi-labs/pulumi-hcl/vendored/hcl2shim"
+	"github.com/pulumi/pulumi-hcl/vendored/hcl2shim"
 )
 
 // mergedBlockTypes are the block types an override amends rather than

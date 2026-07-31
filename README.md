@@ -31,8 +31,8 @@ Pulumi HCL ships with the [`pulumi`](https://github.com/pulumi/pulumi) CLI. If y
 can install the plugin directly onto your path:
 
 ```bash
-go install github.com/pulumi-labs/pulumi-hcl/cmd/pulumi-language-hcl@latest  # for the language
-go install github.com/pulumi-labs/pulumi-hcl/cmd/pulumi-converter-hcl@latest # for the converter
+go install github.com/pulumi/pulumi-hcl/cmd/pulumi-language-hcl@latest  # for the language
+go install github.com/pulumi/pulumi-hcl/cmd/pulumi-converter-hcl@latest # for the converter
 ```
 
 ## Usage

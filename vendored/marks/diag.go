@@ -5,7 +5,7 @@
 
 package marks
 
-import "github.com/pulumi-labs/pulumi-hcl/vendored/tfdiags"
+import "github.com/pulumi/pulumi-hcl/vendored/tfdiags"
 
 // DiagnosticDeprecationCause checks whether the given diagnostic is
 // a deprecation warning, and if so returns the deprecation cause and

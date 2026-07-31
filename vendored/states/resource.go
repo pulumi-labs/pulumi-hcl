@@ -8,7 +8,7 @@ package states
 import (
 	"fmt"
 
-	"github.com/pulumi-labs/pulumi-hcl/vendored/addrs"
+	"github.com/pulumi/pulumi-hcl/vendored/addrs"
 )
 
 // Resource represents the state of a resource.

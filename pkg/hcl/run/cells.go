@@ -23,9 +23,9 @@ import (
 
 	"github.com/hashicorp/hcl/v2"
 
-	"github.com/pulumi-labs/pulumi-hcl/pkg/hcl/eval"
-	"github.com/pulumi-labs/pulumi-hcl/pkg/hcl/graph"
-	"github.com/pulumi-labs/pulumi-hcl/pkg/hcl/modulepath"
+	"github.com/pulumi/pulumi-hcl/pkg/hcl/eval"
+	"github.com/pulumi/pulumi-hcl/pkg/hcl/graph"
+	"github.com/pulumi/pulumi-hcl/pkg/hcl/modulepath"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/resource/urn"
 	"github.com/zclconf/go-cty/cty"
 )

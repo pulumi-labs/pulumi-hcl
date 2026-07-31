@@ -28,7 +28,7 @@ import (
 	regaddr "github.com/opentofu/registry-address/v2"
 	"github.com/opentofu/svchost"
 	"github.com/opentofu/svchost/disco"
-	"github.com/pulumi-labs/pulumi-hcl/vendored/getmodules"
+	"github.com/pulumi/pulumi-hcl/vendored/getmodules"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
