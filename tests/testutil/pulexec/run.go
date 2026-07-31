@@ -21,7 +21,9 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/pulumi/providertest/providers"
@@ -40,6 +42,7 @@ import (
 	pulumirpc "github.com/pulumi/pulumi/sdk/v3/proto/go"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/grpc"
+	"google.golang.org/protobuf/types/known/emptypb"
 )
 
 // serveLanguageHost serves the pulumi-language-hcl runtime in-process on an
@@ -103,6 +106,10 @@ type Driver struct {
 	pt        *pulumitest.PulumiTest
 	dir       string
 	providers []Provider
+	// mutations records the mutating RPCs (create/update/delete) the driver's
+	// providers receive; every provider server is wrapped in a
+	// mutationRecorder feeding this log.
+	mutations *mutationLog
 	// lastProgramFiles are the program-file paths written by the previous
 	// writeFiles call, removed before the next stage so a stage that drops a
 	// file doesn't inherit a stale copy.
@@ -128,6 +135,13 @@ func (d *Driver) rawDebugProvidersEnv(t *testing.T) string {
 // any stack config. Call Driver.Apply once per stage.
 func NewDriver(t *testing.T, provs []Provider, config map[string]string) *Driver {
 	t.Helper()
+
+	mutations := &mutationLog{}
+	recorded := make([]Provider, len(provs))
+	for i, p := range provs {
+		recorded[i] = p.recorded(mutations)
+	}
+	provs = recorded
 
 	hostPort := serveLanguageHost(t)
 	dir := t.TempDir()
@@ -173,7 +187,7 @@ backend:
 	for k, v := range config {
 		pt.SetConfig(t, k, v)
 	}
-	return &Driver{pt: pt, dir: dir, providers: provs}
+	return &Driver{pt: pt, dir: dir, providers: provs, mutations: mutations}
 }
 
 // Dir returns the program directory where pulumi runs and program files are
@@ -390,41 +404,75 @@ func (d *Driver) Import(t *testing.T, programFiles map[string]string, converterA
 	return string(out), err
 }
 
-// PreviewStep is the subset of a `pulumi preview --json` plan step callers
-// assert on.
-type PreviewStep struct {
-	Op   string `json:"op"`
-	URN  string `json:"urn"`
-	Type string `json:"type"`
+// mutationLog accumulates the resource-mutating provider RPCs a Driver's
+// providers receive across all engine operations.
+type mutationLog struct {
+	mu    sync.Mutex
+	calls []string
 }
 
-// PreviewSteps runs `pulumi preview --json` and returns the planned steps.
-// This is a raw CLI invocation because the Automation API's Preview does not
-// expose the step-level plan output; it runs outside pulumitest's
-// per-operation provider lifecycle, so the attached providers are supplied
-// explicitly.
-func (d *Driver) PreviewSteps(t *testing.T) ([]PreviewStep, error) {
-	t.Helper()
-	stack := d.pt.CurrentStack()
-	require.NotNil(t, stack, "driver has no stack")
-	cmd := exec.Command("pulumi", "preview", "--json", "--stack", stack.Name(), "--non-interactive")
-	cmd.Dir = d.dir
-	env := os.Environ()
-	for k, v := range stack.Workspace().GetEnvVars() {
-		env = append(env, k+"="+v)
-	}
-	cmd.Env = append(env, "PULUMI_DEBUG_PROVIDERS="+d.rawDebugProvidersEnv(t))
-	var stderr strings.Builder
-	cmd.Stderr = &stderr
-	out, err := cmd.Output()
-	if err != nil {
-		return nil, fmt.Errorf("pulumi preview --json: %w\nstderr: %s", err, stderr.String())
-	}
-	var plan struct {
-		Steps []PreviewStep `json:"steps"`
-	}
-	if err := json.Unmarshal(out, &plan); err != nil {
-		return nil, fmt.Errorf("parsing preview plan: %w", err)
-	}
-	return plan.Steps, nil
+func (l *mutationLog) record(op, urn string) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.calls = append(l.calls, op+" "+urn)
 }
+
+func (l *mutationLog) snapshot() []string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return slices.Clone(l.calls)
+}
+
+// mutationRecorder wraps a provider server, logging the RPCs that mutate (or,
+// with preview set, would mutate) a resource. Previews surface planned
+// creates and updates as Create/Update with preview=true, but planned deletes
+// never reach the provider — asserting no deletes requires a real up.
+type mutationRecorder struct {
+	pulumirpc.ResourceProviderServer
+	log *mutationLog
+}
+
+func previewOp(op string, preview bool) string {
+	if preview {
+		return op + "(preview)"
+	}
+	return op
+}
+
+func (m *mutationRecorder) Create(
+	ctx context.Context, req *pulumirpc.CreateRequest,
+) (*pulumirpc.CreateResponse, error) {
+	m.log.record(previewOp("create", req.Preview), req.Urn)
+	return m.ResourceProviderServer.Create(ctx, req)
+}
+
+func (m *mutationRecorder) Update(
+	ctx context.Context, req *pulumirpc.UpdateRequest,
+) (*pulumirpc.UpdateResponse, error) {
+	m.log.record(previewOp("update", req.Preview), req.Urn)
+	return m.ResourceProviderServer.Update(ctx, req)
+}
+
+func (m *mutationRecorder) Delete(
+	ctx context.Context, req *pulumirpc.DeleteRequest,
+) (*emptypb.Empty, error) {
+	m.log.record("delete", req.Urn)
+	return m.ResourceProviderServer.Delete(ctx, req)
+}
+
+// recorded returns a copy of p whose servers log mutating RPCs to log.
+func (p Provider) recorded(log *mutationLog) Provider {
+	start := p.Start
+	return Provider{Name: p.Name, Start: func(ctx context.Context) (pulumirpc.ResourceProviderServer, error) {
+		srv, err := start(ctx)
+		if err != nil {
+			return nil, err
+		}
+		return &mutationRecorder{ResourceProviderServer: srv, log: log}, nil
+	}}
+}
+
+// Mutations returns the create/update/delete provider calls recorded since
+// the driver was built, in arrival order, formatted "op urn" (preview-mode
+// calls as "op(preview) urn").
+func (d *Driver) Mutations() []string { return d.mutations.snapshot() }
