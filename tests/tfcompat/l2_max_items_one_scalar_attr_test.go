@@ -36,6 +36,23 @@ func TestL2MaxItemsOneScalarAttr(t *testing.T) {
 	})
 }
 
+// TestL2MaxItemsOneListElemAttr flattens a MaxItems=1 field whose element is
+// itself a list, so the flattened Pulumi value is collection-shaped. OpenTofu
+// handles the schema natively, but the bridge's flat encoding is ambiguous
+// for it: makeTerraformInput passes arrays through as already-TF-shaped while
+// Check re-flattens, mis-nesting the value and panicking on two inner items.
+func TestL2MaxItemsOneListElemAttr(t *testing.T) {
+	t.Parallel()
+	t.Skip("TODO[github.com/pulumi/pulumi-terraform-bridge#3557]: " +
+		"the bridge cannot round-trip a MaxItemsOne field with a list-typed Elem; " +
+		"Check panics with \"Unexpected multiple elements in array with MaxItems=1\"")
+	tfcompat.RunCase(t, "l2_max_items_one_list_elem_attr", tfcompat.Case{
+		Providers: []tfcompat.Provider{
+			{Name: "blocky", Factory: providers.BlockyProvider},
+		},
+	})
+}
+
 // TestL2MaxItemsOneAttrIgnoreChanges indexes into a flattened attribute from
 // `ignore_changes`: the TF path `alias[0]` must drop its index like a
 // singular block's would, so the change to the flattened value is ignored.
