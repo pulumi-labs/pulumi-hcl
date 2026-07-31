@@ -2338,11 +2338,7 @@ type AttrPathResolver struct {
 // Pulumi value, so the caller can drop the TF list index that follows it.
 func (r *AttrPathResolver) Next(tfName string) (name string, singular bool, err error) {
 	if fm := r.Mapping.Lookup(tfName); fm != nil {
-		if fm.Nested != nil {
-			r.Mapping, r.Props = fm.Nested, nil
-		} else {
-			r.Mapping, r.Props = nil, nil
-		}
+		r.Mapping, r.Props = fm.Nested, nil
 		return fm.PulumiName, fm.MaxItemsOne, nil
 	}
 	pulumiName, prop := PulumiCaseFromSnakeCase(tfName, r.Props)
@@ -2354,7 +2350,6 @@ func (r *AttrPathResolver) Next(tfName string) (name string, singular bool, err 
 	if r.Mapping != nil || len(r.Props) > 0 {
 		return "", false, fmt.Errorf("unknown property %q", tfName)
 	}
-	r.Mapping, r.Props = nil, nil
 	return tfName, false, nil
 }
 

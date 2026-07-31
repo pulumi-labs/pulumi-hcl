@@ -254,7 +254,7 @@ func translateInstanceValues(
 		fields = resInfo.Fields
 	}
 	outs = tfbridge.MakeTerraformOutputs(ctx, jsonSetChecker{}, attrs, shimRes.Schema(), fields, nil, true)
-	applySensitivePaths(outs, current.AttrSensitivePaths, bridge.ResourceBodyMapping(info, tfType))
+	outs = applySensitivePaths(outs, current.AttrSensitivePaths, bridge.ResourceBodyMapping(info, tfType))
 	ins, err = tfbridge.ExtractInputsFromOutputs(nil, outs, shimRes.Schema(), fields, false)
 	if err != nil {
 		return nil, nil, fmt.Errorf("deriving inputs: %w", err)
@@ -270,14 +270,16 @@ type jsonSetChecker struct{}
 
 func (jsonSetChecker) IsSet(context.Context, any) ([]any, bool) { return nil, false }
 
-// applySensitivePaths marks the values at the state's dynamically-sensitive
-// paths as secrets. Schema-declared sensitivity is already handled during
-// translation; these are the residual marks (e.g. TF's sensitive() function).
-// A path that does not translate or resolve is skipped — better an unmarked
-// value than a failed import.
-func applySensitivePaths(outs resource.PropertyMap, paths []cty.PathValueMarks, mapping *bridge.BodyMapping) {
+// applySensitivePaths returns outs with the values at the state's
+// dynamically-sensitive paths marked as secrets. Schema-declared sensitivity
+// is already handled during translation; these are the residual marks (e.g.
+// TF's sensitive() function). A path that does not translate or resolve is
+// skipped — better an unmarked value than a failed import.
+func applySensitivePaths(
+	outs resource.PropertyMap, paths []cty.PathValueMarks, mapping *bridge.BodyMapping,
+) resource.PropertyMap {
 	if len(paths) == 0 {
-		return
+		return outs
 	}
 	v := resource.FromResourcePropertyValue(resource.NewObjectProperty(outs))
 	for _, pvm := range paths {
@@ -291,9 +293,7 @@ func applySensitivePaths(outs resource.PropertyMap, paths []cty.PathValueMarks, 
 			v = altered
 		}
 	}
-	marked := resource.ToResourcePropertyValue(v).ObjectValue()
-	clear(outs)
-	maps.Copy(outs, marked)
+	return resource.ToResourcePropertyValue(v).ObjectValue()
 }
 
 // importID extracts the `id` attribute verbatim.
