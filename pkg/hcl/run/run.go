@@ -1501,7 +1501,7 @@ func (e *Engine) registerProviderInContext(
 	providerID := resp.ID
 
 	// Use ResourceOutputToCty to match processResource's snake_case key emission.
-	outputObj, err := transform.ResourceOutputToCty(resp.Outputs, resSchema, providerMapping, e.dryRun)
+	outputObj, err := transform.ResourceOutputToCty(resp.Outputs, resSchema, providerMapping, inputsMap, e.dryRun)
 	if err != nil {
 		return fmt.Errorf("converting provider outputs to HCL types: %w", err)
 	}
@@ -1726,7 +1726,7 @@ func (e *Engine) registerResourceInstanceInContext(
 		return fmt.Errorf("resolving resource references in outputs: %w", err)
 	}
 
-	outputObj, err := transform.ResourceOutputToCty(outputs, resSchema, resourceMapping, e.dryRun)
+	outputObj, err := transform.ResourceOutputToCty(outputs, resSchema, resourceMapping, resourceInputs, e.dryRun)
 	if err != nil {
 		return fmt.Errorf("converting resource outputs to HCL types: %w", err)
 	}
@@ -3106,16 +3106,16 @@ type attrPathNameResolver struct {
 
 // next translates one TF (snake_case) attribute-name segment to its Pulumi name
 // and advances the resolver into the nested schema for the following segment. It
-// reports whether the resolved field is a MaxItems=1 block flattened to a single
-// Pulumi object, so the caller can drop the TF list index that follows it.
-func (r *attrPathNameResolver) next(tfName string) (name string, singularBlock bool, err error) {
+// reports whether the resolved field is a MaxItems=1 field flattened to a single
+// Pulumi value, so the caller can drop the TF list index that follows it.
+func (r *attrPathNameResolver) next(tfName string) (name string, singular bool, err error) {
 	if fm := r.mapping.Lookup(tfName); fm != nil {
 		if fm.Nested != nil {
 			r.mapping, r.props = fm.Nested, nil
 		} else {
 			r.mapping, r.props = nil, nil
 		}
-		return fm.PulumiName, fm.TFBlock && fm.MaxItemsOne, nil
+		return fm.PulumiName, fm.MaxItemsOne, nil
 	}
 	pulumiName, prop := transform.PulumiCaseFromSnakeCase(tfName, r.props)
 	if prop != nil {
@@ -4660,7 +4660,7 @@ func evaluatePostconditions(
 	rules []*ast.CheckRule, hclCtx *hcl.EvalContext, newOutputs property.Map, tfType string,
 	resSchema *schema.Resource, mapping *bridge.BodyMapping, dryRun bool, resourceName string,
 ) error {
-	outputObj, err := transform.ResourceOutputToCty(newOutputs, resSchema, mapping, dryRun)
+	outputObj, err := transform.ResourceOutputToCty(newOutputs, resSchema, mapping, property.Map{}, dryRun)
 	if err != nil {
 		return fmt.Errorf("converting outputs for postconditions on %s: %w", resourceName, err)
 	}

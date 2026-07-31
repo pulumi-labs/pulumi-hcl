@@ -198,7 +198,7 @@ func selfBoundEvalCtx(
 	if outputs.Len() == 0 && id == "" && urn == "" {
 		return parent, nil
 	}
-	outputObj, err := transform.ResourceOutputToCty(outputs, resSchema, mapping, dryRun)
+	outputObj, err := transform.ResourceOutputToCty(outputs, resSchema, mapping, property.Map{}, dryRun)
 	if err != nil {
 		return nil, fmt.Errorf("converting outputs: %w", err)
 	}

@@ -24,12 +24,51 @@ import (
 // TestL2MaxItemsOneScalarAttr sets a TypeList MaxItems=1 field with a scalar
 // Elem — an attribute in TF (`alias = ["x"]`) that the bridge flattens to a
 // plain string. The single-element tuple must collapse to the flattened
-// scalar on input, and re-expand to a single-element list on output.
+// scalar on input, and re-expand to a single-element list on output. An
+// explicitly-empty assignment stays an empty list, distinct from an unset
+// field, which is null.
 func TestL2MaxItemsOneScalarAttr(t *testing.T) {
 	t.Parallel()
 	tfcompat.RunCase(t, "l2_max_items_one_scalar_attr", tfcompat.Case{
 		Providers: []tfcompat.Provider{
 			{Name: "blocky", Factory: providers.BlockyProvider},
 		},
+	})
+}
+
+// TestL2MaxItemsOneAttrIgnoreChanges indexes into a flattened attribute from
+// `ignore_changes`: the TF path `alias[0]` must drop its index like a
+// singular block's would, so the change to the flattened value is ignored.
+func TestL2MaxItemsOneAttrIgnoreChanges(t *testing.T) {
+	t.Parallel()
+	tfcompat.RunCase(t, "l2_max_items_one_attr_ignore_changes", tfcompat.Case{
+		Providers: []tfcompat.Provider{
+			{Name: "blocky", Factory: providers.BlockyProvider},
+		},
+	})
+}
+
+// TestL2MaxItemsOneAttrTooMany assigns two elements to a MaxItems=1
+// attribute; both runtimes must reject it with the one-item limit.
+func TestL2MaxItemsOneAttrTooMany(t *testing.T) {
+	t.Parallel()
+	tfcompat.RunCase(t, "l2_max_items_one_attr_too_many", tfcompat.Case{
+		Providers: []tfcompat.Provider{
+			{Name: "blocky", Factory: providers.BlockyProvider},
+		},
+		Stages: []tfcompat.Stage{{ExpectErr: "1 item maximum"}},
+	})
+}
+
+// TestL2ScalarAttrListValue assigns a list to a plain (non-MaxItemsOne)
+// string attribute; both runtimes must reject the value rather than coerce
+// it.
+func TestL2ScalarAttrListValue(t *testing.T) {
+	t.Parallel()
+	tfcompat.RunCase(t, "l2_scalar_attr_list_value", tfcompat.Case{
+		Providers: []tfcompat.Provider{
+			{Name: "blocky", Factory: providers.BlockyProvider},
+		},
+		Stages: []tfcompat.Stage{{ExpectErr: "value type"}},
 	})
 }

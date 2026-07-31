@@ -1042,7 +1042,7 @@ func TestResourceOutputToCtyDoesNotErrorOnValidValues(t *testing.T) {
 				continue
 			}
 			outputs := rapidresource.ResourceProperties(res).Draw(rt, "outputs:"+res.Token)
-			_, err := ResourceOutputToCty(outputs, res, nil, false)
+			_, err := ResourceOutputToCty(outputs, res, nil, property.Map{}, false)
 			require.NoError(t, err)
 		}
 	})
@@ -1080,7 +1080,7 @@ func TestResourceOutputToCtySingularBlockPlaceholder(t *testing.T) {
 
 	t.Run("missing during preview", func(t *testing.T) {
 		t.Parallel()
-		r, err := ResourceOutputToCty(property.Map{}, res, mapping, true)
+		r, err := ResourceOutputToCty(property.Map{}, res, mapping, property.Map{}, true)
 		require.NoError(t, err)
 		assert.Equal(t, map[string]cty.Value{"block": cty.UnknownVal(blockList)}, r)
 	})
@@ -1090,14 +1090,14 @@ func TestResourceOutputToCtySingularBlockPlaceholder(t *testing.T) {
 		outputs := property.NewMap(map[string]property.Value{
 			"block": property.New(property.Null),
 		})
-		r, err := ResourceOutputToCty(outputs, res, mapping, true)
+		r, err := ResourceOutputToCty(outputs, res, mapping, property.Map{}, true)
 		require.NoError(t, err)
 		assert.Equal(t, map[string]cty.Value{"block": cty.UnknownVal(blockList)}, r)
 	})
 
 	t.Run("missing during apply", func(t *testing.T) {
 		t.Parallel()
-		r, err := ResourceOutputToCty(property.Map{}, res, mapping, false)
+		r, err := ResourceOutputToCty(property.Map{}, res, mapping, property.Map{}, false)
 		require.NoError(t, err)
 		assert.Equal(t, map[string]cty.Value{"block": cty.NullVal(blockList)}, r)
 	})
@@ -1144,7 +1144,7 @@ func TestResourceOutputToCtySetField(t *testing.T) {
 			}),
 			"ports": property.New([]property.Value{property.New(443.0), property.New(80.0)}),
 		})
-		r, err := ResourceOutputToCty(outputs, res, mapping, false)
+		r, err := ResourceOutputToCty(outputs, res, mapping, property.Map{}, false)
 		require.NoError(t, err)
 		assert.Equal(t, map[string]cty.Value{
 			"filter": cty.SetVal([]cty.Value{
@@ -1157,7 +1157,7 @@ func TestResourceOutputToCtySetField(t *testing.T) {
 
 	t.Run("missing during preview", func(t *testing.T) {
 		t.Parallel()
-		r, err := ResourceOutputToCty(property.Map{}, res, mapping, true)
+		r, err := ResourceOutputToCty(property.Map{}, res, mapping, property.Map{}, true)
 		require.NoError(t, err)
 		assert.Equal(t, map[string]cty.Value{
 			"filter": cty.UnknownVal(filterSet),
@@ -1167,7 +1167,7 @@ func TestResourceOutputToCtySetField(t *testing.T) {
 
 	t.Run("missing during apply", func(t *testing.T) {
 		t.Parallel()
-		r, err := ResourceOutputToCty(property.Map{}, res, mapping, false)
+		r, err := ResourceOutputToCty(property.Map{}, res, mapping, property.Map{}, false)
 		require.NoError(t, err)
 		assert.Equal(t, map[string]cty.Value{
 			"filter": cty.NullVal(filterSet),
@@ -1180,7 +1180,7 @@ func TestResourceOutputToCtySetField(t *testing.T) {
 		outputs := property.NewMap(map[string]property.Value{
 			"ports": property.New([]property.Value{property.New(443.0).WithSecret(true)}),
 		})
-		r, err := ResourceOutputToCty(outputs, res, mapping, false)
+		r, err := ResourceOutputToCty(outputs, res, mapping, property.Map{}, false)
 		require.NoError(t, err)
 		assert.Equal(t,
 			cty.SetVal([]cty.Value{cty.NumberFloatVal(443)}).Mark(eval.SensitiveMark),
@@ -1221,7 +1221,7 @@ func TestResourceOutputToCtySchemaSecretElided(t *testing.T) {
 		},
 	}
 
-	r, err := ResourceOutputToCty(property.Map{}, res, nil, true)
+	r, err := ResourceOutputToCty(property.Map{}, res, nil, property.Map{}, true)
 	require.NoError(t, err)
 	assert.Equal(t, map[string]cty.Value{
 		"secret_output": cty.UnknownVal(cty.String).Mark(eval.SensitiveMark),
@@ -1265,7 +1265,7 @@ func TestResourceOutputToCtyUnionTypeCollapse(t *testing.T) {
 			}),
 		})
 
-		r, err := ResourceOutputToCty(outputs, res, nil, false)
+		r, err := ResourceOutputToCty(outputs, res, nil, property.Map{}, false)
 		require.NoError(t, err)
 		assert.Equal(t, map[string]cty.Value{
 			"p": cty.ObjectVal(map[string]cty.Value{
@@ -1322,7 +1322,7 @@ func TestResourceOutputToCtyUnionTypeCollapseNested(t *testing.T) {
 			}),
 		})
 
-		r, err := ResourceOutputToCty(outputs, res, nil, false)
+		r, err := ResourceOutputToCty(outputs, res, nil, property.Map{}, false)
 		require.NoError(t, err)
 		// Object{foo_bar:String} and Map<String> unify to Map<String>, so the
 		// outer array can stay as a clean cty.ListVal of cty.MapVal.
@@ -1350,7 +1350,7 @@ func TestResourceOutputToCtyUnionTypeCollapseNested(t *testing.T) {
 			}),
 		})
 
-		r, err := ResourceOutputToCty(outputs, res, nil, false)
+		r, err := ResourceOutputToCty(outputs, res, nil, property.Map{}, false)
 		require.NoError(t, err)
 		assert.Equal(t, map[string]cty.Value{
 			"lookup": cty.MapVal(map[string]cty.Value{
@@ -1383,7 +1383,7 @@ func TestResourceOutputToCtyUnionTypeCollapseNested(t *testing.T) {
 			}),
 		})
 
-		r, err := ResourceOutputToCty(outputs, res, nil, false)
+		r, err := ResourceOutputToCty(outputs, res, nil, property.Map{}, false)
 		require.NoError(t, err)
 		// After union resolution every leaf becomes Map<String>, so both the
 		// inner maps and the outer array can stay homogeneous.
@@ -1416,7 +1416,7 @@ func TestResourceOutputToCtyUnionTypeCollapseNested(t *testing.T) {
 			}),
 		})
 
-		r, err := ResourceOutputToCty(outputs, res, nil, false)
+		r, err := ResourceOutputToCty(outputs, res, nil, property.Map{}, false)
 		require.NoError(t, err)
 		// Object{foo_bar:String} and Map<String> unify to Map<String>, so the
 		// outer collection can stay as a clean cty.MapVal of cty.MapVal.
@@ -1458,7 +1458,7 @@ func TestResourceOutputToCtyUnionTypeCollapseNested(t *testing.T) {
 			outputs := property.NewMap(map[string]property.Value{
 				"v": property.New(map[string]property.Value{"p": property.New("hi")}),
 			})
-			r, err := ResourceOutputToCty(outputs, res, nil, false)
+			r, err := ResourceOutputToCty(outputs, res, nil, property.Map{}, false)
 			require.NoError(t, err)
 			assert.Equal(t, map[string]cty.Value{
 				"v": cty.ObjectVal(map[string]cty.Value{"p": cty.StringVal("hi")}),
@@ -1471,7 +1471,7 @@ func TestResourceOutputToCtyUnionTypeCollapseNested(t *testing.T) {
 			outputs := property.NewMap(map[string]property.Value{
 				"v": property.New(map[string]property.Value{"p": property.New(true)}),
 			})
-			r, err := ResourceOutputToCty(outputs, res, nil, false)
+			r, err := ResourceOutputToCty(outputs, res, nil, property.Map{}, false)
 			require.NoError(t, err)
 			assert.Equal(t, map[string]cty.Value{
 				"v": cty.ObjectVal(map[string]cty.Value{"p": cty.BoolVal(true)}),
@@ -1510,7 +1510,7 @@ func TestResourceOutputToCtyUnionTypeCollapseNested(t *testing.T) {
 			}),
 		})
 
-		r, err := ResourceOutputToCty(outputs, res, nil, false)
+		r, err := ResourceOutputToCty(outputs, res, nil, property.Map{}, false)
 		require.NoError(t, err)
 		assert.Equal(t, map[string]cty.Value{
 			"v": cty.MapVal(map[string]cty.Value{
@@ -1548,7 +1548,7 @@ func TestResourceOutputToCtyUnionTypeCollapseNested(t *testing.T) {
 			}),
 		})
 
-		r, err := ResourceOutputToCty(outputs, res, nil, false)
+		r, err := ResourceOutputToCty(outputs, res, nil, property.Map{}, false)
 		require.NoError(t, err)
 		assert.Equal(t, map[string]cty.Value{
 			"v": cty.MapVal(map[string]cty.Value{
@@ -1592,7 +1592,7 @@ func TestResourceOutputToCtyUnionTypeCollapseNested(t *testing.T) {
 			}),
 		})
 
-		r, err := ResourceOutputToCty(outputs, res, nil, false)
+		r, err := ResourceOutputToCty(outputs, res, nil, property.Map{}, false)
 		require.NoError(t, err)
 		assert.Equal(t, map[string]cty.Value{
 			"v": cty.ObjectVal(map[string]cty.Value{
@@ -1626,7 +1626,7 @@ func TestResourceOutputToCtyJSONType(t *testing.T) {
 		}),
 	})
 
-	r, err := ResourceOutputToCty(outputs, res, nil, false)
+	r, err := ResourceOutputToCty(outputs, res, nil, property.Map{}, false)
 	require.NoError(t, err)
 	assert.Equal(t, map[string]cty.Value{
 		"wrapper": cty.ObjectVal(map[string]cty.Value{
@@ -1764,7 +1764,7 @@ func TestResourceOutputToCtyRecursiveValue(t *testing.T) {
 		})),
 	})
 
-	result, err := ResourceOutputToCty(outputs, recursiveResourceSchema(), nil, false)
+	result, err := ResourceOutputToCty(outputs, recursiveResourceSchema(), nil, property.Map{}, false)
 	require.NoError(t, err)
 
 	a := result["a"]
@@ -1799,7 +1799,7 @@ func TestResourceOutputToCtyRecursiveUnknown(t *testing.T) {
 		"a": property.New(property.Computed),
 	})
 
-	result, err := ResourceOutputToCty(outputs, recursiveResourceSchema(), nil, true)
+	result, err := ResourceOutputToCty(outputs, recursiveResourceSchema(), nil, property.Map{}, true)
 	require.NoError(t, err)
 	assert.False(t, result["a"].IsKnown())
 }
@@ -1879,7 +1879,7 @@ func TestResourceOutputToCtyRecursiveArrayMixedDepth(t *testing.T) {
 		})),
 	})
 
-	result, err := ResourceOutputToCty(outputs, res, nil, false)
+	result, err := ResourceOutputToCty(outputs, res, nil, property.Map{}, false)
 	require.NoError(t, err)
 
 	items := result["items"]

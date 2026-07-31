@@ -506,18 +506,31 @@ func tooManySingularBlocks(name string, rng hcl.Range) *hcl.Diagnostic {
 	}
 }
 
-// flattenedTarget reports whether prop is a type a MaxItemsOne field
-// flattens to — one that cannot itself hold a collection value.
-func flattenedTarget(prop schema.Type) bool {
-	switch prop {
-	case schema.BoolType, schema.IntType, schema.NumberType, schema.StringType:
-		return true
+// unwrapSingular converts a MaxItemsOne field's TF-shaped collection to its
+// flattened value: empty becomes null, a single element becomes the element
+// (container marks carried over). More than one element is an error, matching
+// the field's one-item limit. Values that are not known collections pass
+// through untouched.
+func unwrapSingular(path string, val cty.Value) (cty.Value, error) {
+	unmarked, marks := val.Unmark()
+	if ty := unmarked.Type(); !ty.IsTupleType() && !ty.IsListType() && !ty.IsSetType() {
+		return val, nil
 	}
-	switch prop.(type) {
-	case *schema.ObjectType, *schema.MapType, *schema.EnumType:
-		return true
+	if unmarked.IsNull() || !unmarked.IsKnown() {
+		return val, nil
 	}
-	return false
+	switch n := unmarked.LengthInt(); n {
+	case 0:
+		return cty.NullVal(cty.DynamicPseudoType).WithMarks(marks), nil
+	case 1:
+		it := unmarked.ElementIterator()
+		it.Next()
+		_, elem := it.Element()
+		return elem.WithMarks(marks), nil
+	default:
+		return cty.Value{}, fmt.Errorf(
+			"%q: too many list items: attribute supports 1 item maximum, but config has %d declared", path, n)
+	}
 }
 
 // schemaToCtyPrimitive returns the cty primitive type corresponding to a
@@ -718,6 +731,18 @@ func ctyToObject(path string, val cty.Value, properties []*schema.Property, attr
 				puField, keyStr, path, strings.Join(paths, ", "))
 		}
 		seen[puField] = struct{}{}
+		// A MaxItemsOne field still in TF shape (attribute-syntax assignment,
+		// state attributes) is a single-element collection; unwrap it to the
+		// flattened value. An explicit empty collection becomes a present-null
+		// property — the encoding the bridge maps back to an empty TF list —
+		// where an unset field stays absent entirely.
+		if fieldIsSingular(mapping, puField) {
+			var err error
+			v, err = unwrapSingular(keyStr, v)
+			if err != nil {
+				return property.Map{}, err
+			}
+		}
 		var err error
 		result[puField], err = ctyToResourceProperty(keyStr, v, prop.Type, attrExprs[keyStr],
 			prop.Secret || alreadyInSecret, nestedMappingFor(prop.Name, mapping))
@@ -823,21 +848,6 @@ func ctyToResourceProperty(path string, val cty.Value, prop schema.Type, expr hc
 		return property.Value{}, nil
 	case !val.IsKnown():
 		return property.New(property.Computed), nil
-	}
-
-	// A MaxItemsOne field still in TF shape (attribute-syntax assignment,
-	// state attributes) is a single-element collection; when the schema
-	// flattened the field to a non-collection type, unwrap it.
-	if ty := val.Type(); (ty.IsTupleType() || ty.IsListType() || ty.IsSetType()) && flattenedTarget(prop) {
-		switch val.LengthInt() {
-		case 0:
-			return property.Value{}, nil
-		case 1:
-			it := val.ElementIterator()
-			it.Next()
-			_, elem := it.Element()
-			return ctyToResourceProperty(path, elem, prop, expr, alreadyInSecret, mapping)
-		}
 	}
 
 	// Coerce the value to match the expected schema type when possible.
@@ -950,7 +960,8 @@ func ctyToResourceProperty(path string, val cty.Value, prop schema.Type, expr hc
 		}
 		return ctyToPropertyValue(val)
 	default:
-		return property.Value{}, fmt.Errorf("%q: unknown schema type %s when converting %#v", path, prop, val.Type())
+		return property.Value{}, fmt.Errorf("%q: incorrect value type: cannot convert %s to %s",
+			path, val.Type().FriendlyName(), prop)
 	}
 }
 
@@ -1163,8 +1174,12 @@ func ctyObjectToPropertyValue(val cty.Value) (property.Value, error) {
 // ResourceOutputToCty projects Pulumi resource outputs into a cty value.
 // When mapping is non-nil the cty keys are TF attribute names, so HCL
 // traversals like `aws_lambda_function.fn.function_name` resolve even when
-// the bridge has renamed the property on the Pulumi side.
-func ResourceOutputToCty(pv property.Map, r *schema.Resource, mapping *bridge.BodyMapping, dryRun bool) (map[string]cty.Value, error) {
+// the bridge has renamed the property on the Pulumi side. inputs is the
+// resource's registered input map; it disambiguates a flattened attribute's
+// null output between explicitly-empty and unset (see propertyObjectToCtyMap).
+func ResourceOutputToCty(
+	pv property.Map, r *schema.Resource, mapping *bridge.BodyMapping, inputs property.Map, dryRun bool,
+) (map[string]cty.Value, error) {
 	properties := r.Properties
 	// version + pluginDownloadURL aren't in the schema Properties but
 	// flow through as outputs via the Pulumi resource-options machinery.
@@ -1174,7 +1189,7 @@ func ResourceOutputToCty(pv property.Map, r *schema.Resource, mapping *bridge.Bo
 			&schema.Property{Name: "pluginDownloadURL", Type: schema.StringType},
 		)
 	}
-	return propertyObjectToCtyMap("", pv, properties, mapping, dryRun)
+	return propertyObjectToCtyMap("", pv, properties, mapping, inputs, dryRun)
 }
 
 // ResourceReferenceType returns the cty type of a reference to r — the value
@@ -1207,7 +1222,7 @@ func DataSourceReferenceType(fn *schema.Function, mapping *bridge.BodyMapping) c
 // FunctionOutputToCty mirrors ResourceOutputToCty for invoke return values.
 func FunctionOutputToCty(pv property.Map, r *schema.Function, mapping *bridge.BodyMapping, dryRun bool) (cty.Value, error) {
 	if obj, ok := r.ReturnType.(*schema.ObjectType); ok {
-		o, err := propertyObjectToCtyMap("", pv, obj.Properties, mapping, dryRun)
+		o, err := propertyObjectToCtyMap("", pv, obj.Properties, mapping, property.Map{}, dryRun)
 		return cty.ObjectVal(o), err
 	}
 	for k, scalarPV := range pv.AsMap() {
@@ -1247,7 +1262,15 @@ func nestedMappingFor(pulumiName string, mapping *bridge.BodyMapping) *bridge.Bo
 	return nil
 }
 
-func propertyObjectToCtyMap(path string, m property.Map, properties []*schema.Property, mapping *bridge.BodyMapping, dryRun bool) (map[string]cty.Value, error) {
+// echo, when non-empty, is the resource's registered input map: for a
+// non-computed TF attribute the provider echoes the configured value, so the
+// inputs disambiguate a flattened attribute's null output between
+// explicitly-empty (the input is a present-null, the bridge's encoding of an
+// empty TF list) and unset (the input is absent).
+func propertyObjectToCtyMap(
+	path string, m property.Map, properties []*schema.Property,
+	mapping *bridge.BodyMapping, echo property.Map, dryRun bool,
+) (map[string]cty.Value, error) {
 	result := make(map[string]cty.Value, m.Len())
 	for _, p := range properties {
 		hclName := tfNameForPulumi(p.Name, mapping)
@@ -1270,15 +1293,24 @@ func propertyObjectToCtyMap(path string, m property.Map, properties []*schema.Pr
 		// legitimately be null, we safely treat null-during-preview as unknown.
 		if !ok || (dryRun && v.IsNull() && p.IsRequired()) {
 			t := ctyTypeFromType(p.Type, nested)
-			if singular && !t.IsListType() && !t.IsTupleType() {
+			if singular {
 				t = cty.List(t)
 			}
 			if setField && t.IsListType() {
 				t = cty.Set(t.ElementType())
 			}
-			if dryRun {
+			switch {
+			case dryRun:
 				result[hclName] = cty.UnknownVal(t)
-			} else {
+			case singular && !fieldIsBlock(mapping, p.Name) && echoedEmpty(echo, p.Name):
+				// The provider dropped the flattened attribute's null echo;
+				// the present-null input still marks it explicitly empty.
+				if t.IsSetType() {
+					result[hclName] = cty.SetValEmpty(t.ElementType())
+				} else {
+					result[hclName] = cty.ListValEmpty(t.ElementType())
+				}
+			default:
 				result[hclName] = cty.NullVal(t)
 			}
 			// A property the schema declares secret stays secret even when the
@@ -1299,12 +1331,18 @@ func propertyObjectToCtyMap(path string, m property.Map, properties []*schema.Pr
 		if err != nil {
 			return nil, err
 		}
-		if singular && !convertedV.Type().IsListType() && !convertedV.Type().IsTupleType() {
+		if singular {
 			if convertedV.IsNull() {
 				switch {
 				case !fieldIsBlock(mapping, p.Name):
-					// An unset list/set attribute is null, not empty.
-					convertedV = cty.NullVal(cty.List(convertedV.Type()))
+					// The provider echoes a flattened attribute's configured
+					// value, and both an empty and an unset TF list flatten
+					// to a null output; only the input distinguishes them.
+					if echoedEmpty(echo, p.Name) {
+						convertedV = cty.ListValEmpty(convertedV.Type())
+					} else {
+						convertedV = cty.NullVal(cty.List(convertedV.Type()))
+					}
 				case fieldIsComputed(mapping, p.Name) && !setField:
 					// An unset Computed list block is provider-controlled:
 					// absence means null, so `r.block == null` holds. Unset
@@ -1326,6 +1364,14 @@ func propertyObjectToCtyMap(path string, m property.Map, properties []*schema.Pr
 	}
 
 	return result, nil
+}
+
+// echoedEmpty reports whether the registered inputs carry a present-null
+// value for the property — the flattened encoding of an explicitly-empty
+// list, as opposed to an unset (absent) field.
+func echoedEmpty(echo property.Map, pulumiName string) bool {
+	in, ok := echo.GetOk(pulumiName)
+	return ok && in.IsNull()
 }
 
 func fieldIsQuery[T any](mapping *bridge.BodyMapping, pulumiName string, query func(*bridge.FieldMapping) T) T {
@@ -1549,7 +1595,7 @@ func ctyObjectTypeRec(
 		// models it as a list; re-wrap it as a list so a reference like
 		// `r.settings[0].x` types the same way it resolves at runtime (see
 		// propertyObjectToCtyMap).
-		if fieldIsSingular(mapping, p.Name) && !t.IsListType() && !t.IsTupleType() {
+		if fieldIsSingular(mapping, p.Name) {
 			t = cty.List(t)
 		}
 		// A TF TypeSet field is set-typed; see propertyObjectToCtyMap.
@@ -1794,7 +1840,7 @@ func propertyValueToCtyWithMapping(path string, v property.Value, typ schema.Typ
 			if typ.Resource == nil {
 				break
 			}
-			result, err := propertyObjectToCtyMap(path, v.AsMap(), typ.Resource.Properties, mapping, dryRun)
+			result, err := propertyObjectToCtyMap(path, v.AsMap(), typ.Resource.Properties, mapping, property.Map{}, dryRun)
 			if err != nil {
 				return cty.Value{}, err
 			}
@@ -1820,7 +1866,7 @@ func propertyValueToCtyWithMapping(path string, v property.Value, typ schema.Typ
 			}
 			return obj, nil
 		case *schema.ObjectType:
-			m, err := propertyObjectToCtyMap(path, v.AsMap(), typ.Properties, mapping, dryRun)
+			m, err := propertyObjectToCtyMap(path, v.AsMap(), typ.Properties, mapping, property.Map{}, dryRun)
 			if err != nil {
 				return cty.Value{}, err
 			}
@@ -1890,7 +1936,7 @@ func propertyValueToCtyWithMapping(path string, v property.Value, typ schema.Typ
 		if !ok || resType.Resource == nil {
 			return cty.NullVal(ctyTypeFromType(typ, mapping)), nil
 		}
-		result, err := propertyObjectToCtyMap(path, property.Map{}, resType.Resource.Properties, mapping, dryRun)
+		result, err := propertyObjectToCtyMap(path, property.Map{}, resType.Resource.Properties, mapping, property.Map{}, dryRun)
 		if err != nil {
 			return cty.Value{}, err
 		}
