@@ -3711,6 +3711,14 @@ func (e *Engine) providerFunctionTable(
 
 	table := map[string]function.Function{}
 	for providerName := range referenced {
+		if config.Terraform != nil {
+			if req, ok := config.Terraform.RequiredProviders[providerName]; ok && packages.IsTerraformProviderSource(req.Source) {
+				for tfName, fn := range eval.TerraformProviderFunctions() {
+					table[ast.ProviderFunctionName(providerName, tfName)] = fn
+				}
+				continue
+			}
+		}
 		fns, err := e.resolver.ProviderFunctions(ctx, providerPackageName(config.Terraform, providerName))
 		if err != nil {
 			if lenient {

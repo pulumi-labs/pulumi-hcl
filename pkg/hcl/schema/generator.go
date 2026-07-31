@@ -275,6 +275,14 @@ func seedProviderFunctions(
 
 	table := map[string]function.Function{}
 	for providerName := range referenced {
+		if config.Terraform != nil {
+			if req, ok := config.Terraform.RequiredProviders[providerName]; ok && packages.IsTerraformProviderSource(req.Source) {
+				for tfName, fn := range eval.TerraformProviderFunctions() {
+					table[ast.ProviderFunctionName(providerName, tfName)] = fn
+				}
+				continue
+			}
+		}
 		fns, err := resolver.ProviderFunctions(ctx, providerName)
 		if err != nil {
 			if lenient {

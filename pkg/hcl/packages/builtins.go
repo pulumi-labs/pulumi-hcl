@@ -14,9 +14,19 @@
 
 package packages
 
-import "github.com/pulumi/pulumi/pkg/v3/codegen/schema"
+import (
+	"strings"
+
+	"github.com/pulumi/pulumi/pkg/v3/codegen/schema"
+)
 
 const (
+	// TerraformProviderSource is the source address of the builtin `terraform`
+	// provider. Declaring it in required_providers is what brings its
+	// provider-defined functions (provider::<local>::encode_expr, ...) into
+	// scope; the provider itself ships no installable plugin.
+	TerraformProviderSource = "terraform.io/builtin/terraform"
+
 	// TerraformDataType is Terraform's builtin `terraform_data` managed
 	// resource. Its provider (`terraform`) ships no installable plugin;
 	// Terraform/OpenTofu implement it internally.
@@ -33,6 +43,12 @@ const (
 	LocalReferenceToken  = "terraform:state:getLocalReference"
 	RemoteReferenceToken = "terraform:state:getRemoteReference"
 )
+
+// IsTerraformProviderSource reports whether a required_providers source
+// address names the builtin terraform provider.
+func IsTerraformProviderSource(source string) bool {
+	return strings.EqualFold(source, TerraformProviderSource)
+}
 
 // TerraformDataSchema is the synthetic schema terraform_data resolves to, so it
 // flows through the generic registration path like any other resource. It is
