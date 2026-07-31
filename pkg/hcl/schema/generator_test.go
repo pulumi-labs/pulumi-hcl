@@ -718,6 +718,38 @@ output "arn" {
 	}, moduleSchema.OutputProperties)
 }
 
+// TestBuiltinTerraformProviderFunctionOutputIsTyped shows that a call to the
+// builtin `terraform` provider's functions types from the in-process
+// implementation: the resolver (which knows no "terraform" provider and would
+// error) is never consulted.
+func TestBuiltinTerraformProviderFunctionOutputIsTyped(t *testing.T) {
+	t.Parallel()
+
+	const src = `
+terraform {
+  required_providers {
+    terraform = {
+      source = "terraform.io/builtin/terraform"
+    }
+  }
+}
+
+output "encoded" {
+  value = provider::terraform::encode_expr([1, 2])
+}
+`
+	config, diags := parser.NewParser().ParseSource("main.tf", []byte(src))
+	require.False(t, diags.HasErrors(), diags.Error())
+
+	moduleSchema, err := GenerateModuleSchema(
+		t.Context(), config, &Binder{Resources: stubResolver{}}, componentToken("pkg", "index", "pkg"), semver.MustParse("0.0.0-dev"))
+	require.NoError(t, err)
+
+	assert.Equal(t, map[string]*PropertySpec{
+		"encoded": {Type: "string"},
+	}, moduleSchema.OutputProperties)
+}
+
 // TestProviderFunctionObjectReturnThroughLocal shows that a provider-defined
 // function's structured return type survives the trip through a local: a
 // field projected from the result types as that field, and the whole result
