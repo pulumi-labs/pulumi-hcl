@@ -28,6 +28,7 @@ import (
 
 	"github.com/hashicorp/hcl/v2"
 	"github.com/pulumi/pulumi-hcl/pkg/hcl/bridge"
+	"github.com/pulumi/pulumi-hcl/pkg/hcl/eval"
 	"github.com/pulumi/pulumi-hcl/pkg/hcl/modulepath"
 	"github.com/pulumi/pulumi-hcl/pkg/hcl/transform"
 	"github.com/pulumi/pulumi-hcl/pkg/util/encryption"
@@ -269,15 +270,23 @@ func translateInstanceValues(
 	if err != nil {
 		return nil, nil, fmt.Errorf("decoding attributes: %w", err)
 	}
+	// Re-mark the state's dynamically-sensitive paths (e.g. TF's sensitive())
+	// with the evaluator's mark; the codec turns marks into secrets.
+	// Schema-declared sensitivity is applied by the codec itself.
+	if len(current.AttrSensitivePaths) > 0 {
+		pvms := make([]cty.PathValueMarks, len(current.AttrSensitivePaths))
+		for i, p := range current.AttrSensitivePaths {
+			pvms[i] = cty.PathValueMarks{Path: p.Path, Marks: cty.NewValueMarks(eval.SensitiveMark)}
+		}
+		val = val.MarkWithPaths(pvms)
+	}
 
-	mapping := bridge.ResourceBodyMapping(info, tfType)
-	m, err := transform.CtyToResourceOutputs(val, res, mapping)
+	m, err := transform.CtyToResourceOutputs(val, res, bridge.ResourceBodyMapping(info, tfType))
 	if err != nil {
 		return nil, nil, fmt.Errorf("translating attributes: %w", err)
 	}
-	v := applySensitivePaths(property.New(m), current.AttrSensitivePaths, mapping)
 
-	outs = resource.ToResourcePropertyValue(v).ObjectValue()
+	outs = resource.ToResourcePropertyValue(property.New(m)).ObjectValue()
 	// Inputs are the outputs' input-property subset. Nested computed leaves
 	// are not stripped; revisit if the round-trip check flags diffs.
 	ins = make(resource.PropertyMap, len(res.InputProperties))
@@ -304,26 +313,6 @@ func resourceSchema(
 		return nil, fmt.Errorf("package %q has no resource %q: %v", pkgName, token, err)
 	}
 	return res, nil
-}
-
-// applySensitivePaths marks the state's dynamically-sensitive paths (e.g.
-// TF's sensitive()) as secrets; schema-declared sensitivity is already
-// applied. Untranslatable paths are skipped rather than failing the import.
-func applySensitivePaths(
-	v property.Value, paths []cty.PathValueMarks, mapping *bridge.BodyMapping,
-) property.Value {
-	for _, pvm := range paths {
-		pp, err := transform.TranslateAttrPath(pvm.Path, mapping, nil)
-		if err != nil {
-			continue
-		}
-		if altered, err := pp.Alter(v, func(e property.Value) property.Value {
-			return e.WithSecret(true)
-		}); err == nil {
-			v = altered
-		}
-	}
-	return v
 }
 
 // importID extracts the `id` attribute verbatim.
