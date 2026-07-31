@@ -23,6 +23,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/blang/semver"
 	"github.com/hashicorp/hcl/v2"
 	sdkschema "github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
 	"github.com/pulumi/pulumi-hcl/pkg/util/encryption"
@@ -32,6 +33,7 @@ import (
 	"github.com/pulumi/pulumi-terraform-bridge/v3/pkg/tfbridge"
 	shimv2 "github.com/pulumi/pulumi-terraform-bridge/v3/pkg/tfshim/sdk-v2"
 	"github.com/pulumi/pulumi/pkg/v3/codegen/convert"
+	"github.com/pulumi/pulumi/pkg/v3/codegen/schema"
 	"github.com/pulumi/pulumi/pkg/v3/resource/plugin"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/resource"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/util/rpcutil"
@@ -96,6 +98,96 @@ func awsInfoSource(t *testing.T) fakeInfoSource {
 	}
 }
 
+// fakeLoader is an in-memory schema.ReferenceLoader.
+type fakeLoader struct {
+	pkgs map[string]*schema.Package
+}
+
+func (f fakeLoader) load(name string) (*schema.Package, error) {
+	p, ok := f.pkgs[name]
+	if !ok {
+		return nil, fmt.Errorf("unknown package %q", name)
+	}
+	return p, nil
+}
+
+func (f fakeLoader) LoadPackage(pkg string, _ *semver.Version) (*schema.Package, error) {
+	return f.load(pkg)
+}
+
+func (f fakeLoader) LoadPackageV2(_ context.Context, d *schema.PackageDescriptor) (*schema.Package, error) {
+	return f.load(d.Name)
+}
+
+func (f fakeLoader) LoadPackageReference(pkg string, _ *semver.Version) (schema.PackageReference, error) {
+	p, err := f.load(pkg)
+	if err != nil {
+		return nil, err
+	}
+	return p.Reference(), nil
+}
+
+func (f fakeLoader) LoadPackageReferenceV2(
+	_ context.Context, d *schema.PackageDescriptor,
+) (schema.PackageReference, error) {
+	return f.LoadPackageReference(d.Name, nil)
+}
+
+// testLoader binds hand-written package specs and serves them the way the
+// engine's loader would.
+func testLoader(t *testing.T, specs ...schema.PackageSpec) fakeLoader {
+	t.Helper()
+	pkgs := make(map[string]*schema.Package, len(specs))
+	for _, spec := range specs {
+		// The bridge's standard module format: "index/randomUuid" is module
+		// "index", not a nested module.
+		spec.Meta = &schema.MetadataSpec{ModuleFormat: "(.*)(?:/[^/]*)"}
+		pkg, err := schema.ImportSpec(spec, nil, fakeLoader{}, schema.ValidationOptions{})
+		require.NoError(t, err)
+		pkgs[spec.Name] = pkg
+	}
+	return fakeLoader{pkgs: pkgs}
+}
+
+// awsPackageSpec is the Pulumi-side schema matching awsInfoSource's TF schema:
+// the projection the bridge would generate (renames, MaxItemsOne flattening,
+// Sensitive → Secret).
+func awsPackageSpec() schema.PackageSpec {
+	str := schema.TypeSpec{Type: "string"}
+	versioning := schema.TypeSpec{Ref: "#/types/aws:s3/BucketVersioning:BucketVersioning"}
+	return schema.PackageSpec{
+		Name: "aws",
+		Types: map[string]schema.ComplexTypeSpec{
+			"aws:s3/BucketVersioning:BucketVersioning": {ObjectTypeSpec: schema.ObjectTypeSpec{
+				Type: "object",
+				Properties: map[string]schema.PropertySpec{
+					"enabled": {TypeSpec: schema.TypeSpec{Type: "boolean"}},
+				},
+			}},
+		},
+		Resources: map[string]schema.ResourceSpec{
+			"aws:s3/bucket:Bucket": {
+				ObjectTypeSpec: schema.ObjectTypeSpec{Properties: map[string]schema.PropertySpec{
+					"acl":         {TypeSpec: str},
+					"secretSauce": {TypeSpec: str, Secret: true},
+					"arn":         {TypeSpec: str},
+					"versioning":  {TypeSpec: versioning},
+				}},
+				InputProperties: map[string]schema.PropertySpec{
+					"acl":         {TypeSpec: str},
+					"secretSauce": {TypeSpec: str, Secret: true},
+					"versioning":  {TypeSpec: versioning},
+				},
+			},
+		},
+	}
+}
+
+func awsLoader(t *testing.T) fakeLoader {
+	t.Helper()
+	return testLoader(t, awsPackageSpec())
+}
+
 // stateV4 wraps a `{"resources": [...]}` fragment in the v4 envelope the
 // state-file parser requires.
 func stateV4(t *testing.T, fragment string) []byte {
@@ -131,7 +223,7 @@ func TestConvertTFState_EmitsImport(t *testing.T) {
 		]
 	}`)
 
-	resp := convertTFState(t.Context(), awsInfoSource(t), state)
+	resp := convertTFState(t.Context(), awsInfoSource(t), awsLoader(t), state)
 
 	require.Empty(t, resp.Diagnostics)
 	require.Len(t, resp.Resources, 1)
@@ -170,7 +262,7 @@ func TestConvertTFState_SkipsUnimportable(t *testing.T) {
 		]
 	}`)
 
-	resp := convertTFState(t.Context(), awsInfoSource(t), state)
+	resp := convertTFState(t.Context(), awsInfoSource(t), awsLoader(t), state)
 
 	// The data source skips silently; the other three each warn.
 	assert.Empty(t, resp.Resources)
@@ -204,7 +296,7 @@ func TestConvertTFState_CountAndForEach(t *testing.T) {
 		]
 	}`)
 
-	resp := convertTFState(t.Context(), awsInfoSource(t), state)
+	resp := convertTFState(t.Context(), awsInfoSource(t), awsLoader(t), state)
 
 	require.Empty(t, resp.Diagnostics)
 	names := make(map[string]string, len(resp.Resources))
@@ -248,7 +340,17 @@ func TestConvertTFState_ProviderNamePrefixMismatch(t *testing.T) {
 			},
 		}),
 	}}
-	resp := convertTFState(t.Context(), src, state)
+	loader := testLoader(t, schema.PackageSpec{
+		Name: "confounding",
+		Resources: map[string]schema.ResourceSpec{
+			"confounding:index/resource:Resource": {ObjectTypeSpec: schema.ObjectTypeSpec{
+				Properties: map[string]schema.PropertySpec{
+					"name": {TypeSpec: schema.TypeSpec{Type: "string"}},
+				},
+			}},
+		},
+	})
+	resp := convertTFState(t.Context(), src, loader, state)
 
 	require.Empty(t, resp.Diagnostics)
 	require.Len(t, resp.Resources, 1)
@@ -289,7 +391,7 @@ func TestConvertTFState_SuppliesValues(t *testing.T) {
 		]
 	}`)
 
-	resp := convertTFState(t.Context(), awsInfoSource(t), state)
+	resp := convertTFState(t.Context(), awsInfoSource(t), awsLoader(t), state)
 	require.Empty(t, resp.Diagnostics)
 	require.Len(t, resp.Resources, 1)
 	got := resp.Resources[0]
@@ -333,7 +435,7 @@ func TestConvertTFState_ValueFallbacks(t *testing.T) {
 		]
 	}`)
 
-	resp := convertTFState(t.Context(), awsInfoSource(t), state)
+	resp := convertTFState(t.Context(), awsInfoSource(t), awsLoader(t), state)
 	require.Len(t, resp.Resources, 2)
 	for _, r := range resp.Resources {
 		assert.Nil(t, r.Outputs, "%s should import by id only", r.ID)
@@ -384,11 +486,19 @@ func TestConvertStateArgValidation(t *testing.T) {
 
 	_, err = New().ConvertState(t.Context(), &plugin.ConvertStateRequest{
 		MapperTarget: "127.0.0.1:1",
+		Args:         []string{"state.json"},
+	})
+	assert.ErrorContains(t, err, "missing loader address")
+
+	_, err = New().ConvertState(t.Context(), &plugin.ConvertStateRequest{
+		MapperTarget: "127.0.0.1:1",
+		LoaderTarget: "127.0.0.1:1",
 	})
 	assert.ErrorContains(t, err, "expected exactly one argument")
 
 	_, err = New().ConvertState(t.Context(), &plugin.ConvertStateRequest{
 		MapperTarget: "127.0.0.1:1",
+		LoaderTarget: "127.0.0.1:1",
 		Args:         []string{"a", "b"},
 	})
 	assert.ErrorContains(t, err, "expected exactly one argument")
@@ -428,6 +538,17 @@ func TestConvertStateViaMapper(t *testing.T) {
 		Cancel: cancel,
 		Init: func(srv *grpc.Server) error {
 			convert.MapperRegistration(convert.NewMapperServer(staticMapper{}))(srv)
+			loader := testLoader(t, schema.PackageSpec{
+				Name: "random",
+				Resources: map[string]schema.ResourceSpec{
+					"random:index/randomUuid:RandomUuid": {ObjectTypeSpec: schema.ObjectTypeSpec{
+						Properties: map[string]schema.PropertySpec{
+							"result": {TypeSpec: schema.TypeSpec{Type: "string"}},
+						},
+					}},
+				},
+			})
+			schema.LoaderRegistration(schema.NewLoaderServer(loader))(srv)
 			return nil
 		},
 	})
@@ -449,6 +570,7 @@ func TestConvertStateViaMapper(t *testing.T) {
 
 	resp, err := New().ConvertState(t.Context(), &plugin.ConvertStateRequest{
 		MapperTarget: target,
+		LoaderTarget: target,
 		Args:         []string{statePath},
 	})
 	require.NoError(t, err)
@@ -462,6 +584,7 @@ func TestConvertStateViaMapper(t *testing.T) {
 	// State-file error paths share the same entry point.
 	_, err = New().ConvertState(t.Context(), &plugin.ConvertStateRequest{
 		MapperTarget: target,
+		LoaderTarget: target,
 		Args:         []string{filepath.Join(dir, "does-not-exist.tfstate")},
 	})
 	assert.ErrorContains(t, err, "reading state file")
@@ -470,6 +593,7 @@ func TestConvertStateViaMapper(t *testing.T) {
 	require.NoError(t, os.WriteFile(badPath, []byte("not json"), 0o600))
 	_, err = New().ConvertState(t.Context(), &plugin.ConvertStateRequest{
 		MapperTarget: target,
+		LoaderTarget: target,
 		Args:         []string{badPath},
 	})
 	assert.ErrorContains(t, err, "parsing state file")

@@ -24,6 +24,7 @@ import (
 	"maps"
 	"os"
 	"slices"
+	"strings"
 
 	"github.com/hashicorp/hcl/v2"
 	"github.com/pulumi/pulumi-hcl/pkg/hcl/bridge"
@@ -35,10 +36,13 @@ import (
 	"github.com/pulumi/pulumi-hcl/vendored/states"
 	"github.com/pulumi/pulumi-terraform-bridge/v3/pkg/tfbridge"
 	"github.com/pulumi/pulumi/pkg/v3/codegen/convert"
+	"github.com/pulumi/pulumi/pkg/v3/codegen/schema"
 	"github.com/pulumi/pulumi/pkg/v3/resource/plugin"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/resource"
+	"github.com/pulumi/pulumi/sdk/v3/go/common/util/contract"
 	"github.com/pulumi/pulumi/sdk/v3/go/property"
 	"github.com/zclconf/go-cty/cty"
+	ctyjson "github.com/zclconf/go-cty/cty/json"
 )
 
 // ConvertState reads a Terraform/OpenTofu state file and emits a
@@ -50,6 +54,9 @@ func (*hclConverter) ConvertState(
 ) (*plugin.ConvertStateResponse, error) {
 	if req.MapperTarget == "" {
 		return nil, errors.New("ConvertState: missing mapper target")
+	}
+	if req.LoaderTarget == "" {
+		return nil, errors.New("ConvertState: missing loader address")
 	}
 	if len(req.Args) != 1 {
 		return nil, fmt.Errorf(
@@ -63,12 +70,19 @@ func (*hclConverter) ConvertState(
 	}
 	providerInfoSource := bridge.NewCache(bridge.NewMapperSource(mapperClient))
 
+	loaderClient, err := schema.NewLoaderClient(req.LoaderTarget)
+	if err != nil {
+		return nil, fmt.Errorf("dial loader at %s: %w", req.LoaderTarget, err)
+	}
+	defer contract.IgnoreClose(loaderClient)
+	loader := schema.ReferenceLoader(schema.NewCachedLoader(loaderClient))
+
 	state, err := readTFStateFile(statePath)
 	if err != nil {
 		return nil, err
 	}
 
-	return convertTFState(ctx, providerInfoSource, state), nil
+	return convertTFState(ctx, providerInfoSource, loader, state), nil
 }
 
 // readTFStateFile parses a state file through the vendored OpenTofu parser,
@@ -92,6 +106,7 @@ func readTFStateFile(statePath string) (*states.State, error) {
 func convertTFState(
 	ctx context.Context,
 	providerInfoSource bridge.ProviderInfoSource,
+	loader schema.ReferenceLoader,
 	state *states.State,
 ) *plugin.ConvertStateResponse {
 	var (
@@ -136,7 +151,7 @@ func convertTFState(
 					"an instance of %s has no string `id` attribute to import by", res.Addr))
 				continue
 			}
-			outs, ins, err := translateInstanceValues(ctx, info, tfType, current)
+			outs, ins, err := translateInstanceValues(ctx, loader, info, token, tfType, id, current)
 			if err != nil {
 				warn("Importing without values", fmt.Sprintf(
 					"an instance of %s imports by id only: %v", res.Addr, err))
@@ -214,16 +229,16 @@ func resourceName(name string, key addrs.InstanceKey) string {
 }
 
 // translateInstanceValues turns an instance's raw TF attributes into the
-// Pulumi property maps an outputs-supplied import needs, using the bridge's
-// own translation over the mapper-provided schema-only shim — so Outputs are
-// exactly what the bridged provider would have written (renames, MaxItemsOne
-// flattening, schema-sensitive fields as secrets) and Inputs are derived the
-// way the bridge's import path derives them. With Outputs supplied the engine
-// skips the provider's Read entirely.
+// Pulumi property maps an outputs-supplied import needs, converting through
+// the same schema and codec the runtime uses for programs: the loader-supplied
+// Pulumi schema and the transform package (renames, MaxItemsOne flattening,
+// schema-declared secrets). With Outputs supplied the engine skips the
+// provider's Read entirely.
 func translateInstanceValues(
 	ctx context.Context,
+	loader schema.ReferenceLoader,
 	info *tfbridge.ProviderInfo,
-	tfType string,
+	token, tfType, id string,
 	current *states.ResourceInstanceObjectSrc,
 ) (outs, ins resource.PropertyMap, err error) {
 	if current.AttrsJSON == nil {
@@ -244,44 +259,67 @@ func translateInstanceValues(
 			"state attributes have schema version %d but the provider maps version %d",
 			current.SchemaVersion, shimRes.SchemaVersion())
 	}
-	var attrs map[string]any
-	if err := json.Unmarshal(current.AttrsJSON, &attrs); err != nil {
+	res, err := resourceSchema(ctx, loader, token)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	ty, err := ctyjson.ImpliedType(current.AttrsJSON)
+	if err != nil {
+		return nil, nil, fmt.Errorf("decoding attributes: %w", err)
+	}
+	val, err := ctyjson.Unmarshal(current.AttrsJSON, ty)
+	if err != nil {
 		return nil, nil, fmt.Errorf("decoding attributes: %w", err)
 	}
 
-	var fields map[string]*tfbridge.SchemaInfo
-	if resInfo := info.Resources[tfType]; resInfo != nil {
-		fields = resInfo.Fields
-	}
-	outs = tfbridge.MakeTerraformOutputs(ctx, jsonSetChecker{}, attrs, shimRes.Schema(), fields, nil, true)
-	outs = applySensitivePaths(outs, current.AttrSensitivePaths, bridge.ResourceBodyMapping(info, tfType))
-	ins, err = tfbridge.ExtractInputsFromOutputs(nil, outs, shimRes.Schema(), fields, false)
+	mapping := bridge.ResourceBodyMapping(info, tfType)
+	m, err := transform.CtyToResourceOutputs(val, res, mapping)
 	if err != nil {
-		return nil, nil, fmt.Errorf("deriving inputs: %w", err)
+		return nil, nil, fmt.Errorf("translating attributes: %w", err)
 	}
+	v := applySensitivePaths(property.New(m), current.AttrSensitivePaths, mapping)
+
+	outs = resource.ToResourcePropertyValue(v).ObjectValue()
+	// Inputs are the outputs' input-property subset, mirroring how the CLI
+	// projects an imported resource's state onto its program. Computed leaves
+	// nested inside input properties are not stripped; revisit if the
+	// import round-trip check flags diffs on them.
+	ins = make(resource.PropertyMap, len(res.InputProperties))
+	for _, p := range res.InputProperties {
+		if pv, has := outs[resource.PropertyKey(p.Name)]; has {
+			ins[resource.PropertyKey(p.Name)] = pv
+		}
+	}
+	outs["id"] = resource.NewStringProperty(id)
 	return outs, ins, nil
 }
 
-// jsonSetChecker satisfies tfbridge's SetChecker for JSON-decoded attribute
-// values, which never contain live *schema.Set instances — set-typed
-// attributes arrive as plain arrays. (The mapper-delivered schema-only shim
-// panics on IsSet.)
-type jsonSetChecker struct{}
+// resourceSchema loads the Pulumi schema for token's resource through the
+// engine-provided loader.
+func resourceSchema(
+	ctx context.Context, loader schema.ReferenceLoader, token string,
+) (*schema.Resource, error) {
+	pkgName, _, _ := strings.Cut(token, ":")
+	ref, err := loader.LoadPackageReferenceV2(ctx, &schema.PackageDescriptor{Name: pkgName})
+	if err != nil {
+		return nil, fmt.Errorf("loading schema for package %q: %w", pkgName, err)
+	}
+	res, ok, err := ref.Resources().Get(token)
+	if err != nil || !ok {
+		return nil, fmt.Errorf("package %q has no resource %q: %v", pkgName, token, err)
+	}
+	return res, nil
+}
 
-func (jsonSetChecker) IsSet(context.Context, any) ([]any, bool) { return nil, false }
-
-// applySensitivePaths returns outs with the values at the state's
+// applySensitivePaths returns v with the values at the state's
 // dynamically-sensitive paths marked as secrets. Schema-declared sensitivity
 // is already handled during translation; these are the residual marks (e.g.
 // TF's sensitive() function). A path that does not translate or resolve is
 // skipped — better an unmarked value than a failed import.
 func applySensitivePaths(
-	outs resource.PropertyMap, paths []cty.PathValueMarks, mapping *bridge.BodyMapping,
-) resource.PropertyMap {
-	if len(paths) == 0 {
-		return outs
-	}
-	v := resource.FromResourcePropertyValue(resource.NewObjectProperty(outs))
+	v property.Value, paths []cty.PathValueMarks, mapping *bridge.BodyMapping,
+) property.Value {
 	for _, pvm := range paths {
 		pp, err := transform.TranslateAttrPath(pvm.Path, mapping, nil)
 		if err != nil {
@@ -293,7 +331,7 @@ func applySensitivePaths(
 			v = altered
 		}
 	}
-	return resource.ToResourcePropertyValue(v).ObjectValue()
+	return v
 }
 
 // importID extracts the `id` attribute verbatim.

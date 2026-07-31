@@ -685,6 +685,19 @@ func ctyToResourceInputs(val cty.Value, r *schema.Resource, attrExprs map[string
 	return ctyToObject(r.Token, val, r.InputProperties, attrExprs, false /* already in a secret */, mapping)
 }
 
+// CtyToResourceOutputs converts a TF-shaped attributes object — e.g. a
+// resource instance's decoded state attributes — into the resource's Pulumi
+// output property map. The `id` attribute is dropped: Pulumi resources carry
+// their ID outside the schema's properties.
+func CtyToResourceOutputs(val cty.Value, r *schema.Resource, mapping *bridge.BodyMapping) (property.Map, error) {
+	if val.Type().IsObjectType() && val.Type().HasAttribute("id") {
+		attrs := val.AsValueMap()
+		delete(attrs, "id")
+		val = cty.ObjectVal(attrs)
+	}
+	return ctyToObject(r.Token, val, r.Properties, nil, false /* already in a secret */, mapping)
+}
+
 func ctyToFunctionInputs(val cty.Value, r *schema.Function, attrExprs map[string]hcl.Expression, mapping *bridge.BodyMapping) (property.Map, error) {
 	var inputs []*schema.Property
 	if r.Inputs != nil {
@@ -899,6 +912,19 @@ func ctyToResourceProperty(path string, val cty.Value, prop schema.Type, expr hc
 		}
 		return property.New(property.Computed), nil
 	case *schema.ObjectType:
+		// A MaxItemsOne block still in TF shape (state attributes, TF's
+		// attribute-syntax block assignment) arrives as a single-element
+		// collection; unwrap it to the object the flattened schema expects.
+		if ty := val.Type(); ty.IsTupleType() || ty.IsListType() || ty.IsSetType() {
+			switch val.LengthInt() {
+			case 0:
+				return property.Value{}, nil
+			case 1:
+				it := val.ElementIterator()
+				it.Next()
+				_, val = it.Element()
+			}
+		}
 		if !val.Type().IsObjectType() {
 			return property.Value{}, fmt.Errorf("expected object at %q, found %#v", path, val.Type())
 		}
