@@ -75,11 +75,11 @@ type Provider struct {
 
 // buildTerraformProviders wires the tofu-side path: each provider records at
 // the helper/schema CRUD boundary (tfexec.Wrap) or the tfprotov6 boundary
-// (tfexec.WrapServer) into the path's shared recorder, and shares the case's
-// import store. Both paths build a fresh provider per configured instance (a
-// provider block with for_each yields several).
+// (tfexec.WrapServer) into the path's shared recorder. Both paths build a
+// fresh provider per configured instance (a provider block with for_each
+// yields several).
 func buildTerraformProviders(
-	t *testing.T, provs []Provider, rec *tfexec.Recorder, store *tfexec.ImportStore,
+	t *testing.T, provs []Provider, rec *tfexec.Recorder,
 ) []tfexec.Provider {
 	t.Helper()
 	tfProvs := make([]tfexec.Provider, len(provs))
@@ -87,9 +87,7 @@ func buildTerraformProviders(
 		switch {
 		case p.Factory != nil && p.PFFactory == nil:
 			factory := p.Factory
-			tfProvs[i] = tfexec.SDKv2Provider(t, p.Name, func() *schema.Provider {
-				return tfexec.WithStore(tfexec.Wrap(factory(), rec), store)
-			})
+			tfProvs[i] = tfexec.SDKv2Provider(t, p.Name, func() *schema.Provider { return tfexec.Wrap(factory(), rec) })
 		case p.PFFactory != nil && p.Factory == nil:
 			tfProvs[i] = tfexec.PFProvider(p.Name, p.PFFactory, rec)
 		default:
@@ -102,7 +100,7 @@ func buildTerraformProviders(
 // buildPulumiProviders wires the Pulumi-side path; the import check uses it
 // alone, having no tofu side.
 func buildPulumiProviders(
-	t *testing.T, provs []Provider, rec *tfexec.Recorder, store *tfexec.ImportStore,
+	t *testing.T, provs []Provider, rec *tfexec.Recorder,
 ) []pulexec.Provider {
 	t.Helper()
 	pulProvs := make([]pulexec.Provider, len(provs))
@@ -110,9 +108,7 @@ func buildPulumiProviders(
 		switch {
 		case p.Factory != nil && p.PFFactory == nil:
 			factory := p.Factory
-			pulProvs[i] = pulexec.SDKv2Provider(t, p.Name, func() *schema.Provider {
-				return tfexec.WithStore(tfexec.Wrap(factory(), rec), store)
-			}, p.Customize)
+			pulProvs[i] = pulexec.SDKv2Provider(t, p.Name, func() *schema.Provider { return tfexec.Wrap(factory(), rec) }, p.Customize)
 		case p.PFFactory != nil && p.Factory == nil:
 			pulProvs[i] = pulexec.PFProvider(t, p.Name, p.PFFactory, rec, p.Customize)
 		default:
@@ -249,9 +245,8 @@ func runCaseFromDir(t *testing.T, caseDir string, c Case) {
 	require.NoError(t, err)
 
 	recA, recB := &tfexec.Recorder{}, &tfexec.Recorder{}
-	store := tfexec.NewImportStore()
-	tfProvs := buildTerraformProviders(t, c.Providers, recA, store)
-	pulProvs := buildPulumiProviders(t, c.Providers, recB, store)
+	tfProvs := buildTerraformProviders(t, c.Providers, recA)
+	pulProvs := buildPulumiProviders(t, c.Providers, recB)
 
 	tfDriver := tfexec.NewDriver(t, tfProvs)
 	pulDriver := pulexec.NewDriver(t, pulProvs, c.Config)
@@ -322,7 +317,7 @@ func runCaseFromDir(t *testing.T, caseDir string, c Case) {
 			lastOK = pulRes
 			lastOKTfOutputs = tfOut
 			if !t.Failed() {
-				runImportCheck(t, c, i, stage.files, store, tfDriver.Dir())
+				runImportCheck(t, c, i, stage.files, tfDriver.Dir())
 			}
 		}
 	}

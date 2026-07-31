@@ -366,9 +366,10 @@ func converterShim(t *testing.T, port int) string {
 
 // Import writes programFiles and runs `pulumi import --from hcl` with the
 // given converter arguments. The converter is served in-process behind a PATH
-// shim, and PULUMI_DEBUG_PROVIDERS points the CLI's mapper — and the
-// import-time Reads — at the attached in-process providers. Imports are
-// unprotected for the same reason as ImportFromFile.
+// shim, and PULUMI_DEBUG_PROVIDERS points the CLI's mapper at the attached
+// in-process providers; the values themselves come from the state, so no
+// provider Read runs. Imports are unprotected for the same reason as
+// ImportFromFile.
 //
 // TODO[https://github.com/pulumi/pulumi/issues/24144]: This is a raw CLI invocation: the
 // Automation API's ImportResources appends `--stack` after the `--` separator, which the

@@ -38,7 +38,7 @@ import (
 // mapper, which reaches the case's providers via PULUMI_DEBUG_PROVIDERS. The
 // same flow against real released plugins is covered by tests/importe2e.
 func runImportCheck(
-	t *testing.T, c Case, stage int, files map[string]string, store *tfexec.ImportStore, tfStateDir string,
+	t *testing.T, c Case, stage int, files map[string]string, tfStateDir string,
 ) {
 	t.Helper()
 
@@ -84,9 +84,9 @@ func runImportCheck(
 			}
 		}
 
-		// Import into a fresh stack whose providers share the case's store, so
-		// import-time Reads reconstruct the attributes the tofu side created.
-		pulProvs := buildPulumiProviders(t, c.Providers, &tfexec.Recorder{}, store)
+		// Import into a fresh stack: the converter supplies inputs and outputs
+		// from the state itself, so the engine performs no provider Reads.
+		pulProvs := buildPulumiProviders(t, c.Providers, &tfexec.Recorder{})
 		d := pulexec.NewDriver(t, pulProvs, c.Config)
 		out, err := d.Import(t, files, statePath)
 		require.NoErrorf(t, err, "pulumi import --from hcl failed:\n%s", out)
