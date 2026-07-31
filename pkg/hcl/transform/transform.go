@@ -864,6 +864,18 @@ func ctyToResourceProperty(path string, val cty.Value, prop schema.Type, expr hc
 		}
 		return property.New(property.Computed), nil
 	case *schema.ObjectType:
+		// A MaxItemsOne field still in TF shape (attribute-syntax assignment,
+		// state attributes) is a single-element collection; unwrap it.
+		if ty := val.Type(); ty.IsTupleType() || ty.IsListType() || ty.IsSetType() {
+			switch val.LengthInt() {
+			case 0:
+				return property.Value{}, nil
+			case 1:
+				it := val.ElementIterator()
+				it.Next()
+				_, val = it.Element()
+			}
+		}
 		if !val.Type().IsObjectType() {
 			return property.Value{}, fmt.Errorf("expected object at %q, found %#v", path, val.Type())
 		}

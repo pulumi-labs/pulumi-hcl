@@ -65,6 +65,7 @@ func (p *pfxProvider) Resources(context.Context) []func() resource.Resource {
 		func() resource.Resource { return &pfxRes{} },
 		func() resource.Resource { return &pfxObj{} },
 		func() resource.Resource { return &pfxMatrix{} },
+		func() resource.Resource { return &pfxFlat{} },
 	}
 }
 
@@ -409,6 +410,65 @@ func (r *pfxObj) Update(ctx context.Context, req resource.UpdateRequest, resp *r
 }
 
 func (r *pfxObj) Delete(_ context.Context, _ resource.DeleteRequest, _ *resource.DeleteResponse) {}
+
+// pfxFlat carries an optional list-nested attribute. Unlike an SDKv2 block,
+// TF assigns it with attribute syntax (`settings = [{...}]`); tests flatten
+// it to a single Pulumi object with a MaxItemsOne override, the projection
+// real bridged providers apply to single-element list attributes.
+type pfxFlat struct{}
+
+var _ resource.Resource = (*pfxFlat)(nil)
+
+type pfxFlatModel struct {
+	ID       types.String `tfsdk:"id"`
+	Settings types.List   `tfsdk:"settings"`
+}
+
+func (r *pfxFlat) Metadata(_ context.Context, req resource.MetadataRequest, resp *resource.MetadataResponse) {
+	resp.TypeName = req.ProviderTypeName + "_flat"
+}
+
+func (r *pfxFlat) Schema(_ context.Context, _ resource.SchemaRequest, resp *resource.SchemaResponse) {
+	resp.Schema = rschema.Schema{
+		Attributes: map[string]rschema.Attribute{
+			"id": rschema.StringAttribute{
+				Computed:      true,
+				PlanModifiers: []planmodifier.String{stringplanmodifier.UseStateForUnknown()},
+			},
+			"settings": rschema.ListNestedAttribute{
+				Optional: true,
+				NestedObject: rschema.NestedAttributeObject{
+					Attributes: map[string]rschema.Attribute{
+						"enabled": rschema.BoolAttribute{Optional: true},
+					},
+				},
+			},
+		},
+	}
+}
+
+func (r *pfxFlat) Create(ctx context.Context, req resource.CreateRequest, resp *resource.CreateResponse) {
+	var plan pfxFlatModel
+	resp.Diagnostics.Append(req.Plan.Get(ctx, &plan)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+	plan.ID = types.StringValue("pfx-flat-id")
+	resp.Diagnostics.Append(resp.State.Set(ctx, &plan)...)
+}
+
+func (r *pfxFlat) Read(_ context.Context, _ resource.ReadRequest, _ *resource.ReadResponse) {}
+
+func (r *pfxFlat) Update(ctx context.Context, req resource.UpdateRequest, resp *resource.UpdateResponse) {
+	var plan pfxFlatModel
+	resp.Diagnostics.Append(req.Plan.Get(ctx, &plan)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+	resp.Diagnostics.Append(resp.State.Set(ctx, &plan)...)
+}
+
+func (r *pfxFlat) Delete(_ context.Context, _ resource.DeleteRequest, _ *resource.DeleteResponse) {}
 
 // pfxObjLookup is the data-source counterpart of pfxObj: an object-typed
 // input attribute whose `item` field is a list of strings (bridged as
