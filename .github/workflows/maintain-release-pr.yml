@@ -34,7 +34,7 @@ jobs:
           # come from a user identity, not GITHUB_TOKEN. PRs/pushes authored by
           # GITHUB_TOKEN don't trigger pull_request workflows, which would leave
           # the release PR with no required-check coverage.
-          token: ${{ secrets.RELEASE_TOKEN }}
+          token: ${{ secrets.PULUMI_BOT_TOKEN }}
       - uses: jdx/mise-action@v4
 
       - name: Check for unreleased changes
@@ -71,7 +71,7 @@ jobs:
       - name: Open or refresh release PR
         if: steps.check.outputs.has-changes == 'true'
         env:
-          GH_TOKEN: ${{ secrets.RELEASE_TOKEN }}
+          GH_TOKEN: ${{ secrets.PULUMI_BOT_TOKEN }}
           VERSION: ${{ steps.latest.outputs.version }}
           AUTO_MERGE: ${{ inputs.auto_merge }}
         run: |
