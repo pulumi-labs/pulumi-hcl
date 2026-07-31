@@ -274,6 +274,59 @@ jobs:
             --api-key "${{ steps.nuget-login.outputs.NUGET_API_KEY }}" \
             --skip-duplicate
 
+  # Publish the Java SDK to Maven Central as com.pulumi:hcl.
+  #
+  # The generated build.gradle carries the whole publishing setup; secrets come
+  # from ESC (Maven Central has no OIDC trusted publishing) via the same
+  # org-wide environment pulumi-java's release uses. Maven Central rejects
+  # re-publishing, so skip when the POM already exists; repo1.maven.org can lag
+  # a publish by a few minutes, in which window a re-run fails loudly instead.
+  publish-java:
+    # release stays in `needs` because this job reads
+    # needs.release.outputs.version below — the `needs` context only exposes
+    # directly-listed jobs, it is not transitive.
+    needs: [release, publish-go-sdk]
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+    env:
+      VERSION: ${{ needs.release.outputs.version }}
+      ESC_ACTION_OIDC_AUTH: true
+      ESC_ACTION_OIDC_ORGANIZATION: pulumi
+      ESC_ACTION_OIDC_REQUESTED_TOKEN_TYPE: urn:pulumi:token-type:access_token:organization
+      ESC_ACTION_ENVIRONMENT: imports/github-secrets
+      ESC_ACTION_EXPORT_ENVIRONMENT_VARIABLES: PUBLISH_REPO_USERNAME=OSSRH_USERNAME,PUBLISH_REPO_PASSWORD=OSSRH_PASSWORD,SIGNING_KEY=JAVA_SIGNING_KEY,SIGNING_PASSWORD=JAVA_SIGNING_PASSWORD
+    steps:
+      - name: Fetch the publishing secrets from ESC
+        uses: pulumi/esc-action@v3
+      - uses: actions/checkout@v7
+        with:
+          ref: sdk-releases
+      - name: Check if this version is already on Maven Central
+        id: published
+        run: |
+          url="https://repo1.maven.org/maven2/com/pulumi/hcl/${VERSION#v}/hcl-${VERSION#v}.pom"
+          if curl --silent --fail --head --location "$url" > /dev/null; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+      - uses: actions/setup-java@v5
+        if: steps.published.outputs.exists == 'false'
+        with:
+          distribution: temurin
+          java-version: '11'
+      # Gradle 9 needs a JVM 17+ daemon; 8.x runs on the JDK 11 the toolchain wants.
+      - uses: gradle/actions/setup-gradle@v6
+        if: steps.published.outputs.exists == 'false'
+        with:
+          gradle-version: '8.14.5'
+      - name: Publish
+        if: steps.published.outputs.exists == 'false'
+        working-directory: sdk/java
+        run: gradle publishToSonatype closeAndReleaseSonatypeStagingRepository
+
   # Ask the Pulumi registry to publish docs for this version.
   #
   # publish-go-sdk committed registry/schema.json (version baked in by the
