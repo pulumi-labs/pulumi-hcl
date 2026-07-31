@@ -106,9 +106,6 @@ type Driver struct {
 	pt        *pulumitest.PulumiTest
 	dir       string
 	providers []Provider
-	// mutations records the mutating RPCs (create/update/delete) the driver's
-	// providers receive; every provider server is wrapped in a
-	// mutationRecorder feeding this log.
 	mutations *mutationLog
 	// lastProgramFiles are the program-file paths written by the previous
 	// writeFiles call, removed before the next stage so a stage that drops a
