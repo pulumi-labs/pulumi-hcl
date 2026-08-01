@@ -1501,7 +1501,7 @@ func (e *Engine) registerProviderInContext(
 	providerID := resp.ID
 
 	// Use ResourceOutputToCty to match processResource's snake_case key emission.
-	outputObj, err := transform.ResourceOutputToCty(resp.Outputs, resSchema, providerMapping, inputsMap, e.dryRun)
+	outputObj, err := transform.ResourceOutputToCty(resp.Outputs, resSchema, providerMapping, e.dryRun)
 	if err != nil {
 		return fmt.Errorf("converting provider outputs to HCL types: %w", err)
 	}
@@ -1726,7 +1726,7 @@ func (e *Engine) registerResourceInstanceInContext(
 		return fmt.Errorf("resolving resource references in outputs: %w", err)
 	}
 
-	outputObj, err := transform.ResourceOutputToCty(outputs, resSchema, resourceMapping, resourceInputs, e.dryRun)
+	outputObj, err := transform.ResourceOutputToCty(outputs, resSchema, resourceMapping, e.dryRun)
 	if err != nil {
 		return fmt.Errorf("converting resource outputs to HCL types: %w", err)
 	}
@@ -4660,7 +4660,7 @@ func evaluatePostconditions(
 	rules []*ast.CheckRule, hclCtx *hcl.EvalContext, newOutputs property.Map, tfType string,
 	resSchema *schema.Resource, mapping *bridge.BodyMapping, dryRun bool, resourceName string,
 ) error {
-	outputObj, err := transform.ResourceOutputToCty(newOutputs, resSchema, mapping, property.Map{}, dryRun)
+	outputObj, err := transform.ResourceOutputToCty(newOutputs, resSchema, mapping, dryRun)
 	if err != nil {
 		return fmt.Errorf("converting outputs for postconditions on %s: %w", resourceName, err)
 	}

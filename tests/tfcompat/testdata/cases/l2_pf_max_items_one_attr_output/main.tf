@@ -13,11 +13,3 @@ output "enabled" {
 output "count" {
   value = length(pfx_flat.this.settings)
 }
-
-resource "pfx_flat" "empty" {
-  settings = []
-}
-
-output "empty_settings" {
-  value = jsonencode(pfx_flat.empty.settings)
-}

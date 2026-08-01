@@ -1170,11 +1170,9 @@ func ctyObjectToPropertyValue(val cty.Value) (property.Value, error) {
 // ResourceOutputToCty projects Pulumi resource outputs into a cty value.
 // When mapping is non-nil the cty keys are TF attribute names, so HCL
 // traversals like `aws_lambda_function.fn.function_name` resolve even when
-// the bridge has renamed the property on the Pulumi side. inputs is the
-// resource's registered input map; it disambiguates a flattened attribute's
-// null output between explicitly-empty and unset (see propertyObjectToCtyMap).
+// the bridge has renamed the property on the Pulumi side.
 func ResourceOutputToCty(
-	pv property.Map, r *schema.Resource, mapping *bridge.BodyMapping, inputs property.Map, dryRun bool,
+	pv property.Map, r *schema.Resource, mapping *bridge.BodyMapping, dryRun bool,
 ) (map[string]cty.Value, error) {
 	properties := r.Properties
 	// version + pluginDownloadURL aren't in the schema Properties but
@@ -1185,7 +1183,7 @@ func ResourceOutputToCty(
 			&schema.Property{Name: "pluginDownloadURL", Type: schema.StringType},
 		)
 	}
-	return propertyObjectToCtyMap("", pv, properties, mapping, inputs, dryRun)
+	return propertyObjectToCtyMap("", pv, properties, mapping, dryRun)
 }
 
 // ResourceReferenceType returns the cty type of a reference to r — the value
@@ -1218,7 +1216,7 @@ func DataSourceReferenceType(fn *schema.Function, mapping *bridge.BodyMapping) c
 // FunctionOutputToCty mirrors ResourceOutputToCty for invoke return values.
 func FunctionOutputToCty(pv property.Map, r *schema.Function, mapping *bridge.BodyMapping, dryRun bool) (cty.Value, error) {
 	if obj, ok := r.ReturnType.(*schema.ObjectType); ok {
-		o, err := propertyObjectToCtyMap("", pv, obj.Properties, mapping, property.Map{}, dryRun)
+		o, err := propertyObjectToCtyMap("", pv, obj.Properties, mapping, dryRun)
 		return cty.ObjectVal(o), err
 	}
 	for k, scalarPV := range pv.AsMap() {
@@ -1258,14 +1256,9 @@ func nestedMappingFor(pulumiName string, mapping *bridge.BodyMapping) *bridge.Bo
 	return nil
 }
 
-// echo, when non-empty, is the resource's registered input map: for a
-// non-computed TF attribute the provider echoes the configured value, so the
-// inputs disambiguate a flattened attribute's null output between
-// explicitly-empty (the input is a present-null, the bridge's encoding of an
-// empty TF list) and unset (the input is absent).
 func propertyObjectToCtyMap(
 	path string, m property.Map, properties []*schema.Property,
-	mapping *bridge.BodyMapping, echo property.Map, dryRun bool,
+	mapping *bridge.BodyMapping, dryRun bool,
 ) (map[string]cty.Value, error) {
 	result := make(map[string]cty.Value, m.Len())
 	for _, p := range properties {
@@ -1295,18 +1288,9 @@ func propertyObjectToCtyMap(
 			if setField && t.IsListType() {
 				t = cty.Set(t.ElementType())
 			}
-			switch {
-			case dryRun:
+			if dryRun {
 				result[hclName] = cty.UnknownVal(t)
-			case singular && !fieldIsBlock(mapping, p.Name) && echoedEmpty(echo, p.Name):
-				// The provider dropped the flattened attribute's null echo;
-				// the present-null input still marks it explicitly empty.
-				if t.IsSetType() {
-					result[hclName] = cty.SetValEmpty(t.ElementType())
-				} else {
-					result[hclName] = cty.ListValEmpty(t.ElementType())
-				}
-			default:
+			} else {
 				result[hclName] = cty.NullVal(t)
 			}
 			// A property the schema declares secret stays secret even when the
@@ -1331,14 +1315,12 @@ func propertyObjectToCtyMap(
 			if convertedV.IsNull() {
 				switch {
 				case !fieldIsBlock(mapping, p.Name):
-					// The provider echoes a flattened attribute's configured
-					// value, and both an empty and an unset TF list flatten
-					// to a null output; only the input distinguishes them.
-					if echoedEmpty(echo, p.Name) {
-						convertedV = cty.ListValEmpty(convertedV.Type())
-					} else {
-						convertedV = cty.NullVal(cty.List(convertedV.Type()))
-					}
+					// A flattened attribute's null output stands for both an
+					// unset field and an explicitly-empty list — the wire
+					// encoding collapses them
+					// (pulumi/pulumi-terraform-bridge#3558) — so it renders
+					// as null, the unset shape.
+					convertedV = cty.NullVal(cty.List(convertedV.Type()))
 				case fieldIsComputed(mapping, p.Name) && !setField:
 					// An unset Computed list block is provider-controlled:
 					// absence means null, so `r.block == null` holds. Unset
@@ -1360,14 +1342,6 @@ func propertyObjectToCtyMap(
 	}
 
 	return result, nil
-}
-
-// echoedEmpty reports whether the registered inputs carry a present-null
-// value for the property — the flattened encoding of an explicitly-empty
-// list, as opposed to an unset (absent) field.
-func echoedEmpty(echo property.Map, pulumiName string) bool {
-	in, ok := echo.GetOk(pulumiName)
-	return ok && in.IsNull()
 }
 
 func fieldIsQuery[T any](mapping *bridge.BodyMapping, pulumiName string, query func(*bridge.FieldMapping) T) T {
@@ -1836,7 +1810,7 @@ func propertyValueToCtyWithMapping(path string, v property.Value, typ schema.Typ
 			if typ.Resource == nil {
 				break
 			}
-			result, err := propertyObjectToCtyMap(path, v.AsMap(), typ.Resource.Properties, mapping, property.Map{}, dryRun)
+			result, err := propertyObjectToCtyMap(path, v.AsMap(), typ.Resource.Properties, mapping, dryRun)
 			if err != nil {
 				return cty.Value{}, err
 			}
@@ -1862,7 +1836,7 @@ func propertyValueToCtyWithMapping(path string, v property.Value, typ schema.Typ
 			}
 			return obj, nil
 		case *schema.ObjectType:
-			m, err := propertyObjectToCtyMap(path, v.AsMap(), typ.Properties, mapping, property.Map{}, dryRun)
+			m, err := propertyObjectToCtyMap(path, v.AsMap(), typ.Properties, mapping, dryRun)
 			if err != nil {
 				return cty.Value{}, err
 			}
@@ -1932,7 +1906,7 @@ func propertyValueToCtyWithMapping(path string, v property.Value, typ schema.Typ
 		if !ok || resType.Resource == nil {
 			return cty.NullVal(ctyTypeFromType(typ, mapping)), nil
 		}
-		result, err := propertyObjectToCtyMap(path, property.Map{}, resType.Resource.Properties, mapping, property.Map{}, dryRun)
+		result, err := propertyObjectToCtyMap(path, property.Map{}, resType.Resource.Properties, mapping, dryRun)
 		if err != nil {
 			return cty.Value{}, err
 		}

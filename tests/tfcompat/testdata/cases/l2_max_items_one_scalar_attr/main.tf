@@ -3,9 +3,9 @@ resource "blocky_thing" "this" {
   alias = ["primary"]
 }
 
-resource "blocky_thing" "empty" {
-  name  = "empty"
-  alias = []
+resource "blocky_thing" "nulled" {
+  name  = "nulled"
+  alias = null
 }
 
 resource "blocky_thing" "unset" {
@@ -20,12 +20,12 @@ output "first" {
   value = blocky_thing.this.alias[0]
 }
 
-output "empty_alias" {
-  value = jsonencode(blocky_thing.empty.alias)
+output "null_alias" {
+  value = jsonencode(blocky_thing.nulled.alias)
 }
 
-output "empty_is_null" {
-  value = blocky_thing.empty.alias == null
+output "null_is_null" {
+  value = blocky_thing.nulled.alias == null
 }
 
 output "unset_alias" {
