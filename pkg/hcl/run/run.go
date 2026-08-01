@@ -3106,16 +3106,16 @@ type attrPathNameResolver struct {
 
 // next translates one TF (snake_case) attribute-name segment to its Pulumi name
 // and advances the resolver into the nested schema for the following segment. It
-// reports whether the resolved field is a MaxItems=1 block flattened to a single
-// Pulumi object, so the caller can drop the TF list index that follows it.
-func (r *attrPathNameResolver) next(tfName string) (name string, singularBlock bool, err error) {
+// reports whether the resolved field is a MaxItems=1 field flattened to a single
+// Pulumi value, so the caller can drop the TF list index that follows it.
+func (r *attrPathNameResolver) next(tfName string) (name string, singular bool, err error) {
 	if fm := r.mapping.Lookup(tfName); fm != nil {
 		if fm.Nested != nil {
 			r.mapping, r.props = fm.Nested, nil
 		} else {
 			r.mapping, r.props = nil, nil
 		}
-		return fm.PulumiName, fm.TFBlock && fm.MaxItemsOne, nil
+		return fm.PulumiName, fm.MaxItemsOne, nil
 	}
 	pulumiName, prop := transform.PulumiCaseFromSnakeCase(tfName, r.props)
 	if prop != nil {

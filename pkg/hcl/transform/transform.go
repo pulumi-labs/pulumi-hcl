@@ -506,6 +506,31 @@ func tooManySingularBlocks(name string, rng hcl.Range) *hcl.Diagnostic {
 	}
 }
 
+// unwrapSingular converts a MaxItemsOne field's TF-shaped collection to its
+// flattened value: empty becomes null, a single element becomes the element
+// (container marks carried over). More than one element is an error, matching
+// the field's one-item limit. Values that are not known collections pass
+// through untouched.
+func unwrapSingular(path string, val cty.Value) (cty.Value, error) {
+	unmarked, marks := val.Unmark()
+	if ty := unmarked.Type(); (!ty.IsTupleType() && !ty.IsListType() && !ty.IsSetType()) ||
+		unmarked.IsNull() || !unmarked.IsKnown() {
+		return val, nil
+	}
+	switch n := unmarked.LengthInt(); n {
+	case 0:
+		return cty.NullVal(cty.DynamicPseudoType).WithMarks(marks), nil
+	case 1:
+		it := unmarked.ElementIterator()
+		it.Next()
+		_, elem := it.Element()
+		return elem.WithMarks(marks), nil
+	default:
+		return cty.Value{}, fmt.Errorf(
+			"%q: too many list items: attribute supports 1 item maximum, but config has %d declared", path, n)
+	}
+}
+
 // schemaToCtyPrimitive returns the cty primitive type corresponding to a
 // Pulumi schema type, if applicable.
 func schemaToCtyPrimitive(typ schema.Type) (cty.Type, bool) {
@@ -704,7 +729,17 @@ func ctyToObject(path string, val cty.Value, properties []*schema.Property, attr
 				puField, keyStr, path, strings.Join(paths, ", "))
 		}
 		seen[puField] = struct{}{}
+		// A MaxItemsOne field still in TF shape (attribute-syntax assignment,
+		// state attributes) is a single-element collection; unwrap it to the
+		// flattened value. An explicit empty collection becomes a present-null
+		// property — the encoding the bridge maps back to an empty TF list —
+		// where an unset field stays absent entirely.
 		var err error
+		if fieldIsSingular(mapping, puField) {
+			if v, err = unwrapSingular(keyStr, v); err != nil {
+				return property.Map{}, err
+			}
+		}
 		result[puField], err = ctyToResourceProperty(keyStr, v, prop.Type, attrExprs[keyStr],
 			prop.Secret || alreadyInSecret, nestedMappingFor(prop.Name, mapping))
 		if err != nil {
@@ -921,7 +956,8 @@ func ctyToResourceProperty(path string, val cty.Value, prop schema.Type, expr hc
 		}
 		return ctyToPropertyValue(val)
 	default:
-		return property.Value{}, fmt.Errorf("%q: unknown schema type %s when converting %#v", path, prop, val.Type())
+		return property.Value{}, fmt.Errorf("%q: incorrect value type: cannot convert %s to %s",
+			path, val.Type().FriendlyName(), prop)
 	}
 }
 
@@ -1135,7 +1171,9 @@ func ctyObjectToPropertyValue(val cty.Value) (property.Value, error) {
 // When mapping is non-nil the cty keys are TF attribute names, so HCL
 // traversals like `aws_lambda_function.fn.function_name` resolve even when
 // the bridge has renamed the property on the Pulumi side.
-func ResourceOutputToCty(pv property.Map, r *schema.Resource, mapping *bridge.BodyMapping, dryRun bool) (map[string]cty.Value, error) {
+func ResourceOutputToCty(
+	pv property.Map, r *schema.Resource, mapping *bridge.BodyMapping, dryRun bool,
+) (map[string]cty.Value, error) {
 	properties := r.Properties
 	// version + pluginDownloadURL aren't in the schema Properties but
 	// flow through as outputs via the Pulumi resource-options machinery.
@@ -1218,21 +1256,24 @@ func nestedMappingFor(pulumiName string, mapping *bridge.BodyMapping) *bridge.Bo
 	return nil
 }
 
-func propertyObjectToCtyMap(path string, m property.Map, properties []*schema.Property, mapping *bridge.BodyMapping, dryRun bool) (map[string]cty.Value, error) {
+func propertyObjectToCtyMap(
+	path string, m property.Map, properties []*schema.Property,
+	mapping *bridge.BodyMapping, dryRun bool,
+) (map[string]cty.Value, error) {
 	result := make(map[string]cty.Value, m.Len())
 	for _, p := range properties {
 		hclName := tfNameForPulumi(p.Name, mapping)
 		nested := nestedMappingFor(p.Name, mapping)
-		// In TF, a block (even MaxItems=1) is always a list. The bridge
-		// flattens MaxItemsOne blocks to objects on the Pulumi side; we
-		// re-wrap them as singleton lists on output so HCL source like
+		// In TF, a MaxItems=1 field — block or list/set attribute — is still
+		// list-shaped. The bridge flattens it to a single Pulumi value; we
+		// re-wrap it as a singleton list on output so HCL source like
 		// `r.settings[0].x` resolves the same way as in TF.
-		singularBlock := mapping != nil && fieldIsSingularBlock(mapping, p.Name)
+		singular := fieldIsSingular(mapping, p.Name)
 		// A TF TypeSet field (set block or set attribute) materializes as a
 		// cty set, so set semantics — content-based, order-independent
 		// equality — match TF. The Pulumi wire encoding carries it as an
 		// ordered array; re-type it on the way back out.
-		setField := mapping != nil && fieldIsSet(mapping, p.Name)
+		setField := fieldIsSet(mapping, p.Name)
 		v, ok := m.GetOk(p.Name)
 		// During preview, required properties that are null are treated as unknown.
 		// This is because resource.Computed{} (the SDK's representation of an unknown value)
@@ -1241,7 +1282,7 @@ func propertyObjectToCtyMap(path string, m property.Map, properties []*schema.Pr
 		// legitimately be null, we safely treat null-during-preview as unknown.
 		if !ok || (dryRun && v.IsNull() && p.IsRequired()) {
 			t := ctyTypeFromType(p.Type, nested)
-			if singularBlock && !t.IsListType() && !t.IsTupleType() {
+			if singular {
 				t = cty.List(t)
 			}
 			if setField && t.IsListType() {
@@ -1270,14 +1311,22 @@ func propertyObjectToCtyMap(path string, m property.Map, properties []*schema.Pr
 		if err != nil {
 			return nil, err
 		}
-		if singularBlock && !convertedV.Type().IsListType() && !convertedV.Type().IsTupleType() {
+		if singular {
 			if convertedV.IsNull() {
-				if fieldIsComputed(mapping, p.Name) && !setField {
+				switch {
+				case !fieldIsBlock(mapping, p.Name):
+					// A flattened attribute's null output stands for both an
+					// unset field and an explicitly-empty list — the wire
+					// encoding collapses them
+					// (pulumi/pulumi-terraform-bridge#3558) — so it renders
+					// as null, the unset shape.
+					convertedV = cty.NullVal(cty.List(convertedV.Type()))
+				case fieldIsComputed(mapping, p.Name) && !setField:
 					// An unset Computed list block is provider-controlled:
 					// absence means null, so `r.block == null` holds. Unset
 					// set blocks materialize as empty either way.
 					convertedV = cty.NullVal(cty.List(convertedV.Type()))
-				} else {
+				default:
 					// An omitted MaxItems=1 block is an empty list of blocks, not a
 					// single-element list holding null, so `length(r.block)` is 0.
 					convertedV = cty.ListValEmpty(convertedV.Type())
@@ -1308,11 +1357,19 @@ func fieldIsQuery[T any](mapping *bridge.BodyMapping, pulumiName string, query f
 	return t
 }
 
-// fieldIsSingularBlock reports whether the Pulumi property is a TF
-// MaxItemsOne block per the bridge mapping.
-func fieldIsSingularBlock(mapping *bridge.BodyMapping, pulumiName string) bool {
+// fieldIsSingular reports whether the Pulumi property is a MaxItemsOne
+// flattening of a TF list/set field per the bridge mapping.
+func fieldIsSingular(mapping *bridge.BodyMapping, pulumiName string) bool {
 	return fieldIsQuery(mapping, pulumiName, func(fm *bridge.FieldMapping) bool {
-		return fm.TFBlock && fm.MaxItemsOne
+		return fm.MaxItemsOne
+	})
+}
+
+// fieldIsBlock reports whether the Pulumi property is a TF block per the
+// bridge mapping.
+func fieldIsBlock(mapping *bridge.BodyMapping, pulumiName string) bool {
+	return fieldIsQuery(mapping, pulumiName, func(fm *bridge.FieldMapping) bool {
+		return fm.TFBlock
 	})
 }
 
@@ -1504,10 +1561,11 @@ func ctyObjectTypeRec(
 			optional = append(optional, key)
 		}
 		t := ctyTypeFromTypeRec(p.Type, nestedMappingFor(p.Name, mapping), seen)
-		// The bridge flattens a MaxItems=1 block to an object, but TF models it
-		// as a list; re-wrap it as a list so a reference like `r.settings[0].x`
-		// types the same way it resolves at runtime (see propertyObjectToCtyMap).
-		if fieldIsSingularBlock(mapping, p.Name) && !t.IsListType() && !t.IsTupleType() {
+		// The bridge flattens a MaxItems=1 field to a single value, but TF
+		// models it as a list; re-wrap it as a list so a reference like
+		// `r.settings[0].x` types the same way it resolves at runtime (see
+		// propertyObjectToCtyMap).
+		if fieldIsSingular(mapping, p.Name) {
 			t = cty.List(t)
 		}
 		// A TF TypeSet field is set-typed; see propertyObjectToCtyMap.

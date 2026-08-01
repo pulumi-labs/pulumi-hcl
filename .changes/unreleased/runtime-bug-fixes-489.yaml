@@ -1,0 +1,6 @@
+kind: bug-fixes
+body: 'Support `MaxItemsOne`-flattened list and set attributes: accept attribute-syntax assignment and re-expand values on output'
+time: 2026-07-31T22:55:19Z
+custom:
+    Component: runtime
+    PR: "489"

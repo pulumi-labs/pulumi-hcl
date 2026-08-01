@@ -78,6 +78,27 @@ func BlockyProvider() *schema.Provider {
 			"blocky_thing": {
 				Schema: map[string]*schema.Schema{
 					"name": {Type: schema.TypeString, Required: true},
+					// A MaxItems=1 list with a scalar Elem is an attribute in
+					// TF (`alias = ["x"]`) that the bridge flattens to a plain
+					// string.
+					"alias": {
+						Type:     schema.TypeList,
+						Optional: true,
+						MaxItems: 1,
+						Elem:     &schema.Schema{Type: schema.TypeString},
+					},
+					// A MaxItems=1 list whose Elem is itself a list flattens
+					// to a plain list — the flattened value is collection-
+					// shaped, unlike alias's scalar.
+					"pair": {
+						Type:     schema.TypeList,
+						Optional: true,
+						MaxItems: 1,
+						Elem: &schema.Schema{
+							Type: schema.TypeList,
+							Elem: &schema.Schema{Type: schema.TypeString},
+						},
+					},
 					"settings": {
 						Type:     schema.TypeList,
 						Optional: true,
