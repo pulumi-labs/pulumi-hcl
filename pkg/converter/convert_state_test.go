@@ -23,10 +23,10 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/blang/semver"
 	"github.com/hashicorp/hcl/v2"
 	sdkschema "github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
 	"github.com/pulumi/pulumi-hcl/pkg/util/encryption"
+	"github.com/pulumi/pulumi-hcl/tests/testutil/schemaloader"
 	"github.com/pulumi/pulumi-hcl/vendored/addrs"
 	"github.com/pulumi/pulumi-hcl/vendored/statefile"
 	"github.com/pulumi/pulumi-hcl/vendored/states"
@@ -66,16 +66,16 @@ func roundtrip(t *testing.T, info tfbridge.ProviderInfo) *tfbridge.ProviderInfo 
 	return m.Unmarshal()
 }
 
-func awsInfoSource(t *testing.T) fakeInfoSource {
+func exampleInfoSource(t *testing.T) fakeInfoSource {
 	t.Helper()
 	p := &sdkschema.Provider{
 		ResourcesMap: map[string]*sdkschema.Resource{
-			"aws_s3_bucket": {
+			"example_resource": {
 				Schema: map[string]*sdkschema.Schema{
-					"acl":          {Type: sdkschema.TypeString, Optional: true},
+					"input_one":    {Type: sdkschema.TypeString, Optional: true},
 					"secret_sauce": {Type: sdkschema.TypeString, Optional: true, Sensitive: true},
-					"arn":          {Type: sdkschema.TypeString, Computed: true},
-					"versioning": {
+					"computed_out": {Type: sdkschema.TypeString, Computed: true},
+					"settings": {
 						Type: sdkschema.TypeList, MaxItems: 1, Optional: true,
 						Elem: &sdkschema.Resource{Schema: map[string]*sdkschema.Schema{
 							"enabled": {Type: sdkschema.TypeBool, Optional: true},
@@ -87,77 +87,32 @@ func awsInfoSource(t *testing.T) fakeInfoSource {
 	}
 	return fakeInfoSource{
 		infos: map[string]*tfbridge.ProviderInfo{
-			"aws": roundtrip(t, tfbridge.ProviderInfo{
+			"example": roundtrip(t, tfbridge.ProviderInfo{
 				P:    shimv2.NewProvider(p),
-				Name: "aws",
+				Name: "example",
 				Resources: map[string]*tfbridge.ResourceInfo{
-					"aws_s3_bucket": {Tok: "aws:s3/bucket:Bucket"},
+					"example_resource": {Tok: "example:index/resource:Resource"},
 				},
 			}),
 		},
 	}
 }
 
-// fakeLoader is an in-memory schema.ReferenceLoader.
-type fakeLoader struct {
-	pkgs map[string]*schema.Package
-}
+// bridgeModuleFormat is the bridge's standard module format:
+// "index/resource" is module "index", not a nested module.
+const bridgeModuleFormat = "(.*)(?:/[^/]*)"
 
-func (f fakeLoader) load(name string) (*schema.Package, error) {
-	p, ok := f.pkgs[name]
-	if !ok {
-		return nil, fmt.Errorf("unknown package %q", name)
-	}
-	return p, nil
-}
-
-func (f fakeLoader) LoadPackage(pkg string, _ *semver.Version) (*schema.Package, error) {
-	return f.load(pkg)
-}
-
-func (f fakeLoader) LoadPackageV2(_ context.Context, d *schema.PackageDescriptor) (*schema.Package, error) {
-	return f.load(d.Name)
-}
-
-func (f fakeLoader) LoadPackageReference(pkg string, _ *semver.Version) (schema.PackageReference, error) {
-	p, err := f.load(pkg)
-	if err != nil {
-		return nil, err
-	}
-	return p.Reference(), nil
-}
-
-func (f fakeLoader) LoadPackageReferenceV2(
-	_ context.Context, d *schema.PackageDescriptor,
-) (schema.PackageReference, error) {
-	return f.LoadPackageReference(d.Name, nil)
-}
-
-// testLoader binds hand-written package specs and serves them the way the
-// engine's loader would.
-func testLoader(t *testing.T, specs ...schema.PackageSpec) fakeLoader {
-	t.Helper()
-	pkgs := make(map[string]*schema.Package, len(specs))
-	for _, spec := range specs {
-		// The bridge's standard module format: "index/randomUuid" is module
-		// "index", not a nested module.
-		spec.Meta = &schema.MetadataSpec{ModuleFormat: "(.*)(?:/[^/]*)"}
-		pkg, err := schema.ImportSpec(spec, nil, fakeLoader{}, schema.ValidationOptions{})
-		require.NoError(t, err)
-		pkgs[spec.Name] = pkg
-	}
-	return fakeLoader{pkgs: pkgs}
-}
-
-// awsPackageSpec is the Pulumi projection of awsInfoSource's TF schema
-// (renames, MaxItemsOne flattening, Sensitive → Secret).
-func awsPackageSpec() schema.PackageSpec {
+// examplePackageSpec is the Pulumi projection of exampleInfoSource's TF
+// schema (renames, MaxItemsOne flattening, Sensitive → Secret).
+func examplePackageSpec() schema.PackageSpec {
 	str := schema.TypeSpec{Type: "string"}
-	versioning := schema.TypeSpec{Ref: "#/types/aws:s3/BucketVersioning:BucketVersioning"}
+	settings := schema.TypeSpec{Ref: "#/types/example:index/Settings:Settings"}
 	return schema.PackageSpec{
-		Name: "aws",
+		Name:    "example",
+		Version: "1.0.0",
+		Meta:    &schema.MetadataSpec{ModuleFormat: bridgeModuleFormat},
 		Types: map[string]schema.ComplexTypeSpec{
-			"aws:s3/BucketVersioning:BucketVersioning": {ObjectTypeSpec: schema.ObjectTypeSpec{
+			"example:index/Settings:Settings": {ObjectTypeSpec: schema.ObjectTypeSpec{
 				Type: "object",
 				Properties: map[string]schema.PropertySpec{
 					"enabled": {TypeSpec: schema.TypeSpec{Type: "boolean"}},
@@ -165,26 +120,26 @@ func awsPackageSpec() schema.PackageSpec {
 			}},
 		},
 		Resources: map[string]schema.ResourceSpec{
-			"aws:s3/bucket:Bucket": {
+			"example:index/resource:Resource": {
 				ObjectTypeSpec: schema.ObjectTypeSpec{Properties: map[string]schema.PropertySpec{
-					"acl":         {TypeSpec: str},
+					"inputOne":    {TypeSpec: str},
 					"secretSauce": {TypeSpec: str, Secret: true},
-					"arn":         {TypeSpec: str},
-					"versioning":  {TypeSpec: versioning},
+					"computedOut": {TypeSpec: str},
+					"settings":    {TypeSpec: settings},
 				}},
 				InputProperties: map[string]schema.PropertySpec{
-					"acl":         {TypeSpec: str},
+					"inputOne":    {TypeSpec: str},
 					"secretSauce": {TypeSpec: str, Secret: true},
-					"versioning":  {TypeSpec: versioning},
+					"settings":    {TypeSpec: settings},
 				},
 			},
 		},
 	}
 }
 
-func awsLoader(t *testing.T) fakeLoader {
+func exampleLoader(t *testing.T) schema.ReferenceLoader {
 	t.Helper()
-	return testLoader(t, awsPackageSpec())
+	return schemaloader.New(t, examplePackageSpec())
 }
 
 // stateV4 wraps a `{"resources": [...]}` fragment in the v4 envelope the
@@ -215,22 +170,22 @@ func TestConvertTFState_EmitsImport(t *testing.T) {
 	state := parseState(t, `{
 		"resources": [
 			{
-				"mode": "managed", "type": "aws_s3_bucket", "name": "b",
-				"provider": "provider[\"registry.terraform.io/hashicorp/aws\"]",
-				"instances": [ { "attributes": { "id": "my-bucket" } } ]
+				"mode": "managed", "type": "example_resource", "name": "b",
+				"provider": "provider[\"registry.terraform.io/acme/example\"]",
+				"instances": [ { "attributes": { "id": "res-1" } } ]
 			}
 		]
 	}`)
 
-	resp := convertTFState(t.Context(), awsInfoSource(t), awsLoader(t), state)
+	resp := convertTFState(t.Context(), exampleInfoSource(t), exampleLoader(t), state)
 
 	require.Empty(t, resp.Diagnostics)
 	require.Len(t, resp.Resources, 1)
 
 	got := resp.Resources[0]
-	assert.Equal(t, "aws:s3/bucket:Bucket", got.Type)
+	assert.Equal(t, "example:index/resource:Resource", got.Type)
 	assert.Equal(t, "b", got.Name)
-	assert.Equal(t, "my-bucket", got.ID)
+	assert.Equal(t, "res-1", got.ID)
 }
 
 func TestConvertTFState_SkipsUnimportable(t *testing.T) {
@@ -239,29 +194,29 @@ func TestConvertTFState_SkipsUnimportable(t *testing.T) {
 	state := parseState(t, `{
 		"resources": [
 			{
-				"mode": "data", "type": "aws_ami", "name": "ubuntu",
-				"provider": "provider[\"registry.terraform.io/hashicorp/aws\"]",
+				"mode": "data", "type": "example_data", "name": "ubuntu",
+				"provider": "provider[\"registry.terraform.io/acme/example\"]",
 				"instances": [ { "attributes": { "id": "ami-123" } } ]
 			},
 			{
-				"module": "module.vpc", "mode": "managed", "type": "aws_s3_bucket", "name": "nested",
-				"provider": "provider[\"registry.terraform.io/hashicorp/aws\"]",
+				"module": "module.vpc", "mode": "managed", "type": "example_resource", "name": "nested",
+				"provider": "provider[\"registry.terraform.io/acme/example\"]",
 				"instances": [ { "attributes": { "id": "nested-bucket" } } ]
 			},
 			{
-				"mode": "managed", "type": "gcp_storage_bucket", "name": "g",
-				"provider": "provider[\"registry.terraform.io/hashicorp/gcp\"]",
-				"instances": [ { "attributes": { "id": "gcp-bucket" } } ]
+				"mode": "managed", "type": "unknown_widget", "name": "g",
+				"provider": "provider[\"registry.terraform.io/acme/unknown\"]",
+				"instances": [ { "attributes": { "id": "widget-1" } } ]
 			},
 			{
-				"mode": "managed", "type": "aws_s3_bucket", "name": "no_id",
-				"provider": "provider[\"registry.terraform.io/hashicorp/aws\"]",
-				"instances": [ { "attributes": { "acl": "private" } } ]
+				"mode": "managed", "type": "example_resource", "name": "no_id",
+				"provider": "provider[\"registry.terraform.io/acme/example\"]",
+				"instances": [ { "attributes": { "input_one": "hello" } } ]
 			}
 		]
 	}`)
 
-	resp := convertTFState(t.Context(), awsInfoSource(t), awsLoader(t), state)
+	resp := convertTFState(t.Context(), exampleInfoSource(t), exampleLoader(t), state)
 
 	// The data source skips silently; the other three each warn.
 	assert.Empty(t, resp.Resources)
@@ -278,16 +233,16 @@ func TestConvertTFState_CountAndForEach(t *testing.T) {
 	state := parseState(t, `{
 		"resources": [
 			{
-				"mode": "managed", "type": "aws_s3_bucket", "name": "counted",
-				"provider": "provider[\"registry.terraform.io/hashicorp/aws\"]",
+				"mode": "managed", "type": "example_resource", "name": "counted",
+				"provider": "provider[\"registry.terraform.io/acme/example\"]",
 				"instances": [
 					{ "index_key": 0, "attributes": { "id": "bucket-0" } },
 					{ "index_key": 1, "attributes": { "id": "bucket-1" } }
 				]
 			},
 			{
-				"mode": "managed", "type": "aws_s3_bucket", "name": "byregion",
-				"provider": "provider[\"registry.terraform.io/hashicorp/aws\"]",
+				"mode": "managed", "type": "example_resource", "name": "byregion",
+				"provider": "provider[\"registry.terraform.io/acme/example\"]",
 				"instances": [
 					{ "index_key": "east", "attributes": { "id": "bucket-east" } }
 				]
@@ -295,7 +250,7 @@ func TestConvertTFState_CountAndForEach(t *testing.T) {
 		]
 	}`)
 
-	resp := convertTFState(t.Context(), awsInfoSource(t), awsLoader(t), state)
+	resp := convertTFState(t.Context(), exampleInfoSource(t), exampleLoader(t), state)
 
 	require.Empty(t, resp.Diagnostics)
 	names := make(map[string]string, len(resp.Resources))
@@ -339,8 +294,10 @@ func TestConvertTFState_ProviderNamePrefixMismatch(t *testing.T) {
 			},
 		}),
 	}}
-	loader := testLoader(t, schema.PackageSpec{
-		Name: "confounding",
+	loader := schemaloader.New(t, schema.PackageSpec{
+		Name:    "confounding",
+		Version: "1.0.0",
+		Meta:    &schema.MetadataSpec{ModuleFormat: bridgeModuleFormat},
 		Resources: map[string]schema.ResourceSpec{
 			"confounding:index/resource:Resource": {ObjectTypeSpec: schema.ObjectTypeSpec{
 				Properties: map[string]schema.PropertySpec{
@@ -367,21 +324,21 @@ func TestConvertTFState_SuppliesValues(t *testing.T) {
 	state := parseState(t, `{
 		"resources": [
 			{
-				"mode": "managed", "type": "aws_s3_bucket", "name": "b",
-				"provider": "provider[\"registry.terraform.io/hashicorp/aws\"]",
+				"mode": "managed", "type": "example_resource", "name": "b",
+				"provider": "provider[\"registry.terraform.io/acme/example\"]",
 				"instances": [ {
 					"attributes": {
-						"id": "my-bucket",
-						"acl": "private",
+						"id": "res-1",
+						"input_one": "hello",
 						"secret_sauce": "hunter2",
-						"arn": "arn:aws:s3:::my-bucket",
-						"versioning": [ { "enabled": true } ],
+						"computed_out": "made-up-by-the-cloud",
+						"settings": [ { "enabled": true } ],
 						"timeouts": { "create": "10m" }
 					},
 					"sensitive_attributes": [
-						[ { "type": "get_attr", "value": "acl" } ],
+						[ { "type": "get_attr", "value": "input_one" } ],
 						[
-							{ "type": "get_attr", "value": "versioning" },
+							{ "type": "get_attr", "value": "settings" },
 							{ "type": "index", "value": { "value": 0, "type": "number" } },
 							{ "type": "get_attr", "value": "enabled" }
 						]
@@ -391,28 +348,28 @@ func TestConvertTFState_SuppliesValues(t *testing.T) {
 		]
 	}`)
 
-	resp := convertTFState(t.Context(), awsInfoSource(t), awsLoader(t), state)
+	resp := convertTFState(t.Context(), exampleInfoSource(t), exampleLoader(t), state)
 	require.Empty(t, resp.Diagnostics)
 	require.Len(t, resp.Resources, 1)
 	got := resp.Resources[0]
 
 	outs := got.Outputs
-	assert.Equal(t, resource.NewStringProperty("my-bucket"), outs["id"])
-	assert.Equal(t, resource.MakeSecret(resource.NewStringProperty("private")), outs["acl"],
+	assert.Equal(t, resource.NewStringProperty("res-1"), outs["id"])
+	assert.Equal(t, resource.MakeSecret(resource.NewStringProperty("hello")), outs["inputOne"],
 		"dynamically-marked sensitive path")
 	assert.Equal(t, resource.MakeSecret(resource.NewStringProperty("hunter2")), outs["secretSauce"],
 		"schema-sensitive field")
-	assert.Equal(t, resource.NewStringProperty("arn:aws:s3:::my-bucket"), outs["arn"])
-	require.True(t, outs["versioning"].IsObject(), "MaxItemsOne block flattens to an object")
+	assert.Equal(t, resource.NewStringProperty("made-up-by-the-cloud"), outs["computedOut"])
+	require.True(t, outs["settings"].IsObject(), "MaxItemsOne block flattens to an object")
 	assert.NotContains(t, outs, resource.PropertyKey("timeouts"), "SDKv2's timeouts state attribute is dropped")
-	assert.Equal(t, resource.MakeSecret(resource.NewBoolProperty(true)), outs["versioning"].ObjectValue()["enabled"],
+	assert.Equal(t, resource.MakeSecret(resource.NewBoolProperty(true)), outs["settings"].ObjectValue()["enabled"],
 		"the sensitive path's index step drops with the MaxItemsOne flattening")
 
 	ins := got.Inputs
-	assert.Contains(t, ins, resource.PropertyKey("acl"))
+	assert.Contains(t, ins, resource.PropertyKey("inputOne"))
 	assert.Contains(t, ins, resource.PropertyKey("secretSauce"))
-	assert.Contains(t, ins, resource.PropertyKey("versioning"))
-	assert.NotContains(t, ins, resource.PropertyKey("arn"), "computed-only fields are not inputs")
+	assert.Contains(t, ins, resource.PropertyKey("settings"))
+	assert.NotContains(t, ins, resource.PropertyKey("computedOut"), "computed-only fields are not inputs")
 	assert.NotContains(t, ins, resource.PropertyKey("id"))
 }
 
@@ -424,19 +381,19 @@ func TestConvertTFState_ValueFallbacks(t *testing.T) {
 	state := parseState(t, `{
 		"resources": [
 			{
-				"mode": "managed", "type": "aws_s3_bucket", "name": "drifted",
-				"provider": "provider[\"registry.terraform.io/hashicorp/aws\"]",
+				"mode": "managed", "type": "example_resource", "name": "drifted",
+				"provider": "provider[\"registry.terraform.io/acme/example\"]",
 				"instances": [ { "schema_version": 5, "attributes": { "id": "old-schema" } } ]
 			},
 			{
-				"mode": "managed", "type": "aws_s3_bucket", "name": "legacy",
-				"provider": "provider[\"registry.terraform.io/hashicorp/aws\"]",
+				"mode": "managed", "type": "example_resource", "name": "legacy",
+				"provider": "provider[\"registry.terraform.io/acme/example\"]",
 				"instances": [ { "attributes_flat": { "id": "flatmap" } } ]
 			}
 		]
 	}`)
 
-	resp := convertTFState(t.Context(), awsInfoSource(t), awsLoader(t), state)
+	resp := convertTFState(t.Context(), exampleInfoSource(t), exampleLoader(t), state)
 	require.Len(t, resp.Resources, 2)
 	for _, r := range resp.Resources {
 		assert.Nil(t, r.Outputs, "%s should import by id only", r.ID)
@@ -463,7 +420,7 @@ func TestImportID(t *testing.T) {
 	assert.True(t, ok)
 	assert.Equal(t, "x", id)
 
-	_, ok = importID(&states.ResourceInstanceObjectSrc{AttrsJSON: []byte(`{"acl": "private"}`)})
+	_, ok = importID(&states.ResourceInstanceObjectSrc{AttrsJSON: []byte(`{"input_one": "hello"}`)})
 	assert.False(t, ok, "no id attribute")
 
 	_, ok = importID(&states.ResourceInstanceObjectSrc{AttrsJSON: []byte(`{"id": ""}`)})
@@ -539,8 +496,10 @@ func TestConvertStateViaMapper(t *testing.T) {
 		Cancel: cancel,
 		Init: func(srv *grpc.Server) error {
 			convert.MapperRegistration(convert.NewMapperServer(staticMapper{}))(srv)
-			loader := testLoader(t, schema.PackageSpec{
-				Name: "random",
+			loader := schemaloader.New(t, schema.PackageSpec{
+				Name:    "random",
+				Version: "1.0.0",
+				Meta:    &schema.MetadataSpec{ModuleFormat: bridgeModuleFormat},
 				Resources: map[string]schema.ResourceSpec{
 					"random:index/randomUuid:RandomUuid": {ObjectTypeSpec: schema.ObjectTypeSpec{
 						Properties: map[string]schema.PropertySpec{
