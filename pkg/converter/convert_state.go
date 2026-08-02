@@ -128,9 +128,6 @@ func convertTFState(
 	for res := range managedResources(state, warn) {
 		provider := res.ProviderConfig.Provider.Type
 		tfType := res.Addr.Resource.Type
-		// terraform_data is OpenTofu's builtin: no plugin, no bridge mapping.
-		// It imports as the engine-builtin Stash, the resource the runtime
-		// lowers it onto.
 		if tfType == packages.TerraformDataType {
 			resources = append(resources, stashImports(res, warn)...)
 			continue
