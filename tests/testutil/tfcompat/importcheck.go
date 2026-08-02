@@ -26,6 +26,8 @@ import (
 	"github.com/pulumi/pulumi-hcl/tests/testutil/tfexec"
 	"github.com/pulumi/pulumi-hcl/vendored/addrs"
 	"github.com/pulumi/pulumi-hcl/vendored/statefile"
+	"github.com/pulumi/pulumi/sdk/v3/go/common/providers"
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
@@ -101,6 +103,23 @@ func runImportCheck(
 		require.NoErrorf(t, err, "up after import failed:\n%s", res.Output)
 		require.Empty(t, d.Mutations(), "up after import performed resource changes")
 		assertOnlyBenignOps(t, "up", res.Changes)
+
+		registered := map[string]bool{}
+		for _, r := range res.Resources {
+			if !providers.IsProviderType(r.Type) {
+				continue
+			}
+			ref, err := providers.NewReference(r.URN, r.ID)
+			require.NoError(t, err)
+			registered[ref.String()] = true
+		}
+		for _, r := range res.Resources {
+			if r.Provider == "" || providers.IsProviderType(r.Type) {
+				continue
+			}
+			assert.Truef(t, registered[r.Provider],
+				"%s is bound to provider %q, which the program did not register", r.URN, r.Provider)
+		}
 	})
 }
 
