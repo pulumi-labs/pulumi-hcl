@@ -373,8 +373,6 @@ func TestConvertTFState_SuppliesValues(t *testing.T) {
 	assert.NotContains(t, ins, resource.PropertyKey("id"))
 }
 
-// TestConvertTFState_ValueFallbacks pins the degradations: instances whose
-// values cannot be translated still import by id, with a warning.
 // TestConvertTFState_TerraformData pins the builtin's import shape: Stash
 // imports carrying the runtime's {type, value} wrapper encoding, an explicit
 // null input when absent, and no triggers_replace (the engine's replacement
@@ -437,6 +435,8 @@ func TestConvertTFState_TerraformData(t *testing.T) {
 		"an absent input imports as the explicit null the runtime registers")
 }
 
+// TestConvertTFState_ValueFallbacks pins the degradations: instances whose
+// values cannot be translated still import by id, with a warning.
 func TestConvertTFState_ValueFallbacks(t *testing.T) {
 	t.Parallel()
 
