@@ -83,8 +83,7 @@ func runImportCheck(
 			}
 		}
 
-		// Import into a fresh stack: the converter supplies inputs and outputs
-		// from the state itself, so the engine performs no provider Reads.
+		// Import into a fresh stack.
 		pulProvs := buildPulumiProviders(t, c.Providers, &tfexec.Recorder{})
 		d := pulexec.NewDriver(t, pulProvs, c.Config)
 		out, err := d.Import(t, files, statePath)
