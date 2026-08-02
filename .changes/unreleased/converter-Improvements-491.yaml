@@ -1,5 +1,5 @@
 kind: Improvements
-body: '`pulumi import --from hcl` imports `terraform_data` resources as the engine-builtin Stash, with their values supplied from the state'
+body: '`pulumi import --from hcl` imports `terraform_data` resources as a `Stash`, with their values supplied from the state'
 time: 2026-08-02T20:05:56.824643+02:00
 custom:
     Component: converter
