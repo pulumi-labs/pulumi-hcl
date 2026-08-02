@@ -40,6 +40,7 @@ import (
 	"github.com/pulumi/pulumi-hcl/pkg/hcl/parser"
 	"github.com/pulumi/pulumi-hcl/pkg/hcl/run"
 	"github.com/pulumi/pulumi-hcl/pkg/version"
+	"github.com/pulumi/pulumi-hcl/vendored/addrs"
 	"github.com/pulumi/pulumi/pkg/v3/codegen/convert"
 	"github.com/pulumi/pulumi/pkg/v3/codegen/pcl"
 	"github.com/pulumi/pulumi/pkg/v3/codegen/schema"
@@ -153,14 +154,17 @@ func (host *LanguageHost) Close() error {
 	return errors.Join(errs...)
 }
 
-// GetRequiredPackages returns the packages required to run an HCL program.
-// It enumerates every provider used in the program (required_providers,
-// provider blocks, resource/data source type prefixes). Pulumi-source
-// providers are emitted as plain PackageDependency entries. Non-Pulumi
-// providers with a local SDK on disk are emitted from that descriptor.
-// Non-Pulumi providers without a local SDK are emitted as PackageSpec
-// entries targeting `terraform-provider`, so `pulumi install` resolves
-// them (per docs/providers.md).
+// bridgePackageName is the plugin that serves any Terraform provider via
+// parameterization.
+const bridgePackageName = "terraform-provider"
+
+// GetRequiredPackages returns the packages required to run an HCL program,
+// keyed by provider source — a local name may resolve to different sources
+// in different modules, and those are distinct requirements. Pulumi-source
+// providers are emitted as plain PackageDependency entries (or from the
+// local SDK descriptor `pulumi package add` wrote). Non-Pulumi sources
+// satisfied by a local SDK are emitted from that descriptor; the rest become
+// PackageSpec entries that `pulumi install` resolves (per docs/providers.md).
 func (host *LanguageHost) GetRequiredPackages(
 	ctx context.Context,
 	req *pulumirpc.GetRequiredPackagesRequest,
@@ -177,9 +181,7 @@ func (host *LanguageHost) GetRequiredPackages(
 	if err != nil {
 		return &pulumirpc.GetRequiredPackagesResponse{}, fmt.Errorf("unable to read SDKs folder: %w", err)
 	}
-
-	var pkgs []*pulumirpc.PackageDependency
-	var specs []*pulumirpc.PackageSpec
+	stamps := readSDKSources(req.Info.ProgramDirectory)
 
 	// Resolve every provider referenced anywhere in the module tree to its
 	// source, mirroring tofu: a provider declared in a child module is installed
@@ -188,60 +190,66 @@ func (host *LanguageHost) GetRequiredPackages(
 	// (the terraform-provider plugin intersects them at resolve time, erroring on
 	// an empty intersection just as tofu does), and distinct sources are distinct
 	// installs.
-	tfSpecs, pulumiPkgs, aliases := collectRequirements(ctx, modules.NewLoader(modules.LiveResolver(ctx)),
+	tfReqs, pulumiPkgs, _ := collectRequirements(ctx, modules.NewLoader(modules.LiveResolver(ctx)),
 		config, req.Info.ProgramDirectory)
 
-	emitted := map[string]bool{}
-	for _, alias := range sortedKeys(aliases) {
-		// A local SDK descriptor (written by `pulumi package add`) is the most
-		// specific source of truth: it carries the base provider name and the
-		// parameterization that a `required_providers` entry alone lacks. Prefer
-		// it even for pulumi-sourced packages, whose parameterized form resolves
-		// to a base provider plus parameter rather than a plain dependency. The
-		// raw source it shadows must not also be installed. An extension package
-		// reports its base provider with the parameter in the extension slot.
-
-		// The descriptor directory is named after the resolved package, which
-		// differs from the alias when required_providers renames the provider
-		// locally; the alias and the package-name aliases then share one
-		// descriptor, reported once.
-		req := aliases[alias]
-		key := alias
-		info, ok := paramInfos[key]
-		if !ok {
-			key = packageName(alias, tfProviderSource(alias, req))
-			info, ok = paramInfos[key]
+	// Distinct sources resolving to one package name cannot both live at
+	// sdks/<name>: `pulumi install` would overwrite one SDK with the other
+	// and never converge.
+	byName := map[string]string{}
+	for _, source := range sortedKeys(tfReqs) {
+		name := packageName("", source)
+		if prev, ok := byName[name]; ok {
+			return nil, fmt.Errorf(
+				"provider sources %q and %q both resolve to package name %q; "+
+					"distinct sources sharing a package name are not supported",
+				tfReqs[prev].display, tfReqs[source].display, name)
 		}
-		if !ok {
+		byName[name] = source
+	}
+
+	var pkgs []*pulumirpc.PackageDependency
+	var specs []*pulumirpc.PackageSpec
+	emitted := map[string]bool{}
+	emitPkg := func(dir string, info workspace.PackageDescriptor) {
+		if emitted[dir] {
+			return
+		}
+		emitted[dir] = true
+		pkgs = append(pkgs, &pulumirpc.PackageDependency{
+			Name:             info.Name,
+			Version:          versionString(info.Version),
+			Kind:             "resource",
+			Parameterization: parameterizationProto(info.Parameterization),
+			Extension:        parameterizationProto(info.ExtensionParameterization),
+		})
+	}
+
+	for _, source := range sortedKeys(tfReqs) {
+		if dir, info, ok := descriptorForSource(source, paramInfos, stamps); ok {
+			emitPkg(dir, info)
 			continue
 		}
-		if !emitted[key] {
-			emitted[key] = true
-			pkgs = append(pkgs, &pulumirpc.PackageDependency{
-				Name:             info.Name,
-				Version:          versionString(info.Version),
-				Kind:             "resource",
-				Parameterization: parameterizationProto(info.Parameterization),
-				Extension:        parameterizationProto(info.ExtensionParameterization),
-			})
-			// An extension's resource tokens live in the base provider's
-			// namespace, so a program that uses only extension resources infers
-			// a bare terraform-provider requirement for the base. That base is
-			// served by the extension reported above, so drop the inferred
-			// spec. A base that is separately declared in required_providers
-			// (used directly by a base resource) stays in pulumiPkgs and is
-			// still reported.
-			if info.ExtensionParameterization != nil {
-				delete(tfSpecs, tfProviderSource(info.Name, aliases[info.Name]))
-			}
+		params := []string{tfReqs[source].display}
+		if constraint := tfReqs[source].versions.constraint(); constraint != "" {
+			params = append(params, constraint)
 		}
-		delete(tfSpecs, tfProviderSource(alias, req))
-		if req.IsPulumi() {
-			delete(pulumiPkgs, packageName(alias, req.Source))
-		}
+		specs = append(specs, &pulumirpc.PackageSpec{
+			Source:     bridgePackageName,
+			Parameters: params,
+		})
 	}
 
 	for _, name := range sortedKeys(pulumiPkgs) {
+		// A local SDK descriptor written by `pulumi package add` carries the
+		// parameterization a required_providers entry alone lacks; prefer it.
+		// A terraform-provider descriptor is not this package — it serves a
+		// non-Pulumi source that happens to share the name (e.g. a root on
+		// pulumi/aws with a child module on hashicorp/aws).
+		if info, ok := paramInfos[name]; ok && info.Name != bridgePackageName {
+			emitPkg(name, info)
+			continue
+		}
 		pkgs = append(pkgs, &pulumirpc.PackageDependency{
 			Name:    name,
 			Version: pulumiPkgs[name],
@@ -249,18 +257,48 @@ func (host *LanguageHost) GetRequiredPackages(
 		})
 	}
 
-	for _, source := range sortedKeys(tfSpecs) {
-		params := []string{source}
-		if constraint := tfSpecs[source].constraint(); constraint != "" {
-			params = append(params, constraint)
-		}
-		specs = append(specs, &pulumirpc.PackageSpec{
-			Source:     "terraform-provider",
-			Parameters: params,
-		})
-	}
-
 	return &pulumirpc.GetRequiredPackagesResponse{Packages: pkgs, Specs: specs}, nil
+}
+
+// descriptorForSource returns the on-disk SDK descriptor that satisfies the
+// canonical provider source, and the sdks/ directory it lives in. A stamped
+// descriptor (see stampSDKSources) satisfies exactly its stamped source; an
+// unstamped one satisfies the source its directory is named after (installs
+// name the SDK directory after the resolved package); an extension satisfies
+// its base provider's source from any directory.
+func descriptorForSource(
+	source string,
+	sdks map[string]workspace.PackageDescriptor,
+	stamps map[string]string,
+) (string, workspace.PackageDescriptor, bool) {
+	for _, dir := range sortedKeys(stamps) {
+		if desc, ok := sdks[dir]; ok && canonicalSource(stamps[dir]) == source {
+			return dir, desc, true
+		}
+	}
+	name := packageName("", source)
+	if desc, ok := sdks[name]; ok && stamps[name] == "" {
+		return name, desc, true
+	}
+	// An extension's resource tokens live in the base provider's namespace,
+	// so the base is served by the extension's SDK.
+	for _, dir := range sortedKeys(sdks) {
+		if desc := sdks[dir]; desc.ExtensionParameterization != nil && desc.Name == name {
+			return dir, desc, true
+		}
+	}
+	return "", workspace.PackageDescriptor{}, false
+}
+
+// canonicalSource returns the fully-qualified form of a provider source
+// ("aws" → "registry.opentofu.org/hashicorp/aws") so every spelling of one
+// provider shares a single requirement; unparseable sources map to themselves.
+func canonicalSource(source string) string {
+	provider, diags := addrs.ParseProviderSourceString(source)
+	if diags.HasErrors() {
+		return source
+	}
+	return provider.String()
 }
 
 // tfProviderSource returns the source URL passed to the terraform-provider
@@ -334,47 +372,49 @@ func readParameterizationInfos(dir string) (map[string]workspace.PackageDescript
 	return result, errors.Join(errs...)
 }
 
-// missingNonPulumiSDKs returns the sorted non-Pulumi provider aliases used
-// by config (and its transitively-loaded modules) that lack an on-disk SDK.
-// Empty workDir skips module recursion.
-func missingNonPulumiSDKs(
-	ctx context.Context, config *ast.Config, sdks map[string]workspace.PackageDescriptor, workDir string,
-) []string {
-	_, _, aliases := collectRequirements(ctx, modules.NewLoader(modules.LiveResolver(ctx)), config, workDir)
-	var missing []string
-	for _, alias := range sortedKeys(aliases) {
-		req := aliases[alias]
-		if isBuiltinProvider(alias) || req.IsPulumi() {
-			continue
-		}
-		if _, ok := sdks[alias]; ok {
-			continue
-		}
-		// The SDK directory is named after the resolved package (the source
-		// basename), which differs from the alias when required_providers
-		// renames the provider locally.
-		if _, ok := sdks[packageName(alias, tfProviderSource(alias, req))]; ok {
-			continue
-		}
-		// An extension resource's type namespace is its base provider name; the
-		// base is served by the extension's SDK, so it is not itself missing.
-		if isExtensionBase(sdks, alias) {
-			continue
-		}
-		missing = append(missing, alias)
+// readSDKSources reads the `source` stamp from sdks/*/hcl.sdk.json files,
+// mapping SDK directory name to the provider source that SDK satisfies.
+// Descriptors written before stamping (see stampSDKSources) are absent.
+func readSDKSources(dir string) map[string]string {
+	sdksDir := filepath.Join(dir, "sdks")
+	entries, err := os.ReadDir(sdksDir)
+	if err != nil {
+		return nil
 	}
-	return missing
+	stamps := map[string]string{}
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		data, err := os.ReadFile(filepath.Join(sdksDir, entry.Name(), "hcl.sdk.json"))
+		if err != nil {
+			continue
+		}
+		var stamp struct {
+			Source string `json:"source"`
+		}
+		if json.Unmarshal(data, &stamp) == nil && stamp.Source != "" {
+			stamps[entry.Name()] = stamp.Source
+		}
+	}
+	return stamps
 }
 
-// isExtensionBase reports whether name is the base provider of some extension
-// package described in sdks.
-func isExtensionBase(sdks map[string]workspace.PackageDescriptor, name string) bool {
-	for _, d := range sdks {
-		if d.ExtensionParameterization != nil && d.Name == name {
-			return true
+// missingNonPulumiSDKs returns the sorted non-Pulumi provider sources used
+// by config (and its transitively-loaded modules) that no on-disk SDK
+// satisfies. Empty workDir skips module recursion.
+func missingNonPulumiSDKs(
+	ctx context.Context, config *ast.Config, sdks map[string]workspace.PackageDescriptor,
+	stamps map[string]string, workDir string,
+) []string {
+	tfReqs, _, _ := collectRequirements(ctx, modules.NewLoader(modules.LiveResolver(ctx)), config, workDir)
+	var missing []string
+	for _, source := range sortedKeys(tfReqs) {
+		if _, _, ok := descriptorForSource(source, sdks, stamps); !ok {
+			missing = append(missing, tfReqs[source].display)
 		}
 	}
-	return false
+	return missing
 }
 
 func isBuiltinProvider(alias string) bool { return alias == "pulumi" || alias == "terraform" }
@@ -397,22 +437,31 @@ func (v *versionSet) add(constraint string) {
 
 func (v *versionSet) constraint() string { return strings.Join(sortedKeys(v.seen), ", ") }
 
+// tfRequirement accumulates what the module tree declares for one canonical
+// provider source: the constraint union, and the shortest spelling seen for
+// specs and error messages.
+type tfRequirement struct {
+	display  string
+	versions versionSet
+}
+
 // collectRequirements walks config (recursing through `module` blocks when
 // workDir is non-empty) and resolves every provider it references to a
 // fully-qualified source, mirroring tofu's resolution. It returns:
-//   - tf: non-Pulumi sources mapped to the union of version constraints
-//     declared for them across the module tree;
+//   - tf: non-Pulumi requirements keyed by canonical source;
 //   - pulumi: pulumi/<name>-sourced packages mapped to their version;
 //   - aliases: every provider local name referenced, mapped to its resolved
-//     required_providers entry (nil for implicit providers), builtins included.
+//     required_providers entry (nil for implicit providers), builtins
+//     included. First declared entry wins across modules — key requirements
+//     off tf/pulumi, never off aliases.
 //
 // Each local name is resolved to its source within the module that uses it (its
 // own required_providers, else the "hashicorp/<name>" default), so a provider
 // declared only in a child module still resolves from its declared source.
 func collectRequirements(
 	ctx context.Context, loader *modules.Loader, config *ast.Config, workDir string,
-) (tf map[string]*versionSet, pulumi map[string]string, aliases map[string]*ast.RequiredProvider) {
-	tf = map[string]*versionSet{}
+) (tf map[string]*tfRequirement, pulumi map[string]string, aliases map[string]*ast.RequiredProvider) {
+	tf = map[string]*tfRequirement{}
 	pulumi = map[string]string{}
 	aliases = map[string]*ast.RequiredProvider{}
 	collectRequirementsRec(ctx, config, workDir, tf, pulumi, aliases, loader, map[string]struct{}{})
@@ -422,7 +471,7 @@ func collectRequirements(
 func collectRequirementsRec(
 	ctx context.Context,
 	config *ast.Config, workDir string,
-	tf map[string]*versionSet, pulumi map[string]string, aliases map[string]*ast.RequiredProvider,
+	tf map[string]*tfRequirement, pulumi map[string]string, aliases map[string]*ast.RequiredProvider,
 	loader *modules.Loader, visited map[string]struct{},
 ) {
 	if config == nil {
@@ -458,13 +507,16 @@ func collectRequirementsRec(
 			return
 		}
 		source := tfProviderSource(alias, req)
-		vs := tf[source]
-		if vs == nil {
-			vs = &versionSet{seen: map[string]struct{}{}}
-			tf[source] = vs
+		key := canonicalSource(source)
+		r := tf[key]
+		if r == nil {
+			r = &tfRequirement{display: source, versions: versionSet{seen: map[string]struct{}{}}}
+			tf[key] = r
+		} else if len(source) < len(r.display) || (len(source) == len(r.display) && source < r.display) {
+			r.display = source
 		}
 		if req != nil {
-			vs.add(req.Version)
+			r.versions.add(req.Version)
 		}
 	}
 
@@ -591,7 +643,8 @@ func (host *LanguageHost) Run(
 		return nil, fmt.Errorf("unable to read parameterization: %w", err)
 	}
 
-	if missing := missingNonPulumiSDKs(ctx, config, paramDescriptors, req.Info.ProgramDirectory); len(missing) > 0 {
+	if missing := missingNonPulumiSDKs(ctx, config, paramDescriptors,
+		readSDKSources(req.Info.ProgramDirectory), req.Info.ProgramDirectory); len(missing) > 0 {
 		return &pulumirpc.RunResponse{
 			Error: fmt.Sprintf(
 				"missing local SDK for non-Pulumi provider(s) %v; run `pulumi install` to fetch them",
@@ -663,14 +716,66 @@ func (host *LanguageHost) GetPluginInfo(
 	}, nil
 }
 
-// InstallDependencies installs dependencies for an HCL program.
+// InstallDependencies installs dependencies for an HCL program. Provider
+// plugins are installed by the CLI from the specs GetRequiredPackages emits;
+// here we only stamp SDK descriptors with the source they satisfy, because
+// directory-name inference goes stale when a required_providers source
+// changes without the SDK regenerating.
 func (host *LanguageHost) InstallDependencies(
 	req *pulumirpc.InstallDependenciesRequest,
 	server pulumirpc.LanguageRuntime_InstallDependenciesServer,
 ) error {
-	// HCL programs don't have traditional package dependencies like Node.js or Python.
-	// Provider plugins are managed by Pulumi automatically.
+	if req.Info != nil {
+		stampSDKSources(server.Context(), req.Info.ProgramDirectory)
+	}
 	return nil
+}
+
+// stampSDKSources writes a `source` field into each sdks/*/hcl.sdk.json that
+// currently satisfies a requirement only by directory-name inference.
+func stampSDKSources(ctx context.Context, dir string) {
+	config, diags := parser.NewParser().ParseDirectory(dir)
+	if diags.HasErrors() {
+		return
+	}
+	tfReqs, _, _ := collectRequirements(ctx, modules.NewLoader(modules.LiveResolver(ctx)), config, dir)
+	paramInfos, err := readParameterizationInfos(dir)
+	if err != nil {
+		return
+	}
+	stamps := readSDKSources(dir)
+	for _, source := range sortedKeys(tfReqs) {
+		name := packageName("", source)
+		if _, ok := paramInfos[name]; !ok || stamps[name] != "" {
+			continue
+		}
+		display := tfReqs[source].display
+		path := filepath.Join(dir, "sdks", name, "hcl.sdk.json")
+		if err := stampSDKSource(path, display); err != nil {
+			logging.V(5).Infof("stampSDKSources: %v", err)
+			continue
+		}
+		stamps[name] = display
+	}
+}
+
+// stampSDKSource rewrites the descriptor at path with source added, leaving
+// every other field untouched.
+func stampSDKSource(path, source string) error {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return err
+	}
+	var desc map[string]any
+	if err := json.Unmarshal(data, &desc); err != nil {
+		return err
+	}
+	desc["source"] = source
+	out, err := json.MarshalIndent(desc, "", "  ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(path, append(out, '\n'), 0o644)
 }
 
 // RuntimeOptionsPrompts returns prompts for runtime options during `pulumi new`.

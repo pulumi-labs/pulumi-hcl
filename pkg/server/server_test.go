@@ -29,6 +29,15 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// bridgedSDK is the shape `pulumi install` writes for a non-Pulumi provider:
+// a terraform-provider descriptor parameterized with the resolved package.
+func bridgedSDK(pkg string) workspace.PackageDescriptor {
+	return workspace.PackageDescriptor{
+		PluginDescriptor: workspace.PluginDescriptor{Name: "terraform-provider"},
+		Parameterization: &workspace.Parameterization{Name: pkg},
+	}
+}
+
 // Test that we correctly inline additional keys.
 func TestGenerateProjectInlinesAdditionalKeys(t *testing.T) {
 	t.Parallel()
@@ -427,11 +436,11 @@ resource "simple_resource" "r" {
 	require.False(t, diags.HasErrors(), diags.Error())
 
 	sdks := map[string]workspace.PackageDescriptor{
-		"simple": {PluginDescriptor: workspace.PluginDescriptor{Name: "simple"}},
+		"simple": bridgedSDK("simple"),
 	}
-	assert.Empty(t, missingNonPulumiSDKs(t.Context(), config, sdks, dir))
-	assert.Equal(t, []string{"myp", "simple"},
-		missingNonPulumiSDKs(t.Context(), config, nil, dir))
+	assert.Empty(t, missingNonPulumiSDKs(t.Context(), config, sdks, nil, dir))
+	assert.Equal(t, []string{"hashicorp/simple"},
+		missingNonPulumiSDKs(t.Context(), config, nil, nil, dir))
 }
 
 // TestGetRequiredPackages_SameSourceVersionIntersection mirrors tofu: two
@@ -481,6 +490,216 @@ terraform {
 		Source:     "terraform-provider",
 		Parameters: []string{"hashicorp/dns", "< 3.2, >= 3.0"},
 	}}, resp.Specs)
+}
+
+// A root on pulumi/aws consuming a child module that implicitly requires
+// hashicorp/aws holds two distinct requirements under one local name: after
+// `pulumi install` writes the bridged SDK, both packages must be reported
+// with no spec left over — not a spec re-emitted forever.
+func TestGetRequiredPackages_PulumiRootTFChildSameName(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "main.tf"), []byte(`
+terraform {
+  required_providers {
+    aws = {
+      source = "pulumi/aws"
+    }
+  }
+}
+
+module "child" {
+  source = "./child"
+}
+`), 0o600))
+	childDir := filepath.Join(dir, "child")
+	require.NoError(t, os.MkdirAll(childDir, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(childDir, "main.tf"), []byte(`
+resource "aws_s3_bucket" "b" {}
+`), 0o600))
+
+	host := &LanguageHost{}
+	info := &pulumirpc.ProgramInfo{ProgramDirectory: dir, RootDirectory: dir, EntryPoint: "."}
+
+	resp, err := host.GetRequiredPackages(t.Context(), &pulumirpc.GetRequiredPackagesRequest{Info: info})
+	require.NoError(t, err)
+	assert.Equal(t, []*pulumirpc.PackageDependency{{
+		Name: "aws",
+		Kind: "resource",
+	}}, resp.Packages)
+	assert.Equal(t, []*pulumirpc.PackageSpec{{
+		Source:     "terraform-provider",
+		Parameters: []string{"hashicorp/aws"},
+	}}, resp.Specs)
+
+	// Mirror what `pulumi install` leaves behind for the spec.
+	sdkDir := filepath.Join(dir, "sdks", "aws")
+	require.NoError(t, os.MkdirAll(sdkDir, 0o755))
+	_, err = host.GeneratePackage(t.Context(), &pulumirpc.GeneratePackageRequest{
+		Directory: sdkDir,
+		Schema: `{
+			"name": "aws",
+			"version": "6.55.0",
+			"parameterization": {
+				"baseProvider": {"name": "terraform-provider", "version": "0.0.1"},
+				"parameter": "aGVsbG8="
+			}
+		}`,
+	})
+	require.NoError(t, err)
+
+	resp, err = host.GetRequiredPackages(t.Context(), &pulumirpc.GetRequiredPackagesRequest{Info: info})
+	require.NoError(t, err)
+	assert.Equal(t, []*pulumirpc.PackageDependency{
+		{
+			Name:    "terraform-provider",
+			Version: "0.0.1",
+			Kind:    "resource",
+			Parameterization: &pulumirpc.PackageParameterization{
+				Name:    "aws",
+				Version: "6.55.0",
+				Value:   []byte("hello"),
+			},
+		},
+		{
+			Name: "aws",
+			Kind: "resource",
+		},
+	}, resp.Packages)
+	assert.Empty(t, resp.Specs)
+}
+
+// Two distinct sources resolving to one package name cannot both live at
+// sdks/<name>, so `pulumi install` could never satisfy both.
+func TestGetRequiredPackages_SameNameDistinctSourcesErrors(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "main.tf"), []byte(`
+module "a" { source = "./a" }
+module "b" { source = "./b" }
+`), 0o600))
+	for name, source := range map[string]string{"a": "hashicorp/dns", "b": "mycorp/dns"} {
+		sub := filepath.Join(dir, name)
+		require.NoError(t, os.MkdirAll(sub, 0o755))
+		require.NoError(t, os.WriteFile(filepath.Join(sub, "main.tf"), []byte(`
+terraform {
+  required_providers {
+    dns = {
+      source = "`+source+`"
+    }
+  }
+}
+`), 0o600))
+	}
+
+	host := &LanguageHost{}
+	_, err := host.GetRequiredPackages(t.Context(), &pulumirpc.GetRequiredPackagesRequest{
+		Info: &pulumirpc.ProgramInfo{ProgramDirectory: dir, RootDirectory: dir, EntryPoint: "."},
+	})
+	assert.ErrorContains(t, err, `provider sources "hashicorp/dns" and "mycorp/dns" both resolve to package name "dns"`)
+}
+
+// Every spelling of one provider source is one requirement: the short form
+// and the fully-qualified registry form must union into a single spec, shown
+// with the shortest spelling.
+func TestGetRequiredPackages_CanonicalSourceDedup(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "main.tf"), []byte(`
+module "a" { source = "./a" }
+module "b" { source = "./b" }
+`), 0o600))
+	for name, source := range map[string]string{"a": "hashicorp/dns", "b": "registry.opentofu.org/hashicorp/dns"} {
+		sub := filepath.Join(dir, name)
+		require.NoError(t, os.MkdirAll(sub, 0o755))
+		require.NoError(t, os.WriteFile(filepath.Join(sub, "main.tf"), []byte(`
+terraform {
+  required_providers {
+    dns = {
+      source  = "`+source+`"
+      version = ">= 3.0"
+    }
+  }
+}
+`), 0o600))
+	}
+
+	host := &LanguageHost{}
+	resp, err := host.GetRequiredPackages(t.Context(), &pulumirpc.GetRequiredPackagesRequest{
+		Info: &pulumirpc.ProgramInfo{ProgramDirectory: dir, RootDirectory: dir, EntryPoint: "."},
+	})
+	require.NoError(t, err)
+	assert.Empty(t, resp.Packages)
+	assert.Equal(t, []*pulumirpc.PackageSpec{{
+		Source:     "terraform-provider",
+		Parameters: []string{"hashicorp/dns", ">= 3.0"},
+	}}, resp.Specs)
+}
+
+// A stamped SDK satisfies exactly its stamped source: after the program's
+// required_providers source changes, the stale SDK must not satisfy the new
+// source by directory-name inference, so `pulumi install` regenerates it.
+func TestDescriptorForSource_StampedSource(t *testing.T) {
+	t.Parallel()
+
+	sdks := map[string]workspace.PackageDescriptor{"dns": bridgedSDK("dns")}
+	stamps := map[string]string{"dns": "hashicorp/dns"}
+
+	dir, _, ok := descriptorForSource(canonicalSource("hashicorp/dns"), sdks, stamps)
+	assert.True(t, ok)
+	assert.Equal(t, "dns", dir)
+
+	_, _, ok = descriptorForSource(canonicalSource("mycorp/dns"), sdks, stamps)
+	assert.False(t, ok)
+
+	// Unstamped descriptors keep satisfying by directory name.
+	_, _, ok = descriptorForSource(canonicalSource("mycorp/dns"), sdks, nil)
+	assert.True(t, ok)
+}
+
+// stampSDKSources records which source each SDK satisfies, preserving the
+// descriptor's other fields.
+func TestStampSDKSources(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "main.tf"), []byte(`
+terraform {
+  required_providers {
+    dns = {
+      source = "hashicorp/dns"
+    }
+  }
+}
+`), 0o600))
+	sdkDir := filepath.Join(dir, "sdks", "dns")
+	require.NoError(t, os.MkdirAll(sdkDir, 0o755))
+	host := &LanguageHost{}
+	_, err := host.GeneratePackage(t.Context(), &pulumirpc.GeneratePackageRequest{
+		Directory: sdkDir,
+		Schema: `{
+			"name": "dns",
+			"version": "3.1.0",
+			"parameterization": {
+				"baseProvider": {"name": "terraform-provider", "version": "0.0.1"},
+				"parameter": "aGVsbG8="
+			}
+		}`,
+	})
+	require.NoError(t, err)
+
+	stampSDKSources(t.Context(), dir)
+
+	assert.Equal(t, map[string]string{"dns": "hashicorp/dns"}, readSDKSources(dir))
+	infos, err := readParameterizationInfos(dir)
+	require.NoError(t, err)
+	require.Len(t, infos, 1)
+	assert.Equal(t, "terraform-provider", infos["dns"].Name)
+	require.NotNil(t, infos["dns"].Parameterization)
+	assert.Equal(t, "dns", infos["dns"].Parameterization.Name)
 }
 
 // TestGetRequiredPackages_DistinctSourcesSameLocalName mirrors tofu: provider
@@ -556,15 +775,15 @@ data "archive_file" "lambda" {}
 	// No SDKs on disk: both non-Pulumi providers (explicit aws, implicit
 	// archive) must be reported missing.
 	assert.Equal(t,
-		[]string{"archive", "aws"},
-		missingNonPulumiSDKs(t.Context(), cfg, nil, ""))
+		[]string{"hashicorp/archive", "hashicorp/aws"},
+		missingNonPulumiSDKs(t.Context(), cfg, nil, nil, ""))
 
 	// Once both have SDKs, nothing is missing.
 	sdks := map[string]workspace.PackageDescriptor{
-		"aws":     {PluginDescriptor: workspace.PluginDescriptor{Name: "aws"}},
-		"archive": {PluginDescriptor: workspace.PluginDescriptor{Name: "archive"}},
+		"aws":     bridgedSDK("aws"),
+		"archive": bridgedSDK("archive"),
 	}
-	assert.Empty(t, missingNonPulumiSDKs(t.Context(), cfg, sdks, ""))
+	assert.Empty(t, missingNonPulumiSDKs(t.Context(), cfg, sdks, nil, ""))
 
 	// A pulumi-source provider needs no SDK even when it's only referenced
 	// by a resource type prefix.
@@ -581,7 +800,7 @@ resource "aws_s3_bucket" "b" {}
 `
 	cfgPulumi, diags := parser.NewParser().ParseSource("main.tf", []byte(pulumiSrc))
 	require.False(t, diags.HasErrors(), "diags: %v", diags)
-	assert.Empty(t, missingNonPulumiSDKs(t.Context(), cfgPulumi, nil, ""))
+	assert.Empty(t, missingNonPulumiSDKs(t.Context(), cfgPulumi, nil, nil, ""))
 }
 
 func TestMissingNonPulumiSDKs_BuiltinProvider(t *testing.T) {
@@ -594,7 +813,7 @@ func TestMissingNonPulumiSDKs_BuiltinProvider(t *testing.T) {
 	cfg, diags := parser.NewParser().ParseSource("main.tf", []byte(src))
 	require.False(t, diags.HasErrors(), "diags: %v", diags)
 
-	assert.Empty(t, missingNonPulumiSDKs(t.Context(), cfg, nil, ""))
+	assert.Empty(t, missingNonPulumiSDKs(t.Context(), cfg, nil, nil, ""))
 }
 
 // A pulumi-sourced provider declared only in a child module must not be
@@ -629,7 +848,7 @@ resource "example_resource" "hello" {}
 	cfg, diags := parser.NewParser().ParseDirectory(dir)
 	require.False(t, diags.HasErrors(), "diags: %v", diags)
 
-	assert.Empty(t, missingNonPulumiSDKs(t.Context(), cfg, nil, dir))
+	assert.Empty(t, missingNonPulumiSDKs(t.Context(), cfg, nil, nil, dir))
 }
 
 // A provider local name that contains underscores (e.g. "snake_names") must
@@ -655,7 +874,7 @@ resource "snake_names_cool_module_some_resource" "first" {
 	cfg, diags := parser.NewParser().ParseSource("main.tf", []byte(src))
 	require.False(t, diags.HasErrors(), "diags: %v", diags)
 
-	assert.Empty(t, missingNonPulumiSDKs(t.Context(), cfg, nil, ""))
+	assert.Empty(t, missingNonPulumiSDKs(t.Context(), cfg, nil, nil, ""))
 }
 
 // Implicit provider inside a child module must surface at the top — without
@@ -681,8 +900,8 @@ resource "aws_s3_bucket" "b" {}
 	require.False(t, diags.HasErrors(), "diags: %v", diags)
 
 	assert.Equal(t,
-		[]string{"aws"},
-		missingNonPulumiSDKs(t.Context(), cfg, nil, dir))
+		[]string{"hashicorp/aws"},
+		missingNonPulumiSDKs(t.Context(), cfg, nil, nil, dir))
 }
 
 // Same recursion via the module's `required_providers` block (no resources).
@@ -713,8 +932,8 @@ terraform {
 	require.False(t, diags.HasErrors(), "diags: %v", diags)
 
 	assert.Equal(t,
-		[]string{"awscc"},
-		missingNonPulumiSDKs(t.Context(), cfg, nil, dir))
+		[]string{"hashicorp/awscc"},
+		missingNonPulumiSDKs(t.Context(), cfg, nil, nil, dir))
 }
 
 // terraform_remote_state is served by the external pulumi-terraform package, so

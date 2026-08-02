@@ -417,8 +417,8 @@ func (m *moduleProvider) requirementSpecs(
 		}
 		source := tfProviderSource(alias, req)
 		params := []string{source}
-		if vs := tf[source]; vs != nil {
-			if c := vs.constraint(); c != "" {
+		if r := tf[canonicalSource(source)]; r != nil {
+			if c := r.versions.constraint(); c != "" {
 				params = append(params, c)
 			}
 		}

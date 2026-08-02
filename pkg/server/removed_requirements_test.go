@@ -49,7 +49,7 @@ removed {
 	require.False(t, diags.HasErrors(), diags.Error())
 
 	tf, pulumiPkgs, aliases := collectRequirements(t.Context(), nil, config, "")
-	assert.Equal(t, []string{"hashicorp/simple"}, slices.Sorted(maps.Keys(tf)))
+	assert.Equal(t, []string{"registry.opentofu.org/hashicorp/simple"}, slices.Sorted(maps.Keys(tf)))
 	assert.Equal(t, map[string]*ast.RequiredProvider{"simple": nil}, aliases)
 	assert.Empty(t, pulumiPkgs)
 }
@@ -77,7 +77,7 @@ removed {
 	require.False(t, diags.HasErrors(), diags.Error())
 
 	tf, pulumiPkgs, aliases := collectRequirements(t.Context(), nil, config, "")
-	assert.Equal(t, []string{"hashicorp/simple"}, slices.Sorted(maps.Keys(tf)))
+	assert.Equal(t, []string{"registry.opentofu.org/hashicorp/simple"}, slices.Sorted(maps.Keys(tf)))
 	assert.Equal(t, map[string]*ast.RequiredProvider{"simple": nil}, aliases)
 	assert.Empty(t, pulumiPkgs)
 }
