@@ -137,11 +137,7 @@ func wrapTerraformDataInputs(resType string, inputs property.Map, evaluated map[
 		if !ok {
 			continue
 		}
-		wrapped, err := packages.WrapTerraformDataValue(src.Type(), v)
-		if err != nil {
-			continue
-		}
-		inputs = inputs.Set(name, wrapped)
+		inputs = inputs.Set(name, packages.WrapTerraformDataValue(src.Type(), v))
 	}
 	return inputs
 }

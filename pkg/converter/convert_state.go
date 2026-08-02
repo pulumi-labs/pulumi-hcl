@@ -128,23 +128,25 @@ func convertTFState(
 	for res := range managedResources(state, warn) {
 		provider := res.ProviderConfig.Provider.Type
 		tfType := res.Addr.Resource.Type
-		if tfType == packages.TerraformDataType {
-			resources = append(resources, stashImports(res, warn)...)
-			continue
+		stash := tfType == packages.TerraformDataType
+		token := packages.StashToken
+		var info *tfbridge.ProviderInfo
+		if !stash {
+			var err error
+			info, err = providerInfoSource.GetProviderInfo(ctx, provider, nil)
+			if err != nil || info == nil {
+				warn("Failed to resolve provider", fmt.Sprintf(
+					"could not resolve bridge mapping for provider %q: %v", provider, err))
+				continue
+			}
+			resInfo, ok := info.Resources[tfType]
+			if !ok || resInfo == nil || resInfo.Tok == "" {
+				warn("Failed to resolve resource type", fmt.Sprintf(
+					"provider %q has no mapping for TF type %q", provider, tfType))
+				continue
+			}
+			token = resInfo.Tok.String()
 		}
-		info, err := providerInfoSource.GetProviderInfo(ctx, provider, nil)
-		if err != nil || info == nil {
-			warn("Failed to resolve provider", fmt.Sprintf(
-				"could not resolve bridge mapping for provider %q: %v", provider, err))
-			continue
-		}
-		resInfo, ok := info.Resources[tfType]
-		if !ok || resInfo == nil || resInfo.Tok == "" {
-			warn("Failed to resolve resource type", fmt.Sprintf(
-				"provider %q has no mapping for TF type %q", provider, tfType))
-			continue
-		}
-		token := resInfo.Tok.String()
 
 		for _, key := range sortedInstanceKeys(res) {
 			current := res.Instances[key].Current
@@ -157,8 +159,15 @@ func convertTFState(
 					"an instance of %s has no string `id` attribute to import by", res.Addr))
 				continue
 			}
-			outs, ins, err := translateInstanceValues(ctx, loader, info, token, tfType, id, current)
-			if err != nil {
+			var outs, ins resource.PropertyMap
+			var err error
+			if stash {
+				if outs, ins, err = stashValues(current); err != nil {
+					warn("Skipped terraform_data resource", fmt.Sprintf(
+						"an instance of %s cannot be translated: %v", res.Addr, err))
+					continue
+				}
+			} else if outs, ins, err = translateInstanceValues(ctx, loader, info, token, tfType, id, current); err != nil {
 				warn("Importing without values", fmt.Sprintf(
 					"an instance of %s imports by id only: %v", res.Addr, err))
 			}
@@ -319,45 +328,15 @@ var terraformDataStateType = cty.Object(map[string]cty.Type{
 	"triggers_replace": cty.DynamicPseudoType,
 })
 
-// stashImports emits one Stash import per terraform_data instance. Inputs and
-// Outputs reproduce what the runtime registers: {type, value} wrappers for
-// non-null values, an explicit null input otherwise. triggers_replace is not
-// emitted — Stash rejects it as an input and an import cannot carry the
-// engine's replacement trigger; the trigger records on the first up, which the
-// engine forgives without a replace. An untranslatable instance is skipped
-// outright: with no plugin behind Stash, an id-only import could only fail.
-func stashImports(res *states.Resource, warn func(summary, detail string)) []plugin.ResourceImport {
-	var imports []plugin.ResourceImport
-	for _, key := range sortedInstanceKeys(res) {
-		current := res.Instances[key].Current
-		if current == nil {
-			continue
-		}
-		id, ok := importID(current)
-		if !ok {
-			warn("Skipped resource without id", fmt.Sprintf(
-				"an instance of %s has no string `id` attribute to import by", res.Addr))
-			continue
-		}
-		outs, ins, err := stashValues(current)
-		if err != nil {
-			warn("Skipped terraform_data resource", fmt.Sprintf(
-				"an instance of %s cannot be translated: %v", res.Addr, err))
-			continue
-		}
-		imports = append(imports, plugin.ResourceImport{
-			Type:    packages.StashToken,
-			Name:    resourceName(res.Addr.Resource.Name, key),
-			ID:      id,
-			Inputs:  ins,
-			Outputs: outs,
-		})
-	}
-	return imports
-}
-
 // stashValues translates a terraform_data instance's attributes into Stash's
-// property surface.
+// property surface — the resource the runtime lowers terraform_data onto,
+// served by the engine's builtin provider. Inputs and Outputs reproduce what
+// the runtime registers: {type, value} wrappers for non-null values, an
+// explicit null input otherwise. triggers_replace is not emitted — Stash
+// rejects it as an input and an import cannot carry the engine's replacement
+// trigger; the trigger records on the first up, which the engine forgives
+// without a replace. An untranslatable instance is skipped outright: with no
+// plugin behind Stash, an id-only import could only fail.
 func stashValues(current *states.ResourceInstanceObjectSrc) (outs, ins resource.PropertyMap, err error) {
 	if current.AttrsJSON == nil {
 		return nil, nil, errors.New("pre-0.12 flatmap attributes are not translatable")
@@ -372,28 +351,17 @@ func stashValues(current *states.ResourceInstanceObjectSrc) (outs, ins resource.
 	if err != nil {
 		return nil, nil, fmt.Errorf("translating attributes: %w", err)
 	}
-	wrap := func(name string) (resource.PropertyValue, error) {
+	wrap := func(name string) resource.PropertyValue {
 		v := m.Get(name)
 		if v.IsNull() {
-			return resource.NewNullProperty(), nil
+			return resource.NewNullProperty()
 		}
 		src, _ := val.GetAttr(name).Unmark()
-		wrapped, err := packages.WrapTerraformDataValue(src.Type(), v)
-		if err != nil {
-			return resource.PropertyValue{}, fmt.Errorf("%s: %w", name, err)
-		}
-		return resource.ToResourcePropertyValue(wrapped), nil
+		return resource.ToResourcePropertyValue(packages.WrapTerraformDataValue(src.Type(), v))
 	}
-	input, err := wrap("input")
-	if err != nil {
-		return nil, nil, err
-	}
-	output, err := wrap("output")
-	if err != nil {
-		return nil, nil, err
-	}
+	input := wrap("input")
 	ins = resource.PropertyMap{"input": input}
-	outs = resource.PropertyMap{"input": input, "output": output}
+	outs = resource.PropertyMap{"input": input, "output": wrap("output")}
 	return outs, ins, nil
 }
 

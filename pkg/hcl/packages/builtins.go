@@ -18,6 +18,7 @@ import (
 	"strings"
 
 	"github.com/pulumi/pulumi/pkg/v3/codegen/schema"
+	"github.com/pulumi/pulumi/sdk/v3/go/common/util/contract"
 	"github.com/pulumi/pulumi/sdk/v3/go/property"
 	"github.com/zclconf/go-cty/cty"
 	ctyjson "github.com/zclconf/go-cty/cty/json"
@@ -97,15 +98,13 @@ const (
 
 // WrapTerraformDataValue boxes a terraform_data value of the given cty type as
 // a {type, value} wrapper.
-func WrapTerraformDataValue(t cty.Type, v property.Value) (property.Value, error) {
+func WrapTerraformDataValue(t cty.Type, v property.Value) property.Value {
 	typeJSON, err := ctyjson.MarshalType(t)
-	if err != nil {
-		return property.Value{}, err
-	}
+	contract.AssertNoErrorf(err, "marshaling cty type for the terraform_data wrapper")
 	return property.New(map[string]property.Value{
 		TerraformDataTypeKey:  property.New(string(typeJSON)),
 		TerraformDataValueKey: v,
-	}), nil
+	})
 }
 
 // TerraformRemoteStateSchema is the synthetic schema terraform_remote_state
