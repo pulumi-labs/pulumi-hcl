@@ -19,15 +19,21 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"slices"
+	"strings"
+	"sync"
 	"testing"
 
 	"github.com/pulumi/providertest/providers"
 	"github.com/pulumi/providertest/pulumitest"
 	"github.com/pulumi/providertest/pulumitest/optnewstack"
 	"github.com/pulumi/providertest/pulumitest/opttest"
+	"github.com/pulumi/pulumi-hcl/pkg/converter"
 	"github.com/pulumi/pulumi-hcl/pkg/server"
 	"github.com/pulumi/pulumi-hcl/tests/testutil/tfexec"
+	"github.com/pulumi/pulumi/pkg/v3/resource/plugin"
 	"github.com/pulumi/pulumi/sdk/v3/go/auto"
 	"github.com/pulumi/pulumi/sdk/v3/go/auto/optdestroy"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/apitype"
@@ -36,6 +42,7 @@ import (
 	pulumirpc "github.com/pulumi/pulumi/sdk/v3/proto/go"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/grpc"
+	"google.golang.org/protobuf/types/known/emptypb"
 )
 
 // serveLanguageHost serves the pulumi-language-hcl runtime in-process on an
@@ -98,11 +105,27 @@ type Result struct {
 type Driver struct {
 	pt        *pulumitest.PulumiTest
 	dir       string
-	providers []string
+	providers []Provider
+	mutations *mutationLog
 	// lastProgramFiles are the program-file paths written by the previous
 	// writeFiles call, removed before the next stage so a stage that drops a
 	// file doesn't inherit a stale copy.
 	lastProgramFiles []string
+}
+
+// rawDebugProvidersEnv starts an in-process server per provider and returns
+// the PULUMI_DEBUG_PROVIDERS value describing them: pulumitest only attaches
+// providers for the duration of its own engine operations, so raw commands
+// must bring their own.
+func (d *Driver) rawDebugProvidersEnv(t *testing.T) string {
+	t.Helper()
+	parts := make([]string, 0, len(d.providers))
+	for _, p := range d.providers {
+		handle, err := startProvider(t.Context(), p.Start)
+		require.NoError(t, err)
+		parts = append(parts, fmt.Sprintf("%s:%d", p.Name, handle.Port))
+	}
+	return strings.Join(parts, ",")
 }
 
 // NewDriver builds the project dir, attaches the bridged providers, and sets
@@ -110,13 +133,15 @@ type Driver struct {
 func NewDriver(t *testing.T, provs []Provider, config map[string]string) *Driver {
 	t.Helper()
 
+	mutations := &mutationLog{}
+	recorded := make([]Provider, len(provs))
+	for i, p := range provs {
+		recorded[i] = p.recorded(mutations)
+	}
+	provs = recorded
+
 	hostPort := serveLanguageHost(t)
 	dir := t.TempDir()
-
-	provNames := make([]string, len(provs))
-	for i, p := range provs {
-		provNames[i] = p.Name
-	}
 
 	// The project name is used as the default namespace for user config. It
 	// must not collide with any attached provider name, or user config like
@@ -159,7 +184,7 @@ backend:
 	for k, v := range config {
 		pt.SetConfig(t, k, v)
 	}
-	return &Driver{pt: pt, dir: dir, providers: provNames}
+	return &Driver{pt: pt, dir: dir, providers: provs, mutations: mutations}
 }
 
 // Dir returns the program directory where pulumi runs and program files are
@@ -273,7 +298,8 @@ func (d *Driver) writeFiles(t *testing.T, programFiles map[string]string) {
 // short-circuits plugin lookup to the in-process gRPC server.
 func (d *Driver) writeStubSDKs(t *testing.T) {
 	t.Helper()
-	for _, name := range d.providers {
+	for _, p := range d.providers {
+		name := p.Name
 		sdkDir := filepath.Join(d.dir, "sdks", name)
 		require.NoError(t, os.MkdirAll(sdkDir, 0o755))
 		desc := fmt.Sprintf(`{"name":%q,"kind":"resource"}`+"\n", name)
@@ -305,3 +331,146 @@ func startProvider(
 
 	return &handle, nil
 }
+
+func serveConverter(t *testing.T) int {
+	t.Helper()
+	cancel := make(chan bool)
+	t.Cleanup(func() { close(cancel) })
+	handle, err := rpcutil.ServeWithOptions(rpcutil.ServeOptions{
+		Cancel: cancel,
+		Init: func(srv *grpc.Server) error {
+			pulumirpc.RegisterConverterServer(srv, plugin.NewConverterServer(converter.New()))
+			return nil
+		},
+	})
+	require.NoError(t, err)
+	return handle.Port
+}
+
+// converterShim writes a pulumi-converter-hcl executable into a fresh temp dir
+// and returns that dir. Converter plugins have no PULUMI_DEBUG_* attach path,
+// but the CLI prefers an ambient plugin found on PATH and its only handshake
+// is the port printed on stdout — so a script that prints the in-process
+// server's port and blocks stands in for the real binary. The CLI kills the
+// shim when it closes the plugin; the in-process server outlives it.
+func converterShim(t *testing.T, port int) string {
+	t.Helper()
+	dir := t.TempDir()
+	shim := fmt.Sprintf("#!/bin/sh\necho %d\nexec tail -f /dev/null\n", port)
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "pulumi-converter-hcl"), []byte(shim), 0o755))
+	return dir
+}
+
+// Import writes programFiles and runs `pulumi import --from hcl` with the
+// given converter arguments. The converter is served in-process behind a PATH
+// shim, and PULUMI_DEBUG_PROVIDERS points the CLI's mapper at the attached
+// in-process providers; the values themselves come from the state, so no
+// provider Read runs. Imports are unprotected for the same reason as
+// ImportFromFile.
+//
+// TODO[https://github.com/pulumi/pulumi/issues/24144]: This is a raw CLI invocation: the
+// Automation API's ImportResources appends `--stack` after the `--` separator, which the
+// CLI then hands to the converter as arguments.
+func (d *Driver) Import(t *testing.T, programFiles map[string]string, converterArgs ...string) (string, error) {
+	t.Helper()
+	d.writeFiles(t, programFiles)
+	stack := d.pt.CurrentStack()
+	require.NotNil(t, stack, "driver has no stack")
+
+	args := append([]string{
+		"import", "--from", "hcl",
+		"--yes", "--skip-preview", "--protect=false", "--generate-code=false",
+		"--stack", stack.Name(), "--non-interactive", "--",
+	}, converterArgs...)
+	cmd := exec.Command("pulumi", args...)
+	cmd.Dir = d.dir
+	env := os.Environ()
+	envPath := os.Getenv("PATH")
+	for k, v := range stack.Workspace().GetEnvVars() {
+		env = append(env, k+"="+v)
+		if k == "PATH" {
+			envPath = v
+		}
+	}
+	shimDir := converterShim(t, serveConverter(t))
+	env = append(env,
+		"PATH="+shimDir+string(os.PathListSeparator)+envPath,
+		"PULUMI_DEBUG_PROVIDERS="+d.rawDebugProvidersEnv(t),
+	)
+	cmd.Env = env
+	out, err := cmd.CombinedOutput()
+	return string(out), err
+}
+
+// mutationLog accumulates the resource-mutating provider RPCs a Driver's
+// providers receive across all engine operations.
+type mutationLog struct {
+	mu    sync.Mutex
+	calls []string
+}
+
+func (l *mutationLog) record(op, urn string) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.calls = append(l.calls, op+" "+urn)
+}
+
+func (l *mutationLog) snapshot() []string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return slices.Clone(l.calls)
+}
+
+// mutationRecorder wraps a provider server, logging the RPCs that mutate (or,
+// with preview set, would mutate) a resource. Previews surface planned
+// creates and updates as Create/Update with preview=true, but planned deletes
+// never reach the provider — asserting no deletes requires a real up.
+type mutationRecorder struct {
+	pulumirpc.ResourceProviderServer
+	log *mutationLog
+}
+
+func previewOp(op string, preview bool) string {
+	if preview {
+		return op + "(preview)"
+	}
+	return op
+}
+
+func (m *mutationRecorder) Create(
+	ctx context.Context, req *pulumirpc.CreateRequest,
+) (*pulumirpc.CreateResponse, error) {
+	m.log.record(previewOp("create", req.Preview), req.Urn)
+	return m.ResourceProviderServer.Create(ctx, req)
+}
+
+func (m *mutationRecorder) Update(
+	ctx context.Context, req *pulumirpc.UpdateRequest,
+) (*pulumirpc.UpdateResponse, error) {
+	m.log.record(previewOp("update", req.Preview), req.Urn)
+	return m.ResourceProviderServer.Update(ctx, req)
+}
+
+func (m *mutationRecorder) Delete(
+	ctx context.Context, req *pulumirpc.DeleteRequest,
+) (*emptypb.Empty, error) {
+	m.log.record("delete", req.Urn)
+	return m.ResourceProviderServer.Delete(ctx, req)
+}
+
+// recorded returns a copy of p whose servers log mutating RPCs to log.
+func (p Provider) recorded(log *mutationLog) Provider {
+	start := p.Start
+	return Provider{Name: p.Name, Start: func(ctx context.Context) (pulumirpc.ResourceProviderServer, error) {
+		srv, err := start(ctx)
+		if err != nil {
+			return nil, err
+		}
+		return &mutationRecorder{ResourceProviderServer: srv, log: log}, nil
+	}}
+}
+
+// Mutations returns the create/update/delete provider calls recorded since
+// the driver was built, in arrival order, formatted "op urn" (preview-mode
+// calls as "op(preview) urn").
+func (d *Driver) Mutations() []string { return d.mutations.snapshot() }

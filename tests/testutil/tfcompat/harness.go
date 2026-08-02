@@ -73,32 +73,49 @@ type Provider struct {
 	Customize func(*testing.T, *tfbridge.ProviderInfo)
 }
 
-// buildProviders wires each Case provider into both paths, wrapping it with
-// the per-path recorder. SDKv2 providers record at the helper/schema CRUD
-// boundary (tfexec.Wrap); plugin-framework providers record at the tfprotov6
-// boundary (tfexec.WrapServer). Both paths build a fresh provider per
-// configured instance (a provider block with for_each yields several), all
-// recording into the path's shared recorder.
-func buildProviders(
-	t *testing.T, provs []Provider, recA, recB *tfexec.Recorder,
-) ([]tfexec.Provider, []pulexec.Provider) {
+// buildTerraformProviders wires the tofu-side path: each provider records at
+// the helper/schema CRUD boundary (tfexec.Wrap) or the tfprotov6 boundary
+// (tfexec.WrapServer) into the path's shared recorder. Both paths build a
+// fresh provider per configured instance (a provider block with for_each
+// yields several).
+func buildTerraformProviders(
+	t *testing.T, provs []Provider, rec *tfexec.Recorder,
+) []tfexec.Provider {
 	t.Helper()
 	tfProvs := make([]tfexec.Provider, len(provs))
+	for i, p := range provs {
+		switch {
+		case p.Factory != nil && p.PFFactory == nil:
+			factory := p.Factory
+			tfProvs[i] = tfexec.SDKv2Provider(t, p.Name, func() *schema.Provider { return tfexec.Wrap(factory(), rec) })
+		case p.PFFactory != nil && p.Factory == nil:
+			tfProvs[i] = tfexec.PFProvider(p.Name, p.PFFactory, rec)
+		default:
+			t.Fatalf("provider %q: exactly one of Factory or PFFactory must be set", p.Name)
+		}
+	}
+	return tfProvs
+}
+
+// buildPulumiProviders wires the Pulumi-side path; the import check uses it
+// alone, having no tofu side.
+func buildPulumiProviders(
+	t *testing.T, provs []Provider, rec *tfexec.Recorder,
+) []pulexec.Provider {
+	t.Helper()
 	pulProvs := make([]pulexec.Provider, len(provs))
 	for i, p := range provs {
 		switch {
 		case p.Factory != nil && p.PFFactory == nil:
 			factory := p.Factory
-			tfProvs[i] = tfexec.SDKv2Provider(t, p.Name, func() *schema.Provider { return tfexec.Wrap(factory(), recA) })
-			pulProvs[i] = pulexec.SDKv2Provider(t, p.Name, func() *schema.Provider { return tfexec.Wrap(factory(), recB) }, p.Customize)
+			pulProvs[i] = pulexec.SDKv2Provider(t, p.Name, func() *schema.Provider { return tfexec.Wrap(factory(), rec) }, p.Customize)
 		case p.PFFactory != nil && p.Factory == nil:
-			tfProvs[i] = tfexec.PFProvider(p.Name, p.PFFactory, recA)
-			pulProvs[i] = pulexec.PFProvider(t, p.Name, p.PFFactory, recB, p.Customize)
+			pulProvs[i] = pulexec.PFProvider(t, p.Name, p.PFFactory, rec, p.Customize)
 		default:
 			t.Fatalf("provider %q: exactly one of Factory or PFFactory must be set", p.Name)
 		}
 	}
-	return tfProvs, pulProvs
+	return pulProvs
 }
 
 // Case is the test description passed to RunCase.
@@ -138,6 +155,11 @@ type Case struct {
 	// over the same program. Omitted entries (or a nil Stages) default to a
 	// plain apply.
 	Stages []Stage
+
+	// SkipImport, when non-empty, skips the case's state checks with the
+	// given reason: some cases cannot round-trip through a fresh import
+	// driver (e.g. providers whose simulated backend is per-instance state).
+	SkipImport string
 }
 
 type StageMode int
@@ -223,7 +245,8 @@ func runCaseFromDir(t *testing.T, caseDir string, c Case) {
 	require.NoError(t, err)
 
 	recA, recB := &tfexec.Recorder{}, &tfexec.Recorder{}
-	tfProvs, pulProvs := buildProviders(t, c.Providers, recA, recB)
+	tfProvs := buildTerraformProviders(t, c.Providers, recA)
+	pulProvs := buildPulumiProviders(t, c.Providers, recB)
 
 	tfDriver := tfexec.NewDriver(t, tfProvs)
 	pulDriver := pulexec.NewDriver(t, pulProvs, c.Config)
@@ -293,6 +316,9 @@ func runCaseFromDir(t *testing.T, caseDir string, c Case) {
 			}
 			lastOK = pulRes
 			lastOKTfOutputs = tfOut
+			if !t.Failed() {
+				runImportCheck(t, c, i, stage.files, tfDriver.Dir())
+			}
 		}
 	}
 
