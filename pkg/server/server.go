@@ -177,11 +177,10 @@ func (host *LanguageHost) GetRequiredPackages(
 		return &pulumirpc.GetRequiredPackagesResponse{}, nil
 	}
 
-	paramInfos, err := readParameterizationInfos(req.Info.ProgramDirectory)
+	sdks, err := readSDKInfos(req.Info.ProgramDirectory)
 	if err != nil {
 		return &pulumirpc.GetRequiredPackagesResponse{}, fmt.Errorf("unable to read SDKs folder: %w", err)
 	}
-	stamps := readSDKSources(req.Info.ProgramDirectory)
 
 	// Resolve every provider referenced anywhere in the module tree to its
 	// source, mirroring tofu: a provider declared in a child module is installed
@@ -226,12 +225,12 @@ func (host *LanguageHost) GetRequiredPackages(
 	}
 
 	for _, source := range sortedKeys(tfReqs) {
-		if dir, info, ok := descriptorForSource(source, paramInfos, stamps); ok {
-			emitPkg(dir, info)
+		if dir, desc, ok := descriptorForSource(source, sdks); ok {
+			emitPkg(dir, desc)
 			continue
 		}
 		params := []string{tfReqs[source].display}
-		if constraint := tfReqs[source].versions.constraint(); constraint != "" {
+		if constraint := tfReqs[source].constraint(); constraint != "" {
 			params = append(params, constraint)
 		}
 		specs = append(specs, &pulumirpc.PackageSpec{
@@ -246,8 +245,8 @@ func (host *LanguageHost) GetRequiredPackages(
 		// A terraform-provider descriptor is not this package — it serves a
 		// non-Pulumi source that happens to share the name (e.g. a root on
 		// pulumi/aws with a child module on hashicorp/aws).
-		if info, ok := paramInfos[name]; ok && info.Name != bridgePackageName {
-			emitPkg(name, info)
+		if info, ok := sdks[name]; ok && info.desc.Name != bridgePackageName {
+			emitPkg(name, info.desc)
 			continue
 		}
 		pkgs = append(pkgs, &pulumirpc.PackageDependency{
@@ -267,23 +266,21 @@ func (host *LanguageHost) GetRequiredPackages(
 // name the SDK directory after the resolved package); an extension satisfies
 // its base provider's source from any directory.
 func descriptorForSource(
-	source string,
-	sdks map[string]workspace.PackageDescriptor,
-	stamps map[string]string,
+	source string, sdks map[string]sdkInfo,
 ) (string, workspace.PackageDescriptor, bool) {
-	for _, dir := range sortedKeys(stamps) {
-		if desc, ok := sdks[dir]; ok && canonicalSource(stamps[dir]) == source {
-			return dir, desc, true
+	for _, dir := range sortedKeys(sdks) {
+		if info := sdks[dir]; info.source != "" && canonicalSource(info.source) == source {
+			return dir, info.desc, true
 		}
 	}
 	name := packageName("", source)
-	if desc, ok := sdks[name]; ok && stamps[name] == "" {
-		return name, desc, true
+	if info, ok := sdks[name]; ok && info.source == "" {
+		return name, info.desc, true
 	}
 	// An extension's resource tokens live in the base provider's namespace,
 	// so the base is served by the extension's SDK.
 	for _, dir := range sortedKeys(sdks) {
-		if desc := sdks[dir]; desc.ExtensionParameterization != nil && desc.Name == name {
+		if desc := sdks[dir].desc; desc.ExtensionParameterization != nil && desc.Name == name {
 			return dir, desc, true
 		}
 	}
@@ -340,9 +337,16 @@ func parameterizationProto(p *workspace.Parameterization) *pulumirpc.PackagePara
 	}
 }
 
-// readParameterizationInfos reads sdks/*/hcl.sdk.json files from dir and
-// returns a map from parameterized package alias to its ParameterizationInfo.
-func readParameterizationInfos(dir string) (map[string]workspace.PackageDescriptor, error) {
+// sdkInfo is one sdks/<dir>/hcl.sdk.json: the package descriptor plus the
+// provider source it satisfies (empty until stampSDKSources records it).
+type sdkInfo struct {
+	desc   workspace.PackageDescriptor
+	source string
+}
+
+// readSDKInfos reads every sdks/*/hcl.sdk.json under dir, keyed by SDK
+// directory name.
+func readSDKInfos(dir string) (map[string]sdkInfo, error) {
 	sdksDir := filepath.Join(dir, "sdks")
 	entries, err := os.ReadDir(sdksDir)
 	if os.IsNotExist(err) {
@@ -351,7 +355,7 @@ func readParameterizationInfos(dir string) (map[string]workspace.PackageDescript
 	if err != nil {
 		return nil, err
 	}
-	result := make(map[string]workspace.PackageDescriptor, len(entries))
+	result := make(map[string]sdkInfo, len(entries))
 	var errs []error
 	for _, entry := range entries {
 		if !entry.IsDir() {
@@ -362,55 +366,42 @@ func readParameterizationInfos(dir string) (map[string]workspace.PackageDescript
 		if err != nil {
 			continue
 		}
-		var desc workspace.PackageDescriptor
-		if err := json.Unmarshal(data, &desc); err != nil {
-			errs = append(errs, fmt.Errorf("%q: %w", path, err))
-		} else {
-			result[entry.Name()] = desc
+		var info sdkInfo
+		var stamp struct {
+			Source string `json:"source"`
 		}
+		if err := json.Unmarshal(data, &info.desc); err != nil {
+			errs = append(errs, fmt.Errorf("%q: %w", path, err))
+			continue
+		}
+		if json.Unmarshal(data, &stamp) == nil {
+			info.source = stamp.Source
+		}
+		result[entry.Name()] = info
 	}
 	return result, errors.Join(errs...)
 }
 
-// readSDKSources reads the `source` stamp from sdks/*/hcl.sdk.json files,
-// mapping SDK directory name to the provider source that SDK satisfies.
-// Descriptors written before stamping (see stampSDKSources) are absent.
-func readSDKSources(dir string) map[string]string {
-	sdksDir := filepath.Join(dir, "sdks")
-	entries, err := os.ReadDir(sdksDir)
-	if err != nil {
-		return nil
+// sdkDescriptors projects sdkInfos down to the descriptor map the schema
+// loader and run engine consume.
+func sdkDescriptors(infos map[string]sdkInfo) map[string]workspace.PackageDescriptor {
+	descs := make(map[string]workspace.PackageDescriptor, len(infos))
+	for name, info := range infos {
+		descs[name] = info.desc
 	}
-	stamps := map[string]string{}
-	for _, entry := range entries {
-		if !entry.IsDir() {
-			continue
-		}
-		data, err := os.ReadFile(filepath.Join(sdksDir, entry.Name(), "hcl.sdk.json"))
-		if err != nil {
-			continue
-		}
-		var stamp struct {
-			Source string `json:"source"`
-		}
-		if json.Unmarshal(data, &stamp) == nil && stamp.Source != "" {
-			stamps[entry.Name()] = stamp.Source
-		}
-	}
-	return stamps
+	return descs
 }
 
 // missingNonPulumiSDKs returns the sorted non-Pulumi provider sources used
 // by config (and its transitively-loaded modules) that no on-disk SDK
 // satisfies. Empty workDir skips module recursion.
 func missingNonPulumiSDKs(
-	ctx context.Context, config *ast.Config, sdks map[string]workspace.PackageDescriptor,
-	stamps map[string]string, workDir string,
+	ctx context.Context, config *ast.Config, sdks map[string]sdkInfo, workDir string,
 ) []string {
 	tfReqs, _, _ := collectRequirements(ctx, modules.NewLoader(modules.LiveResolver(ctx)), config, workDir)
 	var missing []string
 	for _, source := range sortedKeys(tfReqs) {
-		if _, _, ok := descriptorForSource(source, sdks, stamps); !ok {
+		if _, _, ok := descriptorForSource(source, sdks); !ok {
 			missing = append(missing, tfReqs[source].display)
 		}
 	}
@@ -419,31 +410,19 @@ func missingNonPulumiSDKs(
 
 func isBuiltinProvider(alias string) bool { return alias == "pulumi" || alias == "terraform" }
 
-// versionSet is a deduplicated set of version constraints declared for one
-// provider source. constraint() joins them in sorted order — so the emitted
-// spec is deterministic regardless of module-walk order — the way tofu renders
-// a merged requirement (", "-separated). The terraform-provider plugin parses
-// and intersects them, an order-independent operation.
-type versionSet struct {
-	seen map[string]struct{}
-}
-
-func (v *versionSet) add(constraint string) {
-	if constraint == "" {
-		return
-	}
-	v.seen[constraint] = struct{}{}
-}
-
-func (v *versionSet) constraint() string { return strings.Join(sortedKeys(v.seen), ", ") }
-
 // tfRequirement accumulates what the module tree declares for one canonical
 // provider source: the constraint union, and the shortest spelling seen for
 // specs and error messages.
 type tfRequirement struct {
-	display  string
-	versions versionSet
+	display     string
+	constraints map[string]struct{}
 }
+
+// constraint joins the declared constraints in sorted order — deterministic
+// regardless of walk order — the way tofu renders a merged requirement
+// (", "-separated). The terraform-provider plugin intersects them at resolve
+// time, erroring on an empty intersection just as tofu does.
+func (r *tfRequirement) constraint() string { return strings.Join(sortedKeys(r.constraints), ", ") }
 
 // collectRequirements walks config (recursing through `module` blocks when
 // workDir is non-empty) and resolves every provider it references to a
@@ -510,13 +489,13 @@ func collectRequirementsRec(
 		key := canonicalSource(source)
 		r := tf[key]
 		if r == nil {
-			r = &tfRequirement{display: source, versions: versionSet{seen: map[string]struct{}{}}}
+			r = &tfRequirement{display: source, constraints: map[string]struct{}{}}
 			tf[key] = r
 		} else if len(source) < len(r.display) || (len(source) == len(r.display) && source < r.display) {
 			r.display = source
 		}
-		if req != nil {
-			r.versions.add(req.Version)
+		if req != nil && req.Version != "" {
+			r.constraints[req.Version] = struct{}{}
 		}
 	}
 
@@ -638,13 +617,13 @@ func (host *LanguageHost) Run(
 		return nil, fmt.Errorf("unable to acquire gRPC schema loader: %w", err)
 	}
 
-	paramDescriptors, err := readParameterizationInfos(req.Info.ProgramDirectory)
+	sdkInfos, err := readSDKInfos(req.Info.ProgramDirectory)
 	if err != nil {
 		return nil, fmt.Errorf("unable to read parameterization: %w", err)
 	}
+	paramDescriptors := sdkDescriptors(sdkInfos)
 
-	if missing := missingNonPulumiSDKs(ctx, config, paramDescriptors,
-		readSDKSources(req.Info.ProgramDirectory), req.Info.ProgramDirectory); len(missing) > 0 {
+	if missing := missingNonPulumiSDKs(ctx, config, sdkInfos, req.Info.ProgramDirectory); len(missing) > 0 {
 		return &pulumirpc.RunResponse{
 			Error: fmt.Sprintf(
 				"missing local SDK for non-Pulumi provider(s) %v; run `pulumi install` to fetch them",
@@ -739,14 +718,14 @@ func stampSDKSources(ctx context.Context, dir string) {
 		return
 	}
 	tfReqs, _, _ := collectRequirements(ctx, modules.NewLoader(modules.LiveResolver(ctx)), config, dir)
-	paramInfos, err := readParameterizationInfos(dir)
+	sdks, err := readSDKInfos(dir)
 	if err != nil {
 		return
 	}
-	stamps := readSDKSources(dir)
 	for _, source := range sortedKeys(tfReqs) {
 		name := packageName("", source)
-		if _, ok := paramInfos[name]; !ok || stamps[name] != "" {
+		info, ok := sdks[name]
+		if !ok || info.source != "" {
 			continue
 		}
 		display := tfReqs[source].display
@@ -755,7 +734,8 @@ func stampSDKSources(ctx context.Context, dir string) {
 			logging.V(5).Infof("stampSDKSources: %v", err)
 			continue
 		}
-		stamps[name] = display
+		info.source = display
+		sdks[name] = info
 	}
 }
 

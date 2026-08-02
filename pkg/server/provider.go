@@ -102,10 +102,11 @@ func NewHCLProvider(ctx context.Context, modulePath, addr string) (*HCLProvider,
 
 	// A component's own bridged providers carry parameterization descriptors in
 	// its sdks folder, mirroring how `Run` loads them for a root program.
-	paramDescriptors, err := readParameterizationInfos(modulePath)
+	sdkInfos, err := readSDKInfos(modulePath)
 	if err != nil {
 		return nil, fmt.Errorf("reading parameterization: %w", err)
 	}
+	paramDescriptors := sdkDescriptors(sdkInfos)
 	schemaLoader := pulumiSchema.ReferenceLoader(pkgLoader)
 	if len(paramDescriptors) > 0 {
 		schemaLoader = packages.NewParameterizationAwareLoader(pkgLoader, paramDescriptors)
