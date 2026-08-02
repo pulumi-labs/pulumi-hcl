@@ -277,7 +277,7 @@ func runCaseFromDir(t *testing.T, caseDir string, c Case) {
 			defer wg.Done()
 			switch stage.Mode {
 			case StagePreview:
-				pulErr = pulDriver.Preview(t, stage.files)
+				_, pulErr = pulDriver.Preview(t, stage.files)
 			case StageDestroy:
 				pulErr = pulDriver.Destroy(t, stage.files)
 			default:

@@ -375,6 +375,68 @@ func TestConvertTFState_SuppliesValues(t *testing.T) {
 
 // TestConvertTFState_ValueFallbacks pins the degradations: instances whose
 // values cannot be translated still import by id, with a warning.
+// TestConvertTFState_TerraformData pins the builtin's import shape: Stash
+// imports carrying the runtime's {type, value} wrapper encoding, an explicit
+// null input when absent, and no triggers_replace (the engine's replacement
+// trigger records on the first up).
+func TestConvertTFState_TerraformData(t *testing.T) {
+	t.Parallel()
+
+	state := parseState(t, `{
+		"resources": [
+			{
+				"mode": "managed", "type": "terraform_data", "name": "d",
+				"provider": "provider[\"terraform.io/builtin/terraform\"]",
+				"instances": [ {
+					"attributes": {
+						"id": "aaaa-bbbb",
+						"input": {"value": ["x", "y"], "type": ["set", "string"]},
+						"output": {"value": ["x", "y"], "type": ["set", "string"]},
+						"triggers_replace": {"value": "v1", "type": "string"}
+					}
+				} ]
+			},
+			{
+				"mode": "managed", "type": "terraform_data", "name": "trigger_only",
+				"provider": "provider[\"terraform.io/builtin/terraform\"]",
+				"instances": [ {
+					"attributes": {
+						"id": "cccc-dddd",
+						"input": null,
+						"output": null,
+						"triggers_replace": {"value": "v2", "type": "string"}
+					}
+				} ]
+			}
+		]
+	}`)
+
+	resp := convertTFState(t.Context(), fakeInfoSource{}, nil, state)
+	require.Empty(t, resp.Diagnostics)
+	require.Len(t, resp.Resources, 2)
+
+	got := resp.Resources[0]
+	assert.Equal(t, "pulumi:index:Stash", got.Type)
+	assert.Equal(t, "d", got.Name)
+	assert.Equal(t, "aaaa-bbbb", got.ID)
+	assert.Empty(t, got.Version)
+	assert.Nil(t, got.Parameterization, "the engine's builtin provider serves Stash; no plugin identity")
+	wrapped := resource.NewObjectProperty(resource.PropertyMap{
+		"type": resource.NewStringProperty(`["set","string"]`),
+		"value": resource.NewArrayProperty([]resource.PropertyValue{
+			resource.NewStringProperty("x"), resource.NewStringProperty("y"),
+		}),
+	})
+	assert.Equal(t, resource.PropertyMap{"input": wrapped}, got.Inputs,
+		"the cty type survives in the wrapper; triggers_replace is not an input")
+	assert.Equal(t, resource.PropertyMap{"input": wrapped, "output": wrapped}, got.Outputs)
+
+	trigger := resp.Resources[1]
+	assert.Equal(t, "cccc-dddd", trigger.ID)
+	assert.Equal(t, resource.PropertyMap{"input": resource.NewNullProperty()}, trigger.Inputs,
+		"an absent input imports as the explicit null the runtime registers")
+}
+
 func TestConvertTFState_ValueFallbacks(t *testing.T) {
 	t.Parallel()
 

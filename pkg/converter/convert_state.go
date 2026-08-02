@@ -29,6 +29,7 @@ import (
 	"github.com/pulumi/pulumi-hcl/pkg/hcl/bridge"
 	"github.com/pulumi/pulumi-hcl/pkg/hcl/eval"
 	"github.com/pulumi/pulumi-hcl/pkg/hcl/modulepath"
+	"github.com/pulumi/pulumi-hcl/pkg/hcl/packages"
 	"github.com/pulumi/pulumi-hcl/pkg/hcl/transform"
 	"github.com/pulumi/pulumi-hcl/pkg/util/encryption"
 	"github.com/pulumi/pulumi-hcl/vendored/addrs"
@@ -127,6 +128,13 @@ func convertTFState(
 	for res := range managedResources(state, warn) {
 		provider := res.ProviderConfig.Provider.Type
 		tfType := res.Addr.Resource.Type
+		// terraform_data is OpenTofu's builtin: no plugin, no bridge mapping.
+		// It imports as the engine-builtin Stash, the resource the runtime
+		// lowers it onto.
+		if tfType == packages.TerraformDataType {
+			resources = append(resources, stashImports(res, warn)...)
+			continue
+		}
 		info, err := providerInfoSource.GetProviderInfo(ctx, provider, nil)
 		if err != nil || info == nil {
 			warn("Failed to resolve provider", fmt.Sprintf(
@@ -270,16 +278,7 @@ func translateInstanceValues(
 	if err != nil {
 		return nil, nil, fmt.Errorf("decoding attributes: %w", err)
 	}
-	// Re-mark the state's dynamically-sensitive paths (e.g. TF's sensitive())
-	// with the evaluator's mark; the codec turns marks into secrets.
-	// Schema-declared sensitivity is applied by the codec itself.
-	if len(current.AttrSensitivePaths) > 0 {
-		pvms := make([]cty.PathValueMarks, len(current.AttrSensitivePaths))
-		for i, p := range current.AttrSensitivePaths {
-			pvms[i] = cty.PathValueMarks{Path: p.Path, Marks: cty.NewValueMarks(eval.SensitiveMark)}
-		}
-		val = val.MarkWithPaths(pvms)
-	}
+	val = markSensitivePaths(val, current.AttrSensitivePaths)
 
 	m, err := transform.CtyToResourceOutputs(val, res, bridge.ResourceBodyMapping(info, tfType))
 	if err != nil {
@@ -296,6 +295,108 @@ func translateInstanceValues(
 		}
 	}
 	outs["id"] = resource.NewStringProperty(id)
+	return outs, ins, nil
+}
+
+// markSensitivePaths re-marks the state's dynamically-sensitive paths (e.g.
+// TF's sensitive()) with the evaluator's mark; the transform codec turns marks
+// into secrets. Schema-declared sensitivity is applied by the codec itself.
+func markSensitivePaths(val cty.Value, paths []cty.PathValueMarks) cty.Value {
+	if len(paths) == 0 {
+		return val
+	}
+	pvms := make([]cty.PathValueMarks, len(paths))
+	for i, p := range paths {
+		pvms[i] = cty.PathValueMarks{Path: p.Path, Marks: cty.NewValueMarks(eval.SensitiveMark)}
+	}
+	return val.MarkWithPaths(pvms)
+}
+
+// terraformDataStateType is terraform_data's object type in state attributes;
+// decoding against it lets ctyjson consume the dynamic attributes' type
+// annotations natively.
+var terraformDataStateType = cty.Object(map[string]cty.Type{
+	"id":               cty.String,
+	"input":            cty.DynamicPseudoType,
+	"output":           cty.DynamicPseudoType,
+	"triggers_replace": cty.DynamicPseudoType,
+})
+
+// stashImports emits one Stash import per terraform_data instance. Inputs and
+// Outputs reproduce what the runtime registers: {type, value} wrappers for
+// non-null values, an explicit null input otherwise. triggers_replace is not
+// emitted — Stash rejects it as an input and an import cannot carry the
+// engine's replacement trigger; the trigger records on the first up, which the
+// engine forgives without a replace. An untranslatable instance is skipped
+// outright: with no plugin behind Stash, an id-only import could only fail.
+func stashImports(res *states.Resource, warn func(summary, detail string)) []plugin.ResourceImport {
+	var imports []plugin.ResourceImport
+	for _, key := range sortedInstanceKeys(res) {
+		current := res.Instances[key].Current
+		if current == nil {
+			continue
+		}
+		id, ok := importID(current)
+		if !ok {
+			warn("Skipped resource without id", fmt.Sprintf(
+				"an instance of %s has no string `id` attribute to import by", res.Addr))
+			continue
+		}
+		outs, ins, err := stashValues(current)
+		if err != nil {
+			warn("Skipped terraform_data resource", fmt.Sprintf(
+				"an instance of %s cannot be translated: %v", res.Addr, err))
+			continue
+		}
+		imports = append(imports, plugin.ResourceImport{
+			Type:    packages.StashToken,
+			Name:    resourceName(res.Addr.Resource.Name, key),
+			ID:      id,
+			Inputs:  ins,
+			Outputs: outs,
+		})
+	}
+	return imports
+}
+
+// stashValues translates a terraform_data instance's attributes into Stash's
+// property surface.
+func stashValues(current *states.ResourceInstanceObjectSrc) (outs, ins resource.PropertyMap, err error) {
+	if current.AttrsJSON == nil {
+		return nil, nil, errors.New("pre-0.12 flatmap attributes are not translatable")
+	}
+	val, err := ctyjson.Unmarshal(current.AttrsJSON, terraformDataStateType)
+	if err != nil {
+		return nil, nil, fmt.Errorf("decoding attributes: %w", err)
+	}
+	val = markSensitivePaths(val, current.AttrSensitivePaths)
+
+	m, err := transform.CtyToResourceOutputs(val, packages.TerraformDataSchema(), nil)
+	if err != nil {
+		return nil, nil, fmt.Errorf("translating attributes: %w", err)
+	}
+	wrap := func(name string) (resource.PropertyValue, error) {
+		v := m.Get(name)
+		if v.IsNull() {
+			return resource.NewNullProperty(), nil
+		}
+		src, _ := val.GetAttr(name).Unmark()
+		wrapped, err := packages.WrapTerraformDataValue(src.Type(), v)
+		if err != nil {
+			return resource.PropertyValue{}, fmt.Errorf("%s: %w", name, err)
+		}
+		return resource.ToResourcePropertyValue(wrapped), nil
+	}
+	input, err := wrap("input")
+	if err != nil {
+		return nil, nil, err
+	}
+	output, err := wrap("output")
+	if err != nil {
+		return nil, nil, err
+	}
+	ins = resource.PropertyMap{"input": input}
+	outs = resource.PropertyMap{"input": input, "output": output}
 	return outs, ins, nil
 }
 

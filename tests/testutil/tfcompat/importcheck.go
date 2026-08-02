@@ -66,9 +66,8 @@ func runImportCheck(
 
 		f, err := statefile.Read(bytes.NewReader(stateJSON), encryption.StateEncryptionDisabled())
 		require.NoError(t, err)
-		// Module-nested resources and terraform_data cannot import completely
-		// yet (pulumi/pulumi-hcl#167), so their previews would propose
-		// creates.
+		// Module-nested resources cannot import completely yet
+		// (pulumi/pulumi-hcl#167), so their previews would propose creates.
 		for _, mod := range f.State.Modules {
 			for _, res := range mod.Resources {
 				if res.Addr.Resource.Mode != addrs.ManagedResourceMode {
@@ -76,9 +75,6 @@ func runImportCheck(
 				}
 				if !mod.Addr.IsRoot() {
 					t.Skip("state has module-nested resources; import does not support modules yet")
-				}
-				if res.Addr.Resource.Type == "terraform_data" {
-					t.Skip("state has terraform_data resources; import does not support the builtin yet")
 				}
 			}
 		}
@@ -96,11 +92,30 @@ func runImportCheck(
 		// boundary — would execute on the real up. The stack shell, default
 		// providers, and module component shells are still created, but none
 		// of those reach a resource provider's mutating RPCs.
-		require.NoError(t, d.Preview(t, files))
+		summary, err := d.Preview(t, files)
+		require.NoError(t, err)
 		require.Empty(t, d.Mutations(), "preview after import proposed resource changes")
+		assertOnlyBenignOps(t, "preview", summary)
 
 		res, err := d.TryApply(t, files)
 		require.NoErrorf(t, err, "up after import failed:\n%s", res.Output)
 		require.Empty(t, d.Mutations(), "up after import performed resource changes")
+		assertOnlyBenignOps(t, "up", res.Changes)
 	})
+}
+
+// assertOnlyBenignOps fails on any operation beyond same, create (the stack
+// shell, default providers, and component shells), or read: resources served
+// in-process by the engine's builtin provider (e.g. terraform_data's Stash)
+// never reach a provider's mutating RPCs, so the recorder alone cannot see
+// them change.
+func assertOnlyBenignOps[K ~string](t *testing.T, phase string, ops map[K]int) {
+	t.Helper()
+	for op, n := range ops {
+		switch string(op) {
+		case "same", "create", "read":
+		default:
+			t.Errorf("%s after import performed %d %q operations", phase, n, op)
+		}
+	}
 }

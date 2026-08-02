@@ -18,6 +18,9 @@ import (
 	"strings"
 
 	"github.com/pulumi/pulumi/pkg/v3/codegen/schema"
+	"github.com/pulumi/pulumi/sdk/v3/go/property"
+	"github.com/zclconf/go-cty/cty"
+	ctyjson "github.com/zclconf/go-cty/cty/json"
 )
 
 const (
@@ -79,6 +82,30 @@ func TerraformDataSchema() *schema.Resource {
 			anyProp("input"), anyProp("output"), anyProp("triggers_replace"),
 		},
 	}
+}
+
+// terraform_data's attributes are dynamically typed, and the Pulumi property
+// encoding cannot represent every cty type: a set flattens to an ordered array
+// that would re-expand as a tuple. Each value is therefore boxed as a
+// {type, value} wrapper object — persisting the cty type through the engine
+// and its state alongside the value, the way OpenTofu stores dynamic
+// attributes.
+const (
+	TerraformDataTypeKey  = "type"
+	TerraformDataValueKey = "value"
+)
+
+// WrapTerraformDataValue boxes a terraform_data value of the given cty type as
+// a {type, value} wrapper.
+func WrapTerraformDataValue(t cty.Type, v property.Value) (property.Value, error) {
+	typeJSON, err := ctyjson.MarshalType(t)
+	if err != nil {
+		return property.Value{}, err
+	}
+	return property.New(map[string]property.Value{
+		TerraformDataTypeKey:  property.New(string(typeJSON)),
+		TerraformDataValueKey: v,
+	}), nil
 }
 
 // TerraformRemoteStateSchema is the synthetic schema terraform_remote_state

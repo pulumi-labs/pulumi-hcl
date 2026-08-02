@@ -94,6 +94,10 @@ type Provider struct {
 type Result struct {
 	Outputs   map[string]string
 	Resources []apitype.ResourceV3
+	// Changes counts the up's resource operations by kind, as reported by the
+	// engine — including resources served in-process by the engine's builtin
+	// provider, which no provider-boundary recorder can observe.
+	Changes map[string]int
 	// Output is the combined stdout/stderr of the `pulumi up`, used by tests
 	// that assert on user-visible diagnostics (e.g. check-block warnings).
 	Output string
@@ -228,31 +232,37 @@ func (d *Driver) TryApply(t *testing.T, programFiles map[string]string) (Result,
 	var deployment apitype.DeploymentV3
 	require.NoError(t, json.Unmarshal(exported.Deployment, &deployment))
 
+	var changes map[string]int
+	if upResult.Summary.ResourceChanges != nil {
+		changes = *upResult.Summary.ResourceChanges
+	}
 	return Result{
 		Outputs:   outputs,
 		Resources: deployment.Resources,
+		Changes:   changes,
 		Output:    upResult.StdOut + "\n" + upResult.StdErr + "\n" + cap.Logs(),
 	}, upErr
 }
 
 // Preview runs `pulumi preview` and returns the error (nil on success).
 // Same captureT indirection as TryApply.
-func (d *Driver) Preview(t *testing.T, programFiles map[string]string) error {
+func (d *Driver) Preview(t *testing.T, programFiles map[string]string) (map[apitype.OpType]int, error) {
 	t.Helper()
 
 	d.writeFiles(t, programFiles)
 
+	var res auto.PreviewResult
 	cap := newCaptureT(t)
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		d.pt.Preview(cap)
+		res = d.pt.Preview(cap)
 	}()
 	<-done
 	if cap.Failed() {
-		return fmt.Errorf("pulumi preview: %s", cap.Logs())
+		return nil, fmt.Errorf("pulumi preview: %s", cap.Logs())
 	}
-	return nil
+	return res.ChangeSummary, nil
 }
 
 // --run-program re-runs the language host during destroy so BeforeDelete
