@@ -23,6 +23,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/blang/semver"
 	"github.com/hashicorp/hcl/v2"
 	sdkschema "github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
 	"github.com/pulumi/pulumi-hcl/pkg/util/encryption"
@@ -35,6 +36,7 @@ import (
 	"github.com/pulumi/pulumi/pkg/v3/codegen/convert"
 	"github.com/pulumi/pulumi/pkg/v3/codegen/schema"
 	"github.com/pulumi/pulumi/pkg/v3/resource/plugin"
+	"github.com/pulumi/pulumi/sdk/v3/go/common/apitype"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/resource"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/util/rpcutil"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/workspace"
@@ -142,6 +144,27 @@ func exampleLoader(t *testing.T) schema.ReferenceLoader {
 	return schemaloader.New(t, examplePackageSpec())
 }
 
+// exampleDescriptor mirrors what `pulumi install` writes to
+// sdks/example/hcl.sdk.json for a dynamically bridged provider: the base
+// terraform-provider plugin plus the parameterization that produces the
+// example package from it.
+func exampleDescriptor() workspace.PackageDescriptor {
+	base := semver.MustParse("0.0.1")
+	return workspace.PackageDescriptor{
+		PluginDescriptor: workspace.PluginDescriptor{
+			Name:              "terraform-provider",
+			Kind:              apitype.ResourcePlugin,
+			Version:           &base,
+			PluginDownloadURL: "github://api.github.com/pulumi/pulumi-terraform-provider",
+		},
+		Parameterization: &workspace.Parameterization{
+			Name:    "example",
+			Version: semver.MustParse("6.0.0"),
+			Value:   []byte(`{"remote":{"url":"registry.terraform.io/acme/example","version":"6.0.0"}}`),
+		},
+	}
+}
+
 // stateV4 wraps a `{"resources": [...]}` fragment in the v4 envelope the
 // state-file parser requires.
 func stateV4(t *testing.T, fragment string) []byte {
@@ -164,7 +187,7 @@ func parseState(t *testing.T, fragment string) *states.State {
 	return f.State
 }
 
-func TestConvertTFState_EmitsImport(t *testing.T) {
+func TestConvertTFState_EmitsParameterizedImport(t *testing.T) {
 	t.Parallel()
 
 	state := parseState(t, `{
@@ -177,7 +200,8 @@ func TestConvertTFState_EmitsImport(t *testing.T) {
 		]
 	}`)
 
-	resp := convertTFState(t.Context(), exampleInfoSource(t), exampleLoader(t), state)
+	descriptors := map[string]workspace.PackageDescriptor{"example": exampleDescriptor()}
+	resp := convertTFState(t.Context(), exampleInfoSource(t), exampleLoader(t), descriptors, state)
 
 	require.Empty(t, resp.Diagnostics)
 	require.Len(t, resp.Resources, 1)
@@ -186,6 +210,13 @@ func TestConvertTFState_EmitsImport(t *testing.T) {
 	assert.Equal(t, "example:index/resource:Resource", got.Type)
 	assert.Equal(t, "b", got.Name)
 	assert.Equal(t, "res-1", got.ID)
+	assert.Equal(t, "6.0.0", got.Version, "the parameterized package's version")
+	assert.Equal(t, "github://api.github.com/pulumi/pulumi-terraform-provider", got.PluginDownloadURL)
+	require.NotNil(t, got.Parameterization)
+	assert.Equal(t, "terraform-provider", got.Parameterization.PluginName)
+	assert.Equal(t, "0.0.1", got.Parameterization.PluginVersion)
+	assert.JSONEq(t, `{"remote":{"url":"registry.terraform.io/acme/example","version":"6.0.0"}}`,
+		string(got.Parameterization.Value))
 }
 
 func TestConvertTFState_SkipsUnimportable(t *testing.T) {
@@ -216,7 +247,7 @@ func TestConvertTFState_SkipsUnimportable(t *testing.T) {
 		]
 	}`)
 
-	resp := convertTFState(t.Context(), exampleInfoSource(t), exampleLoader(t), state)
+	resp := convertTFState(t.Context(), exampleInfoSource(t), exampleLoader(t), nil, state)
 
 	// The data source skips silently; the other three each warn.
 	assert.Empty(t, resp.Resources)
@@ -250,7 +281,7 @@ func TestConvertTFState_CountAndForEach(t *testing.T) {
 		]
 	}`)
 
-	resp := convertTFState(t.Context(), exampleInfoSource(t), exampleLoader(t), state)
+	resp := convertTFState(t.Context(), exampleInfoSource(t), exampleLoader(t), nil, state)
 
 	require.Empty(t, resp.Diagnostics)
 	names := make(map[string]string, len(resp.Resources))
@@ -306,7 +337,7 @@ func TestConvertTFState_ProviderNamePrefixMismatch(t *testing.T) {
 			}},
 		},
 	})
-	resp := convertTFState(t.Context(), src, loader, state)
+	resp := convertTFState(t.Context(), src, loader, nil, state)
 
 	require.Empty(t, resp.Diagnostics)
 	require.Len(t, resp.Resources, 1)
@@ -348,7 +379,7 @@ func TestConvertTFState_SuppliesValues(t *testing.T) {
 		]
 	}`)
 
-	resp := convertTFState(t.Context(), exampleInfoSource(t), exampleLoader(t), state)
+	resp := convertTFState(t.Context(), exampleInfoSource(t), exampleLoader(t), nil, state)
 	require.Empty(t, resp.Diagnostics)
 	require.Len(t, resp.Resources, 1)
 	got := resp.Resources[0]
@@ -455,7 +486,7 @@ func TestConvertTFState_ValueFallbacks(t *testing.T) {
 		]
 	}`)
 
-	resp := convertTFState(t.Context(), exampleInfoSource(t), exampleLoader(t), state)
+	resp := convertTFState(t.Context(), exampleInfoSource(t), exampleLoader(t), nil, state)
 	require.Len(t, resp.Resources, 2)
 	for _, r := range resp.Resources {
 		assert.Nil(t, r.Outputs, "%s should import by id only", r.ID)
@@ -514,24 +545,31 @@ func TestConvertStateArgValidation(t *testing.T) {
 		MapperTarget: "127.0.0.1:1",
 		LoaderTarget: "127.0.0.1:1",
 	})
-	assert.ErrorContains(t, err, "expected exactly one argument")
+	assert.ErrorContains(t, err, "expected the state file path")
 
 	_, err = New().ConvertState(t.Context(), &plugin.ConvertStateRequest{
 		MapperTarget: "127.0.0.1:1",
 		LoaderTarget: "127.0.0.1:1",
-		Args:         []string{"a", "b"},
+		Args:         []string{"a", "b", "c"},
 	})
-	assert.ErrorContains(t, err, "expected exactly one argument")
+	assert.ErrorContains(t, err, "expected the state file path")
 }
 
-// staticMapper is a convert.Mapper with a fixed mapping for "random".
-type staticMapper struct{}
+// ecosystemAssertingMapper is a convert.Mapper with a fixed mapping for
+// "random" that asserts the converter's wire contract: mappings are requested
+// for the terraform ecosystem, hinted at the parameterized base plugin.
+type ecosystemAssertingMapper struct{ t *testing.T }
 
-func (staticMapper) GetMapping(
-	_ context.Context, provider string, _ *convert.MapperPackageHint, _ string,
+func (m ecosystemAssertingMapper) GetMapping(
+	_ context.Context, provider string, hint *convert.MapperPackageHint, ecosystem string,
 ) ([]byte, error) {
+	assert.Equal(m.t, "terraform", ecosystem, "the converter must request terraform mappings")
 	if provider != "random" {
 		return nil, nil
+	}
+	if assert.NotNil(m.t, hint, "the descriptor must hint the mapper") {
+		assert.Equal(m.t, "terraform-provider", hint.PluginName)
+		assert.NotNil(m.t, hint.Parameterization)
 	}
 	return json.Marshal(tfbridge.MarshalProviderInfo(&tfbridge.ProviderInfo{
 		P: shimv2.NewProvider(&sdkschema.Provider{
@@ -557,7 +595,7 @@ func TestConvertStateViaMapper(t *testing.T) {
 	handle, err := rpcutil.ServeWithOptions(rpcutil.ServeOptions{
 		Cancel: cancel,
 		Init: func(srv *grpc.Server) error {
-			convert.MapperRegistration(convert.NewMapperServer(staticMapper{}))(srv)
+			convert.MapperRegistration(convert.NewMapperServer(ecosystemAssertingMapper{t}))(srv)
 			loader := schemaloader.New(t, schema.PackageSpec{
 				Name:    "random",
 				Version: "1.0.0",
@@ -590,10 +628,18 @@ func TestConvertStateViaMapper(t *testing.T) {
 		]
 	}`), 0o600))
 
+	// The project's sdks/ descriptor marks "random" as dynamically bridged.
+	desc := exampleDescriptor()
+	desc.Parameterization.Name = "random"
+	descJSON, err := json.Marshal(desc)
+	require.NoError(t, err)
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "sdks", "random"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "sdks", "random", "hcl.sdk.json"), descJSON, 0o600))
+
 	resp, err := New().ConvertState(t.Context(), &plugin.ConvertStateRequest{
 		MapperTarget: target,
 		LoaderTarget: target,
-		Args:         []string{statePath},
+		Args:         []string{statePath, dir},
 	})
 	require.NoError(t, err)
 	require.Empty(t, resp.Diagnostics)
@@ -602,12 +648,15 @@ func TestConvertStateViaMapper(t *testing.T) {
 	assert.Equal(t, "random:index/randomUuid:RandomUuid", got.Type)
 	assert.Equal(t, "example", got.Name)
 	assert.Equal(t, "aabbccdd-0011-2233-4455-66778899aabb", got.ID)
+	assert.Equal(t, "6.0.0", got.Version)
+	require.NotNil(t, got.Parameterization)
+	assert.Equal(t, "terraform-provider", got.Parameterization.PluginName)
 
 	// State-file error paths share the same entry point.
 	_, err = New().ConvertState(t.Context(), &plugin.ConvertStateRequest{
 		MapperTarget: target,
 		LoaderTarget: target,
-		Args:         []string{filepath.Join(dir, "does-not-exist.tfstate")},
+		Args:         []string{filepath.Join(dir, "does-not-exist.tfstate"), dir},
 	})
 	assert.ErrorContains(t, err, "reading state file")
 

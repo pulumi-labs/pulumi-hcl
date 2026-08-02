@@ -23,11 +23,9 @@ func TestMain(m *testing.M) {
 		fmt.Fprintf(os.Stderr, "finding plugin dir: %v\n", err)
 		os.Exit(1)
 	}
-	cmd := exec.Command("make", "bin/pulumi-language-hcl", "bin/pulumi-resource-hcl")
-	cmd.Dir = filepath.Dir(langBinDir)
-	cmd.Stdout = os.Stderr
-	cmd.Stderr = os.Stderr
-	if err := cmd.Run(); err != nil {
+	err = runIn(filepath.Dir(langBinDir), nil,
+		"make", "bin/pulumi-language-hcl", "bin/pulumi-resource-hcl", "bin/pulumi-converter-hcl")
+	if err != nil {
 		fmt.Fprintf(os.Stderr, "building plugins: %v\n", err)
 		os.Exit(1)
 	}
@@ -145,11 +143,7 @@ func TestSmokeInLanguageModule(t *testing.T) {
 		Verbose:       true,
 		Stdout:        &preview,
 		PrepareProject: func(e *engine.Projinfo) error {
-			cmd := exec.Command("pulumi", "package", "add", moduleDir)
-			cmd.Dir = e.Root
-			cmd.Env = append(os.Environ(), "PULUMI_HOME="+home)
-			cmd.Stdout, cmd.Stderr = os.Stderr, os.Stderr
-			return cmd.Run()
+			return runIn(e.Root, []string{"PULUMI_HOME=" + home}, "pulumi", "package", "add", moduleDir)
 		},
 		ExtraRuntimeValidation: func(t *testing.T, stack integration.RuntimeValidationStackInfo) {
 			// The pet name flows from a not-yet-created `random_pet` inside the
@@ -245,11 +239,7 @@ func TestSmokeParameterizedModule(t *testing.T) {
 		Dir:           filepath.Join("testdata", "parameterized", "program"),
 		PulumiHomeDir: home,
 		PrepareProject: func(e *engine.Projinfo) error {
-			cmd := exec.Command("pulumi", "package", "add", resourceBin, "module", moduleDir)
-			cmd.Dir = e.Root
-			cmd.Env = append(os.Environ(), "PULUMI_HOME="+home)
-			cmd.Stdout, cmd.Stderr = os.Stderr, os.Stderr
-			return cmd.Run()
+			return runIn(e.Root, []string{"PULUMI_HOME=" + home}, "pulumi", "package", "add", resourceBin, "module", moduleDir)
 		},
 		ExtraRuntimeValidation: func(t *testing.T, stack integration.RuntimeValidationStackInfo) {
 			// petLength = 3 flows into the module's random_pet through the
@@ -374,9 +364,110 @@ func hostPluginsDir() string {
 
 func prepareWithPulumiInstall(pulumiHome string) func(*engine.Projinfo) error {
 	return func(e *engine.Projinfo) error {
-		cmd := exec.Command("pulumi", "install")
-		cmd.Dir = e.Root
-		cmd.Env = append(os.Environ(), "PULUMI_HOME="+pulumiHome)
-		return cmd.Run()
+		return runIn(e.Root, []string{"PULUMI_HOME=" + pulumiHome}, "pulumi", "install")
 	}
+}
+
+// random_uuid needs no credentials and its state is fully translatable, so the
+// import supplies its values verbatim and no provider Read runs.
+const importProgram = `terraform {
+  required_providers {
+    random = {
+      source  = "hashicorp/random"
+      version = "3.6.0"
+    }
+  }
+}
+
+resource "random_uuid" "example" {
+}
+`
+
+// TestSmokeImportFromHCL drives the real `tofu` and `pulumi` binaries through
+// `pulumi import --from hcl`, encoding its core promise: if `tofu plan` shows
+// no diff, the first `pulumi preview` after import must not either. The
+// imported resources must land under the very same parameterized provider the
+// runtime uses, with the state's values supplied directly.
+func TestSmokeImportFromHCL(t *testing.T) {
+	t.Parallel()
+	tofuBin := lookPath(t, "tofu", "terraform")
+	pulumiBin := lookPath(t, "pulumi")
+	lookPath(t, "pulumi-language-hcl")
+	lookPath(t, "pulumi-converter-hcl")
+
+	// The file backend requires its directory to exist before `stack init`.
+	base := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(base, "state"), 0o755))
+	env := []string{
+		"PULUMI_CONFIG_PASSPHRASE=test",
+		"PULUMI_BACKEND_URL=file://" + filepath.Join(base, "state"),
+		// Never reach out for the language plugin: it must already be on PATH.
+		"PULUMI_DISABLE_AUTOMATIC_PLUGIN_ACQUISITION=true",
+	}
+
+	tfDir := filepath.Join(base, "tf")
+	require.NoError(t, os.MkdirAll(tfDir, 0o755))
+	writeFile(t, filepath.Join(tfDir, "main.tf"), importProgram)
+	run(t, tfDir, env, tofuBin, "init", "-input=false")
+	run(t, tfDir, env, tofuBin, "apply", "-auto-approve", "-input=false")
+
+	statePath := filepath.Join(tfDir, "terraform.tfstate")
+	require.FileExists(t, statePath, "tofu apply should have produced state")
+
+	// The premise: `tofu plan` is clean, so `pulumi preview` must be too.
+	run(t, tfDir, env, tofuBin, "plan", "-detailed-exitcode", "-input=false")
+
+	pulDir := filepath.Join(base, "pulumi")
+	require.NoError(t, os.MkdirAll(pulDir, 0o755))
+	writeFile(t, filepath.Join(pulDir, "Pulumi.yaml"), "name: import-e2e\nruntime: hcl\n")
+	writeFile(t, filepath.Join(pulDir, "main.tf"), importProgram)
+
+	// `pulumi install` writes sdks/random/hcl.sdk.json, the descriptor
+	// ConvertState reads to build the parameterized import.
+	run(t, pulDir, env, pulumiBin, "install")
+	require.FileExists(t, filepath.Join(pulDir, "sdks", "random", "hcl.sdk.json"),
+		"pulumi install should have written the random SDK descriptor")
+
+	run(t, pulDir, env, pulumiBin, "stack", "init", "dev")
+
+	// --protect=false: HCL programs cannot express the protect option, so the
+	// default (protected) would make every first preview diff on it.
+	run(t, pulDir, env, pulumiBin, "import", "--from", "hcl", statePath, "--protect=false", "--yes")
+
+	// The state's values were supplied directly, so the first preview must be
+	// clean immediately — no provider Read ran to materialize attributes
+	// differently from the TF state.
+	run(t, pulDir, env, pulumiBin, "preview", "--expect-no-changes")
+}
+
+func lookPath(t *testing.T, names ...string) string {
+	t.Helper()
+	for _, name := range names {
+		if p, err := exec.LookPath(name); err == nil {
+			return p
+		}
+	}
+	t.Skipf("none of %v found on PATH", names)
+	return ""
+}
+
+func writeFile(t *testing.T, path, content string) {
+	t.Helper()
+	require.NoError(t, os.WriteFile(path, []byte(content), 0o600))
+}
+
+// runIn runs the command in dir with env appended to the environment,
+// streaming output to stderr.
+func runIn(dir string, env []string, name string, args ...string) error {
+	cmd := exec.Command(name, args...)
+	cmd.Dir = dir
+	cmd.Env = append(os.Environ(), env...)
+	cmd.Stdout, cmd.Stderr = os.Stderr, os.Stderr
+	return cmd.Run()
+}
+
+func run(t *testing.T, dir string, env []string, name string, args ...string) {
+	t.Helper()
+	require.NoErrorf(t, runIn(dir, env, name, args...),
+		"%s %s failed", filepath.Base(name), strings.Join(args, " "))
 }

@@ -42,6 +42,7 @@ import (
 	"github.com/pulumi/pulumi/sdk/v3/go/common/resource"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/tokens"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/util/contract"
+	"github.com/pulumi/pulumi/sdk/v3/go/common/workspace"
 	"github.com/pulumi/pulumi/sdk/v3/go/property"
 	"github.com/zclconf/go-cty/cty"
 	ctyjson "github.com/zclconf/go-cty/cty/json"
@@ -51,6 +52,10 @@ import (
 // ResourceImport per managed root-module resource instance, resolving TF types
 // to Pulumi tokens through the engine-provided mapper, so
 // `pulumi import --from hcl` can pull TF state into a Pulumi HCL project.
+// Imports are parameterized (dynamic-bridge) when the project's sdks/
+// descriptors say so, landing resources under the same `terraform-provider`
+// packages the HCL runtime executes — unlike pulumi-converter-terraform's
+// static-bridge imports, which would provoke a replace on the next preview.
 func (*hclConverter) ConvertState(
 	ctx context.Context, req *plugin.ConvertStateRequest,
 ) (*plugin.ConvertStateResponse, error) {
@@ -60,11 +65,23 @@ func (*hclConverter) ConvertState(
 	if req.LoaderTarget == "" {
 		return nil, errors.New("ConvertState: missing loader address")
 	}
-	if len(req.Args) != 1 {
+	if len(req.Args) < 1 || len(req.Args) > 2 {
 		return nil, fmt.Errorf(
-			"ConvertState: expected exactly one argument (the state file path), got %d", len(req.Args))
+			"ConvertState: expected the state file path and optionally the project directory, got %d arguments",
+			len(req.Args))
 	}
 	statePath := req.Args[0]
+	// Parameterization descriptors are written by `pulumi install` into the
+	// project's sdks/. The CLI runs the converter with cwd = project root;
+	// in-process callers, which cannot chdir, pass the directory explicitly.
+	projectDir := "."
+	if len(req.Args) == 2 {
+		projectDir = req.Args[1]
+	}
+	descriptors, err := readParameterizationInfos(projectDir)
+	if err != nil {
+		return nil, fmt.Errorf("reading parameterization infos: %w", err)
+	}
 
 	mapperClient, err := convert.NewMapperClient(req.MapperTarget)
 	if err != nil {
@@ -78,13 +95,16 @@ func (*hclConverter) ConvertState(
 	}
 	defer contract.IgnoreClose(loaderClient)
 	loader := schema.NewCachedLoader(loaderClient)
+	if len(descriptors) > 0 {
+		loader = packages.NewParameterizationAwareLoader(loader, descriptors)
+	}
 
 	state, err := readTFStateFile(statePath)
 	if err != nil {
 		return nil, err
 	}
 
-	return convertTFState(ctx, providerInfoSource, loader, state), nil
+	return convertTFState(ctx, providerInfoSource, loader, descriptors, state), nil
 }
 
 // readTFStateFile parses a state file through the vendored OpenTofu parser,
@@ -109,6 +129,7 @@ func convertTFState(
 	ctx context.Context,
 	providerInfoSource bridge.ProviderInfoSource,
 	loader schema.ReferenceLoader,
+	descriptors map[string]workspace.PackageDescriptor,
 	state *states.State,
 ) *plugin.ConvertStateResponse {
 	var (
@@ -131,9 +152,15 @@ func convertTFState(
 		stash := tfType == packages.TerraformDataType
 		token := packages.StashToken
 		var info *tfbridge.ProviderInfo
+		var desc *workspace.PackageDescriptor
+		var parameterization *plugin.ResourceParameterization
+		var version, pluginDownloadURL string
 		if !stash {
+			if d, ok := descriptors[provider]; ok {
+				desc = &d
+			}
 			var err error
-			info, err = providerInfoSource.GetProviderInfo(ctx, provider, nil)
+			info, err = providerInfoSource.GetProviderInfo(ctx, provider, desc)
 			if err != nil || info == nil {
 				warn("Failed to resolve provider", fmt.Sprintf(
 					"could not resolve bridge mapping for provider %q: %v", provider, err))
@@ -146,6 +173,10 @@ func convertTFState(
 				continue
 			}
 			token = resInfo.Tok.String()
+			parameterization, version = parameterizationFor(desc)
+			if desc != nil {
+				pluginDownloadURL = desc.PluginDownloadURL
+			}
 		}
 
 		for _, key := range sortedInstanceKeys(res) {
@@ -172,11 +203,14 @@ func convertTFState(
 					"an instance of %s imports by id only: %v", res.Addr, err))
 			}
 			resources = append(resources, plugin.ResourceImport{
-				Type:    token,
-				Name:    resourceName(res.Addr.Resource.Name, key),
-				ID:      id,
-				Inputs:  ins,
-				Outputs: outs,
+				Type:              token,
+				Name:              resourceName(res.Addr.Resource.Name, key),
+				ID:                id,
+				Inputs:            ins,
+				Outputs:           outs,
+				Version:           version,
+				PluginDownloadURL: pluginDownloadURL,
+				Parameterization:  parameterization,
 			})
 		}
 	}
@@ -241,6 +275,25 @@ func resourceName(name string, key addrs.InstanceKey) string {
 	default:
 		return name
 	}
+}
+
+// parameterizationFor maps a package descriptor to the import-side
+// parameterization: the resource's Type/Version describe the parameterized
+// package (e.g. "aws@6.0.0"), while the Parameterization block describes the
+// base plugin it is produced from (e.g. "terraform-provider").
+func parameterizationFor(desc *workspace.PackageDescriptor) (*plugin.ResourceParameterization, string) {
+	if desc == nil || desc.Parameterization == nil {
+		return nil, ""
+	}
+	var baseVersion string
+	if desc.Version != nil {
+		baseVersion = desc.Version.String()
+	}
+	return &plugin.ResourceParameterization{
+		PluginName:    desc.Name,
+		PluginVersion: baseVersion,
+		Value:         desc.Parameterization.Value,
+	}, desc.Parameterization.Version.String()
 }
 
 // translateInstanceValues converts an instance's raw TF attributes into
