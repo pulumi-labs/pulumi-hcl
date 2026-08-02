@@ -728,14 +728,10 @@ func stampSDKSources(ctx context.Context, dir string) {
 		if !ok || info.source != "" {
 			continue
 		}
-		display := tfReqs[source].display
 		path := filepath.Join(dir, "sdks", name, "hcl.sdk.json")
-		if err := stampSDKSource(path, display); err != nil {
+		if err := stampSDKSource(path, tfReqs[source].display); err != nil {
 			logging.V(5).Infof("stampSDKSources: %v", err)
-			continue
 		}
-		info.source = display
-		sdks[name] = info
 	}
 }
 
