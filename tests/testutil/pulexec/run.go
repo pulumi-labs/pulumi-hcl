@@ -94,8 +94,7 @@ type Provider struct {
 type Result struct {
 	Outputs   map[string]string
 	Resources []apitype.ResourceV3
-	// Changes counts the up's resource operations by kind.
-	Changes map[string]int
+	Changes   map[string]int
 	// Output is the combined stdout/stderr of the `pulumi up`, used by tests
 	// that assert on user-visible diagnostics (e.g. check-block warnings).
 	Output string
