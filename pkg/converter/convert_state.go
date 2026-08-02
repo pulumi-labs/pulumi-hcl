@@ -315,12 +315,10 @@ func resourceSchema(
 	return res, nil
 }
 
-// importID extracts the `id` attribute verbatim.
-//
-// TODO(pulumi/pulumi-hcl#167): resources whose importer needs a
-// composite or derived import string (e.g. aws_iam_role_policy_attachment's
-// role/policy-arn) import under the wrong ID; deriving the import string
-// needs per-resource knowledge the schema does not carry.
+// importID extracts the `id` attribute verbatim: with the instance's values
+// supplied, the id is recorded as opaque identity and never fed to a
+// provider's importer, so composite import strings (aws_iam_role_policy_attachment's
+// role/policy-arn) need no derivation.
 func importID(src *states.ResourceInstanceObjectSrc) (string, bool) {
 	if src.AttrsJSON == nil {
 		// Pre-0.12 states carry flatmap attributes instead.
