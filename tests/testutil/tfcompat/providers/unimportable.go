@@ -22,15 +22,14 @@ import (
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
 )
 
-// CompositeIDProvider mirrors resources like aws_iam_role_policy_attachment,
-// whose importer wants a composite "role/policy" string rather than the
-// resource's own opaque id. Its importer is a tripwire that fails on any
-// call, so a passing round-trip proves a values-supplied import never
-// invokes it and so never needs the composite form.
-func CompositeIDProvider() *schema.Provider {
+// UnimportableProvider exposes a resource whose importer fails on any call,
+// standing in for resources whose import string the state's id cannot supply
+// (aws_iam_role_policy_attachment wants "role/policy"). A passing round-trip
+// proves a values-supplied import never invokes the importer.
+func UnimportableProvider() *schema.Provider {
 	return &schema.Provider{
 		ResourcesMap: map[string]*schema.Resource{
-			"composite_attachment": {
+			"unimportable_resource": {
 				Schema: map[string]*schema.Schema{
 					"role":   {Type: schema.TypeString, Required: true, ForceNew: true},
 					"policy": {Type: schema.TypeString, Required: true, ForceNew: true},

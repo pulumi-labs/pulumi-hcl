@@ -21,16 +21,16 @@ import (
 	"github.com/pulumi/pulumi-hcl/tests/testutil/tfcompat/providers"
 )
 
-// The resource's importer wants a composite "role/policy" string its state id
-// does not carry — the aws_iam_role_policy_attachment shape. A values-supplied
-// import records the id as opaque identity and never invokes the importer, so
-// the tripwire in providers.CompositeIDProvider stays untripped and the
-// round-trip is clean.
-func TestL2CompositeImportID(t *testing.T) {
+// The resource cannot be imported through its provider: its importer fails on
+// any call, as it would for a resource whose import string the state's id does
+// not carry (aws_iam_role_policy_attachment wants "role/policy"). A
+// values-supplied import records the id as identity and never invokes the
+// importer, so the round-trip is clean.
+func TestL2UnimportableResource(t *testing.T) {
 	t.Parallel()
-	tfcompat.RunCase(t, "l2_composite_import_id", tfcompat.Case{
+	tfcompat.RunCase(t, "l2_unimportable_resource", tfcompat.Case{
 		Providers: []tfcompat.Provider{
-			{Name: "composite", Factory: providers.CompositeIDProvider},
+			{Name: "unimportable", Factory: providers.UnimportableProvider},
 		},
 	})
 }
