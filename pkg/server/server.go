@@ -1415,6 +1415,7 @@ func (r *resourceMonitorAdapter) RegisterResource(
 		URN:     urn.URN(resp.Urn),
 		ID:      resp.Id,
 		Outputs: resource.FromResourcePropertyMap(outputs),
+		Unknown: resp.Unknown,
 	}, nil
 }
 
@@ -1481,6 +1482,7 @@ func (r *resourceMonitorAdapter) Invoke(
 		AcceptResources:   true,
 		AcceptsByteString: true,
 		PackageRef:        string(req.PackageRef),
+		DependsOn:         req.DependsOn,
 	}
 
 	// Call the resource monitor
@@ -1504,6 +1506,7 @@ func (r *resourceMonitorAdapter) Invoke(
 	return &run.InvokeResponse{
 		Return:   resource.FromResourcePropertyMap(returnVal),
 		Failures: failures,
+		Unknown:  resp.Unknown,
 	}, nil
 }
 

@@ -1573,6 +1573,12 @@ func (g *Graph) inlineModule(
 	initDeps = append(initDeps, g.exprDeps(mod.Count, parentPath)...)
 	initDeps = append(initDeps, g.exprDeps(mod.ForEach, parentPath)...)
 	initDeps = append(initDeps, g.refsToNodes(g.traversalDepRefs(parentPath, mod.DependsOn...))...)
+	// The module's component registration records the providers passed in
+	// via `providers = {...}`, so init must run after those parent-scope
+	// configurations are registered.
+	for localKey, passExpr := range mod.Providers {
+		initDeps = append(initDeps, g.resolvePassedProvider(loaded.Config, localKey, passExpr, parent)...)
+	}
 	if err := g.AddNode(&Node{
 		Key:        initKey,
 		Type:       NodeTypeModuleInit,

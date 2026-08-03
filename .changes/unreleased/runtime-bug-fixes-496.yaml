@@ -1,0 +1,6 @@
+kind: bug-fixes
+body: Resolve outputs of creates skipped by `--target` as unknown instead of null
+time: 2026-08-03T15:45:00Z
+custom:
+    Component: runtime
+    PR: "496"

@@ -194,6 +194,7 @@ type RegisterResourceResponse struct {
 	URN     urn.URN
 	ID      string
 	Outputs property.Map
+	Unknown bool // True when the engine elided the operation (e.g. a create skipped by a targeted update), so outputs must resolve as unknown.
 }
 
 // ReadResourceRequest contains the parameters for reading an existing resource.
@@ -230,12 +231,14 @@ type InvokeRequest struct {
 	Version           string
 	PluginDownloadURL string
 	PackageRef        PackageRef
+	DependsOn         []string // URNs of the resources the invoke's arguments were read from; the engine gates the invoke on their created-ness.
 }
 
 // InvokeResponse contains the result of invoking a function.
 type InvokeResponse struct {
 	Return   property.Map
 	Failures []string
+	Unknown  bool // True when the engine declined to service the invoke because a dependency is pending creation, so the result must resolve as unknown.
 }
 
 // CallRequest contains the parameters for invoking a method on a resource.
@@ -1237,6 +1240,36 @@ func (e *Engine) resolvePassThroughProvider(modInfo *graph.ModuleInfo, localKey 
 	return e.resolvePassThroughProvider(e.parentModuleInfo(modInfo), providerExprKey(passExpr))
 }
 
+// resolvePassedProviders resolves every entry of a module call's
+// `providers = { ... }` map to a "<urn>::<id>" reference, keyed by the
+// provider's package name. An expression the parent's scope doesn't bind is
+// chased through the parent's own pass-through entries; entries that resolve
+// to no registered configuration are dropped.
+func (e *Engine) resolvePassedProviders(modInfo *graph.ModuleInfo, parentEvalCtx *eval.Context) map[string]string {
+	var refs map[string]string
+	for _, passExpr := range modInfo.Module.Providers {
+		ref := ""
+		val, diags := eval.NewEvaluator(parentEvalCtx).EvaluateExpression(passExpr)
+		if !diags.HasErrors() {
+			if r, err := providerRefFromCty(val); err == nil {
+				ref = r
+			}
+		}
+		if ref == "" {
+			ref = e.resolvePassThroughProvider(e.parentModuleInfo(modInfo), providerExprKey(passExpr))
+		}
+		if ref == "" {
+			continue
+		}
+		pkg := urn.URN(ref[:strings.LastIndex(ref, "::")]).Type().Name().String()
+		if refs == nil {
+			refs = make(map[string]string)
+		}
+		refs[pkg] = ref
+	}
+	return refs
+}
+
 // parentModuleInfo returns the ModuleInfo of the module call enclosing
 // modInfo, or nil when the parent is the root config (or has no instances).
 func (e *Engine) parentModuleInfo(modInfo *graph.ModuleInfo) *graph.ModuleInfo {
@@ -1711,7 +1744,7 @@ func (e *Engine) registerResourceInstanceInContext(
 		}
 	}
 
-	urn, id, outputs, err := e.registerResource(ctx, res.Type, resSchema.Token, resourceName, resourceInputs, opts)
+	urn, id, outputs, unknown, err := e.registerResource(ctx, res.Type, resSchema.Token, resourceName, resourceInputs, opts)
 	if err != nil {
 		e.failedNodes.Set(instance.Key, fmt.Errorf("registering resource: %w", err))
 		return nil
@@ -1726,14 +1759,14 @@ func (e *Engine) registerResourceInstanceInContext(
 		return fmt.Errorf("resolving resource references in outputs: %w", err)
 	}
 
-	outputObj, err := transform.ResourceOutputToCty(outputs, resSchema, resourceMapping, e.dryRun)
+	outputObj, err := transform.ResourceOutputToCty(outputs, resSchema, resourceMapping, e.dryRun || unknown)
 	if err != nil {
 		return fmt.Errorf("converting resource outputs to HCL types: %w", err)
 	}
 	if err := unwrapTerraformDataOutputs(res.Type, outputObj, outputs); err != nil {
 		return fmt.Errorf("converting resource outputs to HCL types: %w", err)
 	}
-	if e.dryRun && id == "" {
+	if (e.dryRun || unknown) && id == "" {
 		outputObj["id"] = cty.UnknownVal(cty.String)
 	} else {
 		outputObj["id"] = cty.StringVal(id)
@@ -3189,11 +3222,12 @@ func (e *Engine) registerResource(
 	name string,
 	inputs property.Map,
 	opts *ResourceOptions,
-) (urn.URN, string, property.Map, error) {
+) (urn.URN, string, property.Map, bool, error) {
 	inputs = lowerTerraformDataInputs(tfType, inputs, opts)
 
 	if typeToken == stackReferenceType {
-		return e.readResource(ctx, typeToken, name, inputs, opts)
+		u, id, outputs, err := e.readResource(ctx, typeToken, name, inputs, opts)
+		return u, id, outputs, false, err
 	}
 
 	// Register with the resource monitor
@@ -3229,10 +3263,10 @@ func (e *Engine) registerResource(
 		Hooks:                   opts.Hooks,
 	})
 	if err != nil {
-		return "", "", property.Map{}, err
+		return "", "", property.Map{}, false, err
 	}
 
-	return resp.URN, resp.ID, lowerTerraformDataOutputs(tfType, resp.Outputs, opts), nil
+	return resp.URN, resp.ID, lowerTerraformDataOutputs(tfType, resp.Outputs, opts), resp.Unknown, nil
 }
 
 // stackReferenceType is the builtin resource the engine resolves against the
@@ -3420,6 +3454,12 @@ func (e *Engine) invokeDataSourceOnce(
 			}
 		}
 	}
+
+	// Declaring the dependencies lets the engine gate the invoke on their
+	// created-ness: a read whose arguments come from a resource that has not
+	// been created yet (e.g. during preview) comes back wholly unknown
+	// instead of observing state the dependency has not produced.
+	invokeReq.DependsOn = depURNs
 
 	// Match the Node.js / Python SDK behavior: during preview, if any input
 	// to the invoke is unknown, skip the provider call and synthesize an
@@ -3795,6 +3835,10 @@ func (e *Engine) invokeFunction(ctx context.Context, tfType string, req InvokeRe
 		return property.Map{}, fmt.Errorf("function invocation failed: %v", resp.Failures)
 	}
 
+	if resp.Unknown {
+		return property.Map{}, nil
+	}
+
 	if tfType == packages.RemoteStateType {
 		return remoteStateResult(dsArgs, defaults, resp.Return), nil
 	}
@@ -4090,13 +4134,19 @@ func (e *Engine) initModuleCallIn(
 		}
 	}
 
+	// Record the providers passed into the module on its component
+	// registration: the engine propagates a component's providers map to
+	// remote components (MLCs) registered under it, whose construct calls
+	// would otherwise fall back to default providers.
+	passedProviders := e.resolvePassedProviders(modInfo, parentEvalCtx)
+
 	newInstance := func(index *int, eachKey, eachVal *cty.Value) (*moduleInstance, error) {
 		instPath := instancePath(parentPath, modInfo.ModuleName(), index, eachKey)
 		instName, err := moduleInstanceName(mod, parentEvalCtx, parentName, instPath, index, eachKey, eachVal)
 		if err != nil {
 			return nil, err
 		}
-		componentOpts := &ResourceOptions{Parent: parentURN}
+		componentOpts := &ResourceOptions{Parent: parentURN, Providers: passedProviders}
 		componentOpts.Aliases = e.moduleComponentAliases(instPath)
 		if mod.Protect != nil {
 			hclCtx := parentEvalCtx.HCLContextWithIteration(index, eachKey, eachVal)
@@ -4370,6 +4420,7 @@ func (e *Engine) registerComponentResource(
 		Dependencies: deps,
 		Parent:       opts.Parent,
 		Protect:      opts.Protect,
+		Providers:    opts.Providers,
 	})
 	if err != nil {
 		return "", "", property.Map{}, err

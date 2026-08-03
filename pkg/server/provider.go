@@ -548,6 +548,7 @@ func (m *constructResourceMonitor) RegisterResource(
 		Parent:              string(parent),
 		Dependencies:        req.Dependencies,
 		Provider:            req.Provider,
+		Providers:           req.Providers,
 		Protect:             &req.Protect,
 		DeleteBeforeReplace: req.DeleteBeforeReplace,
 		IgnoreChanges:       ignoreChanges,
@@ -573,6 +574,7 @@ func (m *constructResourceMonitor) RegisterResource(
 		URN:     urn.URN(resp.Urn),
 		ID:      resp.Id,
 		Outputs: resource.FromResourcePropertyMap(outputs),
+		Unknown: resp.Unknown,
 	}, nil
 }
 
@@ -677,6 +679,7 @@ func (m *constructResourceMonitor) Invoke(
 		PackageRef:        string(req.PackageRef),
 		AcceptResources:   true,
 		AcceptsByteString: true,
+		DependsOn:         req.DependsOn,
 	})
 	if err != nil {
 		return nil, err
@@ -695,6 +698,7 @@ func (m *constructResourceMonitor) Invoke(
 	return &run.InvokeResponse{
 		Return:   resource.FromResourcePropertyMap(ret),
 		Failures: failures,
+		Unknown:  resp.Unknown,
 	}, nil
 }
 

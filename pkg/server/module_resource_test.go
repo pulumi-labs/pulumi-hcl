@@ -190,9 +190,9 @@ type refMonitorServer struct {
 
 func (s *refMonitorServer) Invoke(
 	_ context.Context, req *pulumirpc.ResourceInvokeRequest,
-) (*pulumirpc.InvokeResponse, error) {
+) (*pulumirpc.ResourceInvokeResponse, error) {
 	if req.Tok != "pulumi:pulumi:getResource" {
-		return &pulumirpc.InvokeResponse{}, nil
+		return &pulumirpc.ResourceInvokeResponse{}, nil
 	}
 	ret, err := structpb.NewStruct(map[string]any{
 		"state": map[string]any{"value": "from-handler"},
@@ -200,7 +200,7 @@ func (s *refMonitorServer) Invoke(
 	if err != nil {
 		return nil, err
 	}
-	return &pulumirpc.InvokeResponse{Return: ret}, nil
+	return &pulumirpc.ResourceInvokeResponse{Return: ret}, nil
 }
 
 // TestModuleConstructResourceReferenceInput drives construct with a whole

@@ -42,9 +42,9 @@ type routingCaptureMonitorServer struct {
 
 func (s *routingCaptureMonitorServer) Invoke(
 	_ context.Context, req *pulumirpc.ResourceInvokeRequest,
-) (*pulumirpc.InvokeResponse, error) {
+) (*pulumirpc.ResourceInvokeResponse, error) {
 	s.invokeReq = req
-	return &pulumirpc.InvokeResponse{}, nil
+	return &pulumirpc.ResourceInvokeResponse{}, nil
 }
 
 func (s *routingCaptureMonitorServer) Call(

@@ -15,6 +15,9 @@ data "simple-invoke_secret_invoke" "invoke_0" {
   value           = "hello"
   secret_response = simple_resource.first.value
 }
+data "simple-invoke_text" "invoke_1" {
+  text = simple-invoke_string_resource.third.text
+}
 
 resource "simple_resource" "first" {
   lifecycle {
@@ -29,4 +32,16 @@ resource "simple_resource" "second" {
     create_before_destroy = true
   }
   value = data.simple-invoke_secret_invoke.invoke_0.secret
+}
+resource "simple-invoke_string_resource" "third" {
+  lifecycle {
+    create_before_destroy = true
+  }
+  text = "third"
+}
+resource "simple-invoke_string_resource" "fourth" {
+  lifecycle {
+    create_before_destroy = true
+  }
+  text = data.simple-invoke_text.invoke_1.result
 }

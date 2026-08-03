@@ -11,3 +11,13 @@ resource "second" "simple:index:Resource" {
   }).secret
 }
 
+resource "third" "simple-invoke:index:StringResource" {
+  text = "third"
+}
+
+resource "fourth" "simple-invoke:index:StringResource" {
+  text = invoke("simple-invoke:index:getText", {
+    text = third.text
+  }).result
+}
+
