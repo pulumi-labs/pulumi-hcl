@@ -34,12 +34,13 @@ func TestL2ModuleSiblingCalls(t *testing.T) {
 		Providers: []tfcompat.Provider{
 			{Name: "simple", Factory: providers.SimpleProvider},
 		},
-		// TODO[pulumi/pulumi-hcl#167]: two component instances of one type
-		// ("outer.a" and "outer.b", both components:index:Leaf) record their
-		// inputs non-deterministically, so a preview after an unchanged up
-		// intermittently proposes a component update and the convergence
-		// assertion flakes. Not an import bug: a fresh up/preview loop on
-		// this program, with no import in it at all, oscillates the same way.
-		SkipImport: "component inputs do not settle for same-typed sibling modules",
+		// Two component instances of one type ("outer.a" and "outer.b", both
+		// components:index:Leaf) record their inputs non-deterministically,
+		// so a preview after an unchanged up intermittently proposes a
+		// component update and the convergence assertion flakes. Not an
+		// import bug: a fresh up/preview loop on this program, with no import
+		// in it at all, oscillates the same way.
+		SkipImport: "TODO[github.com/pulumi/pulumi-hcl#495]: " +
+			"component inputs do not settle for same-typed sibling modules",
 	})
 }
