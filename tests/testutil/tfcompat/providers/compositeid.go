@@ -16,18 +16,17 @@ package providers
 
 import (
 	"context"
-	"fmt"
-	"strings"
+	"errors"
 
 	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
 )
 
-// CompositeIDProvider mirrors resources like aws_iam_role_policy_attachment:
-// the importer parses a composite "role/policy" import string, while the
-// resource's own id is an opaque internal value the importer would reject.
-// The importer is a tripwire — a state import that reaches it fails loudly,
-// so a passing round-trip proves values-supplied imports never invoke it.
+// CompositeIDProvider mirrors resources like aws_iam_role_policy_attachment,
+// whose importer wants a composite "role/policy" string rather than the
+// resource's own opaque id. Its importer is a tripwire that fails on any
+// call, so a passing round-trip proves a values-supplied import never
+// invokes it and so never needs the composite form.
 func CompositeIDProvider() *schema.Provider {
 	return &schema.Provider{
 		ResourcesMap: map[string]*schema.Resource{
@@ -37,19 +36,8 @@ func CompositeIDProvider() *schema.Provider {
 					"policy": {Type: schema.TypeString, Required: true, ForceNew: true},
 				},
 				Importer: &schema.ResourceImporter{
-					StateContext: func(_ context.Context, d *schema.ResourceData, _ any) ([]*schema.ResourceData, error) {
-						parts := strings.SplitN(d.Id(), "/", 2)
-						if len(parts) != 2 {
-							return nil, fmt.Errorf("expected an import id in role/policy form, got %q", d.Id())
-						}
-						if err := d.Set("role", parts[0]); err != nil {
-							return nil, err
-						}
-						if err := d.Set("policy", parts[1]); err != nil {
-							return nil, err
-						}
-						d.SetId("internal:" + parts[0])
-						return []*schema.ResourceData{d}, nil
+					StateContext: func(_ context.Context, _ *schema.ResourceData, _ any) ([]*schema.ResourceData, error) {
+						return nil, errors.New("unexpected call to import")
 					},
 				},
 				CreateContext: func(_ context.Context, d *schema.ResourceData, _ any) diag.Diagnostics {

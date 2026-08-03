@@ -146,7 +146,7 @@ func convertTFState(
 			if current == nil {
 				continue
 			}
-			id, ok := importID(current)
+			id, ok := idAttr(current)
 			if !ok {
 				warn("Skipped resource without id", fmt.Sprintf(
 					"an instance of %s has no string `id` attribute to import by", res.Addr))
@@ -319,7 +319,7 @@ func resourceSchema(
 // supplied, the id is recorded as opaque identity and never fed to a
 // provider's importer, so composite import strings (aws_iam_role_policy_attachment's
 // role/policy-arn) need no derivation.
-func importID(src *states.ResourceInstanceObjectSrc) (string, bool) {
+func idAttr(src *states.ResourceInstanceObjectSrc) (string, bool) {
 	if src.AttrsJSON == nil {
 		// Pre-0.12 states carry flatmap attributes instead.
 		id := src.AttrsFlat["id"]

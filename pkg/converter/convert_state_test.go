@@ -414,22 +414,22 @@ func TestResourceName(t *testing.T) {
 	assert.Equal(t, "my-bucket.v2", resourceName("my-bucket.v2", addrs.NoKey), "no sanitisation")
 }
 
-func TestImportID(t *testing.T) {
+func TestIDAttr(t *testing.T) {
 	t.Parallel()
-	id, ok := importID(&states.ResourceInstanceObjectSrc{AttrsJSON: []byte(`{"id": "x"}`)})
+	id, ok := idAttr(&states.ResourceInstanceObjectSrc{AttrsJSON: []byte(`{"id": "x"}`)})
 	assert.True(t, ok)
 	assert.Equal(t, "x", id)
 
-	_, ok = importID(&states.ResourceInstanceObjectSrc{AttrsJSON: []byte(`{"input_one": "hello"}`)})
+	_, ok = idAttr(&states.ResourceInstanceObjectSrc{AttrsJSON: []byte(`{"input_one": "hello"}`)})
 	assert.False(t, ok, "no id attribute")
 
-	_, ok = importID(&states.ResourceInstanceObjectSrc{AttrsJSON: []byte(`{"id": ""}`)})
+	_, ok = idAttr(&states.ResourceInstanceObjectSrc{AttrsJSON: []byte(`{"id": ""}`)})
 	assert.False(t, ok, "empty id")
 
-	_, ok = importID(&states.ResourceInstanceObjectSrc{AttrsJSON: []byte(`{"id": 123}`)})
+	_, ok = idAttr(&states.ResourceInstanceObjectSrc{AttrsJSON: []byte(`{"id": 123}`)})
 	assert.False(t, ok, "non-string id")
 
-	id, ok = importID(&states.ResourceInstanceObjectSrc{AttrsFlat: map[string]string{"id": "flat"}})
+	id, ok = idAttr(&states.ResourceInstanceObjectSrc{AttrsFlat: map[string]string{"id": "flat"}})
 	assert.True(t, ok, "pre-0.12 flatmap attributes")
 	assert.Equal(t, "flat", id)
 }
