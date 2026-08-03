@@ -51,6 +51,7 @@ which is Terraform-internal and has no equivalent here.
 | `entries`            | Collection      | Converts a map or object to a list of `{key, value}` objects.     |
 | `pulumiResourceName` | Pulumi-specific | Returns the Pulumi resource name for a resource reference.        |
 | `pulumiResourceType` | Pulumi-specific | Returns the Pulumi resource type for a resource reference.        |
+| `pulumiResourceURN`  | Pulumi-specific | Returns the Pulumi URN for a resource reference.                  |
 | `fileAsset`          | Asset/Archive   | Creates a Pulumi `FileAsset` from a local file path.              |
 | `stringAsset`        | Asset/Archive   | Creates a Pulumi `StringAsset` from a string value.               |
 | `remoteAsset`        | Asset/Archive   | Creates a Pulumi `RemoteAsset` from a URL.                        |

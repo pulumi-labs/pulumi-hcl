@@ -66,3 +66,57 @@ resource "pfx_res" "res" {
 	err := engine.Run(t.Context())
 	assert.ErrorContains(t, err, "aliases must be a list")
 }
+
+// TestEngine_AliasesParentURN pins that an alias's parent_urn can reference
+// another resource's URN via pulumiResourceURN.
+func TestEngine_AliasesParentURN(t *testing.T) {
+	t.Parallel()
+
+	src := []byte(`
+resource "pfx_res" "first" {
+}
+
+resource "pfx_res" "second" {
+  pulumi {
+    aliases = [{
+      parent_urn = pulumiResourceURN(pfx_res.first)
+    }]
+  }
+}
+`)
+
+	p := parser.NewParser()
+	config, diags := p.ParseSource("test.hcl", src)
+	require.False(t, diags.HasErrors(), "parse error: %s", diags.Error())
+
+	mock := &testutil.MockResourceMonitor{}
+	engine := newTestEngine(t, config, &run.EngineOptions{
+		ModuleLoader:    testModuleLoader(t),
+		ProjectName:     "test-project",
+		StackName:       "dev",
+		ResourceMonitor: mock,
+		WorkDir:         t.TempDir(),
+		RootDir:         t.TempDir(),
+		SchemaLoader: schemaloader.New(t, schema.PackageSpec{
+			Name: "pfx",
+			Resources: map[string]schema.ResourceSpec{
+				"pfx:index:Res": {},
+			},
+		}),
+	})
+
+	require.NoError(t, engine.Run(t.Context()))
+
+	var second *run.RegisterResourceRequest
+	for i := range mock.RegisteredResources {
+		if mock.RegisteredResources[i].Name == "second" {
+			second = &mock.RegisteredResources[i]
+			break
+		}
+	}
+	require.NotNil(t, second, "expected resource 'second' to be registered")
+
+	assert.Equal(t, []run.Alias{{Spec: &run.AliasSpec{
+		ParentURN: "urn:pulumi:test::project::pfx:index:Res::first",
+	}}}, second.Aliases)
+}

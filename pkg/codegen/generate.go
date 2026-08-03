@@ -1631,18 +1631,14 @@ func (g *generator) aliasElemTokens(elem model.Expression) (hclwrite.Tokens, hcl
 			hclKey = "no_parent"
 			valTokens, d = g.exprTokens(item.Value, schema.BoolType)
 		case "parent":
-			// Transform resource reference to parent_urn = resource_type.name.urn
+			// Transform resource reference to parent_urn = pulumiResourceURN(resource_type.name)
 			hclKey = "parent_urn"
 			baseTokens, d2 := g.exprTokens(item.Value, schema.AnyType)
 			diags = append(diags, d2...)
 			if d2.HasErrors() {
 				return nil, diags
 			}
-			// Append .urn to get the resource's URN
-			valTokens = append(baseTokens,
-				&hclwrite.Token{Type: hclsyntax.TokenDot, Bytes: []byte(".")},
-				&hclwrite.Token{Type: hclsyntax.TokenIdent, Bytes: []byte("urn")},
-			)
+			valTokens = pulumiResourceURNCallTokens(baseTokens)
 		default:
 			hclKey = transform.SnakeCaseFromPulumiCase(keyStr)
 			valTokens, d = g.exprTokens(item.Value, schema.AnyType)
@@ -2899,6 +2895,14 @@ func (g *generator) scopeTraversalTokens(expr *model.ScopeTraversalExpression) (
 		}
 		rewritten = append(rewritten, hcl.TraverseRoot{Name: hclType})
 		rewritten = append(rewritten, traverseNameStep(part.LogicalName()))
+		// PCL exposes a resource's URN as a `.urn` attribute; HCL resource
+		// values have no such attribute, so the traversal becomes a
+		// pulumiResourceURN call on the resource (or indexed instance).
+		if rest := traversal[1:]; len(rest) > 0 {
+			if attr, ok := rest[len(rest)-1].(hcl.TraverseAttr); ok && attr.Name == "urn" && allIndexSteps(rest[:len(rest)-1]) {
+				return pulumiResourceURNCallTokens(hclwrite.TokensForTraversal(append(rewritten, rest[:len(rest)-1]...))), nil
+			}
+		}
 		// part.Schema can be nil when the binder ran with SkipResourceTypechecking
 		// (or similar relaxed options); fall back to the unmodified traversal.
 		var props []*schema.Property
@@ -2965,6 +2969,27 @@ func (g *generator) scopeTraversalTokens(expr *model.ScopeTraversalExpression) (
 		}
 		return hclwrite.TokensForTraversal(traversal), nil
 	}
+}
+
+// pulumiResourceURNCallTokens wraps resource-reference tokens in a
+// pulumiResourceURN(...) call.
+func pulumiResourceURNCallTokens(resTokens hclwrite.Tokens) hclwrite.Tokens {
+	tokens := hclwrite.Tokens{
+		{Type: hclsyntax.TokenIdent, Bytes: []byte("pulumiResourceURN")},
+		{Type: hclsyntax.TokenOParen, Bytes: []byte("(")},
+	}
+	tokens = append(tokens, resTokens...)
+	return append(tokens, &hclwrite.Token{Type: hclsyntax.TokenCParen, Bytes: []byte(")")})
+}
+
+// allIndexSteps reports whether every traversal step is an index step.
+func allIndexSteps(steps hcl.Traversal) bool {
+	for _, step := range steps {
+		if _, ok := step.(hcl.TraverseIndex); !ok {
+			return false
+		}
+	}
+	return true
 }
 
 // passthroughFuncCallTokens generates tokens for a function call: name(arg1, arg2, ...).

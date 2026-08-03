@@ -30,5 +30,5 @@ resource "simple_resource" "independent" {
   value = true
 }
 output "recovered" {
-  value = recover(fail_on_create_resource.failing.urn, "recovered: ${error}")
+  value = recover(pulumiResourceURN(fail_on_create_resource.failing), "recovered: ${error}")
 }

@@ -1068,6 +1068,14 @@ func (ft *fileTransformer) transformExpr(expr hclsyntax.Expression) hclwrite.Tok
 				}
 			}
 		}
+		// pulumiResourceURN(<resource>) is the encoding generate.go emits
+		// for PCL's `<resource>.urn`; restore the attribute on eject.
+		if e.Name == "pulumiResourceURN" && len(e.Args) == 1 {
+			return append(ft.transformExpr(e.Args[0]),
+				&hclwrite.Token{Type: hclsyntax.TokenDot, Bytes: []byte(".")},
+				&hclwrite.Token{Type: hclsyntax.TokenIdent, Bytes: []byte("urn")},
+			)
+		}
 		// A provider-defined function call ejects as a positional invoke:
 		// provider::<local>::<fn>(a, b) → invoke("<token>", a, b).
 		if _, _, ok := ast.ParseProviderFunctionName(e.Name); ok {

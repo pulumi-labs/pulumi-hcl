@@ -225,6 +225,7 @@ func Functions(baseDir string) map[string]function.Function {
 		// Pulumi-specific functions
 		"pulumiResourceName": pulumiResourceNameFunc,
 		"pulumiResourceType": pulumiResourceTypeFunc,
+		"pulumiResourceURN":  pulumiResourceURNFunc,
 
 		// Asset and archive functions
 		"fileAsset":     fileAssetFunc(baseDir),
@@ -2411,6 +2412,11 @@ var pulumiResourceNameFunc = resourceUrnFuncHelper("pulumiResourceName", func(u 
 // extracting it from the resource's URN.
 var pulumiResourceTypeFunc = resourceUrnFuncHelper("pulumiResourceType", func(u urn.URN) (cty.Value, error) {
 	return cty.StringVal(u.Type().String()), nil
+})
+
+// pulumiResourceURNFunc returns the URN of a Pulumi resource.
+var pulumiResourceURNFunc = resourceUrnFuncHelper("pulumiResourceURN", func(u urn.URN) (cty.Value, error) {
+	return cty.StringVal(string(u)), nil
 })
 
 func resourceUrnFuncHelper(fnName string, f func(urn.URN) (cty.Value, error)) function.Function {

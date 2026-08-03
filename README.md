@@ -421,9 +421,10 @@ call "my_bucket" "get_object" {
 
 The `call` block invokes a method on an existing resource. The first label is the resource's logical name (matching a declared resource) and the second is the method name. Results are referenced as `call.<resource>.<method>.<output>`.
 
-Two built-in functions provide access to a resource's Pulumi identity at runtime:
+Three built-in functions provide access to a resource's Pulumi identity at runtime:
 - `pulumiResourceName(resource)` — returns the logical name from the resource's URN
 - `pulumiResourceType(resource)` — returns the type token from the resource's URN
+- `pulumiResourceURN(resource)` — returns the resource's URN
 
 ## Development
 
