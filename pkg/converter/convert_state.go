@@ -29,6 +29,7 @@ import (
 	"github.com/pulumi/pulumi-hcl/pkg/hcl/bridge"
 	"github.com/pulumi/pulumi-hcl/pkg/hcl/eval"
 	"github.com/pulumi/pulumi-hcl/pkg/hcl/modulepath"
+	"github.com/pulumi/pulumi-hcl/pkg/hcl/packages"
 	"github.com/pulumi/pulumi-hcl/pkg/hcl/transform"
 	"github.com/pulumi/pulumi-hcl/pkg/util/encryption"
 	"github.com/pulumi/pulumi-hcl/vendored/addrs"
@@ -127,19 +128,25 @@ func convertTFState(
 	for res := range managedResources(state, warn) {
 		provider := res.ProviderConfig.Provider.Type
 		tfType := res.Addr.Resource.Type
-		info, err := providerInfoSource.GetProviderInfo(ctx, provider, nil)
-		if err != nil || info == nil {
-			warn("Failed to resolve provider", fmt.Sprintf(
-				"could not resolve bridge mapping for provider %q: %v", provider, err))
-			continue
+		stash := tfType == packages.TerraformDataType
+		token := packages.StashToken
+		var info *tfbridge.ProviderInfo
+		if !stash {
+			var err error
+			info, err = providerInfoSource.GetProviderInfo(ctx, provider, nil)
+			if err != nil || info == nil {
+				warn("Failed to resolve provider", fmt.Sprintf(
+					"could not resolve bridge mapping for provider %q: %v", provider, err))
+				continue
+			}
+			resInfo, ok := info.Resources[tfType]
+			if !ok || resInfo == nil || resInfo.Tok == "" {
+				warn("Failed to resolve resource type", fmt.Sprintf(
+					"provider %q has no mapping for TF type %q", provider, tfType))
+				continue
+			}
+			token = resInfo.Tok.String()
 		}
-		resInfo, ok := info.Resources[tfType]
-		if !ok || resInfo == nil || resInfo.Tok == "" {
-			warn("Failed to resolve resource type", fmt.Sprintf(
-				"provider %q has no mapping for TF type %q", provider, tfType))
-			continue
-		}
-		token := resInfo.Tok.String()
 
 		for _, key := range sortedInstanceKeys(res) {
 			current := res.Instances[key].Current
@@ -152,8 +159,15 @@ func convertTFState(
 					"an instance of %s has no string `id` attribute to import by", res.Addr))
 				continue
 			}
-			outs, ins, err := translateInstanceValues(ctx, loader, info, token, tfType, id, current)
-			if err != nil {
+			var outs, ins resource.PropertyMap
+			var err error
+			if stash {
+				if outs, ins, err = stashValues(current); err != nil {
+					warn("Skipped terraform_data resource", fmt.Sprintf(
+						"an instance of %s cannot be translated: %v", res.Addr, err))
+					continue
+				}
+			} else if outs, ins, err = translateInstanceValues(ctx, loader, info, token, tfType, id, current); err != nil {
 				warn("Importing without values", fmt.Sprintf(
 					"an instance of %s imports by id only: %v", res.Addr, err))
 			}
@@ -270,16 +284,7 @@ func translateInstanceValues(
 	if err != nil {
 		return nil, nil, fmt.Errorf("decoding attributes: %w", err)
 	}
-	// Re-mark the state's dynamically-sensitive paths (e.g. TF's sensitive())
-	// with the evaluator's mark; the codec turns marks into secrets.
-	// Schema-declared sensitivity is applied by the codec itself.
-	if len(current.AttrSensitivePaths) > 0 {
-		pvms := make([]cty.PathValueMarks, len(current.AttrSensitivePaths))
-		for i, p := range current.AttrSensitivePaths {
-			pvms[i] = cty.PathValueMarks{Path: p.Path, Marks: cty.NewValueMarks(eval.SensitiveMark)}
-		}
-		val = val.MarkWithPaths(pvms)
-	}
+	val = markSensitivePaths(val, current.AttrSensitivePaths)
 
 	m, err := transform.CtyToResourceOutputs(val, res, bridge.ResourceBodyMapping(info, tfType))
 	if err != nil {
@@ -296,6 +301,67 @@ func translateInstanceValues(
 		}
 	}
 	outs["id"] = resource.NewStringProperty(id)
+	return outs, ins, nil
+}
+
+// markSensitivePaths re-marks the state's dynamically-sensitive paths (e.g.
+// TF's sensitive()) with the evaluator's mark; the transform codec turns marks
+// into secrets. Schema-declared sensitivity is applied by the codec itself.
+func markSensitivePaths(val cty.Value, paths []cty.PathValueMarks) cty.Value {
+	if len(paths) == 0 {
+		return val
+	}
+	pvms := make([]cty.PathValueMarks, len(paths))
+	for i, p := range paths {
+		pvms[i] = cty.PathValueMarks{Path: p.Path, Marks: cty.NewValueMarks(eval.SensitiveMark)}
+	}
+	return val.MarkWithPaths(pvms)
+}
+
+// terraformDataStateType is terraform_data's object type in state attributes;
+// decoding against it lets ctyjson consume the dynamic attributes' type
+// annotations natively.
+var terraformDataStateType = cty.Object(map[string]cty.Type{
+	"id":               cty.String,
+	"input":            cty.DynamicPseudoType,
+	"output":           cty.DynamicPseudoType,
+	"triggers_replace": cty.DynamicPseudoType,
+})
+
+// stashValues translates a terraform_data instance's attributes into Stash's
+// property surface — the resource the runtime lowers terraform_data onto,
+// served by the engine's builtin provider. Inputs and Outputs reproduce what
+// the runtime registers: {type, value} wrappers for non-null values, an
+// explicit null input otherwise. triggers_replace is not emitted — Stash
+// rejects it as an input and an import cannot carry the engine's replacement
+// trigger; the trigger records on the first up, which the engine forgives
+// without a replace. An untranslatable instance is skipped outright: with no
+// plugin behind Stash, an id-only import could only fail.
+func stashValues(current *states.ResourceInstanceObjectSrc) (outs, ins resource.PropertyMap, err error) {
+	if current.AttrsJSON == nil {
+		return nil, nil, errors.New("pre-0.12 flatmap attributes are not translatable")
+	}
+	val, err := ctyjson.Unmarshal(current.AttrsJSON, terraformDataStateType)
+	if err != nil {
+		return nil, nil, fmt.Errorf("decoding attributes: %w", err)
+	}
+	val = markSensitivePaths(val, current.AttrSensitivePaths)
+
+	m, err := transform.CtyToResourceOutputs(val, packages.TerraformDataSchema(), nil)
+	if err != nil {
+		return nil, nil, fmt.Errorf("translating attributes: %w", err)
+	}
+	wrap := func(name string) resource.PropertyValue {
+		v := m.Get(name)
+		if v.IsNull() {
+			return resource.NewNullProperty()
+		}
+		src, _ := val.GetAttr(name).Unmark()
+		return resource.ToResourcePropertyValue(packages.WrapTerraformDataValue(src.Type(), v))
+	}
+	input := wrap("input")
+	ins = resource.PropertyMap{"input": input}
+	outs = resource.PropertyMap{"input": input, "output": wrap("output")}
 	return outs, ins, nil
 }
 

@@ -120,20 +120,10 @@ func lowerTerraformDataOutputs(resType string, outputs property.Map, opts *Resou
 	return outputs.Set("triggers_replace", opts.ReplacementTrigger.AsArray().Get(0))
 }
 
-// terraform_data's attributes are dynamically typed, and the Pulumi property
-// encoding cannot represent every cty type: a set flattens to an ordered array
-// that would re-expand as a tuple. Each evaluated input is therefore boxed as
-// a {type, value} wrapper object before registration — persisting the cty type
-// through the engine and its state alongside the value, the way OpenTofu
-// stores dynamic attributes — and unboxed wherever outputs re-expand to cty,
-// including from prior state (e.g. a destroy-time provisioner's self).
-const (
-	tdataTypeKey  = "type"
-	tdataValueKey = "value"
-)
-
 // wrapTerraformDataInputs boxes terraform_data's evaluated inputs as
-// {type, value} wrappers. It is a no-op for every other type.
+// {type, value} wrappers (see packages.WrapTerraformDataValue), unboxed
+// wherever outputs re-expand to cty, including from prior state (e.g. a
+// destroy-time provisioner's self). It is a no-op for every other type.
 func wrapTerraformDataInputs(resType string, inputs property.Map, evaluated map[string]cty.Value) property.Map {
 	if resType != packages.TerraformDataType {
 		return inputs
@@ -147,14 +137,7 @@ func wrapTerraformDataInputs(resType string, inputs property.Map, evaluated map[
 		if !ok {
 			continue
 		}
-		typeJSON, err := ctyjson.MarshalType(src.Type())
-		if err != nil {
-			continue
-		}
-		inputs = inputs.Set(name, property.New(map[string]property.Value{
-			tdataTypeKey:  property.New(string(typeJSON)),
-			tdataValueKey: v,
-		}))
+		inputs = inputs.Set(name, packages.WrapTerraformDataValue(src.Type(), v))
 	}
 	return inputs
 }
@@ -191,10 +174,10 @@ func unwrapTerraformDataValue(pv property.Value) (cty.Value, bool, error) {
 		return cty.Value{}, false, nil
 	}
 	m := pv.AsMap()
-	typeJSON, typeOk := m.GetOk(tdataTypeKey)
-	value, valueOk := m.GetOk(tdataValueKey)
+	typeJSON, typeOk := m.GetOk(packages.TerraformDataTypeKey)
+	value, valueOk := m.GetOk(packages.TerraformDataValueKey)
 	if !typeOk || !valueOk || m.Len() != 2 || !typeJSON.IsString() {
-		return cty.Value{}, false, fmt.Errorf("malformed {%s, %s} wrapper", tdataTypeKey, tdataValueKey)
+		return cty.Value{}, false, fmt.Errorf("malformed {%s, %s} wrapper", packages.TerraformDataTypeKey, packages.TerraformDataValueKey)
 	}
 	recorded, err := ctyjson.UnmarshalType([]byte(typeJSON.AsString()))
 	if err != nil {
