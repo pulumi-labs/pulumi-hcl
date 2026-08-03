@@ -1,0 +1,6 @@
+kind: bug-fixes
+body: Record a component's evaluated inputs and their dependencies on its registration
+time: 2026-08-03T10:57:52Z
+custom:
+    Component: runtime
+    PR: "495"

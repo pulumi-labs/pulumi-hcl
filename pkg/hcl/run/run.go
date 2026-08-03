@@ -4070,13 +4070,26 @@ func (e *Engine) initModuleCallIn(
 		parentURN, parentEvalCtx, parentPath, parentName = parent.URN, parent.EvalCtx, parent.Path, parent.Name
 	}
 
-	// Evaluate module inputs for the component resource registration
+	// Evaluate module inputs for the component resource registration. The
+	// inputs' dep marks become the component's dependencies, so the engine
+	// sees the module call depend on the resources its arguments reference.
 	inputs := make(map[string]property.Value)
+	propertyDeps := make(map[string][]string)
+	var deps []string
+	seenDeps := make(map[string]bool)
 	attrs, _ := mod.Config.JustAttributes()
 	for name, attr := range attrs {
 		val, diags := attr.Expr.Value(parentEvalCtx.HCLContext())
 		if diags.HasErrors() {
 			continue
+		}
+		urns := eval.CollectDepURNs(val)
+		propertyDeps[name] = urns
+		for _, u := range urns {
+			if !seenDeps[u] {
+				seenDeps[u] = true
+				deps = append(deps, u)
+			}
 		}
 		// Coerce to the variable's declared type if available.
 		if v, ok := childMod.Config.Variables[name]; ok && v.TypeConstraint != cty.NilType {
@@ -4096,7 +4109,11 @@ func (e *Engine) initModuleCallIn(
 		if err != nil {
 			return nil, err
 		}
-		componentOpts := &ResourceOptions{Parent: parentURN}
+		componentOpts := &ResourceOptions{
+			Parent:               parentURN,
+			DependsOn:            deps,
+			PropertyDependencies: propertyDeps,
+		}
 		componentOpts.Aliases = e.moduleComponentAliases(instPath)
 		if mod.Protect != nil {
 			hclCtx := parentEvalCtx.HCLContextWithIteration(index, eachKey, eachVal)
@@ -4362,14 +4379,14 @@ func (e *Engine) registerComponentResource(
 		return urn, "", inputs, nil
 	}
 
-	deps := opts.DependsOn
 	resp, err := e.resmon.RegisterResource(ctx, RegisterResourceRequest{
-		Type:         typeToken,
-		Name:         name,
-		Inputs:       inputs,
-		Dependencies: deps,
-		Parent:       opts.Parent,
-		Protect:      opts.Protect,
+		Type:                 typeToken,
+		Name:                 name,
+		Inputs:               inputs,
+		Dependencies:         opts.DependsOn,
+		PropertyDependencies: opts.PropertyDependencies,
+		Parent:               opts.Parent,
+		Protect:              opts.Protect,
 	})
 	if err != nil {
 		return "", "", property.Map{}, err

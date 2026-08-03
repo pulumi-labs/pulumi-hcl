@@ -1561,9 +1561,12 @@ func (g *Graph) inlineModule(
 		ParentSourcePath: workDir,
 	}
 
-	// Init node: depends on count/for_each/depends_on from parent scope,
-	// plus the parent module's init (so a nested module never initializes
-	// before its enclosing module's instance/eval-context is registered).
+	// Init node: depends on count/for_each/depends_on and the call's input
+	// expressions from the parent scope (the component registration reports
+	// the evaluated inputs and their dependencies, so they must resolve
+	// first), plus the parent module's init (so a nested module never
+	// initializes before its enclosing module's instance/eval-context is
+	// registered).
 	initKey := NodeKey{Module: path, ID: "__init__"}
 	var initDeps []pdag.Node
 	if !parentPath.IsRoot() {
@@ -1573,6 +1576,12 @@ func (g *Graph) inlineModule(
 	initDeps = append(initDeps, g.exprDeps(mod.Count, parentPath)...)
 	initDeps = append(initDeps, g.exprDeps(mod.ForEach, parentPath)...)
 	initDeps = append(initDeps, g.refsToNodes(g.traversalDepRefs(parentPath, mod.DependsOn...))...)
+	initDeps = append(initDeps, g.exprDeps(mod.PulumiName, parentPath)...)
+	initDeps = append(initDeps, g.exprDeps(mod.Protect, parentPath)...)
+	moduleInputAttrs, _ := mod.Config.JustAttributes()
+	for _, inputAttr := range moduleInputAttrs {
+		initDeps = append(initDeps, g.exprDeps(inputAttr.Expr, parentPath)...)
+	}
 	if err := g.AddNode(&Node{
 		Key:        initKey,
 		Type:       NodeTypeModuleInit,
@@ -1585,7 +1594,6 @@ func (g *Graph) inlineModule(
 	_, initIdx := g.newNode(initKey)
 
 	// Variables: each depends on init + the corresponding input expression from the module block.
-	moduleInputAttrs, _ := mod.Config.JustAttributes()
 	for varName, v := range loaded.Config.Variables {
 		varDeps := []pdag.Node{initIdx}
 		if inputAttr, ok := moduleInputAttrs[varName]; ok {
