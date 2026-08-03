@@ -850,6 +850,7 @@ Pulumi HCL supports nearly all Terraform built-in functions. Functions are group
 | `assetArchive(map)`            | Create a Pulumi `AssetArchive` from a map of assets/archives |
 | `pulumiResourceName(resource)` | Get the logical name from a resource's URN                   |
 | `pulumiResourceType(resource)` | Get the type token from a resource's URN                     |
+| `pulumiResourceURN(resource)`  | Get a resource's URN                                         |
 
 ## Stack References
 

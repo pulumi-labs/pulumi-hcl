@@ -1981,9 +1981,10 @@ func (e *Engine) buildResourceOptions(
 	// Handle aliases attribute
 	if res.Aliases != nil {
 		aliases, err := e.evaluateAliases(res.Aliases)
-		if err == nil {
-			opts.Aliases = append(opts.Aliases, aliases...)
+		if err != nil {
+			return nil, err
 		}
+		opts.Aliases = append(opts.Aliases, aliases...)
 	}
 
 	// Handle import blocks - resolve import ID from import blocks that target this resource
