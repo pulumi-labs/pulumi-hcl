@@ -676,7 +676,7 @@ func (ft *fileTransformer) emitFile(
 			if pclName != logicalName {
 				blk.Body().SetAttributeRaw("__logicalName", hclwrite.TokensForValue(cty.StringVal(logicalName)))
 			}
-			var rangeExpr hclsyntax.Expression
+			var rangeExpr, providersExpr hclsyntax.Expression
 			for _, attr := range sortedAttributes(block.Body.Attributes) {
 				switch attr.Name {
 				case "source":
@@ -684,16 +684,24 @@ func (ft *fileTransformer) emitFile(
 				case "count", "for_each":
 					rangeExpr = attr.Expr
 					continue
-				case "depends_on", "providers", "version":
+				case "providers":
+					providersExpr = attr.Expr
+					continue
+				case "depends_on", "version":
 					continue
 				}
 				start := attr.Range().Start.Byte
 				ft.emitLeadingComments(blk.Body(), start)
 				blk.Body().SetAttributeRaw(attr.Name, ft.withTrailing(ft.transformExpr(attr.Expr), start))
 			}
-			if rangeExpr != nil {
+			if rangeExpr != nil || providersExpr != nil {
 				optBlk := blk.Body().AppendNewBlock("options", nil)
-				optBlk.Body().SetAttributeRaw("range", ft.transformExpr(rangeExpr))
+				if rangeExpr != nil {
+					optBlk.Body().SetAttributeRaw("range", ft.transformExpr(rangeExpr))
+				}
+				if providersExpr != nil {
+					optBlk.Body().SetAttributeRaw("providers", ft.transformExpr(providersExpr))
+				}
 			}
 			out.AppendNewline()
 

@@ -1985,6 +1985,11 @@ func (g *generator) genModule(body *hclwrite.Body, c *pcl.Component) hcl.Diagnos
 		pulumiBody().SetAttributeRaw("name", tokens)
 	}
 
+	if c.Options != nil && c.Options.Providers != nil {
+		d := g.genModuleProviders(block.Body(), c.Options.Providers)
+		diags = append(diags, d...)
+	}
+
 	if c.Options != nil && c.Options.Protect != nil {
 		tokens, d := g.exprTokens(c.Options.Protect, schema.BoolType)
 		diags = append(diags, d...)
@@ -1999,6 +2004,73 @@ func (g *generator) genModule(body *hclwrite.Body, c *pcl.Component) hcl.Diagnos
 		diags = append(diags, d...)
 	}
 	return diags
+}
+
+// genModuleProviders emits a module block's `providers` map from a PCL
+// component's providers option. PCL accepts a list of provider resources or a
+// map of local provider name to provider resource; the list form infers each
+// entry's key from the referenced provider's package name, which is also the
+// local name the child module's required_providers declares.
+func (g *generator) genModuleProviders(body *hclwrite.Body, providers model.Expression) hcl.Diagnostics {
+	var entries []hclwrite.ObjectAttrTokens
+	var diags hcl.Diagnostics
+
+	badEntry := func(rng hcl.Range) hcl.Diagnostics {
+		return append(diags, &hcl.Diagnostic{
+			Severity: hcl.DiagError,
+			Summary:  "invalid providers option",
+			Detail:   "each providers entry must reference a provider resource",
+			Subject:  &rng,
+		})
+	}
+
+	addEntry := func(name, value model.Expression, extractName func(model.Expression) (string, bool)) {
+		key, ok := extractName(name)
+		if !ok {
+			diags = badEntry(name.SyntaxNode().Range())
+			return
+		}
+		v, d := g.exprTokens(value, schema.AnyResourceType)
+		if !d.HasErrors() {
+			entries = append(entries, hclwrite.ObjectAttrTokens{
+				Name:  hclwrite.TokensForIdentifier(key),
+				Value: v,
+			})
+		}
+		diags = diags.Extend(d)
+	}
+
+	switch e := providers.(type) {
+	case *model.TupleConsExpression:
+		for _, elem := range e.Expressions {
+			addEntry(elem, elem, providerPackageNameFromExpr)
+		}
+	case *model.ObjectConsExpression:
+		for _, item := range e.Items {
+			addEntry(item.Key, item.Value, extractStringLiteral)
+		}
+	default:
+		return badEntry(providers.SyntaxNode().Range())
+	}
+
+	body.SetAttributeRaw("providers", hclwrite.TokensForObject(entries))
+	return diags
+}
+
+// providerPackageNameFromExpr returns the package name of the provider
+// resource an expression references, or ok=false when the expression is not a
+// reference to a provider resource.
+func providerPackageNameFromExpr(expr model.Expression) (string, bool) {
+	st, ok := expr.(*model.ScopeTraversalExpression)
+	if !ok || len(st.Parts) == 0 {
+		return "", false
+	}
+	r, ok := st.Parts[0].(*pcl.Resource)
+	if !ok || r.Schema == nil || !r.Schema.IsProvider {
+		return "", false
+	}
+	token, _ := r.GetToken()
+	return string(tokens.Type(token).Name()), true
 }
 
 func (g *generator) genBlocks(body *hclwrite.Body, name string, expr model.Expression, objType *schema.ObjectType) hcl.Diagnostics {
