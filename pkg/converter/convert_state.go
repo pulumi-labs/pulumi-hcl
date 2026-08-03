@@ -419,8 +419,15 @@ func componentImports(
 		// the same response.
 		for depth := 1; depth <= len(addr); depth++ {
 			name, source, declared := moduleComponentName(addr[:depth], sources)
-			if !declared || seen[name] {
+			if !declared {
+				// Nothing deeper can be declared either: the walk fails at
+				// the first call the program does not name.
 				break
+			}
+			// An ancestor shared with an earlier address is already emitted,
+			// but the descendants below it still need their own components.
+			if seen[name] {
+				continue
 			}
 			seen[name] = true
 			parent, _, _ := moduleComponentName(addr[:depth-1], sources)

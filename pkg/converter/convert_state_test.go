@@ -557,6 +557,63 @@ func TestConvertTFState_ModuleResources(t *testing.T) {
 	assert.Equal(t, "res-1", child.ID)
 }
 
+// TestConvertTFState_SiblingModuleCalls covers two calls in one module: their
+// addresses share an ancestor, and emitting that ancestor once must not stop
+// the second call's own component from being emitted. Every Parent has to name
+// something in the same response — the import fails outright on a dangling one.
+func TestConvertTFState_SiblingModuleCalls(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "main.tf"), []byte(`
+		module "outer" { source = "./outer" }
+	`), 0o600))
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "outer", "leaf"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "outer", "main.tf"), []byte(`
+		module "a" { source = "./leaf" }
+		module "b" { source = "./leaf" }
+	`), 0o600))
+
+	state := parseState(t, `{
+		"resources": [
+			{
+				"module": "module.outer.module.a", "mode": "managed",
+				"type": "example_resource", "name": "r",
+				"provider": "provider[\"registry.terraform.io/acme/example\"]",
+				"instances": [ { "attributes": { "id": "res-a" } } ]
+			},
+			{
+				"module": "module.outer.module.b", "mode": "managed",
+				"type": "example_resource", "name": "r",
+				"provider": "provider[\"registry.terraform.io/acme/example\"]",
+				"instances": [ { "attributes": { "id": "res-b" } } ]
+			}
+		]
+	}`)
+
+	resp := convertTFState(t.Context(), exampleInfoSource(t), exampleLoader(t), nil, moduleSources(dir), state)
+	require.Empty(t, resp.Diagnostics)
+
+	byName := map[string]plugin.ResourceImport{}
+	for _, r := range resp.Resources {
+		byName[r.Name] = r
+	}
+	assert.Len(t, byName, 5)
+	for _, r := range resp.Resources {
+		if r.Parent != "" {
+			assert.Containsf(t, byName, r.Parent, "%q is parented to a resource not in the response", r.Name)
+		}
+	}
+
+	// Both calls share a source, so both components carry the same type.
+	assert.Equal(t, "components:index:Leaf", byName["outer.a"].Type)
+	assert.Equal(t, "components:index:Leaf", byName["outer.b"].Type)
+	assert.Equal(t, "outer", byName["outer.a"].Parent)
+	assert.Equal(t, "outer", byName["outer.b"].Parent)
+	assert.Equal(t, "res-a", byName["outer.a.r"].ID)
+	assert.Equal(t, "res-b", byName["outer.b.r"].ID)
+}
+
 func TestResourceName(t *testing.T) {
 	t.Parallel()
 	assert.Equal(t, "b", resourceName("b", addrs.NoKey))
