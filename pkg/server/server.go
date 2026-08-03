@@ -1613,9 +1613,6 @@ func formatTimeoutSeconds(seconds float64) string {
 	return time.Duration(seconds * float64(time.Second)).String()
 }
 
-// NewPackageResolverClient dials the engine's package resolver, which turns
-// package specifications into concrete dependencies (installing and
-// parameterizing plugins as needed).
 func NewPackageResolverClient(target string) (pulumirpc.PackageResolverClient, error) {
 	contract.Assertf(target != "", "unexpected empty target for package resolver")
 
