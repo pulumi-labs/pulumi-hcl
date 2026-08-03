@@ -102,3 +102,28 @@ type RequiredProvider struct {
 func (p *RequiredProvider) IsPulumi() bool {
 	return p != nil && strings.HasPrefix(p.Source, "pulumi/")
 }
+
+// IsBuiltinProviderAlias reports whether alias names a builtin provider,
+// which ships no installable plugin.
+func IsBuiltinProviderAlias(alias string) bool { return alias == "pulumi" || alias == "terraform" }
+
+// TFProviderSource returns the source URL passed to the terraform-provider
+// plugin: req.Source when set, else the OpenTofu-registry default
+// "hashicorp/<alias>".
+func TFProviderSource(alias string, req *RequiredProvider) string {
+	if req != nil && req.Source != "" {
+		return req.Source
+	}
+	return "hashicorp/" + alias
+}
+
+// PackageName returns the Pulumi package name for a required_providers
+// entry: the last segment of the source ("pulumi/aws" → "aws",
+// "hashicorp/simple" → "simple"), or the alias when source is unset.
+func PackageName(alias, source string) string {
+	if source == "" {
+		return alias
+	}
+	parts := strings.Split(source, "/")
+	return parts[len(parts)-1]
+}

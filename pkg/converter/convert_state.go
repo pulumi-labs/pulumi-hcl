@@ -24,10 +24,10 @@ import (
 	"maps"
 	"os"
 	"slices"
-	"strings"
 
 	"github.com/blang/semver"
 	"github.com/hashicorp/hcl/v2"
+	"github.com/pulumi/pulumi-hcl/pkg/hcl/ast"
 	"github.com/pulumi/pulumi-hcl/pkg/hcl/bridge"
 	"github.com/pulumi/pulumi-hcl/pkg/hcl/eval"
 	"github.com/pulumi/pulumi-hcl/pkg/hcl/modulepath"
@@ -146,15 +146,12 @@ func deriveParameterizationInfos(dir string) map[string]workspace.PackageDescrip
 	}
 	out := map[string]workspace.PackageDescriptor{}
 	for alias, req := range config.Terraform.RequiredProviders {
-		if alias == "pulumi" || alias == "terraform" || req.IsPulumi() {
+		if ast.IsBuiltinProviderAlias(alias) || req.IsPulumi() {
 			continue
 		}
-		source := "hashicorp/" + alias
+		source := ast.TFProviderSource(alias, req)
 		var constraint string
 		if req != nil {
-			if req.Source != "" {
-				source = req.Source
-			}
 			constraint = req.Version
 		}
 		var version semver.Version
@@ -165,14 +162,13 @@ func deriveParameterizationInfos(dir string) map[string]workspace.PackageDescrip
 			"url": source, "version": constraint,
 		}})
 		contract.AssertNoErrorf(err, "marshaling the terraform-provider parameterization")
-		parts := strings.Split(source, "/")
 		out[alias] = workspace.PackageDescriptor{
 			PluginDescriptor: workspace.PluginDescriptor{
 				Name: "terraform-provider",
 				Kind: apitype.ResourcePlugin,
 			},
 			Parameterization: &workspace.Parameterization{
-				Name:    parts[len(parts)-1],
+				Name:    ast.PackageName(alias, source),
 				Version: version,
 				Value:   value,
 			},
