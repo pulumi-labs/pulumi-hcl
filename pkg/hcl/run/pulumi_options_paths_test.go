@@ -27,12 +27,10 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// TestEngine_PulumiOptionsNestedPaths documents that `hide_diffs` and
+// TestEngine_PulumiOptionsNestedPaths checks that `hide_diffs` and
 // `replace_on_changes` entries in the `pulumi` block may be multi-segment
 // property paths, matching `lifecycle.ignore_changes` (which accepts the same
-// shapes). Today the graph builder treats any multi-segment entry as a
-// reference to another node and the run fails with `unknown node
-// "tags.stage"`; single top-level attribute names are the only accepted form.
+// shapes), rather than being treated as references to other nodes.
 func TestEngine_PulumiOptionsNestedPaths(t *testing.T) {
 	t.Parallel()
 
