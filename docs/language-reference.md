@@ -841,14 +841,6 @@ Pulumi HCL supports nearly all Terraform built-in functions. Functions are group
 | `pulumiResourceName(resource)` | Get the logical name from a resource's URN                   |
 | `pulumiResourceType(resource)` | Get the type token from a resource's URN                     |
 
-### Functions Not Supported
-
-These Terraform functions have no equivalent:
-
-| Function          | Reason                                        |
-|-------------------|-----------------------------------------------|
-| `ephemeralasnull` | Pulumi has no ephemeral value concept         |
-
 ## Stack References
 
 Access outputs from other Pulumi stacks using the `pulumi_stack_reference` resource:
@@ -947,7 +939,8 @@ Differences from Terraform to be aware of:
 
 ### Unsupported Features
 
-- **`backend`, `required_version`, `provider_meta`** — Accepted inside the `terraform` block but ignored with a warning; Pulumi manages state independently and tracks its own version constraints via `required_version_range`.
+- **`backend`, `required_version`, `provider_meta`, `experiments`** — Accepted inside the `terraform` block but ignored with a warning; Pulumi manages state independently and tracks its own version constraints via `required_version_range`, and language experiments have no Pulumi HCL equivalent.
+- **`cloud`** — Not accepted inside the `terraform` block at all. It is absent from the block's schema, so a `cloud` block is a parse error rather than a warning.
 - **WinRM connections** — Only `type = "ssh"` is supported in `connection` blocks.
 - **`List<Object>` empty vs null** — HCL block syntax cannot distinguish between an empty and null `List<Object>`, a known incompatibility with some Pulumi programs.
 

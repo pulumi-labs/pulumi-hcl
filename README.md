@@ -2,9 +2,6 @@
 
 A Pulumi language plugin that enables running Pulumi against a Terraform HCL IaC program.
 
-> [!WARNING]
-> This language is in active development and not yet suitable for production use.
-
 ## Overview
 
 This plugin allows you to use familiar Terraform/HCL syntax while leveraging Pulumi's state management, secrets handling, and cloud platform. It parses HCL files and translates them to Pulumi resource registrations at runtime.
@@ -27,8 +24,10 @@ output "bucket_arn" {
 
 ## Installation
 
-Pulumi HCL ships with the [`pulumi`](https://github.com/pulumi/pulumi) CLI. If you need the absolute latest version, you
-can install the plugin directly onto your path:
+Pulumi HCL requires the [`pulumi`](https://github.com/pulumi/pulumi) CLI v3.256.0 or later. The CLI downloads the
+language and converter plugins automatically the first time you use them — there is nothing to install by hand.
+
+To build the plugins from source for development, install them directly onto your path:
 
 ```bash
 go install github.com/pulumi/pulumi-hcl/cmd/pulumi-language-hcl@latest  # for the language
@@ -265,9 +264,10 @@ provider "aws" {
 ```
 
 Sources prefixed with `pulumi/` (e.g. `pulumi/aws`) consume a native Pulumi provider
-instead of bridging a Terraform one. `backend`, `required_version`, and `provider_meta` inside the
-`terraform` block are accepted for compatibility but ignored with a warning.  See
-[docs/providers.md](docs/providers.md) for details.
+instead of bridging a Terraform one, and must give a concrete semver version rather than a
+constraint. `backend`, `required_version`, `provider_meta`, and `experiments` inside the
+`terraform` block are accepted for compatibility but ignored with a warning. A `cloud` block is
+not accepted and fails to parse. See [docs/providers.md](docs/providers.md) for details.
 
 ## Design Overview
 
@@ -390,7 +390,8 @@ This plugin supports the majority of Terraform's HCL syntax. For detailed compat
 
 ### Not Supported
 
-- `backend`, `required_version`, and `provider_meta` in the `terraform` block — accepted but ignored with a warning; Pulumi manages state independently
+- `backend`, `required_version`, `provider_meta`, and `experiments` in the `terraform` block — accepted but ignored with a warning; Pulumi manages state independently
+- `cloud` blocks in the `terraform` block — not accepted at all; a `cloud` block is a parse error
 - WinRM `connection` blocks — `connection` supports `type = "ssh"` only
 - `List<Object>` empty vs null distinction: HCL block syntax cannot distinguish between an empty and null `List<Object>`, which is a known incompatibility with some Pulumi programs
 
