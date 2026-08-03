@@ -68,7 +68,7 @@ resource "pfx_res" "res" {
 }
 
 // TestEngine_AliasesParentURN pins that an alias's parent_urn can reference
-// another resource's URN via pulumiResourceURN.
+// another resource's URN via pulumiresourceurn.
 func TestEngine_AliasesParentURN(t *testing.T) {
 	t.Parallel()
 
@@ -79,7 +79,7 @@ resource "pfx_res" "first" {
 resource "pfx_res" "second" {
   pulumi {
     aliases = [{
-      parent_urn = pulumiResourceURN(pfx_res.first)
+      parent_urn = pulumiresourceurn(pfx_res.first)
     }]
   }
 }

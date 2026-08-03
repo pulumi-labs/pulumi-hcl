@@ -46,5 +46,5 @@ resource "any-handled_resource" "anAsset" {
   lifecycle {
     create_before_destroy = true
   }
-  value = stringAsset("the asset contents")
+  value = stringasset("the asset contents")
 }

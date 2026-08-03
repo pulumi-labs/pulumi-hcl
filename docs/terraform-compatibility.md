@@ -49,15 +49,15 @@ which is Terraform-internal and has no equivalent here.
 | Function             | Category        | Notes                                                             |
 |----------------------|-----------------|-------------------------------------------------------------------|
 | `entries`            | Collection      | Converts a map or object to a list of `{key, value}` objects.     |
-| `pulumiResourceName` | Pulumi-specific | Returns the Pulumi resource name for a resource reference.        |
-| `pulumiResourceType` | Pulumi-specific | Returns the Pulumi resource type for a resource reference.        |
-| `pulumiResourceURN`  | Pulumi-specific | Returns the Pulumi URN for a resource reference.                  |
-| `fileAsset`          | Asset/Archive   | Creates a Pulumi `FileAsset` from a local file path.              |
-| `stringAsset`        | Asset/Archive   | Creates a Pulumi `StringAsset` from a string value.               |
-| `remoteAsset`        | Asset/Archive   | Creates a Pulumi `RemoteAsset` from a URL.                        |
-| `fileArchive`        | Asset/Archive   | Creates a Pulumi `FileArchive` from a local path.                 |
-| `remoteArchive`      | Asset/Archive   | Creates a Pulumi `RemoteArchive` from a URL.                      |
-| `assetArchive`       | Asset/Archive   | Creates a Pulumi `AssetArchive` from a map of assets or archives. |
+| `pulumiresourcename` | Pulumi-specific | Returns the Pulumi resource name for a resource reference.        |
+| `pulumiresourcetype` | Pulumi-specific | Returns the Pulumi resource type for a resource reference.        |
+| `pulumiresourceurn`  | Pulumi-specific | Returns the Pulumi URN for a resource reference.                  |
+| `fileasset`          | Asset/Archive   | Creates a Pulumi `FileAsset` from a local file path.              |
+| `stringasset`        | Asset/Archive   | Creates a Pulumi `StringAsset` from a string value.               |
+| `remoteasset`        | Asset/Archive   | Creates a Pulumi `RemoteAsset` from a URL.                        |
+| `filearchive`        | Asset/Archive   | Creates a Pulumi `FileArchive` from a local path.                 |
+| `remotearchive`      | Asset/Archive   | Creates a Pulumi `RemoteArchive` from a URL.                      |
+| `assetarchive`       | Asset/Archive   | Creates a Pulumi `AssetArchive` from a map of assets or archives. |
 
 ## Getting Help
 

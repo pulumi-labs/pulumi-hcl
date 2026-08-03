@@ -14,8 +14,8 @@ resource "simple_resource" "res1" {
   value = true
 }
 output "name" {
-  value = pulumiResourceName(simple_resource.res1)
+  value = pulumiresourcename(simple_resource.res1)
 }
 output "type" {
-  value = pulumiResourceType(simple_resource.res1)
+  value = pulumiresourcetype(simple_resource.res1)
 }

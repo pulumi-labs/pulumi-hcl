@@ -223,17 +223,17 @@ func Functions(baseDir string) map[string]function.Function {
 		"type":            typeFunc,
 
 		// Pulumi-specific functions
-		"pulumiResourceName": pulumiResourceNameFunc,
-		"pulumiResourceType": pulumiResourceTypeFunc,
-		"pulumiResourceURN":  pulumiResourceURNFunc,
+		"pulumiresourcename": pulumiResourceNameFunc,
+		"pulumiresourcetype": pulumiResourceTypeFunc,
+		"pulumiresourceurn":  pulumiResourceURNFunc,
 
 		// Asset and archive functions
-		"fileAsset":     fileAssetFunc(baseDir),
-		"fileArchive":   fileArchiveFunc(baseDir),
-		"stringAsset":   stringAssetFunc(),
-		"assetArchive":  assetArchiveFunc(),
-		"remoteAsset":   remoteAssetFunc(),
-		"remoteArchive": remoteArchiveFunc(),
+		"fileasset":     fileAssetFunc(baseDir),
+		"filearchive":   fileArchiveFunc(baseDir),
+		"stringasset":   stringAssetFunc(),
+		"assetarchive":  assetArchiveFunc(),
+		"remoteasset":   remoteAssetFunc(),
+		"remotearchive": remoteArchiveFunc(),
 	}
 
 	// templatefile and templatestring render a file or string as a template. The
@@ -341,7 +341,7 @@ func TypeInferenceFunctions(baseDir string) map[string]function.Function {
 	for _, name := range []string{
 		"file", "filebase64", "fileexists", "fileset", "templatefile",
 		"filemd5", "filesha1", "filesha256", "filesha512",
-		"filebase64sha256", "filebase64sha512", "fileAsset", "fileArchive",
+		"filebase64sha256", "filebase64sha512", "fileasset", "filearchive",
 	} {
 		funcs[name] = unknownOnError(funcs[name])
 	}
@@ -2404,18 +2404,18 @@ func ctyToGo(val cty.Value) any {
 
 // pulumiResourceNameFunc returns the logical name of a Pulumi resource by
 // extracting it from the resource's URN.
-var pulumiResourceNameFunc = resourceUrnFuncHelper("pulumiResourceName", func(u urn.URN) (cty.Value, error) {
+var pulumiResourceNameFunc = resourceUrnFuncHelper("pulumiresourcename", func(u urn.URN) (cty.Value, error) {
 	return cty.StringVal(u.Name()), nil
 })
 
 // pulumiResourceTypeFunc returns the type token of a Pulumi resource by
 // extracting it from the resource's URN.
-var pulumiResourceTypeFunc = resourceUrnFuncHelper("pulumiResourceType", func(u urn.URN) (cty.Value, error) {
+var pulumiResourceTypeFunc = resourceUrnFuncHelper("pulumiresourcetype", func(u urn.URN) (cty.Value, error) {
 	return cty.StringVal(u.Type().String()), nil
 })
 
 // pulumiResourceURNFunc returns the URN of a Pulumi resource.
-var pulumiResourceURNFunc = resourceUrnFuncHelper("pulumiResourceURN", func(u urn.URN) (cty.Value, error) {
+var pulumiResourceURNFunc = resourceUrnFuncHelper("pulumiresourceurn", func(u urn.URN) (cty.Value, error) {
 	return cty.StringVal(string(u)), nil
 })
 
@@ -2452,7 +2452,7 @@ func fileAssetFunc(baseDir string) function.Function {
 			path := args[0].AsString()
 			a, err := asset.FromPathWithWD(path, baseDir)
 			if err != nil {
-				return cty.NilVal, fmt.Errorf("fileAsset: %w", err)
+				return cty.NilVal, fmt.Errorf("fileasset: %w", err)
 			}
 			return cty.CapsuleVal(AssetCapsuleType, a), nil
 		},
@@ -2467,7 +2467,7 @@ func fileArchiveFunc(baseDir string) function.Function {
 			path := args[0].AsString()
 			a, err := archive.FromPathWithWD(path, baseDir)
 			if err != nil {
-				return cty.NilVal, fmt.Errorf("fileArchive: %w", err)
+				return cty.NilVal, fmt.Errorf("filearchive: %w", err)
 			}
 			return cty.CapsuleVal(ArchiveCapsuleType, a), nil
 		},
@@ -2493,7 +2493,7 @@ func assetArchiveFunc() function.Function {
 		Impl: func(args []cty.Value, retType cty.Type) (cty.Value, error) {
 			val := args[0]
 			if !val.Type().IsObjectType() && !val.Type().IsMapType() {
-				return cty.NilVal, fmt.Errorf("assetArchive: argument must be an object or map")
+				return cty.NilVal, fmt.Errorf("assetarchive: argument must be an object or map")
 			}
 			assets := make(map[string]any)
 			for it := val.ElementIterator(); it.Next(); {
@@ -2505,7 +2505,7 @@ func assetArchiveFunc() function.Function {
 				case v.Type().Equals(ArchiveCapsuleType):
 					assets[key] = v.EncapsulatedValue().(*archive.Archive)
 				default:
-					return cty.NilVal, fmt.Errorf("assetArchive: value for key %q must be an asset or archive, got %s",
+					return cty.NilVal, fmt.Errorf("assetarchive: value for key %q must be an asset or archive, got %s",
 						key, v.Type().FriendlyName())
 				}
 			}
@@ -2523,7 +2523,7 @@ func remoteAssetFunc() function.Function {
 			uri := args[0].AsString()
 			a, err := asset.FromURI(uri)
 			if err != nil {
-				return cty.NilVal, fmt.Errorf("remoteAsset: %w", err)
+				return cty.NilVal, fmt.Errorf("remoteasset: %w", err)
 			}
 			return cty.CapsuleVal(AssetCapsuleType, a), nil
 		},
@@ -2538,7 +2538,7 @@ func remoteArchiveFunc() function.Function {
 			uri := args[0].AsString()
 			a, err := archive.FromURI(uri)
 			if err != nil {
-				return cty.NilVal, fmt.Errorf("remoteArchive: %w", err)
+				return cty.NilVal, fmt.Errorf("remotearchive: %w", err)
 			}
 			return cty.CapsuleVal(ArchiveCapsuleType, a), nil
 		},
