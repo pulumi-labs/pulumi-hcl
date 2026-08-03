@@ -394,14 +394,14 @@ func startProvider(
 	return &handle, nil
 }
 
-func serveConverter(t *testing.T) int {
+func (d *Driver) serveConverter(t *testing.T) int {
 	t.Helper()
 	cancel := make(chan bool)
 	t.Cleanup(func() { close(cancel) })
 	handle, err := rpcutil.ServeWithOptions(rpcutil.ServeOptions{
 		Cancel: cancel,
 		Init: func(srv *grpc.Server) error {
-			pulumirpc.RegisterConverterServer(srv, plugin.NewConverterServer(converter.New()))
+			pulumirpc.RegisterConverterServer(srv, plugin.NewConverterServer(converter.NewInDir(d.dir)))
 			return nil
 		},
 	})
@@ -454,7 +454,7 @@ func (d *Driver) Import(t *testing.T, programFiles map[string]string, converterA
 			envPath = v
 		}
 	}
-	shimDir := converterShim(t, serveConverter(t))
+	shimDir := converterShim(t, d.serveConverter(t))
 	env = append(env,
 		"PATH="+shimDir+string(os.PathListSeparator)+envPath,
 		"PULUMI_DEBUG_PROVIDERS="+d.rawDebugProvidersEnv(t),

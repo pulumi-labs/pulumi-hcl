@@ -82,7 +82,7 @@ func runImportCheck(
 		// Import into a fresh stack.
 		pulProvs := buildPulumiProviders(t, c.Providers, &tfexec.Recorder{})
 		d := pulexec.NewDriver(t, pulProvs, c.Config)
-		out, err := d.Import(t, files, statePath, d.Dir())
+		out, err := d.Import(t, files, statePath)
 		require.NoErrorf(t, err, "pulumi import --from hcl failed:\n%s", out)
 
 		// A clean import means the next operations plan and perform no

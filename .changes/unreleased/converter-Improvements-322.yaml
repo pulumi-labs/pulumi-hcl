@@ -1,5 +1,5 @@
 kind: Improvements
-body: '`pulumi import --from hcl` imports resources under the parameterized (dynamically bridged) providers the HCL runtime executes; providers without a parameterization descriptor import as plain resources'
+body: '`pulumi import --from hcl` correctly imports native terraform resources'
 time: 2026-07-31T22:11:38.614572+02:00
 custom:
     Component: converter
