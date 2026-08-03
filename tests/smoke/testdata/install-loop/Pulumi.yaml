@@ -1,0 +1,2 @@
+name: smoke-test-install-loop
+runtime: hcl
