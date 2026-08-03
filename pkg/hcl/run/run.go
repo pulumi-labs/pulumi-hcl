@@ -43,6 +43,7 @@ import (
 	"github.com/pulumi/pulumi/pkg/v3/codegen"
 	"github.com/pulumi/pulumi/pkg/v3/codegen/schema"
 	"github.com/pulumi/pulumi/pkg/v3/util/pdag"
+	"github.com/pulumi/pulumi/sdk/v3/go/common/providers"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/resource"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/resource/plugin"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/resource/urn"
@@ -1258,11 +1259,14 @@ func (e *Engine) resolvePassedProviders(modInfo *graph.ModuleInfo, parentEvalCtx
 		if ref == "" {
 			continue
 		}
-		pkg := urn.URN(ref[:strings.LastIndex(ref, "::")]).Type().Name().String()
+		parsed, err := providers.ParseReference(ref)
+		if err != nil {
+			continue
+		}
 		if refs == nil {
 			refs = make(map[string]string)
 		}
-		refs[pkg] = ref
+		refs[parsed.URN().Type().Name().String()] = ref
 	}
 	return refs
 }
