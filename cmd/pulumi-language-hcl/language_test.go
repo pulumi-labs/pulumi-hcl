@@ -144,8 +144,6 @@ var expectedFailures = map[string]string{
 		" is reserved as the namespace for resource method calls in HCL",
 	"l2-config-default-from-invoke": "HCL codegen does not support a config variable whose" +
 		" default is sourced from an invoke result",
-	"l3-component-invoke": "the HCL runtime does not parent invokes inside a component to" +
-		" the component, so the invoke does not inherit the component's explicit provider",
 }
 
 // expectedEjectFailures lists tests whose eject (HCL→PCL conversion) step is
