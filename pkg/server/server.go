@@ -260,11 +260,11 @@ func (host *LanguageHost) GetRequiredPackages(
 }
 
 // descriptorForSource returns the on-disk SDK descriptor that satisfies the
-// canonical provider source, and the sdks/ directory it lives in. A stamped
-// descriptor (see stampSDKSources) satisfies exactly its stamped source; an
-// unstamped one satisfies the source its directory is named after (installs
-// name the SDK directory after the resolved package); an extension satisfies
-// its base provider's source from any directory.
+// canonical provider source, and the sdks/ directory it lives in. A
+// descriptor carrying a source (recorded by GeneratePackage) satisfies
+// exactly that source; one without satisfies the source its directory is
+// named after (installs name the SDK directory after the resolved package);
+// an extension satisfies its base provider's source from any directory.
 func descriptorForSource(
 	source string, sdks map[string]sdkInfo,
 ) (string, workspace.PackageDescriptor, bool) {
@@ -285,6 +285,26 @@ func descriptorForSource(
 		}
 	}
 	return "", workspace.PackageDescriptor{}, false
+}
+
+// bridgeRemoteSource returns the provider source a terraform-provider
+// parameterization was resolved from, read from the bridge's parameter
+// encoding ({"remote":{"url":...}}) — the only surviving record of the
+// source, since GeneratePackage receives just the schema. Non-bridge
+// parameters return "" and match by directory name instead.
+func bridgeRemoteSource(desc workspace.PackageDescriptor) string {
+	if desc.Name != bridgePackageName || desc.Parameterization == nil {
+		return ""
+	}
+	var param struct {
+		Remote struct {
+			URL string `json:"url"`
+		} `json:"remote"`
+	}
+	if json.Unmarshal(desc.Parameterization.Value, &param) != nil {
+		return ""
+	}
+	return param.Remote.URL
 }
 
 // canonicalSource returns the fully-qualified form of a provider source
@@ -338,7 +358,8 @@ func parameterizationProto(p *workspace.Parameterization) *pulumirpc.PackagePara
 }
 
 // sdkInfo is one sdks/<dir>/hcl.sdk.json: the package descriptor plus the
-// provider source it satisfies (empty until stampSDKSources records it).
+// provider source it satisfies (recorded by GeneratePackage; empty for
+// pre-existing SDKs and non-bridge parameterized packages).
 type sdkInfo struct {
 	desc   workspace.PackageDescriptor
 	source string
@@ -695,63 +716,14 @@ func (host *LanguageHost) GetPluginInfo(
 	}, nil
 }
 
-// InstallDependencies installs dependencies for an HCL program. Provider
-// plugins are installed by the CLI from the specs GetRequiredPackages emits;
-// here we only stamp SDK descriptors with the source they satisfy, because
-// directory-name inference goes stale when a required_providers source
-// changes without the SDK regenerating.
+// InstallDependencies installs dependencies for an HCL program.
 func (host *LanguageHost) InstallDependencies(
 	req *pulumirpc.InstallDependenciesRequest,
 	server pulumirpc.LanguageRuntime_InstallDependenciesServer,
 ) error {
-	if req.Info != nil {
-		stampSDKSources(server.Context(), req.Info.ProgramDirectory)
-	}
+	// Provider plugins are installed by the CLI from the specs
+	// GetRequiredPackages emits; there is nothing else to install.
 	return nil
-}
-
-// stampSDKSources writes a `source` field into each sdks/*/hcl.sdk.json that
-// currently satisfies a requirement only by directory-name inference.
-func stampSDKSources(ctx context.Context, dir string) {
-	config, diags := parser.NewParser().ParseDirectory(dir)
-	if diags.HasErrors() {
-		return
-	}
-	tfReqs, _, _ := collectRequirements(ctx, modules.NewLoader(modules.LiveResolver(ctx)), config, dir)
-	sdks, err := readSDKInfos(dir)
-	if err != nil {
-		return
-	}
-	for _, source := range sortedKeys(tfReqs) {
-		name := packageName("", source)
-		info, ok := sdks[name]
-		if !ok || info.source != "" {
-			continue
-		}
-		path := filepath.Join(dir, "sdks", name, "hcl.sdk.json")
-		if err := stampSDKSource(path, tfReqs[source].display); err != nil {
-			logging.V(5).Infof("stampSDKSources: %v", err)
-		}
-	}
-}
-
-// stampSDKSource rewrites the descriptor at path with source added, leaving
-// every other field untouched.
-func stampSDKSource(path, source string) error {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return err
-	}
-	var desc map[string]any
-	if err := json.Unmarshal(data, &desc); err != nil {
-		return err
-	}
-	desc["source"] = source
-	out, err := json.MarshalIndent(desc, "", "  ")
-	if err != nil {
-		return err
-	}
-	return os.WriteFile(path, append(out, '\n'), 0o644)
 }
 
 // RuntimeOptionsPrompts returns prompts for runtime options during `pulumi new`.
@@ -1109,7 +1081,12 @@ func (host *LanguageHost) GeneratePackage(
 		return nil, fmt.Errorf("parsing schema for package descriptor: %w", err)
 	}
 
-	data, err := json.MarshalIndent(desc, "", "  ")
+	out := struct {
+		workspace.PackageDescriptor
+		Source string `json:"source,omitempty"`
+	}{desc, bridgeRemoteSource(desc)}
+
+	data, err := json.MarshalIndent(out, "", "  ")
 	if err != nil {
 		return nil, fmt.Errorf("marshaling package descriptor: %w", err)
 	}

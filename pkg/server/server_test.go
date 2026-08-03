@@ -15,6 +15,7 @@
 package server
 
 import (
+	"encoding/base64"
 	"os"
 	"path/filepath"
 	"testing"
@@ -660,46 +661,51 @@ func TestDescriptorForSource_StampedSource(t *testing.T) {
 	assert.True(t, ok)
 }
 
-// stampSDKSources records which source each SDK satisfies, preserving the
-// descriptor's other fields.
-func TestStampSDKSources(t *testing.T) {
+// GeneratePackage records the provider source a bridged SDK satisfies,
+// decoded from the terraform-provider parameterization it was built from;
+// non-bridge parameters leave the source empty.
+func TestGeneratePackageRecordsSource(t *testing.T) {
 	t.Parallel()
 
 	dir := t.TempDir()
-	require.NoError(t, os.WriteFile(filepath.Join(dir, "main.tf"), []byte(`
-terraform {
-  required_providers {
-    dns = {
-      source = "hashicorp/dns"
-    }
-  }
-}
-`), 0o600))
-	sdkDir := filepath.Join(dir, "sdks", "dns")
-	require.NoError(t, os.MkdirAll(sdkDir, 0o755))
 	host := &LanguageHost{}
-	_, err := host.GeneratePackage(t.Context(), &pulumirpc.GeneratePackageRequest{
-		Directory: sdkDir,
-		Schema: `{
-			"name": "dns",
-			"version": "3.1.0",
-			"parameterization": {
-				"baseProvider": {"name": "terraform-provider", "version": "0.0.1"},
-				"parameter": "aGVsbG8="
-			}
-		}`,
-	})
-	require.NoError(t, err)
+	generate := func(sdkName, schema string) {
+		sdkDir := filepath.Join(dir, "sdks", sdkName)
+		require.NoError(t, os.MkdirAll(sdkDir, 0o755))
+		_, err := host.GeneratePackage(t.Context(), &pulumirpc.GeneratePackageRequest{
+			Directory: sdkDir,
+			Schema:    schema,
+		})
+		require.NoError(t, err)
+	}
 
-	stampSDKSources(t.Context(), dir)
+	param := base64.StdEncoding.EncodeToString(
+		[]byte(`{"remote":{"url":"registry.opentofu.org/hashicorp/dns","version":"3.1.0"}}`))
+	generate("dns", `{
+		"name": "dns",
+		"version": "3.1.0",
+		"parameterization": {
+			"baseProvider": {"name": "terraform-provider", "version": "0.0.1"},
+			"parameter": "`+param+`"
+		}
+	}`)
+	generate("myparam", `{
+		"name": "myparam",
+		"version": "1.2.3",
+		"parameterization": {
+			"baseProvider": {"name": "baseplugin", "version": "1.0.0"},
+			"parameter": "aGVsbG8="
+		}
+	}`)
 
 	infos, err := readSDKInfos(dir)
 	require.NoError(t, err)
-	require.Len(t, infos, 1)
-	assert.Equal(t, "hashicorp/dns", infos["dns"].source)
+	require.Len(t, infos, 2)
+	assert.Equal(t, "registry.opentofu.org/hashicorp/dns", infos["dns"].source)
 	assert.Equal(t, "terraform-provider", infos["dns"].desc.Name)
 	require.NotNil(t, infos["dns"].desc.Parameterization)
 	assert.Equal(t, "dns", infos["dns"].desc.Parameterization.Name)
+	assert.Equal(t, "", infos["myparam"].source)
 }
 
 // TestGetRequiredPackages_DistinctSourcesSameLocalName mirrors tofu: provider
