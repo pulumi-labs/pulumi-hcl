@@ -24,12 +24,15 @@ import (
 	"maps"
 	"os"
 	"slices"
+	"strings"
 
+	"github.com/blang/semver"
 	"github.com/hashicorp/hcl/v2"
 	"github.com/pulumi/pulumi-hcl/pkg/hcl/bridge"
 	"github.com/pulumi/pulumi-hcl/pkg/hcl/eval"
 	"github.com/pulumi/pulumi-hcl/pkg/hcl/modulepath"
 	"github.com/pulumi/pulumi-hcl/pkg/hcl/packages"
+	"github.com/pulumi/pulumi-hcl/pkg/hcl/parser"
 	"github.com/pulumi/pulumi-hcl/pkg/hcl/transform"
 	"github.com/pulumi/pulumi-hcl/pkg/util/encryption"
 	"github.com/pulumi/pulumi-hcl/vendored/addrs"
@@ -39,6 +42,7 @@ import (
 	"github.com/pulumi/pulumi/pkg/v3/codegen/convert"
 	"github.com/pulumi/pulumi/pkg/v3/codegen/schema"
 	"github.com/pulumi/pulumi/pkg/v3/resource/plugin"
+	"github.com/pulumi/pulumi/sdk/v3/go/common/apitype"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/resource"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/tokens"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/util/contract"
@@ -52,8 +56,8 @@ import (
 // ResourceImport per managed root-module resource instance, resolving TF types
 // to Pulumi tokens through the engine-provided mapper, so
 // `pulumi import --from hcl` can pull TF state into a Pulumi HCL project.
-// Imports are parameterized (dynamic-bridge) when the project's sdks/
-// descriptors say so, landing resources under the same `terraform-provider`
+// Imports are parameterized (dynamic-bridge) when the project's terraform
+// blocks say so, landing resources under the same `terraform-provider`
 // packages the HCL runtime executes — unlike pulumi-converter-terraform's
 // static-bridge imports, which would provoke a replace on the next preview.
 func (*hclConverter) ConvertState(
@@ -71,16 +75,25 @@ func (*hclConverter) ConvertState(
 			len(req.Args))
 	}
 	statePath := req.Args[0]
-	// Parameterization descriptors are written by `pulumi install` into the
-	// project's sdks/. The CLI runs the converter with cwd = project root;
-	// in-process callers, which cannot chdir, pass the directory explicitly.
+	// The CLI runs the converter with cwd = project root; in-process callers,
+	// which cannot chdir, pass the directory explicitly.
 	projectDir := "."
 	if len(req.Args) == 2 {
 		projectDir = req.Args[1]
 	}
-	descriptors, err := readParameterizationInfos(projectDir)
+	// Dynamically bridged providers are recognized from the project's own
+	// terraform blocks, so import works before `pulumi install` has run. The
+	// sdks/ descriptors install writes carry resolved versions, so they take
+	// precedence when present.
+	descriptors := deriveParameterizationInfos(projectDir)
+	fromSDKs, err := readParameterizationInfos(projectDir)
 	if err != nil {
 		return nil, fmt.Errorf("reading parameterization infos: %w", err)
+	}
+	if descriptors == nil {
+		descriptors = fromSDKs
+	} else {
+		maps.Copy(descriptors, fromSDKs)
 	}
 
 	mapperClient, err := convert.NewMapperClient(req.MapperTarget)
@@ -119,6 +132,53 @@ func readTFStateFile(statePath string) (*states.State, error) {
 		return nil, fmt.Errorf("parsing state file %q: %w", statePath, err)
 	}
 	return f.State, nil
+}
+
+// deriveParameterizationInfos derives parameterization descriptors from the
+// project's terraform blocks: required_providers entries that are neither
+// builtin nor pulumi-sourced are dynamically bridged via terraform-provider.
+// An exact version pin becomes the package version; a range constraint leaves
+// the version for the engine to resolve, but still parameterizes.
+func deriveParameterizationInfos(dir string) map[string]workspace.PackageDescriptor {
+	config, diags := parser.NewParser().ParseDirectory(dir)
+	if config == nil || diags.HasErrors() || config.Terraform == nil {
+		return nil
+	}
+	out := map[string]workspace.PackageDescriptor{}
+	for alias, req := range config.Terraform.RequiredProviders {
+		if alias == "pulumi" || alias == "terraform" || req.IsPulumi() {
+			continue
+		}
+		source := "hashicorp/" + alias
+		var constraint string
+		if req != nil {
+			if req.Source != "" {
+				source = req.Source
+			}
+			constraint = req.Version
+		}
+		var version semver.Version
+		if v, err := semver.ParseTolerant(constraint); err == nil {
+			version = v
+		}
+		value, err := json.Marshal(map[string]any{"remote": map[string]string{
+			"url": source, "version": constraint,
+		}})
+		contract.AssertNoErrorf(err, "marshaling the terraform-provider parameterization")
+		parts := strings.Split(source, "/")
+		out[alias] = workspace.PackageDescriptor{
+			PluginDescriptor: workspace.PluginDescriptor{
+				Name: "terraform-provider",
+				Kind: apitype.ResourcePlugin,
+			},
+			Parameterization: &workspace.Parameterization{
+				Name:    parts[len(parts)-1],
+				Version: version,
+				Value:   value,
+			},
+		}
+	}
+	return out
 }
 
 // convertTFState is the pure core of ConvertState: it turns a parsed state
@@ -289,11 +349,15 @@ func parameterizationFor(desc *workspace.PackageDescriptor) (*plugin.ResourcePar
 	if desc.Version != nil {
 		baseVersion = desc.Version.String()
 	}
+	version := ""
+	if v := desc.Parameterization.Version; !v.EQ(semver.Version{}) {
+		version = v.String()
+	}
 	return &plugin.ResourceParameterization{
 		PluginName:    desc.Name,
 		PluginVersion: baseVersion,
 		Value:         desc.Parameterization.Value,
-	}, desc.Parameterization.Version.String()
+	}, version
 }
 
 // translateInstanceValues converts an instance's raw TF attributes into

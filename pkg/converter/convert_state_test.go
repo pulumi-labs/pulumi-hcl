@@ -440,7 +440,7 @@ func TestConvertTFState_TerraformData(t *testing.T) {
 		]
 	}`)
 
-	resp := convertTFState(t.Context(), fakeInfoSource{}, nil, state)
+	resp := convertTFState(t.Context(), fakeInfoSource{}, nil, nil, state)
 	require.Empty(t, resp.Diagnostics)
 	require.Len(t, resp.Resources, 2)
 
@@ -525,6 +525,51 @@ func TestImportID(t *testing.T) {
 	id, ok = importID(&states.ResourceInstanceObjectSrc{AttrsFlat: map[string]string{"id": "flat"}})
 	assert.True(t, ok, "pre-0.12 flatmap attributes")
 	assert.Equal(t, "flat", id)
+}
+
+func TestDeriveParameterizationInfos(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "main.tf"), []byte(`
+		terraform {
+			required_providers {
+				example = { source = "acme/example", version = "6.0.0" }
+				ranged  = { source = "acme/ranged", version = "~> 2.0" }
+				native  = { source = "pulumi/native", version = "1.0.0" }
+				implied = {}
+			}
+		}
+	`), 0o600))
+
+	got := deriveParameterizationInfos(dir)
+	require.NotNil(t, got)
+	assert.NotContains(t, got, "native", "pulumi-sourced providers are not bridged")
+
+	example := got["example"]
+	assert.Equal(t, "terraform-provider", example.Name)
+	require.NotNil(t, example.Parameterization)
+	assert.Equal(t, "example", example.Parameterization.Name)
+	assert.Equal(t, "6.0.0", example.Parameterization.Version.String())
+	assert.JSONEq(t, `{"remote":{"url":"acme/example","version":"6.0.0"}}`,
+		string(example.Parameterization.Value))
+
+	ranged := got["ranged"]
+	require.NotNil(t, ranged.Parameterization)
+	assert.True(t, ranged.Parameterization.Version.EQ(semver.Version{}),
+		"a range constraint leaves the version for the engine to resolve")
+	param, version := parameterizationFor(&ranged)
+	require.NotNil(t, param)
+	assert.Empty(t, version)
+	assert.JSONEq(t, `{"remote":{"url":"acme/ranged","version":"~> 2.0"}}`,
+		string(param.Value))
+
+	implied := got["implied"]
+	require.NotNil(t, implied.Parameterization)
+	assert.JSONEq(t, `{"remote":{"url":"hashicorp/implied","version":""}}`,
+		string(implied.Parameterization.Value))
+
+	assert.Nil(t, deriveParameterizationInfos(t.TempDir()), "no program, no descriptors")
 }
 
 func TestConvertStateArgValidation(t *testing.T) {
@@ -628,13 +673,15 @@ func TestConvertStateViaMapper(t *testing.T) {
 		]
 	}`), 0o600))
 
-	// The project's sdks/ descriptor marks "random" as dynamically bridged.
-	desc := exampleDescriptor()
-	desc.Parameterization.Name = "random"
-	descJSON, err := json.Marshal(desc)
-	require.NoError(t, err)
-	require.NoError(t, os.MkdirAll(filepath.Join(dir, "sdks", "random"), 0o755))
-	require.NoError(t, os.WriteFile(filepath.Join(dir, "sdks", "random", "hcl.sdk.json"), descJSON, 0o600))
+	// The program's terraform block alone marks "random" as dynamically
+	// bridged: no `pulumi install` (and so no sdks/ descriptor) has run.
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "main.tf"), []byte(`
+		terraform {
+			required_providers {
+				random = { source = "hashicorp/random", version = "6.0.0" }
+			}
+		}
+	`), 0o600))
 
 	resp, err := New().ConvertState(t.Context(), &plugin.ConvertStateRequest{
 		MapperTarget: target,
