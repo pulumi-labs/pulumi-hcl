@@ -11,68 +11,68 @@ resource "asset-archive_asset_resource" "ass" {
   lifecycle {
     create_before_destroy = true
   }
-  value = fileAsset("../test.txt")
+  value = fileasset("../test.txt")
 }
 resource "asset-archive_archive_resource" "arc" {
   lifecycle {
     create_before_destroy = true
   }
-  value = fileArchive("../archive.tar")
+  value = filearchive("../archive.tar")
 }
 resource "asset-archive_archive_resource" "dir" {
   lifecycle {
     create_before_destroy = true
   }
-  value = fileArchive("../folder")
+  value = filearchive("../folder")
 }
 resource "asset-archive_archive_resource" "assarc" {
   lifecycle {
     create_before_destroy = true
   }
-  value = assetArchive({
-    "string"  = stringAsset("file contents")
-    "file"    = fileAsset("../test.txt")
-    "folder"  = fileArchive("../folder")
-    "archive" = fileArchive("../archive.tar")
+  value = assetarchive({
+    "string"  = stringasset("file contents")
+    "file"    = fileasset("../test.txt")
+    "folder"  = filearchive("../folder")
+    "archive" = filearchive("../archive.tar")
   })
 }
 resource "asset-archive_asset_resource" "remoteass" {
   lifecycle {
     create_before_destroy = true
   }
-  value = remoteAsset("https://raw.githubusercontent.com/pulumi/pulumi/7b0eb7fb10694da2f31c0d15edf671df843e0d4c/cmd/pulumi-test-language/tests/testdata/l2-resource-asset-archive/test.txt")
+  value = remoteasset("https://raw.githubusercontent.com/pulumi/pulumi/7b0eb7fb10694da2f31c0d15edf671df843e0d4c/cmd/pulumi-test-language/tests/testdata/l2-resource-asset-archive/test.txt")
 }
 resource "asset-archive_archive_resource" "remotearc" {
   lifecycle {
     create_before_destroy = true
   }
-  value = remoteArchive("https://raw.githubusercontent.com/pulumi/pulumi/7b0eb7fb10694da2f31c0d15edf671df843e0d4c/cmd/pulumi-test-language/tests/testdata/l2-resource-asset-archive/archive.tar")
+  value = remotearchive("https://raw.githubusercontent.com/pulumi/pulumi/7b0eb7fb10694da2f31c0d15edf671df843e0d4c/cmd/pulumi-test-language/tests/testdata/l2-resource-asset-archive/archive.tar")
 }
 // Plain (non-nested) asset/archive outputs must round-trip through stack
 // outputs in every language.
 output "assetOutput" {
-  value = fileAsset("../test.txt")
+  value = fileasset("../test.txt")
 }
 output "archiveOutput" {
-  value = fileArchive("../archive.tar")
+  value = filearchive("../archive.tar")
 }
 // Regression test for pulumi/pulumi#16384: array and map of assets/archives
 // must compose properly through Go program generation.
 output "assetList" {
-  value = [fileAsset("../test.txt"), stringAsset("file contents")]
+  value = [fileasset("../test.txt"), stringasset("file contents")]
 }
 output "archiveList" {
-  value = [fileArchive("../archive.tar"), fileArchive("../folder")]
+  value = [filearchive("../archive.tar"), filearchive("../folder")]
 }
 output "assetMap" {
   value = {
-    "file"   = fileAsset("../test.txt")
-    "string" = stringAsset("file contents")
+    "file"   = fileasset("../test.txt")
+    "string" = stringasset("file contents")
   }
 }
 output "archiveMap" {
   value = {
-    "tar"    = fileArchive("../archive.tar")
-    "folder" = fileArchive("../folder")
+    "tar"    = filearchive("../archive.tar")
+    "folder" = filearchive("../folder")
   }
 }

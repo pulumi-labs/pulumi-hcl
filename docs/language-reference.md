@@ -842,15 +842,15 @@ Pulumi HCL supports nearly all Terraform built-in functions. Functions are group
 
 | Function                       | Description                                                  |
 |--------------------------------|--------------------------------------------------------------|
-| `fileAsset(path)`              | Create a Pulumi `FileAsset` from a local file path           |
-| `stringAsset(text)`            | Create a Pulumi `StringAsset` from a string value            |
-| `remoteAsset(uri)`             | Create a Pulumi `RemoteAsset` from a URL                     |
-| `fileArchive(path)`            | Create a Pulumi `FileArchive` from a local path              |
-| `remoteArchive(uri)`           | Create a Pulumi `RemoteArchive` from a URL                   |
-| `assetArchive(map)`            | Create a Pulumi `AssetArchive` from a map of assets/archives |
-| `pulumiResourceName(resource)` | Get the logical name from a resource's URN                   |
-| `pulumiResourceType(resource)` | Get the type token from a resource's URN                     |
-| `pulumiResourceURN(resource)`  | Get a resource's URN                                         |
+| `fileasset(path)`              | Create a Pulumi `FileAsset` from a local file path           |
+| `stringasset(text)`            | Create a Pulumi `StringAsset` from a string value            |
+| `remoteasset(uri)`             | Create a Pulumi `RemoteAsset` from a URL                     |
+| `filearchive(path)`            | Create a Pulumi `FileArchive` from a local path              |
+| `remotearchive(uri)`           | Create a Pulumi `RemoteArchive` from a URL                   |
+| `assetarchive(map)`            | Create a Pulumi `AssetArchive` from a map of assets/archives |
+| `pulumiresourcename(resource)` | Get the logical name from a resource's URN                   |
+| `pulumiresourcetype(resource)` | Get the type token from a resource's URN                     |
+| `pulumiresourceurn(resource)`  | Get a resource's URN                                         |
 
 ## Stack References
 

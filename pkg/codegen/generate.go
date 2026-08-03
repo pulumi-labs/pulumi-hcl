@@ -1631,7 +1631,7 @@ func (g *generator) aliasElemTokens(elem model.Expression) (hclwrite.Tokens, hcl
 			hclKey = "no_parent"
 			valTokens, d = g.exprTokens(item.Value, schema.BoolType)
 		case "parent":
-			// Transform resource reference to parent_urn = pulumiResourceURN(resource_type.name)
+			// Transform resource reference to parent_urn = pulumiresourceurn(resource_type.name)
 			hclKey = "parent_urn"
 			baseTokens, d2 := g.exprTokens(item.Value, schema.AnyType)
 			diags = append(diags, d2...)
@@ -2473,6 +2473,22 @@ func (g *generator) funcCallTokens(expr *model.FunctionCallExpression) (hclwrite
 		return g.passthroughFuncCallTokens("jsonencode", expr.Args)
 	case "readFile":
 		return g.passthroughFuncCallTokens("file", expr.Args)
+	case "fileAsset":
+		return g.passthroughFuncCallTokens("fileasset", expr.Args)
+	case "fileArchive":
+		return g.passthroughFuncCallTokens("filearchive", expr.Args)
+	case "stringAsset":
+		return g.passthroughFuncCallTokens("stringasset", expr.Args)
+	case "assetArchive":
+		return g.passthroughFuncCallTokens("assetarchive", expr.Args)
+	case "remoteAsset":
+		return g.passthroughFuncCallTokens("remoteasset", expr.Args)
+	case "remoteArchive":
+		return g.passthroughFuncCallTokens("remotearchive", expr.Args)
+	case "pulumiResourceName":
+		return g.passthroughFuncCallTokens("pulumiresourcename", expr.Args)
+	case "pulumiResourceType":
+		return g.passthroughFuncCallTokens("pulumiresourcetype", expr.Args)
 	case "notImplemented":
 		return g.notImplementedTokens(expr)
 	default:
@@ -2972,10 +2988,10 @@ func (g *generator) scopeTraversalTokens(expr *model.ScopeTraversalExpression) (
 }
 
 // pulumiResourceURNCallTokens wraps resource-reference tokens in a
-// pulumiResourceURN(...) call.
+// pulumiresourceurn(...) call.
 func pulumiResourceURNCallTokens(resTokens hclwrite.Tokens) hclwrite.Tokens {
 	tokens := hclwrite.Tokens{
-		{Type: hclsyntax.TokenIdent, Bytes: []byte("pulumiResourceURN")},
+		{Type: hclsyntax.TokenIdent, Bytes: []byte("pulumiresourceurn")},
 		{Type: hclsyntax.TokenOParen, Bytes: []byte("(")},
 	}
 	tokens = append(tokens, resTokens...)

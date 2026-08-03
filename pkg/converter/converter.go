@@ -1068,9 +1068,9 @@ func (ft *fileTransformer) transformExpr(expr hclsyntax.Expression) hclwrite.Tok
 				}
 			}
 		}
-		// pulumiResourceURN(<resource>) is the encoding generate.go emits
+		// pulumiresourceurn(<resource>) is the encoding generate.go emits
 		// for PCL's `<resource>.urn`; restore the attribute on eject.
-		if e.Name == "pulumiResourceURN" && len(e.Args) == 1 {
+		if e.Name == "pulumiresourceurn" && len(e.Args) == 1 {
 			return append(ft.transformExpr(e.Args[0]),
 				&hclwrite.Token{Type: hclsyntax.TokenDot, Bytes: []byte(".")},
 				&hclwrite.Token{Type: hclsyntax.TokenIdent, Bytes: []byte("urn")},
@@ -2394,6 +2394,22 @@ func transformFunctionName(name string) string {
 		return "unsecret"
 	case "file":
 		return "readFile"
+	case "fileasset":
+		return "fileAsset"
+	case "filearchive":
+		return "fileArchive"
+	case "stringasset":
+		return "stringAsset"
+	case "assetarchive":
+		return "assetArchive"
+	case "remoteasset":
+		return "remoteAsset"
+	case "remotearchive":
+		return "remoteArchive"
+	case "pulumiresourcename":
+		return "pulumiResourceName"
+	case "pulumiresourcetype":
+		return "pulumiResourceType"
 	default:
 		return name
 	}

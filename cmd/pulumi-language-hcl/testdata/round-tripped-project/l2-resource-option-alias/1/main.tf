@@ -50,7 +50,7 @@ resource "simple_resource" "aliasParent" {
   pulumi {
     parent = simple_resource.parent
     aliases = [{
-      parent_urn = pulumiResourceURN(simple_resource.aliasURN)
+      parent_urn = pulumiresourceurn(simple_resource.aliasURN)
     }]
   }
   lifecycle {

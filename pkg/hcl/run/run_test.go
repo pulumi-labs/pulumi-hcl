@@ -221,7 +221,7 @@ resource "aws_instance" "web" {
 }
 
 output "name" {
-  value = pulumiResourceName({ key = aws_instance.web })
+  value = pulumiresourcename({ key = aws_instance.web })
 }
 `)
 
@@ -276,11 +276,11 @@ resource "aws_instance" "mapped" {
 }
 
 output "count_name" {
-  value = pulumiResourceName(aws_instance.counted[1])
+  value = pulumiresourcename(aws_instance.counted[1])
 }
 
 output "each_name" {
-  value = pulumiResourceName(aws_instance.mapped["a"])
+  value = pulumiresourcename(aws_instance.mapped["a"])
 }
 `)
 
@@ -597,7 +597,7 @@ resource "aws_instance" "web" {
 }
 
 resource "aws_instance" "named" {
-  ami = pulumiResourceName(aws_instance.web)
+  ami = pulumiresourcename(aws_instance.web)
 }
 `)
 
