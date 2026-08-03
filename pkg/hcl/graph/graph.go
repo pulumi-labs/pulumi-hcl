@@ -1202,6 +1202,14 @@ func (g *Graph) bodyDeps(body hcl.Body, path modulepath.Path, exclude map[string
 	return g.refsToNodes(g.bodyDepRefs(body, path, exclude))
 }
 
+// propertyPathAttrs lists, per block type, the attributes whose entries are
+// property paths of the enclosing resource rather than references to other
+// nodes.
+var propertyPathAttrs = map[string]map[string]bool{
+	"lifecycle": {"ignore_changes": true},
+	"pulumi":    {"hide_diffs": true, "replace_on_changes": true},
+}
+
 // bodyDepRefs extracts one depRef per referencing traversal in an HCL body.
 func (g *Graph) bodyDepRefs(body hcl.Body, path modulepath.Path, exclude map[string]bool) []depRef {
 	if eb, ok := body.(*ast.EscapedBody); ok {
@@ -1230,12 +1238,13 @@ func (g *Graph) bodyDepRefs(body hcl.Body, path modulepath.Path, exclude map[str
 				maps.Copy(childExclude, exclude)
 				childExclude[iterName] = true
 				refs = append(refs, g.bodyDepRefs(block.Body, path, childExclude)...)
-			} else if block.Type == "lifecycle" {
-				// lifecycle blocks contain ignore_changes which holds property
-				// paths (e.g. tags["env"]), not dependency references. We must
-				// skip that attribute to avoid creating spurious graph nodes.
+			} else if skip := propertyPathAttrs[block.Type]; skip != nil {
+				// lifecycle and pulumi blocks contain attributes that hold
+				// property paths (e.g. tags["env"]), not dependency
+				// references. We must skip those attributes to avoid creating
+				// spurious graph nodes.
 				for attrName, attr := range block.Body.Attributes {
-					if attrName == "ignore_changes" {
+					if skip[attrName] {
 						continue
 					}
 					refs = append(refs, g.exprDepRefs(attr.Expr, path, exclude)...)
