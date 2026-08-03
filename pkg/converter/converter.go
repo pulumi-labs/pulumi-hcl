@@ -46,17 +46,12 @@ import (
 )
 
 type hclConverter struct {
-	// projectDir locates the project's files. Empty means the working
-	// directory, which is where the CLI runs the converter; only an
-	// in-process host (which cannot chdir) sets it.
 	projectDir string
 }
 
 // New returns a new HCL->PCL converter.
 func New() plugin.Converter { return &hclConverter{} }
 
-// NewInDir returns a converter that reads the project's files from dir rather
-// than the working directory, for hosts that run the converter in-process.
 func NewInDir(dir string) plugin.Converter { return &hclConverter{projectDir: dir} }
 
 func (*hclConverter) Close() error { return nil }
