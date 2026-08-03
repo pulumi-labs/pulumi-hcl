@@ -164,7 +164,7 @@ The first label is the resource type (Terraform-style, e.g. `aws_instance`). The
 | `for_each`   | map or set | Create instances keyed by `each.key` with `each.value`     |
 | `depends_on` | list       | Explicit dependencies on other resources                   |
 | `provider`   | reference  | Specific provider configuration to use                     |
-| `providers`  | list       | Explicit provider configurations (modules/components only) |
+| `providers`  | map        | Explicit provider configurations (modules/components only), e.g. `providers = { aws = aws.east }` |
 
 ### Lifecycle Block
 
@@ -327,15 +327,15 @@ resource "aws_instance" "web" {
   pulumi {
     name                       = "web-primary"
     parent                     = module.my_component
-    additional_secret_outputs  = ["password"]
+    additional_secret_outputs  = [password]
     protect                    = true
     retain_on_delete           = true
     deleted_with               = aws_vpc.main
-    replace_on_changes         = ["ami"]
+    replace_on_changes         = [ami]
     replace_with               = [aws_instance.replacement]
-    hide_diffs                 = ["user_data"]
+    hide_diffs                 = [user_data]
     import_id                  = "i-1234567890abcdef0"
-    aliases                    = ["old-name"]
+    aliases                    = [{ name = "old-name" }]
     version                    = "6.0.0"
     plugin_download_url        = "https://example.com/plugins"
   }
@@ -344,20 +344,30 @@ resource "aws_instance" "web" {
 
 | Attribute                   | Type         | Description                                                                   |
 |-----------------------------|--------------|-------------------------------------------------------------------------------|
-| `name`                      | string       | Override the Pulumi logical name                                              |
-| `parent`                    | reference    | Parent resource for component hierarchy                                       |
-| `additional_secret_outputs` | list(string) | Output properties to encrypt in state                                         |
-| `protect`                   | bool         | Mark the resource protected in state; deleting it requires unprotecting first |
-| `retain_on_delete`          | bool         | Keep the cloud resource when removed from the program                         |
-| `deleted_with`              | reference    | Cascade deletion when the referenced resource is deleted                      |
-| `replace_with`              | list         | Resources whose replacement triggers replacement of this one                  |
-| `hide_diffs`                | list(string) | Property paths whose diffs should not be displayed                            |
-| `replace_on_changes`        | list(string) | Property paths that force replacement when changed                            |
-| `import_id`                 | string       | Cloud resource ID to import                                                   |
-| `aliases`                   | list         | Alternative names for this resource (used during renames)                     |
-| `version`                   | string       | Provider plugin version                                                       |
-| `plugin_download_url`       | string       | URL to download the provider plugin from                                      |
-| `env_var_mappings`          | expression   | Environment variable remappings for the provider                              |
+| `name`                      | string          | Override the Pulumi logical name                                              |
+| `parent`                    | reference       | Parent resource for component hierarchy                                       |
+| `additional_secret_outputs` | list(attribute) | Output properties to encrypt in state                                         |
+| `protect`                   | bool            | Mark the resource protected in state; deleting it requires unprotecting first |
+| `retain_on_delete`          | bool            | Keep the cloud resource when removed from the program                         |
+| `deleted_with`              | reference       | Cascade deletion when the referenced resource is deleted                      |
+| `replace_with`              | list            | Resources whose replacement triggers replacement of this one                  |
+| `hide_diffs`                | list(attribute) | Attributes whose diffs should not be displayed                                |
+| `replace_on_changes`        | list(attribute) | Attributes that force replacement when changed                                |
+| `import_id`                 | string          | Cloud resource ID to import                                                   |
+| `aliases`                   | list            | Previous identities for this resource (used during renames)                   |
+| `version`                   | string          | Provider plugin version                                                       |
+| `plugin_download_url`       | string          | URL to download the provider plugin from                                      |
+| `env_var_mappings`          | expression      | Environment variable remappings for the provider                              |
+
+`additional_secret_outputs`, `hide_diffs`, and `replace_on_changes` entries
+are bare attribute names (like `lifecycle.ignore_changes`), not quoted
+strings, and use the provider's `snake_case` attribute names. Only top-level
+attribute names are supported.
+
+Each `aliases` entry is either a full URN string or an object with any
+combination of `name`, `type`, `stack`, `project`, `parent_urn`, and
+`no_parent` — a plain string is always treated as a URN, so an old logical
+name must use the object form `{ name = "old-name" }`.
 
 To trigger replacement when another resource or attribute changes, use the
 standard Terraform [`replace_triggered_by`](#lifecycle-block) lifecycle
