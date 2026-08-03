@@ -88,6 +88,32 @@ func TestSmokeRandom(t *testing.T) {
 	})
 }
 
+// TestSmokeInstallConverges reproduces the `pulumi install` loop hit when two
+// modules resolve one provider through different spellings: the root spells
+// the source fully qualified while the child module requires the same
+// provider implicitly ("hashicorp/random"). Requirements used to be tracked
+// per spelling but satisfaction was cleared only for the root's, so the
+// child's spec was re-emitted forever and every preview demanded another
+// `pulumi install`. One install must converge and the program must deploy.
+func TestSmokeInstallConverges(t *testing.T) {
+	t.Parallel()
+
+	home := seedPluginCache(t, "terraform-provider")
+	integration.ProgramTest(t, &integration.ProgramTestOptions{
+		NoParallel:     true,
+		Dir:            filepath.Join("testdata", "install-loop"),
+		PulumiHomeDir:  home,
+		PrepareProject: prepareWithPulumiInstall(home),
+		ExtraRuntimeValidation: func(t *testing.T, stack integration.RuntimeValidationStackInfo) {
+			pet, ok := stack.Outputs["pet"].(string)
+			require.True(t, ok, "pet output must be a string, got %T (%v)",
+				stack.Outputs["pet"], stack.Outputs["pet"])
+			require.Regexp(t, regexp.MustCompile(`^[a-z]+-[a-z]+$`), pet,
+				"pet output should match '<word>-<word>'")
+		},
+	})
+}
+
 // TestSmokeInLanguageModule proves a plain HCL module (no component or package block) can
 // be served as a Multi-Language Component: `pulumi package add ../randommodule` generates
 // a local SDK, the consuming HCL program instantiates the component as
