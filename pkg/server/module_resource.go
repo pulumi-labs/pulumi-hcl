@@ -403,19 +403,19 @@ func RequirementSpecs(
 	tf, pulumi, aliases := collectRequirements(ctx, loader, config, workDir)
 	var reqs []resolve.Request
 	for _, alias := range sortedKeys(aliases) {
-		if ast.IsBuiltinProviderAlias(alias) {
+		if isBuiltinProvider(alias) {
 			continue
 		}
 		req := aliases[alias]
 		if req.IsPulumi() {
-			name := ast.PackageName(alias, req.Source)
+			name := packageName(alias, req.Source)
 			reqs = append(reqs, resolve.Request{
 				Alias: alias,
 				Spec:  &pulumirpc.PackageSpec{Source: name, Version: pulumi[name]},
 			})
 			continue
 		}
-		source := ast.TFProviderSource(alias, req)
+		source := tfProviderSource(alias, req)
 		params := []string{source}
 		if r := tf[canonicalSource(source)]; r != nil {
 			if c := r.constraint(); c != "" {

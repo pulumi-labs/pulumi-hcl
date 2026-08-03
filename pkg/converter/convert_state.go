@@ -23,6 +23,7 @@ import (
 	"iter"
 	"maps"
 	"os"
+	"path/filepath"
 	"slices"
 
 	"github.com/hashicorp/hcl/v2"
@@ -65,9 +66,6 @@ func (c *hclConverter) ConvertState(
 	if req.LoaderTarget == "" {
 		return nil, errors.New("ConvertState: missing loader address")
 	}
-	if req.ResolverTarget == "" {
-		return nil, errors.New("ConvertState: missing resolver address")
-	}
 	if len(req.Args) != 1 {
 		return nil, fmt.Errorf(
 			"ConvertState: expected exactly one argument (the state file path), got %d", len(req.Args))
@@ -103,18 +101,27 @@ func (c *hclConverter) ConvertState(
 }
 
 // packageDescriptors describes every package the project's providers resolve
-// to, so imports land under the packages the runtime executes. The program is
-// the source of truth: its providers are resolved through the engine's package
-// resolver, exactly as `pulumi install` resolves them, so an import needs no
-// prior install. The descriptors install already wrote take precedence.
+// to, keyed by Pulumi package name, so imports land under the packages the
+// runtime executes. The descriptors `pulumi install` wrote win, because those
+// are the ones Run loads; the program's own providers are resolved through the
+// engine's package resolver so an import still lands correctly before an
+// install has run. Older engines supply no resolver, in which case only the
+// installed descriptors are available.
 func (c *hclConverter) packageDescriptors(
 	ctx context.Context, resolverTarget string,
 ) (map[string]workspace.PackageDescriptor, error) {
-	installed, err := readParameterizationInfos(c.projectDir)
+	dir, err := c.programDir()
+	if err != nil {
+		return nil, err
+	}
+	installed, err := readParameterizationInfos(dir)
 	if err != nil {
 		return nil, fmt.Errorf("reading parameterization infos: %w", err)
 	}
-	config, diags := parser.NewParser().ParseDirectory(c.projectDir)
+	if resolverTarget == "" {
+		return installed, nil
+	}
+	config, diags := parser.NewParser().ParseDirectory(dir)
 	if diags.HasErrors() {
 		return nil, fmt.Errorf("parsing the project: %w", diags)
 	}
@@ -122,13 +129,51 @@ func (c *hclConverter) packageDescriptors(
 	if err != nil {
 		return nil, fmt.Errorf("dial package resolver at %s: %w", resolverTarget, err)
 	}
-	specs := server.RequirementSpecs(ctx, modules.NewLoader(modules.LiveResolver(ctx)), config, c.projectDir)
+	specs := server.RequirementSpecs(ctx, modules.NewLoader(modules.LiveResolver(ctx)), config, dir)
 	resolved, err := resolve.Packages(ctx, resolver, specs)
 	if err != nil {
 		return nil, fmt.Errorf("resolving the program's providers: %w", err)
 	}
-	maps.Copy(resolved, installed)
-	return resolved, nil
+	descriptors := byPackageName(resolved)
+	maps.Copy(descriptors, installed)
+	return descriptors, nil
+}
+
+// byPackageName re-keys resolver output — keyed by the provider's module-local
+// name — under the Pulumi package name, which is how a state file's provider
+// address, the schema loader and the `sdks/` directories all name a package. A
+// local name may differ from it ("randy = { source = hashicorp/random }"), so
+// keying by alias would miss.
+func byPackageName(
+	resolved map[string]workspace.PackageDescriptor,
+) map[string]workspace.PackageDescriptor {
+	out := make(map[string]workspace.PackageDescriptor, len(resolved))
+	for _, desc := range resolved {
+		name := desc.Name
+		if desc.Parameterization != nil {
+			name = desc.Parameterization.Name
+		}
+		out[name] = desc
+	}
+	return out
+}
+
+// programDir is the directory holding the program's HCL. ConvertState carries
+// no source directory, so outside tests the project is located from the
+// process's working directory, exactly as the CLI that spawned us located it.
+func (c *hclConverter) programDir() (string, error) {
+	if c.projectDir != "" {
+		return c.projectDir, nil
+	}
+	path, err := workspace.DetectProjectPath()
+	if err != nil {
+		return "", fmt.Errorf("locating the Pulumi project: %w", err)
+	}
+	proj, err := workspace.LoadProject(path)
+	if err != nil {
+		return "", fmt.Errorf("loading %s: %w", path, err)
+	}
+	return filepath.Join(filepath.Dir(path), proj.Main), nil
 }
 
 // readTFStateFile parses a state file through the vendored OpenTofu parser,
@@ -302,16 +347,22 @@ func resourceName(name string, key addrs.InstanceKey) string {
 }
 
 // parameterizationFor maps a package descriptor to the import-side
-// parameterization: the resource's Type/Version describe the parameterized
-// package (e.g. "aws@6.0.0"), while the Parameterization block describes the
-// base plugin it is produced from (e.g. "terraform-provider").
+// parameterization and the version to import the resource at. For a
+// parameterized package the resource's Type/Version describe the parameterized
+// package (e.g. "aws@6.0.0") while the Parameterization block describes the
+// base plugin it is produced from (e.g. "terraform-provider"); an ordinary
+// package just pins its own version, so the import lands on the same plugin
+// the program runs against.
 func parameterizationFor(desc *workspace.PackageDescriptor) (*plugin.ResourceParameterization, string) {
-	if desc == nil || desc.Parameterization == nil {
+	if desc == nil {
 		return nil, ""
 	}
 	var baseVersion string
 	if desc.Version != nil {
 		baseVersion = desc.Version.String()
+	}
+	if desc.Parameterization == nil {
+		return nil, baseVersion
 	}
 	return &plugin.ResourceParameterization{
 		PluginName:    desc.Name,

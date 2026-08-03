@@ -71,7 +71,7 @@ func TestSmokeRandom(t *testing.T) {
 		NoParallel:     true,
 		Dir:            filepath.Join("testdata", "random"),
 		PulumiHomeDir:  home,
-		PrepareProject: prepareWithPulumiInstall(t, home),
+		PrepareProject: prepareWithPulumiInstall(home),
 		PostPrepareProject: func(e *engine.Projinfo) error {
 			sdkPath := filepath.Join(e.Root, "sdks", "random", "hcl.sdk.json")
 			_, err := os.Stat(sdkPath)
@@ -102,7 +102,7 @@ func TestSmokeInstallConverges(t *testing.T) {
 		NoParallel:     true,
 		Dir:            filepath.Join("testdata", "install-loop"),
 		PulumiHomeDir:  home,
-		PrepareProject: prepareWithPulumiInstall(t, home),
+		PrepareProject: prepareWithPulumiInstall(home),
 		ExtraRuntimeValidation: func(t *testing.T, stack integration.RuntimeValidationStackInfo) {
 			pet, ok := stack.Outputs["pet"].(string)
 			require.True(t, ok, "pet output must be a string, got %T (%v)",
@@ -144,8 +144,7 @@ func TestSmokeInLanguageModule(t *testing.T) {
 		Verbose:       true,
 		Stdout:        &preview,
 		PrepareProject: func(e *engine.Projinfo) error {
-			run(t, e.Root, []string{"PULUMI_HOME=" + home}, "pulumi", "package", "add", moduleDir)
-			return nil
+			return run(e.Root, []string{"PULUMI_HOME=" + home}, "pulumi", "package", "add", moduleDir)
 		},
 		ExtraRuntimeValidation: func(t *testing.T, stack integration.RuntimeValidationStackInfo) {
 			// The pet name flows from a not-yet-created `random_pet` inside the
@@ -241,8 +240,7 @@ func TestSmokeParameterizedModule(t *testing.T) {
 		Dir:           filepath.Join("testdata", "parameterized", "program"),
 		PulumiHomeDir: home,
 		PrepareProject: func(e *engine.Projinfo) error {
-			run(t, e.Root, []string{"PULUMI_HOME=" + home}, "pulumi", "package", "add", resourceBin, "module", moduleDir)
-			return nil
+			return run(e.Root, []string{"PULUMI_HOME=" + home}, "pulumi", "package", "add", resourceBin, "module", moduleDir)
 		},
 		ExtraRuntimeValidation: func(t *testing.T, stack integration.RuntimeValidationStackInfo) {
 			// petLength = 3 flows into the module's random_pet through the
@@ -365,10 +363,9 @@ func hostPluginsDir() string {
 	return filepath.Join(home, ".pulumi", "plugins")
 }
 
-func prepareWithPulumiInstall(t *testing.T, pulumiHome string) func(*engine.Projinfo) error {
+func prepareWithPulumiInstall(pulumiHome string) func(*engine.Projinfo) error {
 	return func(e *engine.Projinfo) error {
-		run(t, e.Root, []string{"PULUMI_HOME=" + pulumiHome}, "pulumi", "install")
-		return nil
+		return run(e.Root, []string{"PULUMI_HOME=" + pulumiHome}, "pulumi", "install")
 	}
 }
 
@@ -389,10 +386,16 @@ resource "random_uuid" "example" {
 
 // TestSmokeImportFromHCL drives the real `tofu` and `pulumi` binaries through
 // `pulumi import --from hcl`, encoding its core promise: if `tofu plan` shows
-// no diff, the first `pulumi preview` after import must not either. The
-// imported resources must land under the very same parameterized provider the
-// runtime uses, with the state's values supplied directly — resolved through
-// the engine's package resolver, without a prior `pulumi install`.
+// no diff, the first `pulumi preview` after import must not either. That only
+// holds if the imported resources land under the very same parameterized
+// provider the runtime registers them under, with the state's values supplied
+// directly.
+//
+// `pulumi install` runs first because Run refuses to start without the SDKs on
+// disk, so the no-install import path cannot be driven end to end here; it is
+// covered by the converter's unit tests until the CLI is pinned to a build
+// that supplies a package resolver, at which point the install below can move
+// after the import.
 func TestSmokeImportFromHCL(t *testing.T) {
 	t.Parallel()
 	tofuBin := lookPath(t, "tofu", "terraform")
@@ -406,41 +409,39 @@ func TestSmokeImportFromHCL(t *testing.T) {
 	env := []string{
 		"PULUMI_CONFIG_PASSPHRASE=test",
 		"PULUMI_BACKEND_URL=file://" + filepath.Join(base, "state"),
-		// Never reach out for the language plugin: it must already be on PATH.
-		"PULUMI_DISABLE_AUTOMATIC_PLUGIN_ACQUISITION=true",
+		"PULUMI_HOME=" + seedPluginCache(t, "random", "terraform-provider"),
 	}
 
 	tfDir := filepath.Join(base, "tf")
 	require.NoError(t, os.MkdirAll(tfDir, 0o755))
 	writeFile(t, filepath.Join(tfDir, "main.tf"), importProgram)
-	run(t, tfDir, env, tofuBin, "init", "-input=false")
-	run(t, tfDir, env, tofuBin, "apply", "-auto-approve", "-input=false")
+	mustRun(t, tfDir, env, tofuBin, "init", "-input=false")
+	mustRun(t, tfDir, env, tofuBin, "apply", "-auto-approve", "-input=false")
 
 	statePath := filepath.Join(tfDir, "terraform.tfstate")
 	require.FileExists(t, statePath, "tofu apply should have produced state")
 
 	// The premise: `tofu plan` is clean, so `pulumi preview` must be too.
-	run(t, tfDir, env, tofuBin, "plan", "-detailed-exitcode", "-input=false")
+	mustRun(t, tfDir, env, tofuBin, "plan", "-detailed-exitcode", "-input=false")
 
 	pulDir := filepath.Join(base, "pulumi")
 	require.NoError(t, os.MkdirAll(pulDir, 0o755))
 	writeFile(t, filepath.Join(pulDir, "Pulumi.yaml"), "name: import-e2e\nruntime: hcl\n")
 	writeFile(t, filepath.Join(pulDir, "main.tf"), importProgram)
 
-	// No `pulumi install`: the converter resolves the program's providers
-	// through the engine's package resolver, so nothing is on disk to read.
-	require.NoFileExists(t, filepath.Join(pulDir, "sdks", "random", "hcl.sdk.json"))
-
-	run(t, pulDir, env, pulumiBin, "stack", "init", "dev")
+	mustRun(t, pulDir, env, pulumiBin, "stack", "init", "dev")
+	mustRun(t, pulDir, env, pulumiBin, "install")
+	require.FileExists(t, filepath.Join(pulDir, "sdks", "random", "hcl.sdk.json"),
+		"random is dynamically bridged, so install writes a parameterization descriptor")
 
 	// --protect=false: HCL programs cannot express the protect option, so the
 	// default (protected) would make every first preview diff on it.
-	run(t, pulDir, env, pulumiBin, "import", "--from", "hcl", statePath, "--protect=false", "--yes")
+	mustRun(t, pulDir, env, pulumiBin, "import", "--from", "hcl", statePath, "--protect=false", "--yes")
 
 	// The state's values were supplied directly, so the first preview must be
 	// clean immediately — no provider Read ran to materialize attributes
 	// differently from the TF state.
-	run(t, pulDir, env, pulumiBin, "preview", "--expect-no-changes")
+	mustRun(t, pulDir, env, pulumiBin, "preview", "--expect-no-changes")
 }
 
 func lookPath(t *testing.T, names ...string) string {
@@ -460,13 +461,21 @@ func writeFile(t *testing.T, path, content string) {
 }
 
 // run runs the command in dir with env appended to the environment, streaming
-// output to stderr and failing the test if it does not succeed.
-func run(t *testing.T, dir string, env []string, name string, args ...string) {
-	t.Helper()
+// output to stderr. It returns an error so the integration framework's
+// callbacks — which report and clean up themselves — can hand it back; tests
+// driving commands directly want mustRun.
+func run(dir string, env []string, name string, args ...string) error {
 	cmd := exec.Command(name, args...)
 	cmd.Dir = dir
 	cmd.Env = append(os.Environ(), env...)
 	cmd.Stdout, cmd.Stderr = os.Stderr, os.Stderr
-	require.NoErrorf(t, cmd.Run(),
-		"%s %s failed", filepath.Base(name), strings.Join(args, " "))
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("%s %s: %w", filepath.Base(name), strings.Join(args, " "), err)
+	}
+	return nil
+}
+
+func mustRun(t *testing.T, dir string, env []string, name string, args ...string) {
+	t.Helper()
+	require.NoError(t, run(dir, env, name, args...))
 }

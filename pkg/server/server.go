@@ -197,7 +197,7 @@ func (host *LanguageHost) GetRequiredPackages(
 	// and never converge.
 	byName := map[string]string{}
 	for _, source := range sortedKeys(tfReqs) {
-		name := ast.PackageName("", source)
+		name := packageName("", source)
 		if prev, ok := byName[name]; ok {
 			return nil, fmt.Errorf(
 				"provider sources %q and %q both resolve to package name %q; "+
@@ -273,7 +273,7 @@ func descriptorForSource(
 			return dir, info.desc, true
 		}
 	}
-	name := ast.PackageName("", source)
+	name := packageName("", source)
 	if info, ok := sdks[name]; ok && info.source == "" {
 		return name, info.desc, true
 	}
@@ -316,6 +316,27 @@ func canonicalSource(source string) string {
 		return source
 	}
 	return provider.String()
+}
+
+// tfProviderSource returns the source URL passed to the terraform-provider
+// plugin: req.Source when set, else the OpenTofu-registry default
+// "hashicorp/<alias>".
+func tfProviderSource(alias string, req *ast.RequiredProvider) string {
+	if req != nil && req.Source != "" {
+		return req.Source
+	}
+	return "hashicorp/" + alias
+}
+
+// packageName returns the Pulumi package name for a required_providers
+// entry: the last segment of the source ("pulumi/aws" → "aws",
+// "hashicorp/simple" → "simple"), or the alias when source is unset.
+func packageName(alias, source string) string {
+	if source == "" {
+		return alias
+	}
+	parts := strings.Split(source, "/")
+	return parts[len(parts)-1]
 }
 
 func versionString(v *semver.Version) string {
@@ -408,6 +429,8 @@ func missingNonPulumiSDKs(
 	return missing
 }
 
+func isBuiltinProvider(alias string) bool { return alias == "pulumi" || alias == "terraform" }
+
 // tfRequirement accumulates what the module tree declares for one canonical
 // provider source: the constraint union, and the shortest spelling seen for
 // specs and error messages.
@@ -476,14 +499,14 @@ func collectRequirementsRec(
 		if _, seen := aliases[alias]; !seen || req != nil {
 			aliases[alias] = req
 		}
-		if ast.IsBuiltinProviderAlias(alias) {
+		if isBuiltinProvider(alias) {
 			return
 		}
 		if req.IsPulumi() {
-			pulumi[ast.PackageName(alias, req.Source)] = req.Version
+			pulumi[packageName(alias, req.Source)] = req.Version
 			return
 		}
-		source := ast.TFProviderSource(alias, req)
+		source := tfProviderSource(alias, req)
 		key := canonicalSource(source)
 		r := tf[key]
 		if r == nil {

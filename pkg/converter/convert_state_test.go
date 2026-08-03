@@ -18,6 +18,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -544,19 +545,7 @@ func TestPackageDescriptorsFromResolver(t *testing.T) {
 		}
 	`), 0o600))
 
-	cancel := make(chan bool)
-	handle, err := rpcutil.ServeWithOptions(rpcutil.ServeOptions{
-		Cancel: cancel,
-		Init: func(srv *grpc.Server) error {
-			pulumirpc.RegisterPackageResolverServer(srv, fakeResolver{t: t})
-			return nil
-		},
-	})
-	require.NoError(t, err)
-	t.Cleanup(func() { close(cancel); <-handle.Done })
-
-	c := &hclConverter{projectDir: dir}
-	got, err := c.packageDescriptors(t.Context(), fmt.Sprintf("127.0.0.1:%d", handle.Port))
+	got, err := (&hclConverter{projectDir: dir}).packageDescriptors(t.Context(), serveResolver(t))
 	require.NoError(t, err)
 
 	desc, ok := got["example"]
@@ -577,8 +566,12 @@ type fakeResolver struct {
 func (r fakeResolver) ResolvePackage(
 	_ context.Context, spec *pulumirpc.PackageSpec,
 ) (*pulumirpc.PackageDependency, error) {
+	// assert, never require: this runs on a gRPC handler goroutine, where
+	// t.FailNow would be an illegal runtime.Goexit.
 	assert.Equal(r.t, "terraform-provider", spec.Source)
-	require.NotEmpty(r.t, spec.Parameters, "the provider's source is the first parameter")
+	if !assert.NotEmpty(r.t, spec.Parameters, "the provider's source is the first parameter") {
+		return nil, errors.New("no parameters")
+	}
 	source, version := spec.Parameters[0], ""
 	if len(spec.Parameters) > 1 {
 		version = spec.Parameters[1]
@@ -606,13 +599,6 @@ func TestConvertStateArgValidation(t *testing.T) {
 
 	_, err = New().ConvertState(t.Context(), &plugin.ConvertStateRequest{
 		MapperTarget: "127.0.0.1:1",
-		LoaderTarget: "127.0.0.1:1",
-		Args:         []string{"state.json"},
-	})
-	assert.ErrorContains(t, err, "missing resolver address")
-
-	_, err = New().ConvertState(t.Context(), &plugin.ConvertStateRequest{
-		MapperTarget: "127.0.0.1:1",
 		Args:         []string{"state.json"},
 	})
 	assert.ErrorContains(t, err, "missing loader address")
@@ -631,6 +617,105 @@ func TestConvertStateArgValidation(t *testing.T) {
 		Args:           []string{"a", "b"},
 	})
 	assert.ErrorContains(t, err, "expected exactly one argument")
+}
+
+// TestPackageDescriptorsWithoutResolver pins the older-engine path: with no
+// resolver address the import still lands under whatever `pulumi install`
+// wrote, exactly as it did before the resolver existed.
+func TestPackageDescriptorsWithoutResolver(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	writeInstalledSDK(t, dir, "example", exampleDescriptor())
+
+	got, err := (&hclConverter{projectDir: dir}).packageDescriptors(t.Context(), "")
+	require.NoError(t, err)
+
+	desc, ok := got["example"]
+	require.True(t, ok)
+	require.NotNil(t, desc.Parameterization)
+	assert.Equal(t, "example", desc.Parameterization.Name)
+}
+
+// TestPackageDescriptorsKeyByPackageName pins the key space: a provider whose
+// module-local name differs from its source's type is still found under the
+// package name, which is how the state file names it.
+func TestPackageDescriptorsKeyByPackageName(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "main.tf"), []byte(`
+		terraform {
+			required_providers {
+				randy = { source = "hashicorp/random", version = "6.0.0" }
+			}
+		}
+		resource "randy_uuid" "a" {}
+	`), 0o600))
+
+	got, err := (&hclConverter{projectDir: dir}).packageDescriptors(
+		t.Context(), serveResolver(t))
+	require.NoError(t, err)
+
+	desc, ok := got["random"]
+	require.True(t, ok, "keyed by package name, not by the local name %q", "randy")
+	require.NotNil(t, desc.Parameterization)
+	assert.Equal(t, "random", desc.Parameterization.Name)
+}
+
+// TestProgramDirFromWorkingDirectory pins what the plugin binary does:
+// ConvertState carries no source directory, so New() must find the project
+// from the process's working directory.
+func TestProgramDirFromWorkingDirectory(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, filepath.Join(dir, "Pulumi.yaml"), "name: import-test\nruntime: hcl\n")
+	writeFile(t, filepath.Join(dir, "main.tf"), `
+		terraform {
+			required_providers {
+				example = { source = "acme/example", version = "6.0.0" }
+			}
+		}
+	`)
+
+	t.Chdir(dir)
+	got, err := (&hclConverter{}).packageDescriptors(t.Context(), serveResolver(t))
+	require.NoError(t, err)
+
+	desc, ok := got["example"]
+	require.True(t, ok, "the project resolves from the working directory")
+	assert.Equal(t, "terraform-provider", desc.Name)
+}
+
+// serveResolver runs fakeResolver on a local port and returns its target.
+func serveResolver(t *testing.T) string {
+	t.Helper()
+	cancel := make(chan bool)
+	handle, err := rpcutil.ServeWithOptions(rpcutil.ServeOptions{
+		Cancel: cancel,
+		Init: func(srv *grpc.Server) error {
+			pulumirpc.RegisterPackageResolverServer(srv, fakeResolver{t: t})
+			return nil
+		},
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { close(cancel); <-handle.Done })
+	return fmt.Sprintf("127.0.0.1:%d", handle.Port)
+}
+
+// writeInstalledSDK writes the sdks/<name>/hcl.sdk.json that `pulumi install`
+// leaves behind for a dynamically bridged provider.
+func writeInstalledSDK(t *testing.T, dir, name string, desc workspace.PackageDescriptor) {
+	t.Helper()
+	data, err := json.Marshal(desc)
+	require.NoError(t, err)
+	sdkDir := filepath.Join(dir, "sdks", name)
+	require.NoError(t, os.MkdirAll(sdkDir, 0o755))
+	writeFile(t, filepath.Join(sdkDir, "hcl.sdk.json"), string(data))
+}
+
+func writeFile(t *testing.T, path, content string) {
+	t.Helper()
+	require.NoError(t, os.WriteFile(path, []byte(content), 0o600))
 }
 
 // ecosystemAssertingMapper is a convert.Mapper with a fixed mapping for
@@ -718,10 +803,7 @@ func TestConvertStateViaMapper(t *testing.T) {
 	// The project's sdks/ descriptor marks "random" as dynamically bridged.
 	desc := exampleDescriptor()
 	desc.Parameterization.Name = "random"
-	descJSON, err := json.Marshal(desc)
-	require.NoError(t, err)
-	require.NoError(t, os.MkdirAll(filepath.Join(dir, "sdks", "random"), 0o755))
-	require.NoError(t, os.WriteFile(filepath.Join(dir, "sdks", "random", "hcl.sdk.json"), descJSON, 0o600))
+	writeInstalledSDK(t, dir, "random", desc)
 
 	resp, err := NewInDir(dir).ConvertState(t.Context(), &plugin.ConvertStateRequest{
 		MapperTarget:   target,
