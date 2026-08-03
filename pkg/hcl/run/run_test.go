@@ -5416,6 +5416,20 @@ resource "simple_resource" "r" {
 		"an explicit `providers = { simple = simple }` re-pass must carry the aliased config")
 	assert.Equal(t, specialRef, resources["implicit"].Provider,
 		"an implicit nested call must inherit the middle module's passed-in default")
+
+	componentProviders := map[string]map[string]string{}
+	for i := range mock.RegisteredResources {
+		r := &mock.RegisteredResources[i]
+		if strings.HasPrefix(r.Type, "components:index:") {
+			componentProviders[r.Name] = r.Providers
+		}
+	}
+	assert.Equal(t, map[string]map[string]string{
+		"outer":                {"simple": specialRef},
+		"outer_implicit":       {"simple": specialRef},
+		"outer.inner":          {"simple": specialRef},
+		"outer_implicit.inner": nil,
+	}, componentProviders, "module components must carry the providers passed to them")
 }
 
 func TestEngine_ProviderResolution_ChildModuleBlockWins(t *testing.T) {

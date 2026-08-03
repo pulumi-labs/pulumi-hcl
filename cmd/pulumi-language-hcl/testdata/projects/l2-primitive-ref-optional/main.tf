@@ -22,6 +22,9 @@ resource "optional-primitive-ref_resource" "setRes" {
       "f" = false
     }
   }
+  optional_data = {
+    string = "optional parent"
+  }
 }
 resource "optional-primitive-ref_resource" "unsetRes" {
   lifecycle {
@@ -29,9 +32,14 @@ resource "optional-primitive-ref_resource" "unsetRes" {
   }
   data = {}
 }
-# Traversal through an output object (data) to an optional inner scalar.
-# In Go this lowers to `setRes.Data.ApplyT(func(d Data) (*T, error) { ... return ?d.Field, nil })`
-# where the inner field type is already a pointer - the SDK generator must not double-pointer it.
+resource "optional-primitive-ref_resource" "fromNestedOptional" {
+  lifecycle {
+    create_before_destroy = true
+  }
+  data = {
+    string = optional-primitive-ref_resource.setRes.optional_data.string
+  }
+}
 output "setBoolean" {
   value = optional-primitive-ref_resource.setRes.data.boolean
 }
