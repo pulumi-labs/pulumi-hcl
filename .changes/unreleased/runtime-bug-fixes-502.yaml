@@ -1,0 +1,6 @@
+kind: bug-fixes
+body: 'Fail on invalid `aliases` expressions instead of silently ignoring them'
+time: 2026-08-03T18:37:16Z
+custom:
+    Component: runtime
+    PR: "502"
