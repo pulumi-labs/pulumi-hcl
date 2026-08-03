@@ -194,7 +194,7 @@ type RegisterResourceResponse struct {
 	URN     urn.URN
 	ID      string
 	Outputs property.Map
-	Unknown bool // True when the engine elided the operation (e.g. a create skipped by a targeted update), so outputs must resolve as unknown.
+	Unknown bool // The engine elided the operation (e.g. a targeted update); outputs must resolve as unknown.
 }
 
 // ReadResourceRequest contains the parameters for reading an existing resource.
@@ -231,14 +231,14 @@ type InvokeRequest struct {
 	Version           string
 	PluginDownloadURL string
 	PackageRef        PackageRef
-	DependsOn         []string // URNs of the resources the invoke's arguments were read from; the engine gates the invoke on their created-ness.
+	DependsOn         []string
 }
 
 // InvokeResponse contains the result of invoking a function.
 type InvokeResponse struct {
 	Return   property.Map
 	Failures []string
-	Unknown  bool // True when the engine declined to service the invoke because a dependency is pending creation, so the result must resolve as unknown.
+	Unknown  bool
 }
 
 // CallRequest contains the parameters for invoking a method on a resource.
@@ -1240,11 +1240,8 @@ func (e *Engine) resolvePassThroughProvider(modInfo *graph.ModuleInfo, localKey 
 	return e.resolvePassThroughProvider(e.parentModuleInfo(modInfo), providerExprKey(passExpr))
 }
 
-// resolvePassedProviders resolves every entry of a module call's
-// `providers = { ... }` map to a "<urn>::<id>" reference, keyed by the
-// provider's package name. An expression the parent's scope doesn't bind is
-// chased through the parent's own pass-through entries; entries that resolve
-// to no registered configuration are dropped.
+// resolvePassedProviders resolves a module call's `providers = { ... }`
+// entries to "<urn>::<id>" references keyed by the provider's package name.
 func (e *Engine) resolvePassedProviders(modInfo *graph.ModuleInfo, parentEvalCtx *eval.Context) map[string]string {
 	var refs map[string]string
 	for _, passExpr := range modInfo.Module.Providers {
@@ -3455,10 +3452,7 @@ func (e *Engine) invokeDataSourceOnce(
 		}
 	}
 
-	// Declaring the dependencies lets the engine gate the invoke on their
-	// created-ness: a read whose arguments come from a resource that has not
-	// been created yet (e.g. during preview) comes back wholly unknown
-	// instead of observing state the dependency has not produced.
+	// The engine gates the invoke on the created-ness of its dependencies.
 	invokeReq.DependsOn = depURNs
 
 	// Match the Node.js / Python SDK behavior: during preview, if any input
@@ -4134,10 +4128,8 @@ func (e *Engine) initModuleCallIn(
 		}
 	}
 
-	// Record the providers passed into the module on its component
-	// registration: the engine propagates a component's providers map to
-	// remote components (MLCs) registered under it, whose construct calls
-	// would otherwise fall back to default providers.
+	// The engine propagates a component's providers map to remote components
+	// registered under it.
 	passedProviders := e.resolvePassedProviders(modInfo, parentEvalCtx)
 
 	newInstance := func(index *int, eachKey, eachVal *cty.Value) (*moduleInstance, error) {
