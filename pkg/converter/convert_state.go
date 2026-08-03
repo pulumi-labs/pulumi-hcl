@@ -152,10 +152,6 @@ func convertTFState(
 					"an instance of %s has no string `id` attribute to import by", res.Addr))
 				continue
 			}
-			// TODO(pulumi/pulumi-hcl#167): an id-only import has no values to
-			// supply, so the engine reads the resource through the provider's
-			// importer — which resources whose import string the id does not
-			// carry (aws_iam_role_policy_attachment's role/policy-arn) reject.
 			outs, ins, err := translateInstanceValues(ctx, loader, info, token, tfType, id, current)
 			if err != nil {
 				warn("Importing without values", fmt.Sprintf(
@@ -320,8 +316,8 @@ func resourceSchema(
 }
 
 // idAttr extracts the `id` attribute verbatim: an import that supplies the
-// instance's values records the id as identity and never feeds it to a
-// provider's importer, so composite import strings need no derivation.
+// instance's values records the id as its identity rather than feeding it to
+// the provider's importer.
 func idAttr(src *states.ResourceInstanceObjectSrc) (string, bool) {
 	if src.AttrsJSON == nil {
 		// Pre-0.12 states carry flatmap attributes instead.
