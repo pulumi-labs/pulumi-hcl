@@ -29,8 +29,12 @@ import (
 	"github.com/pulumi/pulumi-hcl/pkg/hcl/bridge"
 	"github.com/pulumi/pulumi-hcl/pkg/hcl/eval"
 	"github.com/pulumi/pulumi-hcl/pkg/hcl/modulepath"
+	"github.com/pulumi/pulumi-hcl/pkg/hcl/modules"
 	"github.com/pulumi/pulumi-hcl/pkg/hcl/packages"
+	"github.com/pulumi/pulumi-hcl/pkg/hcl/parser"
+	"github.com/pulumi/pulumi-hcl/pkg/hcl/resolve"
 	"github.com/pulumi/pulumi-hcl/pkg/hcl/transform"
+	"github.com/pulumi/pulumi-hcl/pkg/server"
 	"github.com/pulumi/pulumi-hcl/pkg/util/encryption"
 	"github.com/pulumi/pulumi-hcl/vendored/addrs"
 	"github.com/pulumi/pulumi-hcl/vendored/statefile"
@@ -52,8 +56,8 @@ import (
 // ResourceImport per managed root-module resource instance, resolving TF types
 // to Pulumi tokens through the engine-provided mapper, so
 // `pulumi import --from hcl` can pull TF state into a Pulumi HCL project.
-// Imports are parameterized (dynamic-bridge) when the project's installed
-// SDKs say so, landing resources under the same `terraform-provider`
+// Imports are parameterized (dynamic-bridge) when the project's providers
+// resolve that way, landing resources under the same `terraform-provider`
 // packages the HCL runtime executes — unlike pulumi-converter-terraform's
 // static-bridge imports, which would provoke a replace on the next preview.
 func (c *hclConverter) ConvertState(
@@ -70,14 +74,9 @@ func (c *hclConverter) ConvertState(
 			"ConvertState: expected exactly one argument (the state file path), got %d", len(req.Args))
 	}
 	statePath := req.Args[0]
-	// TODO(pulumi/pulumi-hcl#167): recognizing dynamically bridged providers
-	// from the program itself — so import works before `pulumi install` has
-	// run — needs the same requirement collection the language host performs,
-	// which needs a package resolver the converter cannot reach yet
-	// (pulumi/pulumi#24174).
-	descriptors, err := readParameterizationInfos(c.projectDir)
+	descriptors, err := c.packageDescriptors(ctx, req.ResolverTarget)
 	if err != nil {
-		return nil, fmt.Errorf("reading parameterization infos: %w", err)
+		return nil, err
 	}
 
 	mapperClient, err := convert.NewMapperClient(req.MapperTarget)
@@ -102,6 +101,39 @@ func (c *hclConverter) ConvertState(
 	}
 
 	return convertTFState(ctx, providerInfoSource, loader, descriptors, state), nil
+}
+
+// packageDescriptors describes every package the project's providers resolve
+// to, so imports land under the packages the runtime executes. The program is
+// the source of truth: its providers are resolved through the engine's package
+// resolver, exactly as `pulumi install` resolves them, so an import needs no
+// prior install. The descriptors install already wrote take precedence, and
+// stand alone against an engine that serves no resolver.
+func (c *hclConverter) packageDescriptors(
+	ctx context.Context, resolverTarget string,
+) (map[string]workspace.PackageDescriptor, error) {
+	installed, err := readParameterizationInfos(c.projectDir)
+	if err != nil {
+		return nil, fmt.Errorf("reading parameterization infos: %w", err)
+	}
+	if resolverTarget == "" {
+		return installed, nil
+	}
+	config, diags := parser.NewParser().ParseDirectory(c.projectDir)
+	if config == nil || diags.HasErrors() {
+		return installed, nil
+	}
+	resolver, err := server.NewPackageResolverClient(resolverTarget)
+	if err != nil {
+		return nil, fmt.Errorf("dial package resolver at %s: %w", resolverTarget, err)
+	}
+	specs := server.RequirementSpecs(ctx, modules.NewLoader(modules.LiveResolver(ctx)), config, c.projectDir)
+	resolved, err := resolve.Packages(ctx, resolver, specs)
+	if err != nil {
+		return nil, fmt.Errorf("resolving the program's providers: %w", err)
+	}
+	maps.Copy(resolved, installed)
+	return resolved, nil
 }
 
 // readTFStateFile parses a state file through the vendored OpenTofu parser,

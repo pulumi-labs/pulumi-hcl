@@ -40,6 +40,7 @@ import (
 	"github.com/pulumi/pulumi/sdk/v3/go/common/resource"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/util/rpcutil"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/workspace"
+	pulumirpc "github.com/pulumi/pulumi/sdk/v3/proto/go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/grpc"
@@ -525,6 +526,68 @@ func TestImportID(t *testing.T) {
 	id, ok = importID(&states.ResourceInstanceObjectSrc{AttrsFlat: map[string]string{"id": "flat"}})
 	assert.True(t, ok, "pre-0.12 flatmap attributes")
 	assert.Equal(t, "flat", id)
+}
+
+// TestPackageDescriptorsFromResolver pins the pre-install path: with no SDKs
+// on disk, the program's providers resolve through the engine's package
+// resolver, exactly as `pulumi install` resolves them.
+func TestPackageDescriptorsFromResolver(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "main.tf"), []byte(`
+		terraform {
+			required_providers {
+				example = { source = "acme/example", version = "6.0.0" }
+			}
+		}
+	`), 0o600))
+
+	cancel := make(chan bool)
+	handle, err := rpcutil.ServeWithOptions(rpcutil.ServeOptions{
+		Cancel: cancel,
+		Init: func(srv *grpc.Server) error {
+			pulumirpc.RegisterPackageResolverServer(srv, fakeResolver{t: t})
+			return nil
+		},
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { close(cancel); <-handle.Done })
+
+	c := &hclConverter{projectDir: dir}
+	got, err := c.packageDescriptors(t.Context(), fmt.Sprintf("127.0.0.1:%d", handle.Port))
+	require.NoError(t, err)
+
+	desc, ok := got["example"]
+	require.True(t, ok, "the program's provider resolves without an installed SDK")
+	assert.Equal(t, "terraform-provider", desc.Name)
+	require.NotNil(t, desc.Parameterization)
+	assert.Equal(t, "example", desc.Parameterization.Name)
+	assert.Equal(t, "6.0.0", desc.Parameterization.Version.String())
+}
+
+// fakeResolver stands in for the engine's package resolver, asserting the
+// converter asks for the bridge plugin parameterized by the program's source.
+type fakeResolver struct {
+	pulumirpc.UnimplementedPackageResolverServer
+	t *testing.T
+}
+
+func (r fakeResolver) ResolvePackage(
+	_ context.Context, spec *pulumirpc.PackageSpec,
+) (*pulumirpc.PackageDependency, error) {
+	assert.Equal(r.t, "terraform-provider", spec.Source)
+	assert.Contains(r.t, spec.Parameters, "acme/example")
+	return &pulumirpc.PackageDependency{
+		Kind:    string(apitype.ResourcePlugin),
+		Name:    "terraform-provider",
+		Version: "0.0.1",
+		Parameterization: &pulumirpc.PackageParameterization{
+			Name:    "example",
+			Version: "6.0.0",
+			Value:   []byte(`{"remote":{"url":"acme/example","version":"6.0.0"}}`),
+		},
+	}, nil
 }
 
 func TestConvertStateArgValidation(t *testing.T) {

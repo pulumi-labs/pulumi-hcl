@@ -125,7 +125,7 @@ func (m *moduleProvider) handshake(ctx context.Context, req p.HandshakeRequest) 
 		return p.HandshakeResponse{}, fmt.Errorf("dial mapper at %s: %w", *req.MapperAddress, err)
 	}
 
-	resolverClient, err := newPackageResolverClient(*req.ResolverAddress)
+	resolverClient, err := NewPackageResolverClient(*req.ResolverAddress)
 	if err != nil {
 		return p.HandshakeResponse{}, fmt.Errorf("dial resolver at %s: %w", *req.ResolverAddress, err)
 	}
@@ -389,13 +389,13 @@ func (m *moduleProvider) newConstructMonitor(
 	}
 }
 
-// requirementSpecs turns every provider the module tree references into a
+// RequirementSpecs turns every provider the module tree references into a
 // resolver request keyed by its local name. Pulumi-sourced providers resolve by
 // package name; bridged Terraform providers resolve as a parameterization of the
 // terraform-provider plugin, matching how GetRequiredPackages emits install
 // specs. Built-in providers (pulumi, terraform) are handled by the engine and
 // are not resolved.
-func (m *moduleProvider) requirementSpecs(
+func RequirementSpecs(
 	ctx context.Context, loader *modules.Loader, config *ast.Config, workDir string,
 ) []resolve.Request {
 	ctx, span := potel.Start(ctx, "requirementSpecs")
