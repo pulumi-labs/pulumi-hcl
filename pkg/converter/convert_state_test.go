@@ -21,6 +21,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/blang/semver"
@@ -566,8 +567,8 @@ func TestPackageDescriptorsFromResolver(t *testing.T) {
 	assert.Equal(t, "6.0.0", desc.Parameterization.Version.String())
 }
 
-// fakeResolver stands in for the engine's package resolver, asserting the
-// converter asks for the bridge plugin parameterized by the program's source.
+// fakeResolver stands in for the engine's package resolver: it echoes the
+// requested parameterization back, as the terraform-provider plugin does.
 type fakeResolver struct {
 	pulumirpc.UnimplementedPackageResolverServer
 	t *testing.T
@@ -577,15 +578,20 @@ func (r fakeResolver) ResolvePackage(
 	_ context.Context, spec *pulumirpc.PackageSpec,
 ) (*pulumirpc.PackageDependency, error) {
 	assert.Equal(r.t, "terraform-provider", spec.Source)
-	assert.Contains(r.t, spec.Parameters, "acme/example")
+	require.NotEmpty(r.t, spec.Parameters, "the provider's source is the first parameter")
+	source, version := spec.Parameters[0], ""
+	if len(spec.Parameters) > 1 {
+		version = spec.Parameters[1]
+	}
+	name := source[strings.LastIndex(source, "/")+1:]
 	return &pulumirpc.PackageDependency{
 		Kind:    string(apitype.ResourcePlugin),
 		Name:    "terraform-provider",
 		Version: "0.0.1",
 		Parameterization: &pulumirpc.PackageParameterization{
-			Name:    "example",
-			Version: "6.0.0",
-			Value:   []byte(`{"remote":{"url":"acme/example","version":"6.0.0"}}`),
+			Name:    name,
+			Version: version,
+			Value:   fmt.Appendf(nil, `{"remote":{"url":%q,"version":%q}}`, source, version),
 		},
 	}, nil
 }
@@ -600,20 +606,29 @@ func TestConvertStateArgValidation(t *testing.T) {
 
 	_, err = New().ConvertState(t.Context(), &plugin.ConvertStateRequest{
 		MapperTarget: "127.0.0.1:1",
+		LoaderTarget: "127.0.0.1:1",
+		Args:         []string{"state.json"},
+	})
+	assert.ErrorContains(t, err, "missing resolver address")
+
+	_, err = New().ConvertState(t.Context(), &plugin.ConvertStateRequest{
+		MapperTarget: "127.0.0.1:1",
 		Args:         []string{"state.json"},
 	})
 	assert.ErrorContains(t, err, "missing loader address")
 
 	_, err = New().ConvertState(t.Context(), &plugin.ConvertStateRequest{
-		MapperTarget: "127.0.0.1:1",
-		LoaderTarget: "127.0.0.1:1",
+		MapperTarget:   "127.0.0.1:1",
+		LoaderTarget:   "127.0.0.1:1",
+		ResolverTarget: "127.0.0.1:1",
 	})
 	assert.ErrorContains(t, err, "expected exactly one argument")
 
 	_, err = New().ConvertState(t.Context(), &plugin.ConvertStateRequest{
-		MapperTarget: "127.0.0.1:1",
-		LoaderTarget: "127.0.0.1:1",
-		Args:         []string{"a", "b"},
+		MapperTarget:   "127.0.0.1:1",
+		LoaderTarget:   "127.0.0.1:1",
+		ResolverTarget: "127.0.0.1:1",
+		Args:           []string{"a", "b"},
 	})
 	assert.ErrorContains(t, err, "expected exactly one argument")
 }
@@ -672,6 +687,7 @@ func TestConvertStateViaMapper(t *testing.T) {
 				},
 			})
 			schema.LoaderRegistration(schema.NewLoaderServer(loader))(srv)
+			pulumirpc.RegisterPackageResolverServer(srv, fakeResolver{t: t})
 			return nil
 		},
 	})
@@ -691,6 +707,14 @@ func TestConvertStateViaMapper(t *testing.T) {
 		]
 	}`), 0o600))
 
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "main.tf"), []byte(`
+		terraform {
+			required_providers {
+				random = { source = "hashicorp/random", version = "6.0.0" }
+			}
+		}
+	`), 0o600))
+
 	// The project's sdks/ descriptor marks "random" as dynamically bridged.
 	desc := exampleDescriptor()
 	desc.Parameterization.Name = "random"
@@ -700,9 +724,10 @@ func TestConvertStateViaMapper(t *testing.T) {
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "sdks", "random", "hcl.sdk.json"), descJSON, 0o600))
 
 	resp, err := NewInDir(dir).ConvertState(t.Context(), &plugin.ConvertStateRequest{
-		MapperTarget: target,
-		LoaderTarget: target,
-		Args:         []string{statePath},
+		MapperTarget:   target,
+		LoaderTarget:   target,
+		ResolverTarget: target,
+		Args:           []string{statePath},
 	})
 	require.NoError(t, err)
 	require.Empty(t, resp.Diagnostics)
@@ -716,19 +741,21 @@ func TestConvertStateViaMapper(t *testing.T) {
 	assert.Equal(t, "terraform-provider", got.Parameterization.PluginName)
 
 	// State-file error paths share the same entry point.
-	_, err = New().ConvertState(t.Context(), &plugin.ConvertStateRequest{
-		MapperTarget: target,
-		LoaderTarget: target,
-		Args:         []string{filepath.Join(dir, "does-not-exist.tfstate")},
+	_, err = NewInDir(dir).ConvertState(t.Context(), &plugin.ConvertStateRequest{
+		MapperTarget:   target,
+		LoaderTarget:   target,
+		ResolverTarget: target,
+		Args:           []string{filepath.Join(dir, "does-not-exist.tfstate")},
 	})
 	assert.ErrorContains(t, err, "reading state file")
 
 	badPath := filepath.Join(dir, "bad.tfstate")
 	require.NoError(t, os.WriteFile(badPath, []byte("not json"), 0o600))
-	_, err = New().ConvertState(t.Context(), &plugin.ConvertStateRequest{
-		MapperTarget: target,
-		LoaderTarget: target,
-		Args:         []string{badPath},
+	_, err = NewInDir(dir).ConvertState(t.Context(), &plugin.ConvertStateRequest{
+		MapperTarget:   target,
+		LoaderTarget:   target,
+		ResolverTarget: target,
+		Args:           []string{badPath},
 	})
 	assert.ErrorContains(t, err, "parsing state file")
 }

@@ -23,9 +23,10 @@ func TestMain(m *testing.M) {
 		fmt.Fprintf(os.Stderr, "finding plugin dir: %v\n", err)
 		os.Exit(1)
 	}
-	err = runIn(filepath.Dir(langBinDir), nil,
-		"make", "bin/pulumi-language-hcl", "bin/pulumi-resource-hcl", "bin/pulumi-converter-hcl")
-	if err != nil {
+	cmd := exec.Command("make", "bin/pulumi-language-hcl", "bin/pulumi-resource-hcl", "bin/pulumi-converter-hcl")
+	cmd.Dir = filepath.Dir(langBinDir)
+	cmd.Stdout, cmd.Stderr = os.Stderr, os.Stderr
+	if err := cmd.Run(); err != nil {
 		fmt.Fprintf(os.Stderr, "building plugins: %v\n", err)
 		os.Exit(1)
 	}
@@ -70,7 +71,7 @@ func TestSmokeRandom(t *testing.T) {
 		NoParallel:     true,
 		Dir:            filepath.Join("testdata", "random"),
 		PulumiHomeDir:  home,
-		PrepareProject: prepareWithPulumiInstall(home),
+		PrepareProject: prepareWithPulumiInstall(t, home),
 		PostPrepareProject: func(e *engine.Projinfo) error {
 			sdkPath := filepath.Join(e.Root, "sdks", "random", "hcl.sdk.json")
 			_, err := os.Stat(sdkPath)
@@ -101,7 +102,7 @@ func TestSmokeInstallConverges(t *testing.T) {
 		NoParallel:     true,
 		Dir:            filepath.Join("testdata", "install-loop"),
 		PulumiHomeDir:  home,
-		PrepareProject: prepareWithPulumiInstall(home),
+		PrepareProject: prepareWithPulumiInstall(t, home),
 		ExtraRuntimeValidation: func(t *testing.T, stack integration.RuntimeValidationStackInfo) {
 			pet, ok := stack.Outputs["pet"].(string)
 			require.True(t, ok, "pet output must be a string, got %T (%v)",
@@ -143,7 +144,8 @@ func TestSmokeInLanguageModule(t *testing.T) {
 		Verbose:       true,
 		Stdout:        &preview,
 		PrepareProject: func(e *engine.Projinfo) error {
-			return runIn(e.Root, []string{"PULUMI_HOME=" + home}, "pulumi", "package", "add", moduleDir)
+			run(t, e.Root, []string{"PULUMI_HOME=" + home}, "pulumi", "package", "add", moduleDir)
+			return nil
 		},
 		ExtraRuntimeValidation: func(t *testing.T, stack integration.RuntimeValidationStackInfo) {
 			// The pet name flows from a not-yet-created `random_pet` inside the
@@ -239,7 +241,8 @@ func TestSmokeParameterizedModule(t *testing.T) {
 		Dir:           filepath.Join("testdata", "parameterized", "program"),
 		PulumiHomeDir: home,
 		PrepareProject: func(e *engine.Projinfo) error {
-			return runIn(e.Root, []string{"PULUMI_HOME=" + home}, "pulumi", "package", "add", resourceBin, "module", moduleDir)
+			run(t, e.Root, []string{"PULUMI_HOME=" + home}, "pulumi", "package", "add", resourceBin, "module", moduleDir)
+			return nil
 		},
 		ExtraRuntimeValidation: func(t *testing.T, stack integration.RuntimeValidationStackInfo) {
 			// petLength = 3 flows into the module's random_pet through the
@@ -362,9 +365,10 @@ func hostPluginsDir() string {
 	return filepath.Join(home, ".pulumi", "plugins")
 }
 
-func prepareWithPulumiInstall(pulumiHome string) func(*engine.Projinfo) error {
+func prepareWithPulumiInstall(t *testing.T, pulumiHome string) func(*engine.Projinfo) error {
 	return func(e *engine.Projinfo) error {
-		return runIn(e.Root, []string{"PULUMI_HOME=" + pulumiHome}, "pulumi", "install")
+		run(t, e.Root, []string{"PULUMI_HOME=" + pulumiHome}, "pulumi", "install")
+		return nil
 	}
 }
 
@@ -387,7 +391,8 @@ resource "random_uuid" "example" {
 // `pulumi import --from hcl`, encoding its core promise: if `tofu plan` shows
 // no diff, the first `pulumi preview` after import must not either. The
 // imported resources must land under the very same parameterized provider the
-// runtime uses, with the state's values supplied directly.
+// runtime uses, with the state's values supplied directly — resolved through
+// the engine's package resolver, without a prior `pulumi install`.
 func TestSmokeImportFromHCL(t *testing.T) {
 	t.Parallel()
 	tofuBin := lookPath(t, "tofu", "terraform")
@@ -422,11 +427,9 @@ func TestSmokeImportFromHCL(t *testing.T) {
 	writeFile(t, filepath.Join(pulDir, "Pulumi.yaml"), "name: import-e2e\nruntime: hcl\n")
 	writeFile(t, filepath.Join(pulDir, "main.tf"), importProgram)
 
-	// `pulumi install` writes sdks/random/hcl.sdk.json, the descriptor
-	// ConvertState reads to build the parameterized import.
-	run(t, pulDir, env, pulumiBin, "install")
-	require.FileExists(t, filepath.Join(pulDir, "sdks", "random", "hcl.sdk.json"),
-		"pulumi install should have written the random SDK descriptor")
+	// No `pulumi install`: the converter resolves the program's providers
+	// through the engine's package resolver, so nothing is on disk to read.
+	require.NoFileExists(t, filepath.Join(pulDir, "sdks", "random", "hcl.sdk.json"))
 
 	run(t, pulDir, env, pulumiBin, "stack", "init", "dev")
 
@@ -447,7 +450,7 @@ func lookPath(t *testing.T, names ...string) string {
 			return p
 		}
 	}
-	t.Skipf("none of %v found on PATH", names)
+	t.Fatalf("none of %v found on PATH", names)
 	return ""
 }
 
@@ -456,18 +459,14 @@ func writeFile(t *testing.T, path, content string) {
 	require.NoError(t, os.WriteFile(path, []byte(content), 0o600))
 }
 
-// runIn runs the command in dir with env appended to the environment,
-// streaming output to stderr.
-func runIn(dir string, env []string, name string, args ...string) error {
+// run runs the command in dir with env appended to the environment, streaming
+// output to stderr and failing the test if it does not succeed.
+func run(t *testing.T, dir string, env []string, name string, args ...string) {
+	t.Helper()
 	cmd := exec.Command(name, args...)
 	cmd.Dir = dir
 	cmd.Env = append(os.Environ(), env...)
 	cmd.Stdout, cmd.Stderr = os.Stderr, os.Stderr
-	return cmd.Run()
-}
-
-func run(t *testing.T, dir string, env []string, name string, args ...string) {
-	t.Helper()
-	require.NoErrorf(t, runIn(dir, env, name, args...),
+	require.NoErrorf(t, cmd.Run(),
 		"%s %s failed", filepath.Base(name), strings.Join(args, " "))
 }

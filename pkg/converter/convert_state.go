@@ -56,10 +56,6 @@ import (
 // ResourceImport per managed root-module resource instance, resolving TF types
 // to Pulumi tokens through the engine-provided mapper, so
 // `pulumi import --from hcl` can pull TF state into a Pulumi HCL project.
-// Imports are parameterized (dynamic-bridge) when the project's providers
-// resolve that way, landing resources under the same `terraform-provider`
-// packages the HCL runtime executes — unlike pulumi-converter-terraform's
-// static-bridge imports, which would provoke a replace on the next preview.
 func (c *hclConverter) ConvertState(
 	ctx context.Context, req *plugin.ConvertStateRequest,
 ) (*plugin.ConvertStateResponse, error) {
@@ -68,6 +64,9 @@ func (c *hclConverter) ConvertState(
 	}
 	if req.LoaderTarget == "" {
 		return nil, errors.New("ConvertState: missing loader address")
+	}
+	if req.ResolverTarget == "" {
+		return nil, errors.New("ConvertState: missing resolver address")
 	}
 	if len(req.Args) != 1 {
 		return nil, fmt.Errorf(
@@ -107,8 +106,7 @@ func (c *hclConverter) ConvertState(
 // to, so imports land under the packages the runtime executes. The program is
 // the source of truth: its providers are resolved through the engine's package
 // resolver, exactly as `pulumi install` resolves them, so an import needs no
-// prior install. The descriptors install already wrote take precedence, and
-// stand alone against an engine that serves no resolver.
+// prior install. The descriptors install already wrote take precedence.
 func (c *hclConverter) packageDescriptors(
 	ctx context.Context, resolverTarget string,
 ) (map[string]workspace.PackageDescriptor, error) {
@@ -116,12 +114,9 @@ func (c *hclConverter) packageDescriptors(
 	if err != nil {
 		return nil, fmt.Errorf("reading parameterization infos: %w", err)
 	}
-	if resolverTarget == "" {
-		return installed, nil
-	}
 	config, diags := parser.NewParser().ParseDirectory(c.projectDir)
-	if config == nil || diags.HasErrors() {
-		return installed, nil
+	if diags.HasErrors() {
+		return nil, fmt.Errorf("parsing the project: %w", diags)
 	}
 	resolver, err := server.NewPackageResolverClient(resolverTarget)
 	if err != nil {
