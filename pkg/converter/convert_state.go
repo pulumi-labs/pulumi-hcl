@@ -25,6 +25,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 
 	"github.com/hashicorp/hcl/v2"
 	"github.com/pulumi/pulumi-hcl/pkg/hcl/bridge"
@@ -75,6 +76,10 @@ func (c *hclConverter) ConvertState(
 	if err != nil {
 		return nil, err
 	}
+	programDir, err := c.programDir()
+	if err != nil {
+		return nil, err
+	}
 
 	mapperClient, err := convert.NewMapperClient(req.MapperTarget)
 	if err != nil {
@@ -97,7 +102,7 @@ func (c *hclConverter) ConvertState(
 		return nil, err
 	}
 
-	resp := convertTFState(ctx, providerInfoSource, loader, descriptors, state)
+	resp := convertTFState(ctx, providerInfoSource, loader, descriptors, moduleSources(programDir), state)
 	resp.Diagnostics = append(diags, resp.Diagnostics...)
 	return resp, nil
 }
@@ -191,6 +196,42 @@ func (c *hclConverter) programDir() (string, error) {
 	return filepath.Join(filepath.Dir(path), proj.Main), nil
 }
 
+// moduleSources maps each module call the program declares — keyed by its
+// dotted call path, so nested calls are distinguishable — to its source, so
+// state module addresses resolve to the component types the runtime registers.
+// Calls inside modules fetched from a registry or VCS are not walked: their
+// configuration is not on disk, and their resources import once the module is
+// installed.
+func moduleSources(dir string) map[string]string {
+	out := map[string]string{}
+	var walk func(dir, prefix string, depth int)
+	walk = func(dir, prefix string, depth int) {
+		config, diags := parser.NewParser().ParseDirectory(dir)
+		if config == nil || diags.HasErrors() || depth > maxModuleDepth {
+			return
+		}
+		for _, mod := range config.Modules {
+			path := joinName(prefix, mod.Name)
+			out[path] = mod.Source
+			if isLocalModuleSource(mod.Source) {
+				walk(filepath.Join(dir, mod.Source), path, depth+1)
+			}
+		}
+	}
+	walk(dir, "", 0)
+	return out
+}
+
+// maxModuleDepth bounds the module walk: a local module that (transitively)
+// calls itself would otherwise recurse forever.
+const maxModuleDepth = 32
+
+// isLocalModuleSource reports whether a module source is a filesystem path,
+// the only kind whose configuration is readable without fetching it.
+func isLocalModuleSource(source string) bool {
+	return strings.HasPrefix(source, "./") || strings.HasPrefix(source, "../")
+}
+
 // readTFStateFile parses a state file through the vendored OpenTofu parser,
 // which sniffs the format version and upgrades pre-v4 states.
 func readTFStateFile(statePath string) (*states.State, error) {
@@ -214,6 +255,7 @@ func convertTFState(
 	providerInfoSource bridge.ProviderInfoSource,
 	loader schema.ReferenceLoader,
 	descriptors map[string]workspace.PackageDescriptor,
+	sources map[string]string,
 	state *states.State,
 ) *plugin.ConvertStateResponse {
 	var (
@@ -230,7 +272,9 @@ func convertTFState(
 		})
 	}
 
-	for res := range managedResources(state, warn) {
+	resources = append(resources, componentImports(state, sources)...)
+
+	for res, component := range managedResources(state, sources, warn) {
 		provider := res.ProviderConfig.Provider.Type
 		tfType := res.Addr.Resource.Type
 		stash := tfType == packages.TerraformDataType
@@ -288,7 +332,8 @@ func convertTFState(
 			}
 			resources = append(resources, plugin.ResourceImport{
 				Type:              token,
-				Name:              resourceName(res.Addr.Resource.Name, key),
+				Name:              joinName(component, resourceName(res.Addr.Resource.Name, key)),
+				Parent:            component,
 				ID:                id,
 				Inputs:            ins,
 				Outputs:           outs,
@@ -302,32 +347,92 @@ func convertTFState(
 	return &plugin.ConvertStateResponse{Resources: resources, Diagnostics: diagnostics}
 }
 
-// managedResources yields the root module's managed resources in address
-// order. Module-nested resources are skipped with a warning: core can import
-// components (pulumi/pulumi#15199), but mapping module instances to the
-// component names the HCL runtime registers is not built yet
-// (pulumi/pulumi-hcl#167).
-func managedResources(state *states.State, warn func(summary, detail string)) iter.Seq[*states.Resource] {
-	return func(yield func(*states.Resource) bool) {
+// managedResources yields the state's managed resources in address order,
+// paired with the name of the module component enclosing them ("" at the
+// root). Resources in a module the program does not declare are skipped with
+// a warning: without the module's source there is no component to import them
+// under.
+func managedResources(
+	state *states.State, sources map[string]string, warn func(summary, detail string),
+) iter.Seq2[*states.Resource, string] {
+	return func(yield func(*states.Resource, string) bool) {
 		for _, modKey := range slices.Sorted(maps.Keys(state.Modules)) {
 			mod := state.Modules[modKey]
+			component, _, declared := moduleComponentName(mod.Addr, sources)
 			for _, resKey := range slices.Sorted(maps.Keys(mod.Resources)) {
 				res := mod.Resources[resKey]
 				if res.Addr.Resource.Mode != addrs.ManagedResourceMode {
 					continue
 				}
-				if !mod.Addr.IsRoot() {
+				if !declared {
 					warn("Skipped module resource", fmt.Sprintf(
-						"resource %q is nested in %q; module import is not yet supported",
+						"resource %q is nested in %q, which the program does not declare",
 						res.Addr.Resource.Name, mod.Addr.String()))
 					continue
 				}
-				if !yield(res) {
+				if !yield(res, component) {
 					return
 				}
 			}
 		}
 	}
+}
+
+// moduleComponentName renders a state module address as the component name the
+// runtime registers for it — each call's name with its instance key, joined
+// with "." — and the source of the innermost call. It reports false for a
+// module the program does not declare.
+func moduleComponentName(addr addrs.ModuleInstance, sources map[string]string) (name, source string, ok bool) {
+	callPath := ""
+	for _, step := range addr {
+		callPath = joinName(callPath, step.Name)
+		source, ok = sources[callPath]
+		if !ok {
+			return "", "", false
+		}
+		name = joinName(name, resourceName(step.Name, step.InstanceKey))
+	}
+	return name, source, true
+}
+
+// joinName joins an enclosing module component's name to a child name,
+// mirroring the runtime's own module-name joining.
+func joinName(parent, name string) string {
+	if parent == "" {
+		return name
+	}
+	return parent + "." + name
+}
+
+// componentImports emits one import per module instance in the state, typed
+// and named as the runtime registers the module's component so its children
+// land on the URNs the program will register.
+func componentImports(
+	state *states.State, sources map[string]string,
+) []plugin.ResourceImport {
+	var imports []plugin.ResourceImport
+	seen := map[string]bool{}
+	for _, modKey := range slices.Sorted(maps.Keys(state.Modules)) {
+		addr := state.Modules[modKey].Addr
+		// State records only the modules that hold resources, so every
+		// enclosing module is emitted too: a component's parent must be in
+		// the same response.
+		for depth := 1; depth <= len(addr); depth++ {
+			name, source, declared := moduleComponentName(addr[:depth], sources)
+			if !declared || seen[name] {
+				break
+			}
+			seen[name] = true
+			parent, _, _ := moduleComponentName(addr[:depth-1], sources)
+			imports = append(imports, plugin.ResourceImport{
+				Type:        "components:index:" + modules.ComponentTypeName(modules.SourceName(source)),
+				Name:        name,
+				IsComponent: true,
+				Parent:      parent,
+			})
+		}
+	}
+	return imports
 }
 
 // sortedInstanceKeys orders a resource's instances deterministically:

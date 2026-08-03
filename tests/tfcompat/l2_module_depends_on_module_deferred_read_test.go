@@ -29,6 +29,7 @@ func TestL2ModuleDependsOnModuleDeferredRead(t *testing.T) {
 		Providers: []tfcompat.Provider{
 			{Name: "pending", Factory: providers.PendingProvider},
 		},
+		SkipImport: "the pending provider's backend is factory-local",
 		Stages: []tfcompat.Stage{
 			{Mode: tfcompat.StagePreview},
 			{},

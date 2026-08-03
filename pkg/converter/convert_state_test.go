@@ -204,7 +204,7 @@ func TestConvertTFState_EmitsParameterizedImport(t *testing.T) {
 	}`)
 
 	descriptors := map[string]workspace.PackageDescriptor{"example": exampleDescriptor()}
-	resp := convertTFState(t.Context(), exampleInfoSource(t), exampleLoader(t), descriptors, state)
+	resp := convertTFState(t.Context(), exampleInfoSource(t), exampleLoader(t), descriptors, nil, state)
 
 	require.Empty(t, resp.Diagnostics)
 	require.Len(t, resp.Resources, 1)
@@ -250,7 +250,7 @@ func TestConvertTFState_SkipsUnimportable(t *testing.T) {
 		]
 	}`)
 
-	resp := convertTFState(t.Context(), exampleInfoSource(t), exampleLoader(t), nil, state)
+	resp := convertTFState(t.Context(), exampleInfoSource(t), exampleLoader(t), nil, nil, state)
 
 	// The data source skips silently; the other three each warn.
 	assert.Empty(t, resp.Resources)
@@ -284,7 +284,7 @@ func TestConvertTFState_CountAndForEach(t *testing.T) {
 		]
 	}`)
 
-	resp := convertTFState(t.Context(), exampleInfoSource(t), exampleLoader(t), nil, state)
+	resp := convertTFState(t.Context(), exampleInfoSource(t), exampleLoader(t), nil, nil, state)
 
 	require.Empty(t, resp.Diagnostics)
 	names := make(map[string]string, len(resp.Resources))
@@ -340,7 +340,7 @@ func TestConvertTFState_ProviderNamePrefixMismatch(t *testing.T) {
 			}},
 		},
 	})
-	resp := convertTFState(t.Context(), src, loader, nil, state)
+	resp := convertTFState(t.Context(), src, loader, nil, nil, state)
 
 	require.Empty(t, resp.Diagnostics)
 	require.Len(t, resp.Resources, 1)
@@ -382,7 +382,7 @@ func TestConvertTFState_SuppliesValues(t *testing.T) {
 		]
 	}`)
 
-	resp := convertTFState(t.Context(), exampleInfoSource(t), exampleLoader(t), nil, state)
+	resp := convertTFState(t.Context(), exampleInfoSource(t), exampleLoader(t), nil, nil, state)
 	require.Empty(t, resp.Diagnostics)
 	require.Len(t, resp.Resources, 1)
 	got := resp.Resources[0]
@@ -443,7 +443,7 @@ func TestConvertTFState_TerraformData(t *testing.T) {
 		]
 	}`)
 
-	resp := convertTFState(t.Context(), fakeInfoSource{}, nil, nil, state)
+	resp := convertTFState(t.Context(), fakeInfoSource{}, nil, nil, nil, state)
 	require.Empty(t, resp.Diagnostics)
 	require.Len(t, resp.Resources, 2)
 
@@ -489,7 +489,7 @@ func TestConvertTFState_ValueFallbacks(t *testing.T) {
 		]
 	}`)
 
-	resp := convertTFState(t.Context(), exampleInfoSource(t), exampleLoader(t), nil, state)
+	resp := convertTFState(t.Context(), exampleInfoSource(t), exampleLoader(t), nil, nil, state)
 	require.Len(t, resp.Resources, 2)
 	for _, r := range resp.Resources {
 		assert.Nil(t, r.Outputs, "%s should import by id only", r.ID)
@@ -499,6 +499,62 @@ func TestConvertTFState_ValueFallbacks(t *testing.T) {
 	for _, d := range resp.Diagnostics {
 		assert.Equal(t, "Importing without values", d.Summary)
 	}
+}
+
+// TestConvertTFState_ModuleResources pins the module import shape: a component
+// per module instance (including ancestors the state does not name), children
+// parented and dot-named as the runtime registers them.
+func TestConvertTFState_ModuleResources(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "main.tf"), []byte(`
+		module "outer" { source = "./outer" }
+	`), 0o600))
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "outer"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "outer", "main.tf"), []byte(`
+		module "inner" { source = "./inner" }
+	`), 0o600))
+
+	state := parseState(t, `{
+		"resources": [
+			{
+				"module": "module.outer.module.inner", "mode": "managed",
+				"type": "example_resource", "name": "r",
+				"provider": "provider[\"registry.terraform.io/acme/example\"]",
+				"instances": [ { "attributes": { "id": "res-1" } } ]
+			},
+			{
+				"module": "module.absent", "mode": "managed",
+				"type": "example_resource", "name": "gone",
+				"provider": "provider[\"registry.terraform.io/acme/example\"]",
+				"instances": [ { "attributes": { "id": "res-2" } } ]
+			}
+		]
+	}`)
+
+	resp := convertTFState(t.Context(), exampleInfoSource(t), exampleLoader(t), nil, moduleSources(dir), state)
+	require.Len(t, resp.Diagnostics, 1)
+	assert.Equal(t, "Skipped module resource", resp.Diagnostics[0].Summary,
+		"a module the program does not declare has no component to import under")
+
+	require.Len(t, resp.Resources, 3)
+	outer, inner, child := resp.Resources[0], resp.Resources[1], resp.Resources[2]
+
+	assert.Equal(t, "components:index:Outer", outer.Type)
+	assert.Equal(t, "outer", outer.Name)
+	assert.True(t, outer.IsComponent)
+	assert.Empty(t, outer.Parent)
+	assert.Empty(t, outer.ID, "components have no id")
+
+	assert.Equal(t, "components:index:Inner", inner.Type, "the enclosing module holds no resources of its own")
+	assert.Equal(t, "outer.inner", inner.Name)
+	assert.Equal(t, "outer", inner.Parent)
+
+	assert.Equal(t, "example:index/resource:Resource", child.Type)
+	assert.Equal(t, "outer.inner.r", child.Name)
+	assert.Equal(t, "outer.inner", child.Parent)
+	assert.Equal(t, "res-1", child.ID)
 }
 
 func TestResourceName(t *testing.T) {

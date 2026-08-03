@@ -4049,7 +4049,7 @@ func (e *Engine) processModuleInit(ctx context.Context, node *graph.Node) error 
 	modInfo := node.ModuleInfo
 	mod := modInfo.Module
 
-	componentType := fmt.Sprintf("components:index:%s", componentTypeName(modules.SourceName(mod.Source)))
+	componentType := fmt.Sprintf("components:index:%s", modules.ComponentTypeName(modules.SourceName(mod.Source)))
 
 	// A nested module call runs once per instance of the enclosing module; a
 	// root-level call runs in the single root scope (a nil parent instance).
@@ -4380,21 +4380,6 @@ func (e *Engine) processModuleComplete(ctx context.Context, node *graph.Node) er
 }
 
 // componentTypeName derives a component type name from a module's name,
-// replicating PCL's DeclarationName logic.
-func componentTypeName(name string) string {
-	for _, ch := range []string{"-", ".", " "} {
-		name = strings.ReplaceAll(name, ch, "_")
-	}
-	parts := strings.Split(name, "_")
-	var b strings.Builder
-	for _, p := range parts {
-		if p != "" {
-			b.WriteString(strings.ToUpper(p[:1]) + p[1:])
-		}
-	}
-	return b.String()
-}
-
 // registerComponentResource registers a component (non-custom) resource.
 func (e *Engine) registerComponentResource(
 	ctx context.Context,

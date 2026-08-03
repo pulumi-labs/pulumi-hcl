@@ -15,17 +15,14 @@
 package tfcompat
 
 import (
-	"bytes"
 	"fmt"
-	"os"
 	"path/filepath"
 	"testing"
 
-	"github.com/pulumi/pulumi-hcl/pkg/util/encryption"
 	"github.com/pulumi/pulumi-hcl/tests/testutil/pulexec"
 	"github.com/pulumi/pulumi-hcl/tests/testutil/tfexec"
-	"github.com/pulumi/pulumi-hcl/vendored/addrs"
-	"github.com/pulumi/pulumi-hcl/vendored/statefile"
+	"github.com/pulumi/pulumi/sdk/v3/go/common/apitype"
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
@@ -61,23 +58,7 @@ func runImportCheck(
 			}
 		}
 		statePath := filepath.Join(tfStateDir, "terraform.tfstate")
-		stateJSON, err := os.ReadFile(statePath)
-		require.NoError(t, err)
-
-		f, err := statefile.Read(bytes.NewReader(stateJSON), encryption.StateEncryptionDisabled())
-		require.NoError(t, err)
-		// Module-nested resources cannot import completely yet
-		// (pulumi/pulumi-hcl#167), so their previews would propose creates.
-		for _, mod := range f.State.Modules {
-			for _, res := range mod.Resources {
-				if res.Addr.Resource.Mode != addrs.ManagedResourceMode {
-					continue
-				}
-				if !mod.Addr.IsRoot() {
-					t.Skip("state has module-nested resources; import does not support modules yet")
-				}
-			}
-		}
+		require.FileExists(t, statePath)
 
 		// Import into a fresh stack.
 		pulProvs := buildPulumiProviders(t, c.Providers, &tfexec.Recorder{})
@@ -95,25 +76,36 @@ func runImportCheck(
 		summary, err := d.Preview(t, files)
 		require.NoError(t, err)
 		require.Empty(t, d.Mutations(), "preview after import proposed resource changes")
-		assertOnlyBenignOps(t, "preview", summary)
+		assertNoDestructiveOps(t, "preview", summary)
 
 		res, err := d.TryApply(t, files)
 		require.NoErrorf(t, err, "up after import failed:\n%s", res.Output)
 		require.Empty(t, d.Mutations(), "up after import performed resource changes")
-		assertOnlyBenignOps(t, "up", res.Changes)
+		assertNoDestructiveOps(t, "up", res.Changes)
+
+		// Module inputs are not recorded in TF state, so an imported module
+		// component carries none and the up above records them — engine-side
+		// bookkeeping, invisible to the provider. Everything must be settled
+		// by now.
+		settled, err := d.Preview(t, files)
+		require.NoError(t, err)
+		for op, n := range settled {
+			assert.Equalf(t, apitype.OpSame, op, "%d %q operations remain after the import converged", n, op)
+		}
 	})
 }
 
-// assertOnlyBenignOps fails on any operation beyond same, create (the stack
-// shell, default providers, and component shells), or read: resources served
-// in-process by the engine's builtin provider (e.g. terraform_data's Stash)
-// never reach a provider's mutating RPCs, so the recorder alone cannot see
-// them change.
-func assertOnlyBenignOps[K ~string](t *testing.T, phase string, ops map[K]int) {
+// assertNoDestructiveOps fails on any operation that would disturb an existing
+// resource. Creates cover the stack shell, default providers, and module
+// component shells; updates cover the component inputs the import cannot
+// carry. Resources served in-process by the engine's builtin provider (e.g.
+// terraform_data's Stash) never reach a provider's mutating RPCs, so the
+// recorder alone cannot see them change.
+func assertNoDestructiveOps[K ~string](t *testing.T, phase string, ops map[K]int) {
 	t.Helper()
 	for op, n := range ops {
 		switch string(op) {
-		case "same", "create", "read":
+		case "same", "create", "read", "update":
 		default:
 			t.Errorf("%s after import performed %d %q operations", phase, n, op)
 		}
