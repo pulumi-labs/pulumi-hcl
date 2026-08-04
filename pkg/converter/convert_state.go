@@ -25,9 +25,9 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
-	"strings"
 
 	"github.com/hashicorp/hcl/v2"
+	"github.com/pulumi/pulumi-hcl/pkg/hcl/ast"
 	"github.com/pulumi/pulumi-hcl/pkg/hcl/bridge"
 	"github.com/pulumi/pulumi-hcl/pkg/hcl/eval"
 	"github.com/pulumi/pulumi-hcl/pkg/hcl/modulepath"
@@ -80,6 +80,10 @@ func (c *hclConverter) ConvertState(
 	if err != nil {
 		return nil, err
 	}
+	sources, err := moduleSources(ctx, programDir)
+	if err != nil {
+		return nil, err
+	}
 
 	mapperClient, err := convert.NewMapperClient(req.MapperTarget)
 	if err != nil {
@@ -102,7 +106,7 @@ func (c *hclConverter) ConvertState(
 		return nil, err
 	}
 
-	resp := convertTFState(ctx, providerInfoSource, loader, descriptors, moduleSources(programDir), state)
+	resp := convertTFState(ctx, providerInfoSource, loader, descriptors, sources, state)
 	resp.Diagnostics = append(diags, resp.Diagnostics...)
 	return resp, nil
 }
@@ -196,40 +200,38 @@ func (c *hclConverter) programDir() (string, error) {
 	return filepath.Join(filepath.Dir(path), proj.Main), nil
 }
 
-// moduleSources maps each module call the program declares — keyed by its
-// dotted call path, so nested calls are distinguishable — to its source, so
-// state module addresses resolve to the component types the runtime registers.
-// Calls inside modules fetched from a registry or VCS are not walked: their
-// configuration is not on disk, and their resources import once the module is
-// installed.
-func moduleSources(dir string) map[string]string {
-	out := map[string]string{}
-	var walk func(dir, prefix string, depth int)
-	walk = func(dir, prefix string, depth int) {
-		config, diags := parser.NewParser().ParseDirectory(dir)
-		if config == nil || diags.HasErrors() || depth > maxModuleDepth {
-			return
-		}
+// moduleSources maps each module call the program declares, keyed by its call
+// path, to the source the runtime derives the call's component type from. The
+// walk goes through the module loader, so a call inside a fetched module is
+// reached the same way the runtime reaches it; a module that cannot be loaded
+// contributes its own call but nothing below it.
+func moduleSources(ctx context.Context, dir string) (map[modulepath.Path]string, error) {
+	config, diags := parser.NewParser().ParseDirectory(dir)
+	if diags.HasErrors() {
+		return nil, fmt.Errorf("parsing the program: %w", diags)
+	}
+	loader := modules.NewLoader(modules.LiveResolver(ctx))
+	out := map[modulepath.Path]string{}
+	// A module reached from within itself would recurse forever, so the walk
+	// tracks the sources on the current chain rather than every source seen:
+	// one module called twice is two calls, and both need their own entry.
+	chain := map[string]bool{}
+	var walk func(config *ast.Config, dir string, path modulepath.Path)
+	walk = func(config *ast.Config, dir string, path modulepath.Path) {
 		for _, mod := range config.Modules {
-			path := joinName(prefix, mod.Name)
-			out[path] = mod.Source
-			if isLocalModuleSource(mod.Source) {
-				walk(filepath.Join(dir, mod.Source), path, depth+1)
+			callPath := path.Append(modulepath.NewStep(mod.Name))
+			out[callPath] = mod.Source
+			loaded, err := loader.LoadModule(ctx, mod.Source, mod.Version, dir)
+			if err != nil || chain[loaded.SourcePath] {
+				continue
 			}
+			chain[loaded.SourcePath] = true
+			walk(loaded.Config, loaded.SourcePath, callPath)
+			delete(chain, loaded.SourcePath)
 		}
 	}
-	walk(dir, "", 0)
-	return out
-}
-
-// maxModuleDepth bounds the module walk: a local module that (transitively)
-// calls itself would otherwise recurse forever.
-const maxModuleDepth = 32
-
-// isLocalModuleSource reports whether a module source is a filesystem path,
-// the only kind whose configuration is readable without fetching it.
-func isLocalModuleSource(source string) bool {
-	return strings.HasPrefix(source, "./") || strings.HasPrefix(source, "../")
+	walk(config, dir, modulepath.Root())
+	return out, nil
 }
 
 // readTFStateFile parses a state file through the vendored OpenTofu parser,
@@ -255,7 +257,7 @@ func convertTFState(
 	providerInfoSource bridge.ProviderInfoSource,
 	loader schema.ReferenceLoader,
 	descriptors map[string]workspace.PackageDescriptor,
-	sources map[string]string,
+	sources map[modulepath.Path]string,
 	state *states.State,
 ) *plugin.ConvertStateResponse {
 	var (
@@ -332,8 +334,8 @@ func convertTFState(
 			}
 			resources = append(resources, plugin.ResourceImport{
 				Type:              token,
-				Name:              joinName(component, resourceName(res.Addr.Resource.Name, key)),
-				Parent:            component,
+				Name:              component.Append(instanceStep(res.Addr.Resource.Name, key)).LogicalName(),
+				Parent:            component.LogicalName(),
 				ID:                id,
 				Inputs:            ins,
 				Outputs:           outs,
@@ -348,17 +350,17 @@ func convertTFState(
 }
 
 // managedResources yields the state's managed resources in address order,
-// paired with the name of the module component enclosing them ("" at the
-// root). Resources in a module the program does not declare are skipped with
-// a warning: without the module's source there is no component to import them
-// under.
+// paired with the path of the module component enclosing them (the root path
+// at the root). Resources in a module the program does not declare are skipped
+// with a warning: without the module's source there is no component to import
+// them under.
 func managedResources(
-	state *states.State, sources map[string]string, warn func(summary, detail string),
-) iter.Seq2[*states.Resource, string] {
-	return func(yield func(*states.Resource, string) bool) {
+	state *states.State, sources map[modulepath.Path]string, warn func(summary, detail string),
+) iter.Seq2[*states.Resource, modulepath.Path] {
+	return func(yield func(*states.Resource, modulepath.Path) bool) {
 		for _, modKey := range slices.Sorted(maps.Keys(state.Modules)) {
 			mod := state.Modules[modKey]
-			component, _, declared := moduleComponentName(mod.Addr, sources)
+			component, _, declared := moduleComponent(mod.Addr, sources)
 			for _, resKey := range slices.Sorted(maps.Keys(mod.Resources)) {
 				res := mod.Resources[resKey]
 				if res.Addr.Resource.Mode != addrs.ManagedResourceMode {
@@ -378,47 +380,39 @@ func managedResources(
 	}
 }
 
-// moduleComponentName renders a state module address as the component name the
-// runtime registers for it — each call's name with its instance key, joined
-// with "." — and the source of the innermost call. It reports false for a
-// module the program does not declare.
-func moduleComponentName(addr addrs.ModuleInstance, sources map[string]string) (name, source string, ok bool) {
-	callPath := ""
+// moduleComponent resolves a state module address to the path the runtime
+// registers the module's component under, and the source of the innermost
+// call. It reports false for a module the program does not declare.
+func moduleComponent(
+	addr addrs.ModuleInstance, sources map[modulepath.Path]string,
+) (instance modulepath.Path, source string, ok bool) {
+	call := modulepath.Root()
 	for _, step := range addr {
-		callPath = joinName(callPath, step.Name)
-		source, ok = sources[callPath]
+		call = call.Append(modulepath.NewStep(step.Name))
+		source, ok = sources[call]
 		if !ok {
-			return "", "", false
+			return modulepath.Root(), "", false
 		}
-		name = joinName(name, resourceName(step.Name, step.InstanceKey))
+		instance = instance.Append(instanceStep(step.Name, step.InstanceKey))
 	}
-	return name, source, true
-}
-
-// joinName joins an enclosing module component's name to a child name,
-// mirroring the runtime's own module-name joining.
-func joinName(parent, name string) string {
-	if parent == "" {
-		return name
-	}
-	return parent + "." + name
+	return instance, source, true
 }
 
 // componentImports emits one import per module instance in the state, typed
 // and named as the runtime registers the module's component so its children
 // land on the URNs the program will register.
 func componentImports(
-	state *states.State, sources map[string]string,
+	state *states.State, sources map[modulepath.Path]string,
 ) []plugin.ResourceImport {
 	var imports []plugin.ResourceImport
-	seen := map[string]bool{}
+	seen := map[modulepath.Path]bool{}
 	for _, modKey := range slices.Sorted(maps.Keys(state.Modules)) {
 		addr := state.Modules[modKey].Addr
 		// State records only the modules that hold resources, so every
 		// enclosing module is emitted too: a component's parent must be in
 		// the same response.
 		for depth := 1; depth <= len(addr); depth++ {
-			name, source, declared := moduleComponentName(addr[:depth], sources)
+			instance, source, declared := moduleComponent(addr[:depth], sources)
 			if !declared {
 				// Nothing deeper can be declared either: the walk fails at
 				// the first call the program does not name.
@@ -426,16 +420,16 @@ func componentImports(
 			}
 			// An ancestor shared with an earlier address is already emitted,
 			// but the descendants below it still need their own components.
-			if seen[name] {
+			if seen[instance] {
 				continue
 			}
-			seen[name] = true
-			parent, _, _ := moduleComponentName(addr[:depth-1], sources)
+			seen[instance] = true
+			parent, _, _ := moduleComponent(addr[:depth-1], sources)
 			imports = append(imports, plugin.ResourceImport{
 				Type:        "components:index:" + modules.ComponentTypeName(modules.SourceName(source)),
-				Name:        name,
+				Name:        instance.LogicalName(),
 				IsComponent: true,
-				Parent:      parent,
+				Parent:      parent.LogicalName(),
 			})
 		}
 	}
@@ -463,13 +457,18 @@ func sortedInstanceKeys(res *states.Resource) []addrs.InstanceKey {
 // pulumi-converter-terraform — the runtime registers raw labels, so
 // sanitising here would diff.
 func resourceName(name string, key addrs.InstanceKey) string {
+	return instanceStep(name, key).LogicalName()
+}
+
+// instanceStep is the modulepath step naming one instance of a block.
+func instanceStep(name string, key addrs.InstanceKey) modulepath.Step {
 	switch k := key.(type) {
 	case addrs.IntKey:
-		return modulepath.NewIndexedStep(name, int(k)).LogicalName()
+		return modulepath.NewIndexedStep(name, int(k))
 	case addrs.StringKey:
-		return modulepath.NewKeyedStep(name, string(k)).LogicalName()
+		return modulepath.NewKeyedStep(name, string(k))
 	default:
-		return name
+		return modulepath.NewStep(name)
 	}
 }
 

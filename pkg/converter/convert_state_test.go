@@ -28,6 +28,7 @@ import (
 	"github.com/blang/semver"
 	"github.com/hashicorp/hcl/v2"
 	sdkschema "github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/pulumi/pulumi-hcl/pkg/hcl/modulepath"
 	"github.com/pulumi/pulumi-hcl/pkg/util/encryption"
 	"github.com/pulumi/pulumi-hcl/tests/testutil/schemaloader"
 	"github.com/pulumi/pulumi-hcl/vendored/addrs"
@@ -533,7 +534,7 @@ func TestConvertTFState_ModuleResources(t *testing.T) {
 		]
 	}`)
 
-	resp := convertTFState(t.Context(), exampleInfoSource(t), exampleLoader(t), nil, moduleSources(dir), state)
+	resp := convertTFState(t.Context(), exampleInfoSource(t), exampleLoader(t), nil, mustModuleSources(t, dir), state)
 	require.Len(t, resp.Diagnostics, 1)
 	assert.Equal(t, "Skipped module resource", resp.Diagnostics[0].Summary,
 		"a module the program does not declare has no component to import under")
@@ -591,7 +592,7 @@ func TestConvertTFState_SiblingModuleCalls(t *testing.T) {
 		]
 	}`)
 
-	resp := convertTFState(t.Context(), exampleInfoSource(t), exampleLoader(t), nil, moduleSources(dir), state)
+	resp := convertTFState(t.Context(), exampleInfoSource(t), exampleLoader(t), nil, mustModuleSources(t, dir), state)
 	require.Empty(t, resp.Diagnostics)
 
 	byName := map[string]plugin.ResourceImport{}
@@ -1005,4 +1006,39 @@ func TestConvertStateViaMapper(t *testing.T) {
 		Args:           []string{badPath},
 	})
 	assert.ErrorContains(t, err, "parsing state file")
+}
+
+// mustModuleSources walks a program directory the way ConvertState does.
+func mustModuleSources(t *testing.T, dir string) map[modulepath.Path]string {
+	t.Helper()
+	sources, err := moduleSources(t.Context(), dir)
+	require.NoError(t, err)
+	return sources
+}
+
+// TestModuleSourcesDottedLabels covers a module label containing a dot, which
+// a dotted-string call path cannot tell apart from nesting: `module "a.b"` at
+// the root and `module "b"` inside `module "a"` are different calls with
+// different sources.
+func TestModuleSourcesDottedLabels(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	for _, sub := range []string{"dotted", "a", "nested"} {
+		require.NoError(t, os.MkdirAll(filepath.Join(dir, sub), 0o755))
+	}
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "main.tf"), []byte(`
+		module "a.b" { source = "./dotted" }
+		module "a"   { source = "./a" }
+	`), 0o600))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "a", "main.tf"), []byte(`
+		module "b" { source = "../nested" }
+	`), 0o600))
+
+	root := modulepath.Root()
+	assert.Equal(t, map[modulepath.Path]string{
+		root.Append(modulepath.NewStep("a.b")):                               "./dotted",
+		root.Append(modulepath.NewStep("a")):                                 "./a",
+		root.Append(modulepath.NewStep("a")).Append(modulepath.NewStep("b")): "../nested",
+	}, mustModuleSources(t, dir))
 }
