@@ -16,16 +16,16 @@ package providers
 
 import (
 	"context"
-	"errors"
 
 	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
 )
 
-// UnimportableProvider exposes a resource whose importer fails on any call,
-// standing in for resources whose import string the state's id cannot supply
-// (aws_iam_role_policy_attachment wants "role/policy"). A passing round-trip
-// proves a values-supplied import never invokes the importer.
+// UnimportableProvider exposes a resource whose read fails on any call. An
+// import that has to read the resource — as it does for a resource whose
+// import string the state's id cannot supply (aws_iam_role_policy_attachment
+// wants "role/policy") — therefore fails, so a passing round-trip proves the
+// import never read it.
 func UnimportableProvider() *schema.Provider {
 	return &schema.Provider{
 		ResourcesMap: map[string]*schema.Resource{
@@ -35,16 +35,14 @@ func UnimportableProvider() *schema.Provider {
 					"policy": {Type: schema.TypeString, Required: true, ForceNew: true},
 				},
 				Importer: &schema.ResourceImporter{
-					StateContext: func(_ context.Context, _ *schema.ResourceData, _ any) ([]*schema.ResourceData, error) {
-						return nil, errors.New("unexpected call to import")
-					},
+					StateContext: schema.ImportStatePassthroughContext,
 				},
 				CreateContext: func(_ context.Context, d *schema.ResourceData, _ any) diag.Diagnostics {
 					d.SetId("internal:" + d.Get("role").(string))
 					return nil
 				},
 				ReadContext: func(_ context.Context, _ *schema.ResourceData, _ any) diag.Diagnostics {
-					return nil
+					return diag.Errorf("unexpected read")
 				},
 				DeleteContext: func(_ context.Context, d *schema.ResourceData, _ any) diag.Diagnostics {
 					d.SetId("")

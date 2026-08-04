@@ -21,10 +21,11 @@ import (
 	"github.com/pulumi/pulumi-hcl/tests/testutil/tfcompat/providers"
 )
 
-// The resource's importer fails on any call, as it would for a resource whose
-// import string the state's id does not carry (aws_iam_role_policy_attachment
-// wants "role/policy"). Supplying the instance's values from state skips the
-// read that would invoke it, so the round-trip is clean.
+// The resource's read fails on any call, standing in for a resource an import
+// cannot read — one whose import string the state's id does not carry, like
+// aws_iam_role_policy_attachment's "role/policy". Supplying the instance's
+// values from state means the engine never reads it, so the round-trip is
+// clean.
 func TestL2UnimportableResource(t *testing.T) {
 	t.Parallel()
 	tfcompat.RunCase(t, "l2_unimportable_resource", tfcompat.Case{
