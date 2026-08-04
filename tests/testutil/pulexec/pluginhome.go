@@ -16,12 +16,11 @@ package pulexec
 
 import (
 	"os"
-
-	"github.com/blang/semver"
 	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/blang/semver"
 	"github.com/stretchr/testify/require"
 )
 
