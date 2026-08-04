@@ -1,0 +1,25 @@
+terraform {
+  required_providers {
+    simple = {
+      source  = "pulumi/simple"
+      version = "2.0.0"
+    }
+  }
+}
+
+resource "simple_resource" "res" {
+  pulumi {
+    name ="${pulumi.module.name}-res"
+  }
+  lifecycle {
+    create_before_destroy = true
+  }
+  value = var.input
+}
+variable "input" {
+  type        = bool
+  description = "A simple input"
+}
+output "output" {
+  value = simple_resource.res.value
+}

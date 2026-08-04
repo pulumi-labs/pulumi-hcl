@@ -4115,6 +4115,7 @@ func (e *Engine) initModuleCallIn(
 
 	// Evaluate module inputs for the component resource registration
 	inputs := make(map[string]property.Value)
+	inputDeps := make(map[string][]string)
 	attrs, _ := mod.Config.JustAttributes()
 	for name, attr := range attrs {
 		val, diags := attr.Expr.Value(parentEvalCtx.HCLContext())
@@ -4130,6 +4131,7 @@ func (e *Engine) initModuleCallIn(
 		pv, err := transform.CtyToPropertyValue(val)
 		if err == nil {
 			inputs[name] = pv
+			inputDeps[name] = eval.CollectDepURNs(val)
 		}
 	}
 
@@ -4143,7 +4145,15 @@ func (e *Engine) initModuleCallIn(
 		if err != nil {
 			return nil, err
 		}
-		componentOpts := &ResourceOptions{Parent: parentURN, Providers: passedProviders}
+		componentOpts := &ResourceOptions{
+			Parent:               parentURN,
+			Providers:            passedProviders,
+			PropertyDependencies: inputDeps,
+		}
+		for _, deps := range inputDeps {
+			componentOpts.DependsOn = append(componentOpts.DependsOn, deps...)
+		}
+		componentOpts.DependsOn = e.cellURNs.widen(componentOpts.DependsOn)
 		componentOpts.Aliases = e.moduleComponentAliases(instPath)
 		if mod.Protect != nil {
 			hclCtx := parentEvalCtx.HCLContextWithIteration(index, eachKey, eachVal)
@@ -4411,13 +4421,14 @@ func (e *Engine) registerComponentResource(
 
 	deps := opts.DependsOn
 	resp, err := e.resmon.RegisterResource(ctx, RegisterResourceRequest{
-		Type:         typeToken,
-		Name:         name,
-		Inputs:       inputs,
-		Dependencies: deps,
-		Parent:       opts.Parent,
-		Protect:      opts.Protect,
-		Providers:    opts.Providers,
+		Type:                 typeToken,
+		Name:                 name,
+		Inputs:               inputs,
+		Dependencies:         deps,
+		PropertyDependencies: opts.PropertyDependencies,
+		Parent:               opts.Parent,
+		Protect:              opts.Protect,
+		Providers:            opts.Providers,
 	})
 	if err != nil {
 		return "", "", property.Map{}, err
