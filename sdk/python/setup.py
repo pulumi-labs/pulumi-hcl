@@ -9,7 +9,7 @@ from setuptools.command.install import install
 from subprocess import check_call
 
 
-VERSION = "0.12.0"
+VERSION = "0.13.0"
 def readme():
     try:
         with open('README.md', encoding='utf-8') as f:
@@ -18,19 +18,19 @@ def readme():
         return "hcl Pulumi Package - Development Version"
 
 
-setup(name='pulumi_labs_hcl',
+setup(name='pulumi_hcl',
       python_requires='>=3.9',
       version=VERSION,
       description="Instantiate a Terraform/OpenTofu module as a Pulumi component.",
       long_description=readme(),
       long_description_content_type='text/markdown',
       project_urls={
-          'Repository': 'https://github.com/pulumi-labs/pulumi-hcl'
+          'Repository': 'https://github.com/pulumi/pulumi-hcl'
       },
       license='Apache-2.0',
       packages=find_packages(),
       package_data={
-          'pulumi_labs_hcl': [
+          'pulumi_hcl': [
               'py.typed',
               'pulumi-plugin.json',
           ]

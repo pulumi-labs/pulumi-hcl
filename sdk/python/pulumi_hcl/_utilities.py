@@ -320,7 +320,7 @@ def deprecated(message: str) -> typing.Callable[[C], C]:
     return decorator
 
 def get_plugin_download_url():
-	return "github://api.github.com/pulumi-labs/pulumi-hcl"
+	return "github://api.github.com/pulumi/pulumi-hcl"
 
 def get_version():
-    return "0.12.0"
+    return "0.13.0"

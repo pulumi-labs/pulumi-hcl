@@ -1,29 +1,29 @@
 {
   "name": "hcl",
   "displayName": "Any HCL Module",
-  "version": "0.12.0",
+  "version": "0.13.0",
   "description": "Instantiate a Terraform/OpenTofu module as a Pulumi component.",
   "license": "Apache-2.0",
-  "repository": "https://github.com/pulumi-labs/pulumi-hcl",
-  "logoUrl": "https://raw.githubusercontent.com/pulumi-labs/pulumi-hcl/master/assets/logo.svg",
-  "pluginDownloadURL": "github://api.github.com/pulumi-labs/pulumi-hcl",
+  "repository": "https://github.com/pulumi/pulumi-hcl",
+  "logoUrl": "https://raw.githubusercontent.com/pulumi/pulumi-hcl/master/assets/logo.svg",
+  "pluginDownloadURL": "github://api.github.com/pulumi/pulumi-hcl",
   "publisher": "Pulumi",
   "meta": {
     "supportPack": true
   },
   "language": {
     "csharp": {
-      "rootNamespace": "Pulumi.Labs"
+      "rootNamespace": "Pulumi"
     },
     "go": {
-      "importBasePath": "github.com/pulumi-labs/pulumi-hcl/sdk/go/hcl",
+      "importBasePath": "github.com/pulumi/pulumi-hcl/sdk/go/hcl",
       "respectSchemaVersion": true
     },
     "nodejs": {
-      "packageName": "@pulumi-labs/hcl"
+      "packageName": "@pulumi/hcl"
     },
     "python": {
-      "packageName": "pulumi_labs_hcl"
+      "packageName": "pulumi_hcl"
     }
   },
   "config": {},

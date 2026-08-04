@@ -14,7 +14,7 @@ _utilities.register(
  {
   "pkg": "hcl",
   "mod": "index",
-  "fqn": "pulumi_labs_hcl",
+  "fqn": "pulumi_hcl",
   "classes": {
    "hcl:index:Module": "Module"
   }
@@ -26,7 +26,7 @@ _utilities.register(
  {
   "pkg": "hcl",
   "token": "pulumi:providers:hcl",
-  "fqn": "pulumi_labs_hcl",
+  "fqn": "pulumi_hcl",
   "class": "Provider"
  }
 ]

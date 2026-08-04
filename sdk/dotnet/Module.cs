@@ -6,9 +6,8 @@ using System.Collections.Generic;
 using System.Collections.Immutable;
 using System.Threading.Tasks;
 using Pulumi.Serialization;
-using Pulumi;
 
-namespace Pulumi.Labs.Hcl
+namespace Pulumi.Hcl
 {
     /// <summary>
     /// A Terraform/OpenTofu module instantiated as a component resource.
@@ -58,7 +57,7 @@ namespace Pulumi.Labs.Hcl
             var defaultOptions = new ComponentResourceOptions
             {
                 Version = Utilities.Version,
-                PluginDownloadURL = "github://api.github.com/pulumi-labs/pulumi-hcl",
+                PluginDownloadURL = "github://api.github.com/pulumi/pulumi-hcl",
             };
             var merged = ComponentResourceOptions.Merge(defaultOptions, options);
             // Override the ID if one was specified for consistency with other language SDKs.

@@ -1,10 +1,10 @@
-module github.com/pulumi-labs/pulumi-hcl/sdk/go
+module github.com/pulumi/pulumi-hcl/sdk/go
 
 go 1.25.11
 
 require (
 	github.com/blang/semver v3.5.1+incompatible
-	github.com/pulumi/pulumi/sdk/v3 v3.254.0
+	github.com/pulumi/pulumi/sdk/v3 v3.255.0
 )
 
 require (

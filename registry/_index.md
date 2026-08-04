@@ -26,7 +26,7 @@ module and exports the resulting VPC id.
 
 ```typescript
 import * as pulumi from "@pulumi/pulumi";
-import * as hcl from "@pulumi-labs/hcl";
+import * as hcl from "@pulumi/hcl";
 
 const vpc = new hcl.Module("vpc", {
     source: "terraform-aws-modules/vpc/aws",
@@ -46,7 +46,7 @@ export const vpcId = vpc.outputs.apply(o => o["vpc_id"]);
 
 ```python
 import pulumi
-import pulumi_labs_hcl as hcl
+import pulumi_hcl as hcl
 
 vpc = hcl.Module("vpc",
     source="terraform-aws-modules/vpc/aws",
@@ -67,7 +67,7 @@ pulumi.export("vpc_id", vpc.outputs["vpc_id"])
 package main
 
 import (
-	"github.com/pulumi-labs/pulumi-hcl/sdk/go/hcl"
+	"github.com/pulumi/pulumi-hcl/sdk/go/hcl"
 	"github.com/pulumi/pulumi/sdk/v3/go/pulumi"
 )
 
@@ -97,7 +97,7 @@ func main() {
 ```csharp
 using System.Collections.Generic;
 using Pulumi;
-using Pulumi.Labs.Hcl;
+using Pulumi.Hcl;
 
 return await Deployment.RunAsync(() =>
 {
