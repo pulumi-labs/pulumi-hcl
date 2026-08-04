@@ -153,7 +153,7 @@ func convertTFState(
 			if current == nil {
 				continue
 			}
-			id, ok := importID(current)
+			id, ok := idAttr(current)
 			if !ok {
 				warn("Skipped resource without id", fmt.Sprintf(
 					"an instance of %s has no string `id` attribute to import by", res.Addr))
@@ -381,13 +381,8 @@ func resourceSchema(
 	return res, nil
 }
 
-// importID extracts the `id` attribute verbatim.
-//
-// TODO(pulumi/pulumi-hcl#167): resources whose importer needs a
-// composite or derived import string (e.g. aws_iam_role_policy_attachment's
-// role/policy-arn) import under the wrong ID; deriving the import string
-// needs per-resource knowledge the schema does not carry.
-func importID(src *states.ResourceInstanceObjectSrc) (string, bool) {
+// idAttr extracts the `id` attribute verbatim.
+func idAttr(src *states.ResourceInstanceObjectSrc) (string, bool) {
 	if src.AttrsJSON == nil {
 		// Pre-0.12 states carry flatmap attributes instead.
 		id := src.AttrsFlat["id"]
