@@ -1,6 +1,0 @@
-kind: bug-fixes
-body: Carry a module's `providers` map on its component registration, so remote components inside the module inherit the passed-in providers
-time: 2026-08-03T15:45:01Z
-custom:
-    Component: runtime
-    PR: "496"

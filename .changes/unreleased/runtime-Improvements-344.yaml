@@ -1,6 +1,0 @@
-kind: Improvements
-body: Add `protect` to resource and module `pulumi` blocks
-time: 2026-07-30T00:00:00Z
-custom:
-    Component: runtime
-    PR: "344"

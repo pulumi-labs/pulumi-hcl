@@ -1,6 +1,0 @@
-kind: bug-fixes
-body: Key provider-requirement satisfaction by source, so `pulumi install` converges when a child module's provider source differs from the root's `required_providers`
-time: 2026-08-01T12:30:00Z
-custom:
-    Component: language-host
-    PR: "490"

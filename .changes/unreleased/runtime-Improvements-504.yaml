@@ -1,6 +1,0 @@
-kind: Improvements
-body: 'Lowercase the built-in function names (`fileasset`, `pulumiresourceurn`, …) to match Terraform naming'
-time: 2026-08-03T20:30:00Z
-custom:
-    Component: runtime
-    PR: "504"

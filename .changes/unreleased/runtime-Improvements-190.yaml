@@ -1,6 +1,0 @@
-kind: Improvements
-body: Add `provider::terraform::decode_tfvars`
-time: 2026-07-31T10:32:16Z
-custom:
-    Component: runtime
-    PR: "190"

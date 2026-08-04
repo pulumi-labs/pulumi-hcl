@@ -1,6 +1,0 @@
-kind: Improvements
-body: '`pulumi import --from hcl` supplies resource values from the state file: outputs land verbatim (skipping the provider''s Read), sensitive values import as secrets, and resources whose values cannot be translated still import by id'
-time: 2026-07-31T13:21:37.55886+02:00
-custom:
-    Component: converter
-    PR: "479"
