@@ -84,9 +84,6 @@ jobs:
           restore-keys: |
             ${{ matrix.cache-key }}-
             go-test-
-      # dev, not latest: `pulumi import --from hcl` only reaches the package
-      # resolver on an engine carrying pulumi/pulumi#24174, which is merged but
-      # unreleased. Drop back to "latest" once it ships.
       - uses: pulumi/actions@v7
         with:
           pulumi-version: "dev"
