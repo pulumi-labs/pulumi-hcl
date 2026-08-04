@@ -315,9 +315,7 @@ func resourceSchema(
 	return res, nil
 }
 
-// idAttr extracts the `id` attribute verbatim: an import that supplies the
-// instance's values records the id as its identity rather than feeding it to
-// the provider's importer.
+// idAttr extracts the `id` attribute verbatim.
 func idAttr(src *states.ResourceInstanceObjectSrc) (string, bool) {
 	if src.AttrsJSON == nil {
 		// Pre-0.12 states carry flatmap attributes instead.
