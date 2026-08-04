@@ -71,7 +71,7 @@ func (c *hclConverter) ConvertState(
 			"ConvertState: expected exactly one argument (the state file path), got %d", len(req.Args))
 	}
 	statePath := req.Args[0]
-	descriptors, err := c.packageDescriptors(ctx, req.ResolverTarget)
+	descriptors, diags, err := c.packageDescriptors(ctx, req.ResolverTarget)
 	if err != nil {
 		return nil, err
 	}
@@ -97,7 +97,9 @@ func (c *hclConverter) ConvertState(
 		return nil, err
 	}
 
-	return convertTFState(ctx, providerInfoSource, loader, descriptors, state), nil
+	resp := convertTFState(ctx, providerInfoSource, loader, descriptors, state)
+	resp.Diagnostics = append(diags, resp.Diagnostics...)
+	return resp, nil
 }
 
 // packageDescriptors describes every package the project's providers resolve
@@ -109,34 +111,47 @@ func (c *hclConverter) ConvertState(
 // installed descriptors are available.
 func (c *hclConverter) packageDescriptors(
 	ctx context.Context, resolverTarget string,
-) (map[string]workspace.PackageDescriptor, error) {
+) (map[string]workspace.PackageDescriptor, hcl.Diagnostics, error) {
 	dir, err := c.programDir()
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	installed, err := readParameterizationInfos(dir)
 	if err != nil {
-		return nil, fmt.Errorf("reading parameterization infos: %w", err)
+		return nil, nil, fmt.Errorf("reading parameterization infos: %w", err)
 	}
 	if resolverTarget == "" {
-		return installed, nil
+		return installed, nil, nil
 	}
 	config, diags := parser.NewParser().ParseDirectory(dir)
 	if diags.HasErrors() {
-		return nil, fmt.Errorf("parsing the project: %w", diags)
+		return nil, nil, fmt.Errorf("parsing the project: %w", diags)
 	}
 	resolver, err := server.NewPackageResolverClient(resolverTarget)
 	if err != nil {
-		return nil, fmt.Errorf("dial package resolver at %s: %w", resolverTarget, err)
+		return nil, nil, fmt.Errorf("dial package resolver at %s: %w", resolverTarget, err)
 	}
 	specs := server.RequirementSpecs(ctx, modules.NewLoader(modules.LiveResolver(ctx)), config, dir)
 	resolved, err := resolve.Packages(ctx, resolver, specs)
 	if err != nil {
-		return nil, fmt.Errorf("resolving the program's providers: %w", err)
+		// Resolution only adds to what `pulumi install` wrote, so a provider
+		// the resolver cannot reach — one served locally, or a registry that
+		// is down — must not sink the whole import. Say so only when nothing
+		// is left to import under, since that is when a resource lands
+		// outside the package the program registers it under.
+		if len(installed) > 0 {
+			return installed, nil, nil
+		}
+		return nil, hcl.Diagnostics{{
+			Severity: hcl.DiagWarning,
+			Summary:  "Failed to resolve the program's providers",
+			Detail: fmt.Sprintf(
+				"resources import without a package version or parameterization: %v", err),
+		}}, nil
 	}
 	descriptors := byPackageName(resolved)
 	maps.Copy(descriptors, installed)
-	return descriptors, nil
+	return descriptors, nil, nil
 }
 
 // byPackageName re-keys resolver output — keyed by the provider's module-local

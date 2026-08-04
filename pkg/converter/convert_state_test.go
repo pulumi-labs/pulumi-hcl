@@ -545,7 +545,7 @@ func TestPackageDescriptorsFromResolver(t *testing.T) {
 		}
 	`), 0o600))
 
-	got, err := (&hclConverter{projectDir: dir}).packageDescriptors(t.Context(), serveResolver(t))
+	got, _, err := (&hclConverter{projectDir: dir}).packageDescriptors(t.Context(), serveResolver(t))
 	require.NoError(t, err)
 
 	desc, ok := got["example"]
@@ -561,11 +561,16 @@ func TestPackageDescriptorsFromResolver(t *testing.T) {
 type fakeResolver struct {
 	pulumirpc.UnimplementedPackageResolverServer
 	t *testing.T
+	// respond overrides the echo, so a test can fail one resolution.
+	respond func(*pulumirpc.PackageSpec) (*pulumirpc.PackageDependency, error)
 }
 
 func (r fakeResolver) ResolvePackage(
 	_ context.Context, spec *pulumirpc.PackageSpec,
 ) (*pulumirpc.PackageDependency, error) {
+	if r.respond != nil {
+		return r.respond(spec)
+	}
 	// assert, never require: this runs on a gRPC handler goroutine, where
 	// t.FailNow would be an illegal runtime.Goexit.
 	assert.Equal(r.t, "terraform-provider", spec.Source)
@@ -628,13 +633,51 @@ func TestPackageDescriptorsWithoutResolver(t *testing.T) {
 	dir := t.TempDir()
 	writeInstalledSDK(t, dir, "example", exampleDescriptor())
 
-	got, err := (&hclConverter{projectDir: dir}).packageDescriptors(t.Context(), "")
+	got, _, err := (&hclConverter{projectDir: dir}).packageDescriptors(t.Context(), "")
 	require.NoError(t, err)
 
 	desc, ok := got["example"]
 	require.True(t, ok)
 	require.NotNil(t, desc.Parameterization)
 	assert.Equal(t, "example", desc.Parameterization.Name)
+}
+
+// TestPackageDescriptorsUnresolvableProvider pins that a provider the resolver
+// cannot reach — served locally, or behind a registry that is down — does not
+// sink the import: it falls back to what `pulumi install` wrote, and says so
+// when there is nothing to fall back to.
+func TestPackageDescriptorsUnresolvableProvider(t *testing.T) {
+	t.Parallel()
+
+	program := `
+		terraform {
+			required_providers {
+				nowhere = { source = "hashicorp/nowhere", version = "1.0.0" }
+			}
+		}
+		resource "nowhere_thing" "a" {}
+	`
+	target := serveResolver(t, func(*pulumirpc.PackageSpec) (*pulumirpc.PackageDependency, error) {
+		return nil, errors.New("registry does not have a provider named hashicorp/nowhere")
+	})
+
+	installedDir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(installedDir, "main.tf"), []byte(program), 0o600))
+	writeInstalledSDK(t, installedDir, "nowhere", exampleDescriptor())
+
+	got, diags, err := (&hclConverter{projectDir: installedDir}).packageDescriptors(t.Context(), target)
+	require.NoError(t, err, "an unresolvable provider must not fail the conversion")
+	assert.Empty(t, diags, "the installed descriptor covers it, so there is nothing to report")
+	assert.Contains(t, got, "nowhere")
+
+	bareDir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(bareDir, "main.tf"), []byte(program), 0o600))
+
+	got, diags, err = (&hclConverter{projectDir: bareDir}).packageDescriptors(t.Context(), target)
+	require.NoError(t, err)
+	assert.Empty(t, got)
+	require.Len(t, diags, 1, "nothing to import under, so the degradation is reported")
+	assert.Equal(t, hcl.DiagWarning, diags[0].Severity)
 }
 
 // TestPackageDescriptorsKeyByPackageName pins the key space: a provider whose
@@ -653,7 +696,7 @@ func TestPackageDescriptorsKeyByPackageName(t *testing.T) {
 		resource "randy_uuid" "a" {}
 	`), 0o600))
 
-	got, err := (&hclConverter{projectDir: dir}).packageDescriptors(
+	got, _, err := (&hclConverter{projectDir: dir}).packageDescriptors(
 		t.Context(), serveResolver(t))
 	require.NoError(t, err)
 
@@ -680,7 +723,7 @@ func TestProgramDirFromWorkingDirectory(t *testing.T) {
 	`)
 
 	t.Chdir(dir)
-	got, err := (&hclConverter{}).packageDescriptors(t.Context(), serveResolver(t))
+	got, _, err := (&hclConverter{}).packageDescriptors(t.Context(), serveResolver(t))
 	require.NoError(t, err)
 
 	desc, ok := got["example"]
@@ -688,14 +731,21 @@ func TestProgramDirFromWorkingDirectory(t *testing.T) {
 	assert.Equal(t, "terraform-provider", desc.Name)
 }
 
-// serveResolver runs fakeResolver on a local port and returns its target.
-func serveResolver(t *testing.T) string {
+// serveResolver runs fakeResolver on a local port and returns its target,
+// optionally with respond standing in for the echo.
+func serveResolver(
+	t *testing.T, respond ...func(*pulumirpc.PackageSpec) (*pulumirpc.PackageDependency, error),
+) string {
 	t.Helper()
+	resolver := fakeResolver{t: t}
+	if len(respond) > 0 {
+		resolver.respond = respond[0]
+	}
 	cancel := make(chan bool)
 	handle, err := rpcutil.ServeWithOptions(rpcutil.ServeOptions{
 		Cancel: cancel,
 		Init: func(srv *grpc.Server) error {
-			pulumirpc.RegisterPackageResolverServer(srv, fakeResolver{t: t})
+			pulumirpc.RegisterPackageResolverServer(srv, resolver)
 			return nil
 		},
 	})
