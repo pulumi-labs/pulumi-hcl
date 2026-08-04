@@ -29,6 +29,8 @@ import (
 	"github.com/hashicorp/hcl/v2"
 	sdkschema "github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
 	"github.com/pulumi/pulumi-hcl/pkg/hcl/modulepath"
+	"github.com/pulumi/pulumi-hcl/pkg/hcl/modules"
+	"github.com/pulumi/pulumi-hcl/pkg/hcl/parser"
 	"github.com/pulumi/pulumi-hcl/pkg/util/encryption"
 	"github.com/pulumi/pulumi-hcl/tests/testutil/schemaloader"
 	"github.com/pulumi/pulumi-hcl/vendored/addrs"
@@ -658,7 +660,7 @@ func TestPackageDescriptorsFromResolver(t *testing.T) {
 		}
 	`), 0o600))
 
-	got, _, err := (&hclConverter{projectDir: dir}).packageDescriptors(t.Context(), serveResolver(t))
+	got, _, err := testPackageDescriptors(t, &hclConverter{projectDir: dir}, serveResolver(t))
 	require.NoError(t, err)
 
 	desc, ok := got["example"]
@@ -744,9 +746,10 @@ func TestPackageDescriptorsWithoutResolver(t *testing.T) {
 	t.Parallel()
 
 	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "main.tf"), nil, 0o600))
 	writeInstalledSDK(t, dir, "example", exampleDescriptor())
 
-	got, _, err := (&hclConverter{projectDir: dir}).packageDescriptors(t.Context(), "")
+	got, _, err := testPackageDescriptors(t, &hclConverter{projectDir: dir}, "")
 	require.NoError(t, err)
 
 	desc, ok := got["example"]
@@ -778,7 +781,7 @@ func TestPackageDescriptorsUnresolvableProvider(t *testing.T) {
 	require.NoError(t, os.WriteFile(filepath.Join(installedDir, "main.tf"), []byte(program), 0o600))
 	writeInstalledSDK(t, installedDir, "nowhere", exampleDescriptor())
 
-	got, diags, err := (&hclConverter{projectDir: installedDir}).packageDescriptors(t.Context(), target)
+	got, diags, err := testPackageDescriptors(t, &hclConverter{projectDir: installedDir}, target)
 	require.NoError(t, err, "an unresolvable provider must not fail the conversion")
 	assert.Empty(t, diags, "the installed descriptor covers it, so there is nothing to report")
 	assert.Contains(t, got, "nowhere")
@@ -786,7 +789,7 @@ func TestPackageDescriptorsUnresolvableProvider(t *testing.T) {
 	bareDir := t.TempDir()
 	require.NoError(t, os.WriteFile(filepath.Join(bareDir, "main.tf"), []byte(program), 0o600))
 
-	got, diags, err = (&hclConverter{projectDir: bareDir}).packageDescriptors(t.Context(), target)
+	got, diags, err = testPackageDescriptors(t, &hclConverter{projectDir: bareDir}, target)
 	require.NoError(t, err)
 	assert.Empty(t, got)
 	require.Len(t, diags, 1, "nothing to import under, so the degradation is reported")
@@ -809,8 +812,7 @@ func TestPackageDescriptorsKeyByPackageName(t *testing.T) {
 		resource "randy_uuid" "a" {}
 	`), 0o600))
 
-	got, _, err := (&hclConverter{projectDir: dir}).packageDescriptors(
-		t.Context(), serveResolver(t))
+	got, _, err := testPackageDescriptors(t, &hclConverter{projectDir: dir}, serveResolver(t))
 	require.NoError(t, err)
 
 	desc, ok := got["random"]
@@ -836,12 +838,26 @@ func TestProgramDirFromWorkingDirectory(t *testing.T) {
 	`)
 
 	t.Chdir(dir)
-	got, _, err := (&hclConverter{}).packageDescriptors(t.Context(), serveResolver(t))
+	got, _, err := testPackageDescriptors(t, &hclConverter{}, serveResolver(t))
 	require.NoError(t, err)
 
 	desc, ok := got["example"]
 	require.True(t, ok, "the project resolves from the working directory")
 	assert.Equal(t, "terraform-provider", desc.Name)
+}
+
+// testPackageDescriptors mirrors ConvertState's prelude: locate the program,
+// parse it, and hand packageDescriptors the shared loader.
+func testPackageDescriptors(
+	t *testing.T, c *hclConverter, resolverTarget string,
+) (map[string]workspace.PackageDescriptor, hcl.Diagnostics, error) {
+	t.Helper()
+	dir, err := c.programDir()
+	require.NoError(t, err)
+	config, diags := parser.NewParser().ParseDirectory(dir)
+	require.False(t, diags.HasErrors(), diags)
+	loader := modules.NewLoader(modules.LiveResolver(t.Context()))
+	return packageDescriptors(t.Context(), resolverTarget, dir, config, loader)
 }
 
 // serveResolver runs fakeResolver on a local port and returns its target,
@@ -1009,9 +1025,9 @@ func TestConvertStateViaMapper(t *testing.T) {
 
 func mustModuleSources(t *testing.T, dir string) map[modulepath.Path]string {
 	t.Helper()
-	sources, err := moduleSources(t.Context(), dir)
-	require.NoError(t, err)
-	return sources
+	config, diags := parser.NewParser().ParseDirectory(dir)
+	require.False(t, diags.HasErrors(), diags)
+	return moduleSources(t.Context(), modules.NewLoader(modules.LiveResolver(t.Context())), config, dir)
 }
 
 // TestModuleSourcesDottedLabels covers a dot in a block label, which a dotted

@@ -72,18 +72,20 @@ func (c *hclConverter) ConvertState(
 			"ConvertState: expected exactly one argument (the state file path), got %d", len(req.Args))
 	}
 	statePath := req.Args[0]
-	descriptors, diags, err := c.packageDescriptors(ctx, req.ResolverTarget)
-	if err != nil {
-		return nil, err
-	}
 	programDir, err := c.programDir()
 	if err != nil {
 		return nil, err
 	}
-	sources, err := moduleSources(ctx, programDir)
+	config, pdiags := parser.NewParser().ParseDirectory(programDir)
+	if pdiags.HasErrors() {
+		return nil, fmt.Errorf("parsing the program: %w", pdiags)
+	}
+	moduleLoader := modules.NewLoader(modules.LiveResolver(ctx))
+	descriptors, diags, err := packageDescriptors(ctx, req.ResolverTarget, programDir, config, moduleLoader)
 	if err != nil {
 		return nil, err
 	}
+	sources := moduleSources(ctx, moduleLoader, config, programDir)
 
 	mapperClient, err := convert.NewMapperClient(req.MapperTarget)
 	if err != nil {
@@ -118,13 +120,9 @@ func (c *hclConverter) ConvertState(
 // engine's package resolver so an import still lands correctly before an
 // install has run. Older engines supply no resolver, in which case only the
 // installed descriptors are available.
-func (c *hclConverter) packageDescriptors(
-	ctx context.Context, resolverTarget string,
+func packageDescriptors(
+	ctx context.Context, resolverTarget, dir string, config *ast.Config, loader *modules.Loader,
 ) (map[string]workspace.PackageDescriptor, hcl.Diagnostics, error) {
-	dir, err := c.programDir()
-	if err != nil {
-		return nil, nil, err
-	}
 	installed, err := readParameterizationInfos(dir)
 	if err != nil {
 		return nil, nil, fmt.Errorf("reading parameterization infos: %w", err)
@@ -132,15 +130,11 @@ func (c *hclConverter) packageDescriptors(
 	if resolverTarget == "" {
 		return installed, nil, nil
 	}
-	config, diags := parser.NewParser().ParseDirectory(dir)
-	if diags.HasErrors() {
-		return nil, nil, fmt.Errorf("parsing the project: %w", diags)
-	}
 	resolver, err := server.NewPackageResolverClient(resolverTarget)
 	if err != nil {
 		return nil, nil, fmt.Errorf("dial package resolver at %s: %w", resolverTarget, err)
 	}
-	specs := server.RequirementSpecs(ctx, modules.NewLoader(modules.LiveResolver(ctx)), config, dir)
+	specs := server.RequirementSpecs(ctx, loader, config, dir)
 	resolved, err := resolve.Packages(ctx, resolver, specs)
 	if err != nil {
 		// Resolution only adds to what `pulumi install` wrote, so a provider
@@ -205,12 +199,9 @@ func (c *hclConverter) programDir() (string, error) {
 // walk goes through the module loader, so a fetched module is reached the same
 // way the runtime reaches it; one that will not load contributes its own call
 // but nothing below it.
-func moduleSources(ctx context.Context, dir string) (map[modulepath.Path]string, error) {
-	config, diags := parser.NewParser().ParseDirectory(dir)
-	if diags.HasErrors() {
-		return nil, fmt.Errorf("parsing the program: %w", diags)
-	}
-	loader := modules.NewLoader(modules.LiveResolver(ctx))
+func moduleSources(
+	ctx context.Context, loader *modules.Loader, config *ast.Config, dir string,
+) map[modulepath.Path]string {
 	out := map[modulepath.Path]string{}
 	chain := map[string]bool{}
 	var walk func(config *ast.Config, dir string, path modulepath.Path)
@@ -228,7 +219,7 @@ func moduleSources(ctx context.Context, dir string) (map[modulepath.Path]string,
 		}
 	}
 	walk(config, dir, modulepath.Root())
-	return out, nil
+	return out
 }
 
 // readTFStateFile parses a state file through the vendored OpenTofu parser,
