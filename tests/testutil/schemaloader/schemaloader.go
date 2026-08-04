@@ -59,6 +59,11 @@ func (m Mock) LoadPackageReferenceV2(ctx context.Context, descriptor *schema.Pac
 	if p, ok := m.findByName(descriptor.Name); ok {
 		return p.Reference(), nil
 	}
+	if descriptor.Parameterization != nil {
+		if p, ok := m.findByName(descriptor.Parameterization.Name); ok {
+			return p.Reference(), nil
+		}
+	}
 	return nil, workspace.NewMissingError(workspace.PluginDescriptor{
 		Kind:              apitype.ResourcePlugin,
 		Name:              descriptor.Name,

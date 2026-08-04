@@ -39,7 +39,7 @@ import (
 // The CLI drives the whole flow: it spawns the converter (an in-process server
 // behind a PATH shim) and resolves mappings through its own engine-side
 // mapper, which reaches the case's providers via PULUMI_DEBUG_PROVIDERS. The
-// same flow against real released plugins is covered by tests/importe2e.
+// same flow against real released plugins is covered by tests/smoke.
 func runImportCheck(
 	t *testing.T, c Case, stage int, files map[string]string, tfStateDir string,
 ) {

@@ -1636,7 +1636,7 @@ func formatTimeoutSeconds(seconds float64) string {
 	return time.Duration(seconds * float64(time.Second)).String()
 }
 
-func newPackageResolverClient(target string) (pulumirpc.PackageResolverClient, error) {
+func NewPackageResolverClient(target string) (pulumirpc.PackageResolverClient, error) {
 	contract.Assertf(target != "", "unexpected empty target for package resolver")
 
 	dialOpts := append(

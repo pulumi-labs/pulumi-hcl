@@ -86,7 +86,7 @@ jobs:
             go-test-
       - uses: pulumi/actions@v7
         with:
-          pulumi-version: "latest"
+          pulumi-version: "dev"
         env:
           GITHUB_TOKEN: ${{ secrets.PULUMI_BOT_TOKEN }}
       - uses: opentofu/setup-opentofu@v2

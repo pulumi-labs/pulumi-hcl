@@ -18,11 +18,14 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
+	"github.com/blang/semver"
 	"github.com/hashicorp/hcl/v2"
 	sdkschema "github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
 	"github.com/pulumi/pulumi-hcl/pkg/util/encryption"
@@ -35,9 +38,11 @@ import (
 	"github.com/pulumi/pulumi/pkg/v3/codegen/convert"
 	"github.com/pulumi/pulumi/pkg/v3/codegen/schema"
 	"github.com/pulumi/pulumi/pkg/v3/resource/plugin"
+	"github.com/pulumi/pulumi/sdk/v3/go/common/apitype"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/resource"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/util/rpcutil"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/workspace"
+	pulumirpc "github.com/pulumi/pulumi/sdk/v3/proto/go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/grpc"
@@ -142,6 +147,27 @@ func exampleLoader(t *testing.T) schema.ReferenceLoader {
 	return schemaloader.New(t, examplePackageSpec())
 }
 
+// exampleDescriptor mirrors what `pulumi install` writes to
+// sdks/example/hcl.sdk.json for a dynamically bridged provider: the base
+// terraform-provider plugin plus the parameterization that produces the
+// example package from it.
+func exampleDescriptor() workspace.PackageDescriptor {
+	base := semver.MustParse("0.0.1")
+	return workspace.PackageDescriptor{
+		PluginDescriptor: workspace.PluginDescriptor{
+			Name:              "terraform-provider",
+			Kind:              apitype.ResourcePlugin,
+			Version:           &base,
+			PluginDownloadURL: "github://api.github.com/pulumi/pulumi-terraform-provider",
+		},
+		Parameterization: &workspace.Parameterization{
+			Name:    "example",
+			Version: semver.MustParse("6.0.0"),
+			Value:   []byte(`{"remote":{"url":"registry.terraform.io/acme/example","version":"6.0.0"}}`),
+		},
+	}
+}
+
 // stateV4 wraps a `{"resources": [...]}` fragment in the v4 envelope the
 // state-file parser requires.
 func stateV4(t *testing.T, fragment string) []byte {
@@ -164,7 +190,7 @@ func parseState(t *testing.T, fragment string) *states.State {
 	return f.State
 }
 
-func TestConvertTFState_EmitsImport(t *testing.T) {
+func TestConvertTFState_EmitsParameterizedImport(t *testing.T) {
 	t.Parallel()
 
 	state := parseState(t, `{
@@ -177,7 +203,8 @@ func TestConvertTFState_EmitsImport(t *testing.T) {
 		]
 	}`)
 
-	resp := convertTFState(t.Context(), exampleInfoSource(t), exampleLoader(t), state)
+	descriptors := map[string]workspace.PackageDescriptor{"example": exampleDescriptor()}
+	resp := convertTFState(t.Context(), exampleInfoSource(t), exampleLoader(t), descriptors, state)
 
 	require.Empty(t, resp.Diagnostics)
 	require.Len(t, resp.Resources, 1)
@@ -186,6 +213,13 @@ func TestConvertTFState_EmitsImport(t *testing.T) {
 	assert.Equal(t, "example:index/resource:Resource", got.Type)
 	assert.Equal(t, "b", got.Name)
 	assert.Equal(t, "res-1", got.ID)
+	assert.Equal(t, "6.0.0", got.Version, "the parameterized package's version")
+	assert.Equal(t, "github://api.github.com/pulumi/pulumi-terraform-provider", got.PluginDownloadURL)
+	require.NotNil(t, got.Parameterization)
+	assert.Equal(t, "terraform-provider", got.Parameterization.PluginName)
+	assert.Equal(t, "0.0.1", got.Parameterization.PluginVersion)
+	assert.JSONEq(t, `{"remote":{"url":"registry.terraform.io/acme/example","version":"6.0.0"}}`,
+		string(got.Parameterization.Value))
 }
 
 func TestConvertTFState_SkipsUnimportable(t *testing.T) {
@@ -216,7 +250,7 @@ func TestConvertTFState_SkipsUnimportable(t *testing.T) {
 		]
 	}`)
 
-	resp := convertTFState(t.Context(), exampleInfoSource(t), exampleLoader(t), state)
+	resp := convertTFState(t.Context(), exampleInfoSource(t), exampleLoader(t), nil, state)
 
 	// The data source skips silently; the other three each warn.
 	assert.Empty(t, resp.Resources)
@@ -250,7 +284,7 @@ func TestConvertTFState_CountAndForEach(t *testing.T) {
 		]
 	}`)
 
-	resp := convertTFState(t.Context(), exampleInfoSource(t), exampleLoader(t), state)
+	resp := convertTFState(t.Context(), exampleInfoSource(t), exampleLoader(t), nil, state)
 
 	require.Empty(t, resp.Diagnostics)
 	names := make(map[string]string, len(resp.Resources))
@@ -306,7 +340,7 @@ func TestConvertTFState_ProviderNamePrefixMismatch(t *testing.T) {
 			}},
 		},
 	})
-	resp := convertTFState(t.Context(), src, loader, state)
+	resp := convertTFState(t.Context(), src, loader, nil, state)
 
 	require.Empty(t, resp.Diagnostics)
 	require.Len(t, resp.Resources, 1)
@@ -348,7 +382,7 @@ func TestConvertTFState_SuppliesValues(t *testing.T) {
 		]
 	}`)
 
-	resp := convertTFState(t.Context(), exampleInfoSource(t), exampleLoader(t), state)
+	resp := convertTFState(t.Context(), exampleInfoSource(t), exampleLoader(t), nil, state)
 	require.Empty(t, resp.Diagnostics)
 	require.Len(t, resp.Resources, 1)
 	got := resp.Resources[0]
@@ -409,7 +443,7 @@ func TestConvertTFState_TerraformData(t *testing.T) {
 		]
 	}`)
 
-	resp := convertTFState(t.Context(), fakeInfoSource{}, nil, state)
+	resp := convertTFState(t.Context(), fakeInfoSource{}, nil, nil, state)
 	require.Empty(t, resp.Diagnostics)
 	require.Len(t, resp.Resources, 2)
 
@@ -455,7 +489,7 @@ func TestConvertTFState_ValueFallbacks(t *testing.T) {
 		]
 	}`)
 
-	resp := convertTFState(t.Context(), exampleInfoSource(t), exampleLoader(t), state)
+	resp := convertTFState(t.Context(), exampleInfoSource(t), exampleLoader(t), nil, state)
 	require.Len(t, resp.Resources, 2)
 	for _, r := range resp.Resources {
 		assert.Nil(t, r.Outputs, "%s should import by id only", r.ID)
@@ -496,6 +530,70 @@ func TestIDAttr(t *testing.T) {
 	assert.Equal(t, "flat", id)
 }
 
+// TestPackageDescriptorsFromResolver pins the pre-install path: with no SDKs
+// on disk, the program's providers resolve through the engine's package
+// resolver, exactly as `pulumi install` resolves them.
+func TestPackageDescriptorsFromResolver(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "main.tf"), []byte(`
+		terraform {
+			required_providers {
+				example = { source = "acme/example", version = "6.0.0" }
+			}
+		}
+	`), 0o600))
+
+	got, _, err := (&hclConverter{projectDir: dir}).packageDescriptors(t.Context(), serveResolver(t))
+	require.NoError(t, err)
+
+	desc, ok := got["example"]
+	require.True(t, ok, "the program's provider resolves without an installed SDK")
+	assert.Equal(t, "terraform-provider", desc.Name)
+	require.NotNil(t, desc.Parameterization)
+	assert.Equal(t, "example", desc.Parameterization.Name)
+	assert.Equal(t, "6.0.0", desc.Parameterization.Version.String())
+}
+
+// fakeResolver stands in for the engine's package resolver: it echoes the
+// requested parameterization back, as the terraform-provider plugin does.
+type fakeResolver struct {
+	pulumirpc.UnimplementedPackageResolverServer
+	t *testing.T
+	// respond overrides the echo, so a test can fail one resolution.
+	respond func(*pulumirpc.PackageSpec) (*pulumirpc.PackageDependency, error)
+}
+
+func (r fakeResolver) ResolvePackage(
+	_ context.Context, spec *pulumirpc.PackageSpec,
+) (*pulumirpc.PackageDependency, error) {
+	if r.respond != nil {
+		return r.respond(spec)
+	}
+	// assert, never require: this runs on a gRPC handler goroutine, where
+	// t.FailNow would be an illegal runtime.Goexit.
+	assert.Equal(r.t, "terraform-provider", spec.Source)
+	if !assert.NotEmpty(r.t, spec.Parameters, "the provider's source is the first parameter") {
+		return nil, errors.New("no parameters")
+	}
+	source, version := spec.Parameters[0], ""
+	if len(spec.Parameters) > 1 {
+		version = spec.Parameters[1]
+	}
+	name := source[strings.LastIndex(source, "/")+1:]
+	return &pulumirpc.PackageDependency{
+		Kind:    string(apitype.ResourcePlugin),
+		Name:    "terraform-provider",
+		Version: "0.0.1",
+		Parameterization: &pulumirpc.PackageParameterization{
+			Name:    name,
+			Version: version,
+			Value:   fmt.Appendf(nil, `{"remote":{"url":%q,"version":%q}}`, source, version),
+		},
+	}, nil
+}
+
 func TestConvertStateArgValidation(t *testing.T) {
 	t.Parallel()
 
@@ -511,27 +609,182 @@ func TestConvertStateArgValidation(t *testing.T) {
 	assert.ErrorContains(t, err, "missing loader address")
 
 	_, err = New().ConvertState(t.Context(), &plugin.ConvertStateRequest{
-		MapperTarget: "127.0.0.1:1",
-		LoaderTarget: "127.0.0.1:1",
+		MapperTarget:   "127.0.0.1:1",
+		LoaderTarget:   "127.0.0.1:1",
+		ResolverTarget: "127.0.0.1:1",
 	})
 	assert.ErrorContains(t, err, "expected exactly one argument")
 
 	_, err = New().ConvertState(t.Context(), &plugin.ConvertStateRequest{
-		MapperTarget: "127.0.0.1:1",
-		LoaderTarget: "127.0.0.1:1",
-		Args:         []string{"a", "b"},
+		MapperTarget:   "127.0.0.1:1",
+		LoaderTarget:   "127.0.0.1:1",
+		ResolverTarget: "127.0.0.1:1",
+		Args:           []string{"a", "b"},
 	})
 	assert.ErrorContains(t, err, "expected exactly one argument")
 }
 
-// staticMapper is a convert.Mapper with a fixed mapping for "random".
-type staticMapper struct{}
+// TestPackageDescriptorsWithoutResolver pins the older-engine path: with no
+// resolver address the import still lands under whatever `pulumi install`
+// wrote, exactly as it did before the resolver existed.
+func TestPackageDescriptorsWithoutResolver(t *testing.T) {
+	t.Parallel()
 
-func (staticMapper) GetMapping(
-	_ context.Context, provider string, _ *convert.MapperPackageHint, _ string,
+	dir := t.TempDir()
+	writeInstalledSDK(t, dir, "example", exampleDescriptor())
+
+	got, _, err := (&hclConverter{projectDir: dir}).packageDescriptors(t.Context(), "")
+	require.NoError(t, err)
+
+	desc, ok := got["example"]
+	require.True(t, ok)
+	require.NotNil(t, desc.Parameterization)
+	assert.Equal(t, "example", desc.Parameterization.Name)
+}
+
+// TestPackageDescriptorsUnresolvableProvider pins that a provider the resolver
+// cannot reach — served locally, or behind a registry that is down — does not
+// sink the import: it falls back to what `pulumi install` wrote, and says so
+// when there is nothing to fall back to.
+func TestPackageDescriptorsUnresolvableProvider(t *testing.T) {
+	t.Parallel()
+
+	program := `
+		terraform {
+			required_providers {
+				nowhere = { source = "hashicorp/nowhere", version = "1.0.0" }
+			}
+		}
+		resource "nowhere_thing" "a" {}
+	`
+	target := serveResolver(t, func(*pulumirpc.PackageSpec) (*pulumirpc.PackageDependency, error) {
+		return nil, errors.New("registry does not have a provider named hashicorp/nowhere")
+	})
+
+	installedDir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(installedDir, "main.tf"), []byte(program), 0o600))
+	writeInstalledSDK(t, installedDir, "nowhere", exampleDescriptor())
+
+	got, diags, err := (&hclConverter{projectDir: installedDir}).packageDescriptors(t.Context(), target)
+	require.NoError(t, err, "an unresolvable provider must not fail the conversion")
+	assert.Empty(t, diags, "the installed descriptor covers it, so there is nothing to report")
+	assert.Contains(t, got, "nowhere")
+
+	bareDir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(bareDir, "main.tf"), []byte(program), 0o600))
+
+	got, diags, err = (&hclConverter{projectDir: bareDir}).packageDescriptors(t.Context(), target)
+	require.NoError(t, err)
+	assert.Empty(t, got)
+	require.Len(t, diags, 1, "nothing to import under, so the degradation is reported")
+	assert.Equal(t, hcl.DiagWarning, diags[0].Severity)
+}
+
+// TestPackageDescriptorsKeyByPackageName pins the key space: a provider whose
+// module-local name differs from its source's type is still found under the
+// package name, which is how the state file names it.
+func TestPackageDescriptorsKeyByPackageName(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "main.tf"), []byte(`
+		terraform {
+			required_providers {
+				randy = { source = "hashicorp/random", version = "6.0.0" }
+			}
+		}
+		resource "randy_uuid" "a" {}
+	`), 0o600))
+
+	got, _, err := (&hclConverter{projectDir: dir}).packageDescriptors(
+		t.Context(), serveResolver(t))
+	require.NoError(t, err)
+
+	desc, ok := got["random"]
+	require.True(t, ok, "keyed by package name, not by the local name %q", "randy")
+	require.NotNil(t, desc.Parameterization)
+	assert.Equal(t, "random", desc.Parameterization.Name)
+}
+
+// TestProgramDirFromWorkingDirectory pins what the plugin binary does:
+// ConvertState carries no source directory, so New() must find the project
+// from the process's working directory.
+//
+//nolint:paralleltest // t.Chdir cannot be used in a parallel test.
+func TestProgramDirFromWorkingDirectory(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, filepath.Join(dir, "Pulumi.yaml"), "name: import-test\nruntime: hcl\n")
+	writeFile(t, filepath.Join(dir, "main.tf"), `
+		terraform {
+			required_providers {
+				example = { source = "acme/example", version = "6.0.0" }
+			}
+		}
+	`)
+
+	t.Chdir(dir)
+	got, _, err := (&hclConverter{}).packageDescriptors(t.Context(), serveResolver(t))
+	require.NoError(t, err)
+
+	desc, ok := got["example"]
+	require.True(t, ok, "the project resolves from the working directory")
+	assert.Equal(t, "terraform-provider", desc.Name)
+}
+
+// serveResolver runs fakeResolver on a local port and returns its target,
+// optionally with respond standing in for the echo.
+func serveResolver(
+	t *testing.T, respond ...func(*pulumirpc.PackageSpec) (*pulumirpc.PackageDependency, error),
+) string {
+	t.Helper()
+	resolver := fakeResolver{t: t}
+	if len(respond) > 0 {
+		resolver.respond = respond[0]
+	}
+	cancel := make(chan bool)
+	handle, err := rpcutil.ServeWithOptions(rpcutil.ServeOptions{
+		Cancel: cancel,
+		Init: func(srv *grpc.Server) error {
+			pulumirpc.RegisterPackageResolverServer(srv, resolver)
+			return nil
+		},
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { close(cancel); <-handle.Done })
+	return fmt.Sprintf("127.0.0.1:%d", handle.Port)
+}
+
+// writeInstalledSDK writes the sdks/<name>/hcl.sdk.json that `pulumi install`
+// leaves behind for a dynamically bridged provider.
+func writeInstalledSDK(t *testing.T, dir, name string, desc workspace.PackageDescriptor) {
+	t.Helper()
+	data, err := json.Marshal(desc)
+	require.NoError(t, err)
+	sdkDir := filepath.Join(dir, "sdks", name)
+	require.NoError(t, os.MkdirAll(sdkDir, 0o755))
+	writeFile(t, filepath.Join(sdkDir, "hcl.sdk.json"), string(data))
+}
+
+func writeFile(t *testing.T, path, content string) {
+	t.Helper()
+	require.NoError(t, os.WriteFile(path, []byte(content), 0o600))
+}
+
+// ecosystemAssertingMapper is a convert.Mapper with a fixed mapping for
+// "random" that asserts the converter's wire contract: mappings are requested
+// for the terraform ecosystem, hinted at the parameterized base plugin.
+type ecosystemAssertingMapper struct{ t *testing.T }
+
+func (m ecosystemAssertingMapper) GetMapping(
+	_ context.Context, provider string, hint *convert.MapperPackageHint, ecosystem string,
 ) ([]byte, error) {
+	assert.Equal(m.t, "terraform", ecosystem, "the converter must request terraform mappings")
 	if provider != "random" {
 		return nil, nil
+	}
+	if assert.NotNil(m.t, hint, "the descriptor must hint the mapper") {
+		assert.Equal(m.t, "terraform-provider", hint.PluginName)
+		assert.NotNil(m.t, hint.Parameterization)
 	}
 	return json.Marshal(tfbridge.MarshalProviderInfo(&tfbridge.ProviderInfo{
 		P: shimv2.NewProvider(&sdkschema.Provider{
@@ -557,7 +810,7 @@ func TestConvertStateViaMapper(t *testing.T) {
 	handle, err := rpcutil.ServeWithOptions(rpcutil.ServeOptions{
 		Cancel: cancel,
 		Init: func(srv *grpc.Server) error {
-			convert.MapperRegistration(convert.NewMapperServer(staticMapper{}))(srv)
+			convert.MapperRegistration(convert.NewMapperServer(ecosystemAssertingMapper{t}))(srv)
 			loader := schemaloader.New(t, schema.PackageSpec{
 				Name:    "random",
 				Version: "1.0.0",
@@ -571,6 +824,7 @@ func TestConvertStateViaMapper(t *testing.T) {
 				},
 			})
 			schema.LoaderRegistration(schema.NewLoaderServer(loader))(srv)
+			pulumirpc.RegisterPackageResolverServer(srv, fakeResolver{t: t})
 			return nil
 		},
 	})
@@ -590,10 +844,24 @@ func TestConvertStateViaMapper(t *testing.T) {
 		]
 	}`), 0o600))
 
-	resp, err := New().ConvertState(t.Context(), &plugin.ConvertStateRequest{
-		MapperTarget: target,
-		LoaderTarget: target,
-		Args:         []string{statePath},
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "main.tf"), []byte(`
+		terraform {
+			required_providers {
+				random = { source = "hashicorp/random", version = "6.0.0" }
+			}
+		}
+	`), 0o600))
+
+	// The project's sdks/ descriptor marks "random" as dynamically bridged.
+	desc := exampleDescriptor()
+	desc.Parameterization.Name = "random"
+	writeInstalledSDK(t, dir, "random", desc)
+
+	resp, err := NewInDir(dir).ConvertState(t.Context(), &plugin.ConvertStateRequest{
+		MapperTarget:   target,
+		LoaderTarget:   target,
+		ResolverTarget: target,
+		Args:           []string{statePath},
 	})
 	require.NoError(t, err)
 	require.Empty(t, resp.Diagnostics)
@@ -602,21 +870,26 @@ func TestConvertStateViaMapper(t *testing.T) {
 	assert.Equal(t, "random:index/randomUuid:RandomUuid", got.Type)
 	assert.Equal(t, "example", got.Name)
 	assert.Equal(t, "aabbccdd-0011-2233-4455-66778899aabb", got.ID)
+	assert.Equal(t, "6.0.0", got.Version)
+	require.NotNil(t, got.Parameterization)
+	assert.Equal(t, "terraform-provider", got.Parameterization.PluginName)
 
 	// State-file error paths share the same entry point.
-	_, err = New().ConvertState(t.Context(), &plugin.ConvertStateRequest{
-		MapperTarget: target,
-		LoaderTarget: target,
-		Args:         []string{filepath.Join(dir, "does-not-exist.tfstate")},
+	_, err = NewInDir(dir).ConvertState(t.Context(), &plugin.ConvertStateRequest{
+		MapperTarget:   target,
+		LoaderTarget:   target,
+		ResolverTarget: target,
+		Args:           []string{filepath.Join(dir, "does-not-exist.tfstate")},
 	})
 	assert.ErrorContains(t, err, "reading state file")
 
 	badPath := filepath.Join(dir, "bad.tfstate")
 	require.NoError(t, os.WriteFile(badPath, []byte("not json"), 0o600))
-	_, err = New().ConvertState(t.Context(), &plugin.ConvertStateRequest{
-		MapperTarget: target,
-		LoaderTarget: target,
-		Args:         []string{badPath},
+	_, err = NewInDir(dir).ConvertState(t.Context(), &plugin.ConvertStateRequest{
+		MapperTarget:   target,
+		LoaderTarget:   target,
+		ResolverTarget: target,
+		Args:           []string{badPath},
 	})
 	assert.ErrorContains(t, err, "parsing state file")
 }

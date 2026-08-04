@@ -26,6 +26,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/blang/semver"
 	"github.com/pulumi/providertest/providers"
 	"github.com/pulumi/providertest/pulumitest"
 	"github.com/pulumi/providertest/pulumitest/optnewstack"
@@ -39,6 +40,7 @@ import (
 	"github.com/pulumi/pulumi/sdk/v3/go/common/apitype"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/util/contract"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/util/rpcutil"
+	"github.com/pulumi/pulumi/sdk/v3/go/common/workspace"
 	pulumirpc "github.com/pulumi/pulumi/sdk/v3/proto/go"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/grpc"
@@ -86,8 +88,46 @@ func languageHostGuard(t *testing.T) string {
 // Provider pairs a provider name with a way to start its in-process Pulumi
 // provider server. Use SDKv2Provider or PFProvider to build one.
 type Provider struct {
-	Name  string
-	Start func(ctx context.Context) (pulumirpc.ResourceProviderServer, error)
+	Name          string
+	Start         func(ctx context.Context) (pulumirpc.ResourceProviderServer, error)
+	Parameterized bool
+}
+
+// parameterizedVersion is the version the fake parameterization reports; the
+// descriptor and the Parameterize response must agree on it.
+const parameterizedVersion = "0.0.1"
+
+// pluginName is the name the engine resolves the provider's plugin by: the
+// package name itself, or the base plugin's name when parameterized.
+func (p Provider) pluginName() string {
+	if p.Parameterized {
+		return p.Name + "-base"
+	}
+	return p.Name
+}
+
+// parameterizedServer wraps a provider server with a Parameterize
+// implementation that accepts any value and reports the package identity,
+// standing in for a dynamically bridged base plugin.
+type parameterizedServer struct {
+	pulumirpc.ResourceProviderServer
+	pkg string
+}
+
+func (s *parameterizedServer) Parameterize(
+	_ context.Context, _ *pulumirpc.ParameterizeRequest,
+) (*pulumirpc.ParameterizeResponse, error) {
+	return &pulumirpc.ParameterizeResponse{Name: s.pkg, Version: parameterizedVersion}, nil
+}
+
+// start returns the provider's server, wrapped for parameterization when
+// configured.
+func (p Provider) start(ctx context.Context) (pulumirpc.ResourceProviderServer, error) {
+	inner, err := p.Start(ctx)
+	if err != nil || !p.Parameterized {
+		return inner, err
+	}
+	return &parameterizedServer{ResourceProviderServer: inner, pkg: p.Name}, nil
 }
 
 // Result holds the outputs and resource state from a Pulumi deployment.
@@ -122,9 +162,9 @@ func (d *Driver) rawDebugProvidersEnv(t *testing.T) string {
 	t.Helper()
 	parts := make([]string, 0, len(d.providers))
 	for _, p := range d.providers {
-		handle, err := startProvider(t.Context(), p.Start)
+		handle, err := startProvider(t.Context(), p.start)
 		require.NoError(t, err)
-		parts = append(parts, fmt.Sprintf("%s:%d", p.Name, handle.Port))
+		parts = append(parts, fmt.Sprintf("%s:%d", p.pluginName(), handle.Port))
 	}
 	return strings.Join(parts, ",")
 }
@@ -168,11 +208,10 @@ backend:
 		opttest.NewStackOptions(optnewstack.DisableAutoDestroy()),
 	)
 	for _, p := range provs {
-		start := p.Start
 		opts = append(opts, opttest.AttachProvider(
-			p.Name,
+			p.pluginName(),
 			func(ctx context.Context, pt providers.PulumiTest) (providers.Port, error) {
-				handle, err := startProvider(ctx, start)
+				handle, err := startProvider(ctx, p.start)
 				if err != nil {
 					return 0, err
 				}
@@ -306,12 +345,28 @@ func (d *Driver) writeFiles(t *testing.T, programFiles map[string]string) {
 func (d *Driver) writeStubSDKs(t *testing.T) {
 	t.Helper()
 	for _, p := range d.providers {
-		name := p.Name
-		sdkDir := filepath.Join(d.dir, "sdks", name)
+		sdkDir := filepath.Join(d.dir, "sdks", p.Name)
 		require.NoError(t, os.MkdirAll(sdkDir, 0o755))
-		desc := fmt.Sprintf(`{"name":%q,"kind":"resource"}`+"\n", name)
+		desc := fmt.Appendf(nil, `{"name":%q,"kind":"resource"}`+"\n", p.Name)
+		if p.Parameterized {
+			version := semver.MustParse(parameterizedVersion)
+			var err error
+			desc, err = json.Marshal(workspace.PackageDescriptor{
+				PluginDescriptor: workspace.PluginDescriptor{
+					Name:    p.pluginName(),
+					Kind:    apitype.ResourcePlugin,
+					Version: &version,
+				},
+				Parameterization: &workspace.Parameterization{
+					Name:    p.Name,
+					Version: version,
+					Value:   []byte(p.Name),
+				},
+			})
+			require.NoError(t, err)
+		}
 		require.NoError(t, os.WriteFile(
-			filepath.Join(sdkDir, "hcl.sdk.json"), []byte(desc), 0o600,
+			filepath.Join(sdkDir, "hcl.sdk.json"), desc, 0o600,
 		))
 	}
 }
@@ -339,14 +394,14 @@ func startProvider(
 	return &handle, nil
 }
 
-func serveConverter(t *testing.T) int {
+func (d *Driver) serveConverter(t *testing.T) int {
 	t.Helper()
 	cancel := make(chan bool)
 	t.Cleanup(func() { close(cancel) })
 	handle, err := rpcutil.ServeWithOptions(rpcutil.ServeOptions{
 		Cancel: cancel,
 		Init: func(srv *grpc.Server) error {
-			pulumirpc.RegisterConverterServer(srv, plugin.NewConverterServer(converter.New()))
+			pulumirpc.RegisterConverterServer(srv, plugin.NewConverterServer(converter.NewInDir(d.dir)))
 			return nil
 		},
 	})
@@ -399,7 +454,7 @@ func (d *Driver) Import(t *testing.T, programFiles map[string]string, converterA
 			envPath = v
 		}
 	}
-	shimDir := converterShim(t, serveConverter(t))
+	shimDir := converterShim(t, d.serveConverter(t))
 	env = append(env,
 		"PATH="+shimDir+string(os.PathListSeparator)+envPath,
 		"PULUMI_DEBUG_PROVIDERS="+d.rawDebugProvidersEnv(t),
@@ -468,7 +523,7 @@ func (m *mutationRecorder) Delete(
 // recorded returns a copy of p whose servers log mutating RPCs to log.
 func (p Provider) recorded(log *mutationLog) Provider {
 	start := p.Start
-	return Provider{Name: p.Name, Start: func(ctx context.Context) (pulumirpc.ResourceProviderServer, error) {
+	return Provider{Name: p.Name, Parameterized: p.Parameterized, Start: func(ctx context.Context) (pulumirpc.ResourceProviderServer, error) {
 		srv, err := start(ctx)
 		if err != nil {
 			return nil, err

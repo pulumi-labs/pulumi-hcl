@@ -45,10 +45,17 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-type hclConverter struct{}
+type hclConverter struct {
+	projectDir string
+}
 
 // New returns a new HCL->PCL converter.
 func New() plugin.Converter { return &hclConverter{} }
+
+// NewInDir returns a converter for the project rooted at dir. [New] locates
+// the project from the working directory instead, which is what the plugin
+// binary needs; NewInDir is for callers that already know where it is.
+func NewInDir(dir string) plugin.Converter { return &hclConverter{projectDir: dir} }
 
 func (*hclConverter) Close() error { return nil }
 
