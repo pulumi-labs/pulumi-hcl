@@ -20,7 +20,7 @@ The following program instantiates the community
 [`terraform-aws-modules/vpc/aws`](https://registry.terraform.io/modules/terraform-aws-modules/vpc/aws)
 module and exports the resulting VPC id.
 
-{{< chooser language "typescript,python,go,csharp,yaml" / >}}
+{{< chooser language "typescript,python,go,csharp,java,yaml" / >}}
 
 {{% choosable language typescript %}}
 
@@ -117,6 +117,35 @@ return await Deployment.RunAsync(() =>
         ["vpcId"] = vpc.Outputs.Apply(o => o["vpc_id"]),
     };
 });
+```
+
+{{% /choosable %}}
+
+{{% choosable language java %}}
+
+```java
+package myproject;
+
+import com.pulumi.Pulumi;
+import com.pulumi.hcl.Module;
+import com.pulumi.hcl.ModuleArgs;
+import java.util.Map;
+
+public class App {
+    public static void main(String[] args) {
+        Pulumi.run(ctx -> {
+            var vpc = new Module("vpc", ModuleArgs.builder()
+                .source("terraform-aws-modules/vpc/aws")
+                .version("5.0.0")
+                .inputs(Map.of(
+                    "name", "example-vpc",
+                    "cidr", "10.0.0.0/16"))
+                .build());
+
+            ctx.export("vpcId", vpc.outputs().applyValue(o -> o.get("vpc_id")));
+        });
+    }
+}
 ```
 
 {{% /choosable %}}
