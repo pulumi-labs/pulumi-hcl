@@ -1,0 +1,6 @@
+kind: bug-fixes
+body: Module components record the arguments they were passed instead of intermittently dropping them
+time: 2026-08-04T16:11:42.93663+02:00
+custom:
+    Component: runtime
+    PR: "506"
