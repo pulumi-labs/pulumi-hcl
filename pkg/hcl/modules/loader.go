@@ -497,3 +497,19 @@ func hashSource(source string) string {
 func (l *Loader) GetCallStack() []string {
 	return append([]string{}, l.callStack...)
 }
+
+// ComponentTypeName derives a component type name from a module's name,
+// replicating PCL's DeclarationName logic.
+func ComponentTypeName(name string) string {
+	for _, ch := range []string{"-", ".", " "} {
+		name = strings.ReplaceAll(name, ch, "_")
+	}
+	parts := strings.Split(name, "_")
+	var b strings.Builder
+	for _, p := range parts {
+		if p != "" {
+			b.WriteString(strings.ToUpper(p[:1]) + p[1:])
+		}
+	}
+	return b.String()
+}

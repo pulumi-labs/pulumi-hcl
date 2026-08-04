@@ -28,6 +28,9 @@ import (
 	"github.com/blang/semver"
 	"github.com/hashicorp/hcl/v2"
 	sdkschema "github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/pulumi/pulumi-hcl/pkg/hcl/modulepath"
+	"github.com/pulumi/pulumi-hcl/pkg/hcl/modules"
+	"github.com/pulumi/pulumi-hcl/pkg/hcl/parser"
 	"github.com/pulumi/pulumi-hcl/pkg/util/encryption"
 	"github.com/pulumi/pulumi-hcl/tests/testutil/schemaloader"
 	"github.com/pulumi/pulumi-hcl/vendored/addrs"
@@ -204,7 +207,7 @@ func TestConvertTFState_EmitsParameterizedImport(t *testing.T) {
 	}`)
 
 	descriptors := map[string]workspace.PackageDescriptor{"example": exampleDescriptor()}
-	resp := convertTFState(t.Context(), exampleInfoSource(t), exampleLoader(t), descriptors, state)
+	resp := convertTFState(t.Context(), exampleInfoSource(t), exampleLoader(t), descriptors, nil, state)
 
 	require.Empty(t, resp.Diagnostics)
 	require.Len(t, resp.Resources, 1)
@@ -250,7 +253,7 @@ func TestConvertTFState_SkipsUnimportable(t *testing.T) {
 		]
 	}`)
 
-	resp := convertTFState(t.Context(), exampleInfoSource(t), exampleLoader(t), nil, state)
+	resp := convertTFState(t.Context(), exampleInfoSource(t), exampleLoader(t), nil, nil, state)
 
 	// The data source skips silently; the other three each warn.
 	assert.Empty(t, resp.Resources)
@@ -284,7 +287,7 @@ func TestConvertTFState_CountAndForEach(t *testing.T) {
 		]
 	}`)
 
-	resp := convertTFState(t.Context(), exampleInfoSource(t), exampleLoader(t), nil, state)
+	resp := convertTFState(t.Context(), exampleInfoSource(t), exampleLoader(t), nil, nil, state)
 
 	require.Empty(t, resp.Diagnostics)
 	names := make(map[string]string, len(resp.Resources))
@@ -340,7 +343,7 @@ func TestConvertTFState_ProviderNamePrefixMismatch(t *testing.T) {
 			}},
 		},
 	})
-	resp := convertTFState(t.Context(), src, loader, nil, state)
+	resp := convertTFState(t.Context(), src, loader, nil, nil, state)
 
 	require.Empty(t, resp.Diagnostics)
 	require.Len(t, resp.Resources, 1)
@@ -382,7 +385,7 @@ func TestConvertTFState_SuppliesValues(t *testing.T) {
 		]
 	}`)
 
-	resp := convertTFState(t.Context(), exampleInfoSource(t), exampleLoader(t), nil, state)
+	resp := convertTFState(t.Context(), exampleInfoSource(t), exampleLoader(t), nil, nil, state)
 	require.Empty(t, resp.Diagnostics)
 	require.Len(t, resp.Resources, 1)
 	got := resp.Resources[0]
@@ -443,7 +446,7 @@ func TestConvertTFState_TerraformData(t *testing.T) {
 		]
 	}`)
 
-	resp := convertTFState(t.Context(), fakeInfoSource{}, nil, nil, state)
+	resp := convertTFState(t.Context(), fakeInfoSource{}, nil, nil, nil, state)
 	require.Empty(t, resp.Diagnostics)
 	require.Len(t, resp.Resources, 2)
 
@@ -489,7 +492,7 @@ func TestConvertTFState_ValueFallbacks(t *testing.T) {
 		]
 	}`)
 
-	resp := convertTFState(t.Context(), exampleInfoSource(t), exampleLoader(t), nil, state)
+	resp := convertTFState(t.Context(), exampleInfoSource(t), exampleLoader(t), nil, nil, state)
 	require.Len(t, resp.Resources, 2)
 	for _, r := range resp.Resources {
 		assert.Nil(t, r.Outputs, "%s should import by id only", r.ID)
@@ -499,6 +502,118 @@ func TestConvertTFState_ValueFallbacks(t *testing.T) {
 	for _, d := range resp.Diagnostics {
 		assert.Equal(t, "Importing without values", d.Summary)
 	}
+}
+
+// TestConvertTFState_ModuleResources pins the module import shape: a component
+// per module instance (including ancestors the state does not name), children
+// parented and dot-named as the runtime registers them.
+func TestConvertTFState_ModuleResources(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "main.tf"), []byte(`
+		module "outer" { source = "./outer" }
+	`), 0o600))
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "outer"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "outer", "main.tf"), []byte(`
+		module "inner" { source = "./inner" }
+	`), 0o600))
+
+	state := parseState(t, `{
+		"resources": [
+			{
+				"module": "module.outer.module.inner", "mode": "managed",
+				"type": "example_resource", "name": "r",
+				"provider": "provider[\"registry.terraform.io/acme/example\"]",
+				"instances": [ { "attributes": { "id": "res-1" } } ]
+			},
+			{
+				"module": "module.absent", "mode": "managed",
+				"type": "example_resource", "name": "gone",
+				"provider": "provider[\"registry.terraform.io/acme/example\"]",
+				"instances": [ { "attributes": { "id": "res-2" } } ]
+			}
+		]
+	}`)
+
+	resp := convertTFState(t.Context(), exampleInfoSource(t), exampleLoader(t), nil, mustModuleSources(t, dir), state)
+	require.Len(t, resp.Diagnostics, 1)
+	assert.Equal(t, "Skipped module resource", resp.Diagnostics[0].Summary,
+		"a module the program does not declare has no component to import under")
+
+	require.Len(t, resp.Resources, 3)
+	outer, inner, child := resp.Resources[0], resp.Resources[1], resp.Resources[2]
+
+	assert.Equal(t, "components:index:Outer", outer.Type)
+	assert.Equal(t, "outer", outer.Name)
+	assert.True(t, outer.IsComponent)
+	assert.Empty(t, outer.Parent)
+	assert.Empty(t, outer.ID, "components have no id")
+
+	assert.Equal(t, "components:index:Inner", inner.Type, "the enclosing module holds no resources of its own")
+	assert.Equal(t, "outer.inner", inner.Name)
+	assert.Equal(t, "outer", inner.Parent)
+
+	assert.Equal(t, "example:index/resource:Resource", child.Type)
+	assert.Equal(t, "outer.inner.r", child.Name)
+	assert.Equal(t, "outer.inner", child.Parent)
+	assert.Equal(t, "res-1", child.ID)
+}
+
+// TestConvertTFState_SiblingModuleCalls covers two calls in one module:
+// emitting their shared ancestor once must not stop the second call's own
+// component being emitted. A dangling Parent fails the import outright.
+func TestConvertTFState_SiblingModuleCalls(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "main.tf"), []byte(`
+		module "outer" { source = "./outer" }
+	`), 0o600))
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "outer", "leaf"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "outer", "main.tf"), []byte(`
+		module "a" { source = "./leaf" }
+		module "b" { source = "./leaf" }
+	`), 0o600))
+
+	state := parseState(t, `{
+		"resources": [
+			{
+				"module": "module.outer.module.a", "mode": "managed",
+				"type": "example_resource", "name": "r",
+				"provider": "provider[\"registry.terraform.io/acme/example\"]",
+				"instances": [ { "attributes": { "id": "res-a" } } ]
+			},
+			{
+				"module": "module.outer.module.b", "mode": "managed",
+				"type": "example_resource", "name": "r",
+				"provider": "provider[\"registry.terraform.io/acme/example\"]",
+				"instances": [ { "attributes": { "id": "res-b" } } ]
+			}
+		]
+	}`)
+
+	resp := convertTFState(t.Context(), exampleInfoSource(t), exampleLoader(t), nil, mustModuleSources(t, dir), state)
+	require.Empty(t, resp.Diagnostics)
+
+	byName := map[string]plugin.ResourceImport{}
+	for _, r := range resp.Resources {
+		byName[r.Name] = r
+	}
+	assert.Len(t, byName, 5)
+	for _, r := range resp.Resources {
+		if r.Parent != "" {
+			assert.Containsf(t, byName, r.Parent, "%q is parented to a resource not in the response", r.Name)
+		}
+	}
+
+	// Both calls share a source, so both components carry the same type.
+	assert.Equal(t, "components:index:Leaf", byName["outer.a"].Type)
+	assert.Equal(t, "components:index:Leaf", byName["outer.b"].Type)
+	assert.Equal(t, "outer", byName["outer.a"].Parent)
+	assert.Equal(t, "outer", byName["outer.b"].Parent)
+	assert.Equal(t, "res-a", byName["outer.a.r"].ID)
+	assert.Equal(t, "res-b", byName["outer.b.r"].ID)
 }
 
 func TestResourceName(t *testing.T) {
@@ -545,7 +660,7 @@ func TestPackageDescriptorsFromResolver(t *testing.T) {
 		}
 	`), 0o600))
 
-	got, _, err := (&hclConverter{projectDir: dir}).packageDescriptors(t.Context(), serveResolver(t))
+	got, _, err := testPackageDescriptors(t, &hclConverter{projectDir: dir}, serveResolver(t))
 	require.NoError(t, err)
 
 	desc, ok := got["example"]
@@ -631,9 +746,10 @@ func TestPackageDescriptorsWithoutResolver(t *testing.T) {
 	t.Parallel()
 
 	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "main.tf"), nil, 0o600))
 	writeInstalledSDK(t, dir, "example", exampleDescriptor())
 
-	got, _, err := (&hclConverter{projectDir: dir}).packageDescriptors(t.Context(), "")
+	got, _, err := testPackageDescriptors(t, &hclConverter{projectDir: dir}, "")
 	require.NoError(t, err)
 
 	desc, ok := got["example"]
@@ -665,7 +781,7 @@ func TestPackageDescriptorsUnresolvableProvider(t *testing.T) {
 	require.NoError(t, os.WriteFile(filepath.Join(installedDir, "main.tf"), []byte(program), 0o600))
 	writeInstalledSDK(t, installedDir, "nowhere", exampleDescriptor())
 
-	got, diags, err := (&hclConverter{projectDir: installedDir}).packageDescriptors(t.Context(), target)
+	got, diags, err := testPackageDescriptors(t, &hclConverter{projectDir: installedDir}, target)
 	require.NoError(t, err, "an unresolvable provider must not fail the conversion")
 	assert.Empty(t, diags, "the installed descriptor covers it, so there is nothing to report")
 	assert.Contains(t, got, "nowhere")
@@ -673,7 +789,7 @@ func TestPackageDescriptorsUnresolvableProvider(t *testing.T) {
 	bareDir := t.TempDir()
 	require.NoError(t, os.WriteFile(filepath.Join(bareDir, "main.tf"), []byte(program), 0o600))
 
-	got, diags, err = (&hclConverter{projectDir: bareDir}).packageDescriptors(t.Context(), target)
+	got, diags, err = testPackageDescriptors(t, &hclConverter{projectDir: bareDir}, target)
 	require.NoError(t, err)
 	assert.Empty(t, got)
 	require.Len(t, diags, 1, "nothing to import under, so the degradation is reported")
@@ -696,8 +812,7 @@ func TestPackageDescriptorsKeyByPackageName(t *testing.T) {
 		resource "randy_uuid" "a" {}
 	`), 0o600))
 
-	got, _, err := (&hclConverter{projectDir: dir}).packageDescriptors(
-		t.Context(), serveResolver(t))
+	got, _, err := testPackageDescriptors(t, &hclConverter{projectDir: dir}, serveResolver(t))
 	require.NoError(t, err)
 
 	desc, ok := got["random"]
@@ -723,12 +838,26 @@ func TestProgramDirFromWorkingDirectory(t *testing.T) {
 	`)
 
 	t.Chdir(dir)
-	got, _, err := (&hclConverter{}).packageDescriptors(t.Context(), serveResolver(t))
+	got, _, err := testPackageDescriptors(t, &hclConverter{}, serveResolver(t))
 	require.NoError(t, err)
 
 	desc, ok := got["example"]
 	require.True(t, ok, "the project resolves from the working directory")
 	assert.Equal(t, "terraform-provider", desc.Name)
+}
+
+// testPackageDescriptors mirrors ConvertState's prelude: locate the program,
+// parse it, and hand packageDescriptors the shared loader.
+func testPackageDescriptors(
+	t *testing.T, c *hclConverter, resolverTarget string,
+) (map[string]workspace.PackageDescriptor, hcl.Diagnostics, error) {
+	t.Helper()
+	dir, err := c.programDir()
+	require.NoError(t, err)
+	config, diags := parser.NewParser().ParseDirectory(dir)
+	require.False(t, diags.HasErrors(), diags)
+	loader := modules.NewLoader(modules.LiveResolver(t.Context()))
+	return packageDescriptors(t.Context(), resolverTarget, dir, config, loader)
 }
 
 // serveResolver runs fakeResolver on a local port and returns its target,
@@ -892,4 +1021,36 @@ func TestConvertStateViaMapper(t *testing.T) {
 		Args:           []string{badPath},
 	})
 	assert.ErrorContains(t, err, "parsing state file")
+}
+
+func mustModuleSources(t *testing.T, dir string) map[modulepath.Path]string {
+	t.Helper()
+	config, diags := parser.NewParser().ParseDirectory(dir)
+	require.False(t, diags.HasErrors(), diags)
+	return moduleSources(t.Context(), modules.NewLoader(modules.LiveResolver(t.Context())), config, dir)
+}
+
+// TestModuleSourcesDottedLabels covers a dot in a block label, which a dotted
+// call-path string cannot tell apart from nesting.
+func TestModuleSourcesDottedLabels(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	for _, sub := range []string{"dotted", "a", "nested"} {
+		require.NoError(t, os.MkdirAll(filepath.Join(dir, sub), 0o755))
+	}
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "main.tf"), []byte(`
+		module "a.b" { source = "./dotted" }
+		module "a"   { source = "./a" }
+	`), 0o600))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "a", "main.tf"), []byte(`
+		module "b" { source = "../nested" }
+	`), 0o600))
+
+	root := modulepath.Root()
+	assert.Equal(t, map[modulepath.Path]string{
+		root.Append(modulepath.NewStep("a.b")):                               "./dotted",
+		root.Append(modulepath.NewStep("a")):                                 "./a",
+		root.Append(modulepath.NewStep("a")).Append(modulepath.NewStep("b")): "../nested",
+	}, mustModuleSources(t, dir))
 }

@@ -21,19 +21,14 @@ import (
 	"github.com/pulumi/pulumi-hcl/tests/testutil/tfcompat/providers"
 )
 
-// A `depends_on` whose target is a module call reaches every resource inside
-// that module, so a root data source defers its read until the module's
-// pending resources are applied.
-func TestL2DataDependsOnModuleDeferredRead(t *testing.T) {
+// Two module calls side by side inside one module. Every other multi-call case
+// puts its siblings at the root, where each import walks a fresh ancestor
+// chain; here the chains share "outer".
+func TestL2ModuleSiblingCalls(t *testing.T) {
 	t.Parallel()
-	tfcompat.RunCase(t, "l2_data_depends_on_module_deferred_read", tfcompat.Case{
+	tfcompat.RunCase(t, "l2_module_sibling_calls", tfcompat.Case{
 		Providers: []tfcompat.Provider{
-			{Name: "pending", Factory: providers.PendingProvider},
-		},
-		SkipImport: "the pending provider's backend is factory-local",
-		Stages: []tfcompat.Stage{
-			{Mode: tfcompat.StagePreview},
-			{},
+			{Name: "simple", Factory: providers.SimpleProvider},
 		},
 	})
 }
