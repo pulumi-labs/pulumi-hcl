@@ -202,9 +202,9 @@ func (c *hclConverter) programDir() (string, error) {
 
 // moduleSources maps each module call the program declares, keyed by its call
 // path, to the source the runtime derives the call's component type from. The
-// walk goes through the module loader, so a call inside a fetched module is
-// reached the same way the runtime reaches it; a module that cannot be loaded
-// contributes its own call but nothing below it.
+// walk goes through the module loader, so a fetched module is reached the same
+// way the runtime reaches it; one that will not load contributes its own call
+// but nothing below it.
 func moduleSources(ctx context.Context, dir string) (map[modulepath.Path]string, error) {
 	config, diags := parser.NewParser().ParseDirectory(dir)
 	if diags.HasErrors() {
@@ -212,9 +212,9 @@ func moduleSources(ctx context.Context, dir string) (map[modulepath.Path]string,
 	}
 	loader := modules.NewLoader(modules.LiveResolver(ctx))
 	out := map[modulepath.Path]string{}
-	// A module reached from within itself would recurse forever, so the walk
-	// tracks the sources on the current chain rather than every source seen:
-	// one module called twice is two calls, and both need their own entry.
+	// Sources on the current chain, not every source seen: one module called
+	// twice is two calls and needs both entries, but a module reached from
+	// within itself would recurse forever.
 	chain := map[string]bool{}
 	var walk func(config *ast.Config, dir string, path modulepath.Path)
 	walk = func(config *ast.Config, dir string, path modulepath.Path) {
@@ -274,7 +274,7 @@ func convertTFState(
 		})
 	}
 
-	resources = append(resources, componentImports(state, sources)...)
+	resources = slices.AppendSeq(resources, componentImports(state, sources))
 
 	for res, component := range managedResources(state, sources, warn) {
 		provider := res.ProviderConfig.Provider.Type
@@ -350,10 +350,9 @@ func convertTFState(
 }
 
 // managedResources yields the state's managed resources in address order,
-// paired with the path of the module component enclosing them (the root path
-// at the root). Resources in a module the program does not declare are skipped
-// with a warning: without the module's source there is no component to import
-// them under.
+// paired with the path of the module component enclosing them. Resources in a
+// module the program does not declare are skipped with a warning: without the
+// module's source there is no component to import them under.
 func managedResources(
 	state *states.State, sources map[modulepath.Path]string, warn func(summary, detail string),
 ) iter.Seq2[*states.Resource, modulepath.Path] {
@@ -381,8 +380,8 @@ func managedResources(
 }
 
 // moduleComponent resolves a state module address to the path the runtime
-// registers the module's component under, and the source of the innermost
-// call. It reports false for a module the program does not declare.
+// registers the module's component under, and the innermost call's source. It
+// reports false for a module the program does not declare.
 func moduleComponent(
 	addr addrs.ModuleInstance, sources map[modulepath.Path]string,
 ) (instance modulepath.Path, source string, ok bool) {
@@ -398,42 +397,42 @@ func moduleComponent(
 	return instance, source, true
 }
 
-// componentImports emits one import per module instance in the state, typed
-// and named as the runtime registers the module's component so its children
-// land on the URNs the program will register.
+// componentImports yields one import per module instance in the state, named
+// as the runtime registers the module's component so its children land on the
+// URNs the program will register. State records only the modules holding
+// resources, so enclosing modules are yielded too: a component's parent must
+// be in the same response.
 func componentImports(
 	state *states.State, sources map[modulepath.Path]string,
-) []plugin.ResourceImport {
-	var imports []plugin.ResourceImport
-	seen := map[modulepath.Path]bool{}
-	for _, modKey := range slices.Sorted(maps.Keys(state.Modules)) {
-		addr := state.Modules[modKey].Addr
-		// State records only the modules that hold resources, so every
-		// enclosing module is emitted too: a component's parent must be in
-		// the same response.
-		for depth := 1; depth <= len(addr); depth++ {
-			instance, source, declared := moduleComponent(addr[:depth], sources)
-			if !declared {
-				// Nothing deeper can be declared either: the walk fails at
-				// the first call the program does not name.
-				break
+) iter.Seq[plugin.ResourceImport] {
+	return func(yield func(plugin.ResourceImport) bool) {
+		seen := map[modulepath.Path]bool{}
+		for _, modKey := range slices.Sorted(maps.Keys(state.Modules)) {
+			addr := state.Modules[modKey].Addr
+			for depth := 1; depth <= len(addr); depth++ {
+				instance, source, declared := moduleComponent(addr[:depth], sources)
+				if !declared {
+					// Nothing deeper can be declared either.
+					break
+				}
+				// A shared ancestor is already emitted, but the descendants
+				// below it still need their own components.
+				if seen[instance] {
+					continue
+				}
+				seen[instance] = true
+				parent, _, _ := moduleComponent(addr[:depth-1], sources)
+				if !yield(plugin.ResourceImport{
+					Type:        "components:index:" + modules.ComponentTypeName(modules.SourceName(source)),
+					Name:        instance.LogicalName(),
+					IsComponent: true,
+					Parent:      parent.LogicalName(),
+				}) {
+					return
+				}
 			}
-			// An ancestor shared with an earlier address is already emitted,
-			// but the descendants below it still need their own components.
-			if seen[instance] {
-				continue
-			}
-			seen[instance] = true
-			parent, _, _ := moduleComponent(addr[:depth-1], sources)
-			imports = append(imports, plugin.ResourceImport{
-				Type:        "components:index:" + modules.ComponentTypeName(modules.SourceName(source)),
-				Name:        instance.LogicalName(),
-				IsComponent: true,
-				Parent:      parent.LogicalName(),
-			})
 		}
 	}
-	return imports
 }
 
 // sortedInstanceKeys orders a resource's instances deterministically:

@@ -558,10 +558,9 @@ func TestConvertTFState_ModuleResources(t *testing.T) {
 	assert.Equal(t, "res-1", child.ID)
 }
 
-// TestConvertTFState_SiblingModuleCalls covers two calls in one module: their
-// addresses share an ancestor, and emitting that ancestor once must not stop
-// the second call's own component from being emitted. Every Parent has to name
-// something in the same response — the import fails outright on a dangling one.
+// TestConvertTFState_SiblingModuleCalls covers two calls in one module:
+// emitting their shared ancestor once must not stop the second call's own
+// component being emitted. A dangling Parent fails the import outright.
 func TestConvertTFState_SiblingModuleCalls(t *testing.T) {
 	t.Parallel()
 
@@ -1008,7 +1007,6 @@ func TestConvertStateViaMapper(t *testing.T) {
 	assert.ErrorContains(t, err, "parsing state file")
 }
 
-// mustModuleSources walks a program directory the way ConvertState does.
 func mustModuleSources(t *testing.T, dir string) map[modulepath.Path]string {
 	t.Helper()
 	sources, err := moduleSources(t.Context(), dir)
@@ -1016,10 +1014,8 @@ func mustModuleSources(t *testing.T, dir string) map[modulepath.Path]string {
 	return sources
 }
 
-// TestModuleSourcesDottedLabels covers a module label containing a dot, which
-// a dotted-string call path cannot tell apart from nesting: `module "a.b"` at
-// the root and `module "b"` inside `module "a"` are different calls with
-// different sources.
+// TestModuleSourcesDottedLabels covers a dot in a block label, which a dotted
+// call-path string cannot tell apart from nesting.
 func TestModuleSourcesDottedLabels(t *testing.T) {
 	t.Parallel()
 

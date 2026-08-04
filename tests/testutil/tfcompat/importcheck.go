@@ -83,10 +83,8 @@ func runImportCheck(
 		require.Empty(t, d.Mutations(), "up after import performed resource changes")
 		assertNoDestructiveOps(t, "up", res.Changes)
 
-		// Module inputs are not recorded in TF state, so an imported module
-		// component carries none and the up above records them — engine-side
-		// bookkeeping, invisible to the provider. Everything must be settled
-		// by now.
+		// TF state records no module inputs, so an imported component carries
+		// none and the up above records them. Nothing may remain after that.
 		settled, err := d.Preview(t, files)
 		require.NoError(t, err)
 		for op, n := range settled {
@@ -96,11 +94,10 @@ func runImportCheck(
 }
 
 // assertNoDestructiveOps fails on any operation that would disturb an existing
-// resource. Creates cover the stack shell, default providers, and module
-// component shells; updates cover the component inputs the import cannot
-// carry. Resources served in-process by the engine's builtin provider (e.g.
-// terraform_data's Stash) never reach a provider's mutating RPCs, so the
-// recorder alone cannot see them change.
+// resource. Creates cover the stack shell, default providers and component
+// shells; updates cover the component inputs the import cannot carry. The
+// recorder cannot see either: resources the engine's builtin provider serves
+// in-process (e.g. terraform_data's Stash) reach no provider RPC.
 func assertNoDestructiveOps[K ~string](t *testing.T, phase string, ops map[K]int) {
 	t.Helper()
 	for op, n := range ops {

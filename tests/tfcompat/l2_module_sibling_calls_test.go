@@ -21,13 +21,9 @@ import (
 	"github.com/pulumi/pulumi-hcl/tests/testutil/tfcompat/providers"
 )
 
-// Two module calls side by side inside one module. Every other multi-call
-// case puts the siblings at the root, where each import walks a fresh
-// ancestor chain; here the chains share "outer", so the import must still
-// emit a component for each sibling below it.
-//
-// The import shape itself is pinned by TestConvertTFState_SiblingModuleCalls,
-// which is what guards that behaviour while the state check is skipped below.
+// Two module calls side by side inside one module. Every other multi-call case
+// puts its siblings at the root, where each import walks a fresh ancestor
+// chain; here the chains share "outer".
 func TestL2ModuleSiblingCalls(t *testing.T) {
 	t.Parallel()
 	tfcompat.RunCase(t, "l2_module_sibling_calls", tfcompat.Case{
