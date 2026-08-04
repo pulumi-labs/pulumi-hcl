@@ -282,6 +282,8 @@ type Graph struct {
 	// dependents counts how many other nodes list a given key in their
 	// dependency list. Read by HasDependents at Walk time.
 	dependents map[NodeKey]int
+	// initReads are the module-init edges deferred to the end of the build.
+	initReads []initEdges
 
 	// moved holds the moved blocks of each module keyed by that module's path.
 	// A moved block's from/to addresses are relative to the module it is written
@@ -522,6 +524,13 @@ func (g *Graph) ExpandableNodes() []*Node {
 	return out
 }
 
+// initEdges is one module init node and the nodes its component registration
+// reads, pending the cycle check that only a finished graph can answer.
+type initEdges struct {
+	init  pdag.Node
+	reads []pdag.Node
+}
+
 // BuildFromConfig builds a dependency graph from an HCL configuration.
 // moduleLoader is required when config contains modules.
 func BuildFromConfig(config *ast.Config, moduleLoader ModuleLoader, workDir string) (*Graph, error) {
@@ -652,9 +661,38 @@ func BuildFromConfig(config *ast.Config, moduleLoader ModuleLoader, workDir stri
 		}
 	}
 
+	g.addInitReadEdges()
 	g.classifyPlanTimeReads()
 
 	return g, nil
+}
+
+// addInitReadEdges orders each module init after what its component
+// registration reads, skipping any edge that would close a cycle. Mutually
+// dependent modules are legal — the dependency runs from one module's outputs
+// to the other's variables, not between the calls — and there the argument
+// cannot be known that early, so init reports it unset.
+func (g *Graph) addInitReadEdges() {
+	// Two init edges can be individually acyclic and jointly cyclic, so which
+	// one is refused depends on the order they are tried; modules are inlined
+	// in map order, so sort before draining or the choice varies per run.
+	slices.SortFunc(g.initReads, func(a, b initEdges) int {
+		aN, bN := g.keyByDagNode[a.init], g.keyByDagNode[b.init]
+		if mCmp := modulepath.Compare(aN.Module, bN.Module); mCmp != 0 {
+			return mCmp
+		}
+		return cmp.Compare(aN.ID, bN.ID)
+	})
+	for _, e := range g.initReads {
+		for _, dep := range e.reads {
+			if err := g.dag.NewEdge(dep, e.init); err != nil {
+				continue
+			}
+			if key, ok := g.keyByDagNode[dep]; ok {
+				g.dependents[key]++
+			}
+		}
+	}
 }
 
 // classifyPlanTimeReads marks each data-source node whose transitive
@@ -1599,8 +1637,18 @@ func (g *Graph) inlineModule(
 
 	_, initIdx := g.newNode(initKey)
 
-	// Variables: each depends on init + the corresponding input expression from the module block.
+	// Init evaluates the call's arguments, name and protect flag to register
+	// the component, so it should follow whatever they read. Recorded now,
+	// added once the graph is whole: an edge that closes a cycle is one the
+	// program cannot satisfy, and only the finished graph shows that.
+	initReads := append(g.exprDeps(mod.PulumiName, parentPath), g.exprDeps(mod.Protect, parentPath)...)
 	moduleInputAttrs, _ := mod.Config.JustAttributes()
+	for _, name := range slices.Sorted(maps.Keys(moduleInputAttrs)) {
+		initReads = append(initReads, g.exprDeps(moduleInputAttrs[name].Expr, parentPath)...)
+	}
+	g.initReads = append(g.initReads, initEdges{init: initIdx, reads: initReads})
+
+	// Variables: each depends on init + the corresponding input expression from the module block.
 	for varName, v := range loaded.Config.Variables {
 		varDeps := []pdag.Node{initIdx}
 		if inputAttr, ok := moduleInputAttrs[varName]; ok {
