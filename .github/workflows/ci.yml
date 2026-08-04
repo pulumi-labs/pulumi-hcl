@@ -84,9 +84,12 @@ jobs:
           restore-keys: |
             ${{ matrix.cache-key }}-
             go-test-
+      # dev, not latest: `pulumi import --from hcl` only reaches the package
+      # resolver on an engine carrying pulumi/pulumi#24174, which is merged but
+      # unreleased. Drop back to "latest" once it ships.
       - uses: pulumi/actions@v7
         with:
-          pulumi-version: "latest"
+          pulumi-version: "dev"
         env:
           GITHUB_TOKEN: ${{ secrets.PULUMI_BOT_TOKEN }}
       - uses: opentofu/setup-opentofu@v2

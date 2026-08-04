@@ -391,11 +391,13 @@ resource "random_uuid" "example" {
 // provider the runtime registers them under, with the state's values supplied
 // directly.
 //
-// `pulumi install` runs first because Run refuses to start without the SDKs on
-// disk, so the no-install import path cannot be driven end to end here; it is
-// covered by the converter's unit tests until the CLI is pinned to a build
-// that supplies a package resolver, at which point the install below can move
-// after the import.
+// `pulumi install` has to come first, and not by choice: the import's
+// deployment phase calls gatherPackagesFromProgram, which rejects the
+// unresolved package specs GetRequiredPackages reports until the SDKs are on
+// disk ("returned 1 unresolved package spec(s) ... run `pulumi install`").
+// The converter runs before that and does resolve the program's providers
+// itself, so the import file is correct either way — but the command as a
+// whole cannot complete without the install, on any engine.
 func TestSmokeImportFromHCL(t *testing.T) {
 	t.Parallel()
 	tofuBin := lookPath(t, "tofu", "terraform")
