@@ -31,6 +31,5 @@ func TestL2NestedModuleAliasedProviderPassthrough(t *testing.T) {
 		Providers: []tfcompat.Provider{
 			{Name: "simple", Factory: providers.SimpleProvider},
 		},
-		SkipImport: "TODO[pulumi/pulumi-hcl#167]: one component update remains non-deterministically",
 	})
 }
