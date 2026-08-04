@@ -524,12 +524,6 @@ func (g *Graph) ExpandableNodes() []*Node {
 	return out
 }
 
-// nodeKeyString names an interned node for deterministic ordering.
-func (g *Graph) nodeKeyString(n pdag.Node) string {
-	key := g.keyByDagNode[n]
-	return key.Module.String() + "\x00" + key.ID
-}
-
 // initEdges is one module init node and the nodes its component registration
 // reads, pending the cycle check that only a finished graph can answer.
 type initEdges struct {
@@ -683,7 +677,11 @@ func (g *Graph) addInitReadEdges() {
 	// one is refused depends on the order they are tried; modules are inlined
 	// in map order, so sort before draining or the choice varies per run.
 	slices.SortFunc(g.initReads, func(a, b initEdges) int {
-		return strings.Compare(g.nodeKeyString(a.init), g.nodeKeyString(b.init))
+		aN, bN := g.keyByDagNode[a.init], g.keyByDagNode[b.init]
+		if mCmp := modulepath.Compare(aN.Module, bN.Module); mCmp != 0 {
+			return mCmp
+		}
+		return cmp.Compare(aN.ID, bN.ID)
 	})
 	for _, e := range g.initReads {
 		for _, dep := range e.reads {
