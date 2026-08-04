@@ -16,6 +16,8 @@ package pulexec
 
 import (
 	"os"
+
+	"github.com/blang/semver"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -57,17 +59,45 @@ func isolatedPulumiHome(t *testing.T) string {
 	if err != nil {
 		return home
 	}
-	for _, e := range entries {
-		for _, name := range runtimePlugins {
-			// Matches every installed version of the plugin, and its
-			// adjacent .lock file.
-			if strings.HasPrefix(e.Name(), "resource-"+name+"-v") {
+	for _, name := range runtimePlugins {
+		// Seed only the highest installed version (pre-releases included, so
+		// a dev build newer than the last release wins): the engine's own
+		// "latest" selection skips pre-releases, which would silently pick a
+		// stale release over a dev build when both are installed.
+		version, ok := highestPluginVersion(entries, name)
+		if !ok {
+			continue
+		}
+		dir := "resource-" + name + "-v" + version.String()
+		for _, e := range entries {
+			// The version directory and its adjacent .lock file.
+			if e.Name() == dir || e.Name() == dir+".lock" {
 				seedEntry(t, filepath.Join(hostDir, e.Name()), filepath.Join(pluginsDir, e.Name()), e)
-				break
 			}
 		}
 	}
 	return home
+}
+
+// highestPluginVersion returns the highest version of plugin name present in
+// the host cache entries, comparing semver with pre-releases included.
+func highestPluginVersion(entries []os.DirEntry, name string) (semver.Version, bool) {
+	var best semver.Version
+	found := false
+	prefix := "resource-" + name + "-v"
+	for _, e := range entries {
+		if !e.IsDir() || !strings.HasPrefix(e.Name(), prefix) {
+			continue
+		}
+		v, err := semver.Parse(strings.TrimPrefix(e.Name(), prefix))
+		if err != nil {
+			continue
+		}
+		if !found || v.GT(best) {
+			best, found = v, true
+		}
+	}
+	return best, found
 }
 
 // seedEntry materializes one host plugin-cache entry at dst: a directory

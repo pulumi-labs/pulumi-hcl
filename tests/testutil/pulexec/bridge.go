@@ -42,6 +42,39 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// SDKv2ProviderDynamic serves an SDKv2 (helper/schema) provider in-process
+// over go-plugin and returns a Provider the engine reaches through the real
+// terraform-provider plugin: the driver points
+// PULUMI_BRIDGE_REATTACH_PROVIDERS at the served provider, so the full
+// parameterization path (Parameterize, wire-schema GetSchema, GetMapping)
+// runs against the shipped dynamic bridge instead of an in-process bridged
+// server. Recording happens at the helper/schema CRUD boundary — pass a
+// factory whose provider is already wrapped (tfexec.Wrap), exactly as on the
+// OpenTofu path.
+func SDKv2ProviderDynamic(
+	t *testing.T, providerName string, factory func() *schema.Provider,
+) Provider {
+	t.Helper()
+	return Provider{
+		Name:     providerName,
+		Reattach: tfexec.ServeProvider(t, tfexec.SDKv2Provider(t, providerName, factory)),
+	}
+}
+
+// PFProviderDynamic is SDKv2ProviderDynamic for terraform-plugin-framework
+// providers, recording provider operations to rec at the tfprotov6 boundary —
+// the same boundary tfexec.PFProvider records at on the OpenTofu path.
+func PFProviderDynamic(
+	t *testing.T, providerName string, factory func() pfprovider.Provider, rec *tfexec.Recorder,
+) Provider {
+	t.Helper()
+	requireValidPFSchema(t, factory())
+	return Provider{
+		Name:     providerName,
+		Reattach: tfexec.ServeProvider(t, tfexec.PFProvider(providerName, factory, rec)),
+	}
+}
+
 // SDKv2Provider builds a Provider from an SDKv2 (helper/schema) provider
 // factory via the classic bridge. Start builds a fresh provider per call so
 // each engine-side provider instance configures its own copy (see
@@ -52,9 +85,9 @@ func SDKv2Provider(
 ) Provider {
 	t.Helper()
 	// Surface validation problems at construction time.
-	BridgedProvider(t, providerName, factory(), customize)
+	bridgedProvider(t, providerName, factory(), customize)
 	return Provider{Name: providerName, Start: func(ctx context.Context) (pulumirpc.ResourceProviderServer, error) {
-		return providerServerFromInfo(ctx, BridgedProvider(t, providerName, factory(), customize))
+		return providerServerFromInfo(ctx, bridgedProvider(t, providerName, factory(), customize))
 	}}
 }
 
@@ -138,12 +171,12 @@ func (s recordingShim) Server(ctx context.Context) (tfprotov6.ProviderServer, er
 	return tfexec.WrapServer(srv, s.rec), nil
 }
 
-// BridgedProvider wraps a *schema.Provider into a tfbridge.ProviderInfo with
+// bridgedProvider wraps a *schema.Provider into a tfbridge.ProviderInfo with
 // auto-generated tokens and no-op CRUD methods where missing. customize, if
 // non-nil, runs after token computation so tests can apply non-default
 // Pulumi-side renames (or any other ProviderInfo tweak) before the provider
 // is served.
-func BridgedProvider(
+func bridgedProvider(
 	t *testing.T, providerName string, tfp *schema.Provider,
 	customize func(*testing.T, *tfbridge.ProviderInfo),
 ) tfbridge.ProviderInfo {

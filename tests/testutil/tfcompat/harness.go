@@ -18,8 +18,9 @@
 // operations:
 //
 //	Path A: real `tofu apply` against the in-memory TF providers (via reattach).
-//	Path B: real `pulumi up` against the same providers (bridged), running the
-//	        pulumi-language-hcl runtime.
+//	Path B: real `pulumi up` against the same providers, reached through the
+//	        real terraform-provider plugin (via PULUMI_BRIDGE_REATTACH_PROVIDERS),
+//	        running the pulumi-language-hcl runtime.
 //
 // Recordings are captured by wrapping each *schema.Provider with tfexec.Wrap
 // before either path sees it, so the comparisons are apples-to-apples.
@@ -53,7 +54,6 @@ import (
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
 	"github.com/pulumi/pulumi-hcl/tests/testutil/pulexec"
 	"github.com/pulumi/pulumi-hcl/tests/testutil/tfexec"
-	"github.com/pulumi/pulumi-terraform-bridge/v3/pkg/tfbridge"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/apitype"
 	"github.com/stretchr/testify/require"
 )
@@ -66,14 +66,10 @@ type Provider struct {
 	Factory func() *schema.Provider
 	// PFFactory builds a terraform-plugin-framework provider.
 	PFFactory func() pfprovider.Provider
-	// Customize, if non-nil, runs against the bridged ProviderInfo on the
-	// Pulumi path so tests can apply non-default Pulumi-side renames (or any
-	// other ProviderInfo tweak) to exercise the bridge mapping behaviour.
-	// The TF path is unaffected.
-	Customize func(*testing.T, *tfbridge.ProviderInfo)
-	// Parameterized serves the Pulumi-side provider as a parameterized
-	// package (see pulexec.Provider.Parameterized). The TF path is
-	// unaffected: parameterization is a Pulumi deployment concept.
+	// Parameterized serves the state-import check's Pulumi-side provider as a
+	// parameterized package (see pulexec.Provider.Parameterized). The main
+	// comparison path always runs the real parameterization flow, and the TF
+	// path is unaffected: parameterization is a Pulumi deployment concept.
 	Parameterized bool
 }
 
@@ -112,13 +108,37 @@ func buildPulumiProviders(
 		switch {
 		case p.Factory != nil && p.PFFactory == nil:
 			factory := p.Factory
-			pulProvs[i] = pulexec.SDKv2Provider(t, p.Name, func() *schema.Provider { return tfexec.Wrap(factory(), rec) }, p.Customize)
+			pulProvs[i] = pulexec.SDKv2Provider(t, p.Name, func() *schema.Provider { return tfexec.Wrap(factory(), rec) }, nil)
 		case p.PFFactory != nil && p.Factory == nil:
-			pulProvs[i] = pulexec.PFProvider(t, p.Name, p.PFFactory, rec, p.Customize)
+			pulProvs[i] = pulexec.PFProvider(t, p.Name, p.PFFactory, rec, nil)
 		default:
 			t.Fatalf("provider %q: exactly one of Factory or PFFactory must be set", p.Name)
 		}
 		pulProvs[i].Parameterized = p.Parameterized
+	}
+	return pulProvs
+}
+
+// buildDynamicPulumiProviders wires the Pulumi-side path used by the main
+// comparison: each provider is served in-process over go-plugin and the
+// engine reaches it through the real terraform-provider plugin
+// (pulexec.SDKv2ProviderDynamic / PFProviderDynamic), so the pulumi path runs
+// the full parameterization flow the production runtime does.
+func buildDynamicPulumiProviders(
+	t *testing.T, provs []Provider, rec *tfexec.Recorder,
+) []pulexec.Provider {
+	t.Helper()
+	pulProvs := make([]pulexec.Provider, len(provs))
+	for i, p := range provs {
+		switch {
+		case p.Factory != nil && p.PFFactory == nil:
+			factory := p.Factory
+			pulProvs[i] = pulexec.SDKv2ProviderDynamic(t, p.Name, func() *schema.Provider { return tfexec.Wrap(factory(), rec) })
+		case p.PFFactory != nil && p.Factory == nil:
+			pulProvs[i] = pulexec.PFProviderDynamic(t, p.Name, p.PFFactory, rec)
+		default:
+			t.Fatalf("provider %q: exactly one of Factory or PFFactory must be set", p.Name)
+		}
 	}
 	return pulProvs
 }
@@ -251,7 +271,7 @@ func runCaseFromDir(t *testing.T, caseDir string, c Case) {
 
 	recA, recB := &tfexec.Recorder{}, &tfexec.Recorder{}
 	tfProvs := buildTerraformProviders(t, c.Providers, recA)
-	pulProvs := buildPulumiProviders(t, c.Providers, recB)
+	pulProvs := buildDynamicPulumiProviders(t, c.Providers, recB)
 
 	tfDriver := tfexec.NewDriver(t, tfProvs)
 	pulDriver := pulexec.NewDriver(t, pulProvs, c.Config)
