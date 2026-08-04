@@ -212,9 +212,6 @@ func moduleSources(ctx context.Context, dir string) (map[modulepath.Path]string,
 	}
 	loader := modules.NewLoader(modules.LiveResolver(ctx))
 	out := map[modulepath.Path]string{}
-	// Sources on the current chain, not every source seen: one module called
-	// twice is two calls and needs both entries, but a module reached from
-	// within itself would recurse forever.
 	chain := map[string]bool{}
 	var walk func(config *ast.Config, dir string, path modulepath.Path)
 	walk = func(config *ast.Config, dir string, path modulepath.Path) {
