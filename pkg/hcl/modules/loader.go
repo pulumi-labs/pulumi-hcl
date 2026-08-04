@@ -498,6 +498,7 @@ func (l *Loader) GetCallStack() []string {
 	return append([]string{}, l.callStack...)
 }
 
+// ComponentTypeName derives a component type name from a module's name,
 // replicating PCL's DeclarationName logic.
 func ComponentTypeName(name string) string {
 	for _, ch := range []string{"-", ".", " "} {

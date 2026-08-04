@@ -4379,7 +4379,6 @@ func (e *Engine) processModuleComplete(ctx context.Context, node *graph.Node) er
 	return nil
 }
 
-// componentTypeName derives a component type name from a module's name,
 // registerComponentResource registers a component (non-custom) resource.
 func (e *Engine) registerComponentResource(
 	ctx context.Context,
