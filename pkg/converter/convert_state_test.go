@@ -666,6 +666,8 @@ func TestPackageDescriptorsKeyByPackageName(t *testing.T) {
 // TestProgramDirFromWorkingDirectory pins what the plugin binary does:
 // ConvertState carries no source directory, so New() must find the project
 // from the process's working directory.
+//
+//nolint:paralleltest // t.Chdir cannot be used in a parallel test.
 func TestProgramDirFromWorkingDirectory(t *testing.T) {
 	dir := t.TempDir()
 	writeFile(t, filepath.Join(dir, "Pulumi.yaml"), "name: import-test\nruntime: hcl\n")
