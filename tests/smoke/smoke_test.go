@@ -393,7 +393,6 @@ func TestSmokeImportFromHCL(t *testing.T) {
 	lookPath(t, "pulumi-language-hcl")
 	lookPath(t, "pulumi-converter-hcl")
 
-	// The file backend requires its directory to exist before `stack init`.
 	base := t.TempDir()
 	require.NoError(t, os.MkdirAll(filepath.Join(base, "state"), 0o755))
 	env := []string{
@@ -411,7 +410,6 @@ func TestSmokeImportFromHCL(t *testing.T) {
 	statePath := filepath.Join(tfDir, "terraform.tfstate")
 	require.FileExists(t, statePath, "tofu apply should have produced state")
 
-	// The premise: `tofu plan` is clean, so `pulumi preview` must be too.
 	mustRun(t, tfDir, env, tofuBin, "plan", "-detailed-exitcode", "-input=false")
 
 	pulDir := filepath.Join(base, "pulumi")
@@ -424,13 +422,7 @@ func TestSmokeImportFromHCL(t *testing.T) {
 	require.FileExists(t, filepath.Join(pulDir, "sdks", "random", "hcl.sdk.json"),
 		"random is dynamically bridged, so install writes a parameterization descriptor")
 
-	// --protect=false: HCL programs cannot express the protect option, so the
-	// default (protected) would make every first preview diff on it.
 	mustRun(t, pulDir, env, pulumiBin, "import", "--from", "hcl", statePath, "--protect=false", "--yes")
-
-	// The state's values were supplied directly, so the first preview must be
-	// clean immediately — no provider Read ran to materialize attributes
-	// differently from the TF state.
 	mustRun(t, pulDir, env, pulumiBin, "preview", "--expect-no-changes")
 }
 
