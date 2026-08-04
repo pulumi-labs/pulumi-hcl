@@ -385,19 +385,7 @@ resource "random_uuid" "example" {
 `
 
 // TestSmokeImportFromHCL drives the real `tofu` and `pulumi` binaries through
-// `pulumi import --from hcl`, encoding its core promise: if `tofu plan` shows
-// no diff, the first `pulumi preview` after import must not either. That only
-// holds if the imported resources land under the very same parameterized
-// provider the runtime registers them under, with the state's values supplied
-// directly.
-//
-// `pulumi install` has to come first, and not by choice: the import's
-// deployment phase calls gatherPackagesFromProgram, which rejects the
-// unresolved package specs GetRequiredPackages reports until the SDKs are on
-// disk ("returned 1 unresolved package spec(s) ... run `pulumi install`").
-// The converter runs before that and does resolve the program's providers
-// itself, so the import file is correct either way — but the command as a
-// whole cannot complete without the install, on any engine.
+// `pulumi import --from hcl`.
 func TestSmokeImportFromHCL(t *testing.T) {
 	t.Parallel()
 	tofuBin := lookPath(t, "tofu", "terraform")
