@@ -2006,11 +2006,10 @@ func (g *generator) genModule(body *hclwrite.Body, c *pcl.Component) hcl.Diagnos
 	return diags
 }
 
-// genModuleProviders emits a module block's `providers` map from a PCL
-// component's providers option. PCL accepts a list of provider resources or a
-// map of local provider name to provider resource; the list form infers each
-// entry's key from the referenced provider's package name, which is also the
-// local name the child module's required_providers declares.
+// genModuleProviders emits a module block's `providers` map. The list form of
+// the PCL providers option keys each entry by the referenced provider's
+// package name, which is the local name the child module's required_providers
+// declares.
 func (g *generator) genModuleProviders(body *hclwrite.Body, providers model.Expression) hcl.Diagnostics {
 	var entries []hclwrite.ObjectAttrTokens
 	var diags hcl.Diagnostics
@@ -2057,9 +2056,6 @@ func (g *generator) genModuleProviders(body *hclwrite.Body, providers model.Expr
 	return diags
 }
 
-// providerPackageNameFromExpr returns the package name of the provider
-// resource an expression references, or ok=false when the expression is not a
-// reference to a provider resource.
 func providerPackageNameFromExpr(expr model.Expression) (string, bool) {
 	st, ok := expr.(*model.ScopeTraversalExpression)
 	if !ok || len(st.Parts) == 0 {

@@ -1562,11 +1562,8 @@ func (g *Graph) inlineModule(
 	}
 
 	// Init node: depends on count/for_each/depends_on and the call's input
-	// expressions from the parent scope (the component registration reports
-	// the evaluated inputs and their dependencies, so they must resolve
-	// first), plus the parent module's init (so a nested module never
-	// initializes before its enclosing module's instance/eval-context is
-	// registered).
+	// expressions (the component registration reports their dependencies),
+	// plus the parent module's init.
 	initKey := NodeKey{Module: path, ID: "__init__"}
 	var initDeps []pdag.Node
 	if !parentPath.IsRoot() {

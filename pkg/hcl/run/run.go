@@ -4070,9 +4070,8 @@ func (e *Engine) initModuleCallIn(
 		parentURN, parentEvalCtx, parentPath, parentName = parent.URN, parent.EvalCtx, parent.Path, parent.Name
 	}
 
-	// Evaluate module inputs for the component resource registration. The
-	// inputs' dep marks become the component's dependencies, so the engine
-	// sees the module call depend on the resources its arguments reference.
+	// Evaluate module inputs for the component resource registration; their
+	// dep marks become the component's dependencies.
 	inputs := make(map[string]property.Value)
 	propertyDeps := make(map[string][]string)
 	var deps []string
