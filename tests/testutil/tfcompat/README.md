@@ -140,7 +140,9 @@ particular:
   Pulumi-only `putest` suite (`tests/putest/`,
   `tests/testutil/putest/`), which asserts directly on stack outputs,
   Pulumi state, and recorded provider ops instead of comparing against
-  OpenTofu.
+  OpenTofu. A tfcompat case skipped as a known divergence gets a putest
+  twin (with `Provider.Dynamic`) locking in the current pulumi-hcl
+  behavior until the divergence is fixed.
 
 Only Create + DataSource Read are exercised by the first test. The
 recorder shapes for Update/Delete are wired but not yet covered by a
