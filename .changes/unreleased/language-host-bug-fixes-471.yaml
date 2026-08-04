@@ -1,6 +1,0 @@
-kind: bug-fixes
-body: Reject lifecycle arguments, provisioner/connection/timeouts blocks, and unsupported `pulumi` options on `data` blocks
-time: 2026-07-30T13:30:00Z
-custom:
-    Component: language-host
-    PR: "471"

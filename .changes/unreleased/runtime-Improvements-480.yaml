@@ -1,6 +1,0 @@
-kind: Improvements
-body: Move to `pulumi/pulumi-hcl`; rename the SDK packages to `@pulumi/hcl`, `pulumi_hcl` and `Pulumi.Hcl`
-time: 2026-07-31T00:00:00Z
-custom:
-    Component: runtime
-    PR: "480"

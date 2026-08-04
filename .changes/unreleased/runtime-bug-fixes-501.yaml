@@ -1,6 +1,0 @@
-kind: bug-fixes
-body: Accept nested property paths in `hide_diffs` and `replace_on_changes`
-time: 2026-08-03T19:10:00Z
-custom:
-    Component: runtime
-    PR: "501"

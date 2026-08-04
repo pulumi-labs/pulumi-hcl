@@ -1,6 +1,0 @@
-kind: Improvements
-body: '`pulumi import --from hcl` imports resources declared in modules, under the module components the runtime registers'
-time: 2026-08-03T12:30:42.49786+02:00
-custom:
-    Component: converter
-    PR: "497"

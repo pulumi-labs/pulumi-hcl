@@ -1,6 +1,0 @@
-kind: Improvements
-body: Support the `providers` option on components
-time: 2026-08-03T10:39:47Z
-custom:
-    Component: codegen
-    PR: "494"

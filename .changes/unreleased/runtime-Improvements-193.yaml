@@ -1,6 +1,0 @@
-kind: Improvements
-body: Add `provider::terraform::encode_expr`
-time: 2026-07-31T10:11:41Z
-custom:
-    Component: runtime
-    PR: "193"
