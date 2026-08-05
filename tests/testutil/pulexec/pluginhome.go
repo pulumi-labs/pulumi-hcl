@@ -67,15 +67,19 @@ func isolatedPulumiHome(t *testing.T) string {
 		if !ok {
 			continue
 		}
+		// The version directory and its adjacent .lock file.
 		dir := "resource-" + name + "-v" + version.String()
-		for _, e := range entries {
-			// The version directory and its adjacent .lock file.
-			if e.Name() == dir || e.Name() == dir+".lock" {
-				seedEntry(t, filepath.Join(hostDir, e.Name()), filepath.Join(pluginsDir, e.Name()), e)
-			}
+		seedEntry(t, filepath.Join(hostDir, dir), filepath.Join(pluginsDir, dir))
+		if lock := dir + ".lock"; fileExists(filepath.Join(hostDir, lock)) {
+			seedEntry(t, filepath.Join(hostDir, lock), filepath.Join(pluginsDir, lock))
 		}
 	}
 	return home
+}
+
+func fileExists(path string) bool {
+	_, err := os.Lstat(path)
+	return err == nil
 }
 
 // highestPluginVersion returns the highest version of plugin name present in
@@ -102,9 +106,11 @@ func highestPluginVersion(entries []os.DirEntry, name string) (semver.Version, b
 // seedEntry materializes one host plugin-cache entry at dst: a directory
 // becomes a real directory whose contents are symlinks into the host cache;
 // anything else is symlinked directly.
-func seedEntry(t *testing.T, src, dst string, e os.DirEntry) {
+func seedEntry(t *testing.T, src, dst string) {
 	t.Helper()
-	if !e.IsDir() {
+	info, err := os.Lstat(src)
+	require.NoError(t, err)
+	if !info.IsDir() {
 		require.NoError(t, os.Symlink(src, dst))
 		return
 	}

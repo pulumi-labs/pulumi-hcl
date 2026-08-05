@@ -1,7 +1,5 @@
-# `rule` (MaxItems=1) is an optional nested block, left out here. It reads as
-# an empty list of blocks (`[]`, length 0), matching OpenTofu. The
-# terraform-provider plugin path reads it as null instead — the divergence the
-# tfcompat case of the same name is skipped for.
+# `rule` (MaxItems=1) is an optional nested block, left out here: it reads as
+# `[]`, matching OpenTofu. The plugin path reads null (https://github.com/pulumi/pulumi-hcl/issues/508).
 resource "blocky_thing" "t" {
   name = "omit"
 

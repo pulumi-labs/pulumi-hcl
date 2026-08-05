@@ -1,8 +1,6 @@
-# `filter` is a repeating TypeSet nested block on blocky_thing. It
-# materializes as a cty set, so comparing it against a `toset(...)` of the
-# same elements is true regardless of element order, matching OpenTofu. The
-# terraform-provider plugin path materializes an ordered tuple and yields
-# false — the divergence the tfcompat case of the same name is skipped for.
+# `filter` is a repeating TypeSet nested block: a cty set, so `== toset(...)`
+# of the same elements is true in either order, matching OpenTofu. The plugin
+# path materializes an ordered tuple and yields false (https://github.com/pulumi/pulumi-hcl/issues/509).
 resource "blocky_thing" "t" {
   name = "seteq"
   filter {

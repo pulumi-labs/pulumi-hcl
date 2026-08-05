@@ -23,15 +23,14 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
-// These cases pin the correct (OpenTofu-matching) behavior of the linked-in
-// bridged provider path. Each mirrors a tfcompat case of the same name that
-// is skipped as a known failure because the terraform-provider plugin path
-// diverges (its wire-schema projection drops empty nested collections and
-// set typing). When those divergences are fixed, re-enable the tfcompat
-// twins and delete these.
+// Each case here pins the correct (OpenTofu-matching) behavior of the
+// linked-in bridge for a tfcompat twin skipped because the
+// terraform-provider plugin path diverges
+// (https://github.com/pulumi/pulumi-hcl/issues/508,
+// https://github.com/pulumi/pulumi-hcl/issues/509). When those are fixed,
+// re-enable the tfcompat twins and delete these.
 
-// TestL2OmittedNestedBlock: an optional MaxItems=1 nested block (`rule`) left
-// out of an enclosing block reads as an empty list of blocks (`[]`, length 0).
+// An omitted optional MaxItems=1 nested block reads as `[]`, length 0.
 func TestL2OmittedNestedBlock(t *testing.T) {
 	t.Parallel()
 	putest.RunCase(t, "l2_omitted_nested_block", putest.Case{
@@ -45,9 +44,8 @@ func TestL2OmittedNestedBlock(t *testing.T) {
 	})
 }
 
-// TestL2OptionalComputedBlockUnset: an Optional+Computed MaxItems=1 block the
-// provider leaves unset reads as null for the TypeList variant and as the
-// empty set for the TypeSet variant.
+// An unset Optional+Computed MaxItems=1 block reads as null for the TypeList
+// variant and as the empty set for the TypeSet variant.
 func TestL2OptionalComputedBlockUnset(t *testing.T) {
 	t.Parallel()
 	putest.RunCase(t, "l2_optional_computed_block_unset", putest.Case{
@@ -63,9 +61,8 @@ func TestL2OptionalComputedBlockUnset(t *testing.T) {
 	})
 }
 
-// TestL2SetBlockEquality: a repeating TypeSet nested block materializes as a
-// cty set, so comparing it to a `toset(...)` of the same elements is true
-// regardless of element order.
+// A repeating TypeSet nested block keeps set typing, so `== toset(...)` of
+// the same elements is true regardless of order.
 func TestL2SetBlockEquality(t *testing.T) {
 	t.Parallel()
 	putest.RunCase(t, "l2_set_block_equality", putest.Case{
@@ -79,10 +76,8 @@ func TestL2SetBlockEquality(t *testing.T) {
 	})
 }
 
-// TestL2IgnoreChangesForceNewBlockRemoved: removing a MaxItems=1 block whose
-// ForceNew `mode` is in ignore_changes replaces the resource (the ignored
-// index no longer exists, so the ForceNew change is observed), and `settings`
-// reports the empty list the replacement was created with.
+// Removing a MaxItems=1 block whose ForceNew `mode` is in ignore_changes
+// replaces the resource, and `settings` reports the replacement's empty list.
 func TestL2IgnoreChangesForceNewBlockRemoved(t *testing.T) {
 	t.Parallel()
 	putest.RunCase(t, "l2_ignore_changes_forcenew_block_removed", putest.Case{

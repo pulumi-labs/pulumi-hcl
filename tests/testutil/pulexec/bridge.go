@@ -43,14 +43,10 @@ import (
 )
 
 // SDKv2ProviderDynamic serves an SDKv2 (helper/schema) provider in-process
-// over go-plugin and returns a Provider the engine reaches through the real
-// terraform-provider plugin: the driver points
-// PULUMI_BRIDGE_REATTACH_PROVIDERS at the served provider, so the full
-// parameterization path (Parameterize, wire-schema GetSchema, GetMapping)
-// runs against the shipped dynamic bridge instead of an in-process bridged
-// server. Recording happens at the helper/schema CRUD boundary — pass a
-// factory whose provider is already wrapped (tfexec.Wrap), exactly as on the
-// OpenTofu path.
+// over go-plugin; the engine reaches it through the real terraform-provider
+// plugin via PULUMI_BRIDGE_REATTACH_PROVIDERS, running the full
+// parameterization flow. Pass an already-wrapped factory (tfexec.Wrap) to
+// record at the CRUD boundary.
 func SDKv2ProviderDynamic(
 	t *testing.T, providerName string, factory func() *schema.Provider,
 ) Provider {

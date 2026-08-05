@@ -14,28 +14,23 @@
 
 // Package putest is the Pulumi-only half of the tfcompat harness: it runs a
 // `.tf` program from testdata/cases/<name>/ through `pulumi up` against
-// in-process bridged providers (pulexec's attach path) with no OpenTofu run
-// to compare against; assertions are made directly against stack outputs,
-// exported Pulumi state, and the recorded provider operations. Use it for
-// setups a tf-compatible program cannot produce — provider-info
-// customization (Customize) foremost — and to pin the correct
-// (OpenTofu-matching) behavior of the linked-in bridge on cases skipped in
+// in-process bridged providers (pulexec's attach path), asserting directly on
+// stack outputs, exported Pulumi state, and recorded provider operations. Use
+// it for setups a tf-compatible program cannot produce (Customize foremost)
+// and to pin the linked-in bridge's correct behavior on cases skipped in
 // tfcompat because the terraform-provider plugin path diverges. Everything
-// else that a real tf-compatible program can produce belongs in the tfcompat
-// harness instead, where OpenTofu itself defines the expected behavior.
+// else belongs in the tfcompat harness, where OpenTofu defines the expected
+// behavior.
 package putest
 
 import (
-	"fmt"
-	"os"
 	"path/filepath"
 	"runtime"
-	"sort"
-	"strconv"
 	"testing"
 
 	pfprovider "github.com/hashicorp/terraform-plugin-framework/provider"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/pulumi/pulumi-hcl/tests/testutil"
 	"github.com/pulumi/pulumi-hcl/tests/testutil/pulexec"
 	"github.com/pulumi/pulumi-hcl/tests/testutil/tfexec"
 	"github.com/pulumi/pulumi-terraform-bridge/v3/pkg/tfbridge"
@@ -85,7 +80,7 @@ func RunCase(t *testing.T, caseName string, c Case) {
 
 	_, callerFile, _, _ := runtime.Caller(1)
 	caseDir := filepath.Join(filepath.Dir(callerFile), "testdata", "cases", caseName)
-	stages, err := loadStages(caseDir)
+	stages, _, err := testutil.LoadStages(caseDir)
 	require.NoError(t, err)
 
 	rec := &tfexec.Recorder{}
@@ -119,82 +114,4 @@ func RunCase(t *testing.T, caseName string, c Case) {
 	if c.AssertOps != nil {
 		c.AssertOps(t, rec.Ops())
 	}
-}
-
-// loadStages returns one file set per stage: a case directory containing only
-// numbered subdirs (0/, 1/, ...) yields that many file sets in order; any
-// other shape yields the whole directory as a single stage.
-func loadStages(caseDir string) ([]map[string]string, error) {
-	entries, err := os.ReadDir(caseDir)
-	if err != nil {
-		return nil, fmt.Errorf("case directory: %w", err)
-	}
-
-	stageDirs := make(map[int]string)
-	for _, e := range entries {
-		if !e.IsDir() {
-			stageDirs = nil
-			break
-		}
-		n, err := strconv.Atoi(e.Name())
-		if err != nil || n < 0 {
-			stageDirs = nil
-			break
-		}
-		stageDirs[n] = filepath.Join(caseDir, e.Name())
-	}
-
-	if len(stageDirs) == 0 {
-		files, err := loadCaseDir(caseDir)
-		if err != nil {
-			return nil, err
-		}
-		return []map[string]string{files}, nil
-	}
-
-	keys := make([]int, 0, len(stageDirs))
-	for k := range stageDirs {
-		keys = append(keys, k)
-	}
-	sort.Ints(keys)
-	fileSets := make([]map[string]string, 0, len(keys))
-	for _, k := range keys {
-		files, err := loadCaseDir(stageDirs[k])
-		if err != nil {
-			return nil, fmt.Errorf("stage %d: %w", k, err)
-		}
-		fileSets = append(fileSets, files)
-	}
-	return fileSets, nil
-}
-
-// loadCaseDir reads every regular file under caseDir and returns a map of
-// relative-path → file contents.
-func loadCaseDir(caseDir string) (map[string]string, error) {
-	files := make(map[string]string)
-	err := filepath.WalkDir(caseDir, func(path string, d os.DirEntry, err error) error {
-		if err != nil {
-			return err
-		}
-		if d.IsDir() {
-			return nil
-		}
-		rel, relErr := filepath.Rel(caseDir, path)
-		if relErr != nil {
-			return relErr
-		}
-		content, readErr := os.ReadFile(path) //nolint:gosec // caseDir is test-controlled
-		if readErr != nil {
-			return readErr
-		}
-		files[rel] = string(content)
-		return nil
-	})
-	if err != nil {
-		return nil, err
-	}
-	if len(files) == 0 {
-		return nil, fmt.Errorf("no files found in case directory %q", caseDir)
-	}
-	return files, nil
 }
