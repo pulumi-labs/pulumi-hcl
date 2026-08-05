@@ -13,15 +13,16 @@
 // limitations under the License.
 
 // Package putest is the Pulumi-only half of the tfcompat harness: it runs a
-// `.tf` program from testdata/cases/<name>/ through `pulumi up` with no
-// OpenTofu run to compare against; assertions are made directly against stack
-// outputs, exported Pulumi state, and the recorded provider operations. Use
-// it for setups a tf-compatible program cannot produce — provider-info
-// customization (Customize) foremost — and, with Provider.Dynamic, to lock in
-// the shipping dynamic bridge's behavior on cases skipped in tfcompat as
-// known divergences from OpenTofu. Everything else that a real tf-compatible
-// program can produce belongs in the tfcompat harness instead, where OpenTofu
-// itself defines the expected behavior.
+// `.tf` program from testdata/cases/<name>/ through `pulumi up` against
+// in-process bridged providers (pulexec's attach path) with no OpenTofu run
+// to compare against; assertions are made directly against stack outputs,
+// exported Pulumi state, and the recorded provider operations. Use it for
+// setups a tf-compatible program cannot produce — provider-info
+// customization (Customize) foremost — and to pin the correct
+// (OpenTofu-matching) behavior of the linked-in bridge on cases skipped in
+// tfcompat because the terraform-provider plugin path diverges. Everything
+// else that a real tf-compatible program can produce belongs in the tfcompat
+// harness instead, where OpenTofu itself defines the expected behavior.
 package putest
 
 import (
@@ -55,12 +56,6 @@ type Provider struct {
 	// can apply non-default Pulumi-side renames (or any other ProviderInfo
 	// tweak) to exercise the bridge mapping behaviour.
 	Customize func(*testing.T, *tfbridge.ProviderInfo)
-	// Dynamic serves the provider through the real terraform-provider plugin
-	// via reattach (the same path tfcompat's pulumi side uses) instead of the
-	// in-process bridge. Use it to lock in behavior of the shipping dynamic
-	// bridge — e.g. cases skipped in tfcompat as known divergences from
-	// OpenTofu. Incompatible with Customize, which only exists in-process.
-	Dynamic bool
 }
 
 // Case is the test description passed to RunCase.
@@ -68,9 +63,6 @@ type Case struct {
 	Providers []Provider
 	// Config is set as stack config.
 	Config map[string]string
-	// ExpectErr, if non-empty, requires the last apply to fail with an error
-	// containing this substring; the other assertions are skipped.
-	ExpectErr string
 	// ExpectedOutputs, if non-nil, must equal the stack outputs exactly.
 	// Non-string outputs appear in their compact-JSON form (see
 	// pulexec.Result).
@@ -99,24 +91,13 @@ func RunCase(t *testing.T, caseName string, c Case) {
 	rec := &tfexec.Recorder{}
 	provs := make([]pulexec.Provider, len(c.Providers))
 	for i, p := range c.Providers {
-		if p.Dynamic && p.Customize != nil {
-			t.Fatalf("provider %q: Dynamic is incompatible with Customize", p.Name)
-		}
 		switch {
 		case p.Factory != nil && p.PFFactory == nil:
 			factory := p.Factory
-			wrapped := func() *schema.Provider { return tfexec.Wrap(factory(), rec) }
-			if p.Dynamic {
-				provs[i] = pulexec.SDKv2ProviderDynamic(t, p.Name, wrapped)
-			} else {
-				provs[i] = pulexec.SDKv2Provider(t, p.Name, wrapped, p.Customize)
-			}
+			provs[i] = pulexec.SDKv2Provider(t, p.Name,
+				func() *schema.Provider { return tfexec.Wrap(factory(), rec) }, p.Customize)
 		case p.PFFactory != nil && p.Factory == nil:
-			if p.Dynamic {
-				provs[i] = pulexec.PFProviderDynamic(t, p.Name, p.PFFactory, rec)
-			} else {
-				provs[i] = pulexec.PFProvider(t, p.Name, p.PFFactory, rec, p.Customize)
-			}
+			provs[i] = pulexec.PFProvider(t, p.Name, p.PFFactory, rec, p.Customize)
 		default:
 			t.Fatalf("provider %q: exactly one of Factory or PFFactory must be set", p.Name)
 		}
@@ -126,16 +107,9 @@ func RunCase(t *testing.T, caseName string, c Case) {
 	var res pulexec.Result
 	for i, files := range stages {
 		res, err = driver.TryApply(t, files)
-		if i < len(stages)-1 || c.ExpectErr == "" {
-			require.NoErrorf(t, err, "stage %d: pulumi up failed", i)
-		}
+		require.NoErrorf(t, err, "stage %d: pulumi up failed", i)
 	}
 
-	if c.ExpectErr != "" {
-		require.Error(t, err, "pulumi up was expected to fail with %q", c.ExpectErr)
-		require.Contains(t, err.Error(), c.ExpectErr)
-		return
-	}
 	if c.ExpectedOutputs != nil {
 		require.Equal(t, c.ExpectedOutputs, res.Outputs)
 	}

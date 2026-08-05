@@ -1,8 +1,7 @@
-# `rule` (MaxItems=1) is an optional nested block, left out here. The dynamic
-# bridge's wire schema drops the empty nested list, so pulumi-hcl reads
-# `policy[0].rule` as null and `length(...)` on it fails the deploy. (OpenTofu
-# materializes the absent block as `[]`, length 0 — see the skipped tfcompat
-# case of the same name.)
+# `rule` (MaxItems=1) is an optional nested block, left out here. It reads as
+# an empty list of blocks (`[]`, length 0), matching OpenTofu. The
+# terraform-provider plugin path reads it as null instead — the divergence the
+# tfcompat case of the same name is skipped for.
 resource "blocky_thing" "t" {
   name = "omit"
 

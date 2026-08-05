@@ -1,9 +1,8 @@
-# `filter` is a repeating TypeSet nested block on blocky_thing. Through the
-# dynamic bridge pulumi-hcl materializes it as an ordered tuple, so comparing
-# it against a `toset(...)` of the same elements is a tuple-vs-set type
-# mismatch and yields false, whatever the element order. (OpenTofu
-# materializes a cty set and yields true for both — see the skipped tfcompat
-# case of the same name.)
+# `filter` is a repeating TypeSet nested block on blocky_thing. It
+# materializes as a cty set, so comparing it against a `toset(...)` of the
+# same elements is true regardless of element order, matching OpenTofu. The
+# terraform-provider plugin path materializes an ordered tuple and yields
+# false — the divergence the tfcompat case of the same name is skipped for.
 resource "blocky_thing" "t" {
   name = "seteq"
   filter {

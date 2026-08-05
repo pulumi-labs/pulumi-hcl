@@ -31,7 +31,8 @@ import (
 // old value instead of the empty list the replacement was created with.
 func TestL2IgnoreChangesForceNewBlockRemoved(t *testing.T) {
 	t.Parallel()
-	// The current behavior is locked in tests/putest/l2_dynamic_block_projection_test.go.
+	// The correct behavior is pinned against the linked-in bridge in
+	// tests/putest/l2_block_projection_test.go.
 	t.Skip("TODO[https://github.com/pulumi/pulumi-hcl/issues/508]: dynamic bridge reports the removed block's old value after the replace, not []")
 	tfcompat.RunCase(t, "l2_ignore_changes_forcenew_block_removed", tfcompat.Case{
 		Providers: []tfcompat.Provider{

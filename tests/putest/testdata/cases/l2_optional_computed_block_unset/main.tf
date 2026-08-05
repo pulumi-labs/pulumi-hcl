@@ -1,8 +1,9 @@
 # `identity` is an Optional+Computed MaxItems=1 nested block that the provider
 # leaves entirely unset at create time; `identity_set` is its TypeSet twin.
-# Through the dynamic bridge both materialize as null, so the `== null` guards
-# hold and jsonencode yields "null" for each. (OpenTofu keeps the set twin an
-# empty set — see the skipped tfcompat case of the same name.)
+# Matching OpenTofu, the list variant materializes as null and the set variant
+# stays an empty set. The terraform-provider plugin path reads the set variant
+# as null too — the divergence the tfcompat case of the same name is skipped
+# for.
 resource "optcomp_thing" "t" {
   name = "probe"
 }
