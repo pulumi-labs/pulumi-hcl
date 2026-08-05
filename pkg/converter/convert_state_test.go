@@ -410,6 +410,81 @@ func TestConvertTFState_SuppliesValues(t *testing.T) {
 	assert.NotContains(t, ins, resource.PropertyKey("id"))
 }
 
+// TestConvertTFState_RenamedID pins the dynamic-bridge import shape (#512):
+// the parameterized terraform-provider maps the protocol schema, where SDKv2
+// injects `id` as Optional+Computed, and renames it to a per-resource
+// property (<resource>Id) that also carries the resource's identity. Imported
+// state must project the TF id onto that property — and only there — or the
+// provider's first Diff sees a null id and replaces the just-imported
+// resource.
+func TestConvertTFState_RenamedID(t *testing.T) {
+	t.Parallel()
+
+	state := parseState(t, `{
+		"resources": [
+			{
+				"mode": "managed", "type": "acme_thing", "name": "b",
+				"provider": "provider[\"registry.terraform.io/acme/acme\"]",
+				"instances": [ { "attributes": { "id": "t-1", "name": "hello" } } ]
+			}
+		]
+	}`)
+
+	src := fakeInfoSource{infos: map[string]*tfbridge.ProviderInfo{
+		"acme": roundtrip(t, tfbridge.ProviderInfo{
+			P: shimv2.NewProvider(&sdkschema.Provider{
+				ResourcesMap: map[string]*sdkschema.Resource{
+					"acme_thing": {Schema: map[string]*sdkschema.Schema{
+						"id":   {Type: sdkschema.TypeString, Optional: true, Computed: true},
+						"name": {Type: sdkschema.TypeString, Optional: true},
+					}},
+				},
+			}),
+			Name: "acme",
+			Resources: map[string]*tfbridge.ResourceInfo{
+				"acme_thing": {
+					Tok: "acme:index/thing:Thing",
+					// The rename fixID installs for every dynamic resource.
+					Fields: map[string]*tfbridge.SchemaInfo{"id": {Name: "thingId"}},
+				},
+			},
+		}),
+	}}
+	str := schema.TypeSpec{Type: "string"}
+	loader := schemaloader.New(t, schema.PackageSpec{
+		Name:    "acme",
+		Version: "1.0.0",
+		Meta:    &schema.MetadataSpec{ModuleFormat: bridgeModuleFormat},
+		Resources: map[string]schema.ResourceSpec{
+			"acme:index/thing:Thing": {
+				ObjectTypeSpec: schema.ObjectTypeSpec{Properties: map[string]schema.PropertySpec{
+					"thingId": {TypeSpec: str},
+					"name":    {TypeSpec: str},
+				}},
+				InputProperties: map[string]schema.PropertySpec{
+					"thingId": {TypeSpec: str},
+					"name":    {TypeSpec: str},
+				},
+			},
+		},
+	})
+
+	resp := convertTFState(t.Context(), src, loader, nil, nil, state)
+	require.Empty(t, resp.Diagnostics)
+	require.Len(t, resp.Resources, 1)
+	got := resp.Resources[0]
+
+	assert.Equal(t, "t-1", got.ID)
+	assert.Equal(t, resource.NewStringProperty("t-1"), got.Outputs["thingId"],
+		"the TF id projects onto the renamed property")
+	assert.NotContains(t, got.Outputs, resource.PropertyKey("id"),
+		"native dynamic-bridge state carries no plain id output")
+	assert.Equal(t, resource.NewStringProperty("hello"), got.Outputs["name"])
+	assert.Contains(t, got.Inputs, resource.PropertyKey("name"))
+	assert.NotContains(t, got.Inputs, resource.PropertyKey("thingId"),
+		"the renamed id is provider-populated, never a program input")
+}
+
 // TestConvertTFState_TerraformData pins the builtin's import shape: Stash
 // imports carrying the runtime's {type, value} wrapper encoding, an explicit
 // null input when absent, and no triggers_replace (the engine's replacement

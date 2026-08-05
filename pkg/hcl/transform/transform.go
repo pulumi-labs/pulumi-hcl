@@ -687,18 +687,32 @@ func ctyToResourceInputs(val cty.Value, r *schema.Resource, attrExprs map[string
 
 // CtyToResourceOutputs converts a TF-shaped attributes object (e.g. decoded
 // state attributes) into the resource's Pulumi output property map, dropping
-// what TF stores but Pulumi does not project: `id` lives outside a Pulumi
-// resource's schema properties, and SDKv2 keeps the resource's `timeouts`
-// block in state attributes (the name is reserved, so it is never a real
-// schema field).
+// what TF stores but Pulumi does not project: SDKv2 keeps the resource's
+// `timeouts` block in state attributes (the name is reserved, so it is never
+// a real schema field), and the classic bridge keeps `id` outside a Pulumi
+// resource's schema properties. The dynamic bridge instead renames `id` to a
+// real schema property (aws_s3_bucket → s3BucketId), so `id` is dropped only
+// when it does not project into the schema.
 func CtyToResourceOutputs(val cty.Value, r *schema.Resource, mapping *bridge.BodyMapping) (property.Map, error) {
 	if ty := val.Type(); ty.IsObjectType() && (ty.HasAttribute("id") || ty.HasAttribute("timeouts")) {
 		attrs := val.AsValueMap()
-		delete(attrs, "id")
+		if IDProperty(r, mapping) == nil {
+			delete(attrs, "id")
+		}
 		delete(attrs, "timeouts")
 		val = cty.ObjectVal(attrs)
 	}
 	return ctyToObject(r.Token, val, r.Properties, nil, false /* already in a secret */, mapping)
+}
+
+// IDProperty returns the schema property the TF `id` attribute projects to,
+// or nil when id lives outside the schema's properties. The dynamic bridge
+// renames id per resource (fixID installs the rename in the mapping's field
+// overrides); resolve through the mapping, never by reconstructing the naming
+// rule — the rename's fallback candidates vary with the schema's other fields.
+func IDProperty(r *schema.Resource, mapping *bridge.BodyMapping) *schema.Property {
+	_, p := resolvePulumiProperty("id", r.Properties, mapping)
+	return p
 }
 
 func ctyToFunctionInputs(val cty.Value, r *schema.Function, attrExprs map[string]hcl.Expression, mapping *bridge.BodyMapping) (property.Map, error) {
