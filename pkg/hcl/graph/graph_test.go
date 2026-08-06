@@ -66,7 +66,7 @@ output "instance_id" {
 	// Verify topological sort works
 	var sorted []string
 	err = g.dag.Walk(t.Context(), func(_ context.Context, n dagNode) error {
-		sorted = append(sorted, n.key.String())
+		sorted = append(sorted, n.desc.String())
 		return nil
 	}, pdag.MaxProcs(1))
 	require.NoError(t, err)
@@ -131,7 +131,7 @@ output "gate" {
 
 	var sorted []string
 	err = g.dag.Walk(t.Context(), func(_ context.Context, n dagNode) error {
-		key := n.key.String()
+		key := n.desc.String()
 		if n.exec != nil {
 			key = barrierKey
 		}
@@ -423,5 +423,5 @@ func TestCycleErrorLabelsExpansionNodes(t *testing.T) {
 	b := g.NewBlockExpansion(nk("pfx_res.a"), true, func(context.Context) error { return nil })
 
 	assert.EqualError(t, b.DependOn(b.Complete()),
-		"dependency cycle: pfx_res.a!complete -> pfx_res.a!expand -> pfx_res.a!complete")
+		"dependency cycle: pfx_res.a (completion) -> pfx_res.a (expand) -> pfx_res.a (completion)")
 }

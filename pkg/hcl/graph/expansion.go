@@ -78,15 +78,15 @@ func (g *Graph) NewBlockExpansion(key NodeKey, static bool, expandExec func(cont
 		defer b.finish()
 		return expandExec(ctx)
 	}
+	expandDesc := nodeDesc{block: key, aspect: aspectExpand}
 	if static {
-		b.expand, b.armExpand = g.internExecNode(NodeKey{Module: key.Module, ID: key.ID + "!expand"}, exec)
+		b.expand, b.armExpand = g.internExecNode(NodeKey{Module: key.Module, ID: key.ID + "!expand"}, expandDesc, exec)
 	} else {
-		// The key is display-only (cycle reports), deliberately not interned.
-		b.expand, b.armExpand = g.dag.NewNode(dagNode{key: NodeKey{Module: key.Module, ID: key.ID + "!expand"}, exec: exec})
+		b.expand, b.armExpand = g.dag.NewNode(dagNode{desc: expandDesc, exec: exec})
 	}
 
 	complete, armComplete := g.dag.NewNode(dagNode{
-		key:  NodeKey{Module: key.Module, ID: key.ID + "!complete"},
+		desc: nodeDesc{block: key, aspect: aspectComplete},
 		exec: func(context.Context) error { return nil },
 	})
 	b.complete = complete
@@ -115,7 +115,7 @@ func (b *BlockExpansion) Gate(suffix string) pdag.Node {
 		return gate
 	}
 	gate, arm := b.g.dag.NewNode(dagNode{
-		key:  NodeKey{Module: b.key.Module, ID: b.key.ID + suffix + "!gate"},
+		desc: nodeDesc{block: b.key, aspect: aspectGate, index: suffix},
 		exec: func(context.Context) error { return nil },
 	})
 	contract.AssertNoErrorf(b.g.dag.NewEdge(b.expand, gate), "fresh nodes cannot form a cycle")
@@ -141,7 +141,7 @@ func (b *BlockExpansion) CompleteBefore(n pdag.Node) error {
 // returns (finish arms them after all wiring).
 func (b *BlockExpansion) AddInstance(suffix string, exec func(context.Context) error) error {
 	inst, arm := b.g.dag.NewNode(dagNode{
-		key:  NodeKey{Module: b.key.Module, ID: b.key.ID + suffix},
+		desc: nodeDesc{block: b.key, aspect: aspectInstance, index: suffix},
 		exec: exec,
 	})
 	// Arm even on the error paths: a node left preparing stalls the walk
