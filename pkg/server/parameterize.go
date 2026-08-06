@@ -141,10 +141,10 @@ type moduleRef struct {
 // requested from the module at archive-relative directory Caller ("" for the
 // root) — resolves to the archive-relative package directory Target.
 type resolvedEdge struct {
-	Caller  string `json:"caller"`
-	Source  string `json:"source"`
-	Version string `json:"version,omitempty"` // Version Constraint
-	Target  string `json:"target"`
+	Caller            string `json:"caller"`
+	Source            string `json:"source"`
+	VersionConstraint string `json:"version,omitempty"`
+	Target            string `json:"target"`
 }
 
 // parameterize configures the provider for a specific module source. Args is the
@@ -401,10 +401,10 @@ func (r *resolveRecorder) resolve(packageSource, versionConstraint, callerDir st
 		return "", "", err
 	}
 	r.edges = append(r.edges, resolvedEdge{
-		Caller:  r.rel(callerDir),
-		Source:  packageSource,
-		Version: versionConstraint,
-		Target:  r.rel(target),
+		Caller:            r.rel(callerDir),
+		Source:            packageSource,
+		VersionConstraint: versionConstraint,
+		Target:            r.rel(target),
 	})
 	return target, resolved, nil
 }
@@ -464,7 +464,7 @@ func dedupeEdges(edges []resolvedEdge) []resolvedEdge {
 		return cmp.Or(
 			cmp.Compare(a.Caller, b.Caller),
 			cmp.Compare(a.Source, b.Source),
-			cmp.Compare(a.Version, b.Version),
+			cmp.Compare(a.VersionConstraint, b.VersionConstraint),
 			cmp.Compare(a.Target, b.Target),
 		)
 	})
@@ -480,7 +480,7 @@ func bundleResolver(unpackDir string, manifest bundleManifest) modules.ResolverF
 	type edgeKey struct{ caller, source, version string }
 	index := make(map[edgeKey]string, len(manifest.Edges))
 	for _, e := range manifest.Edges {
-		index[edgeKey{e.Caller, e.Source, e.Version}] = e.Target
+		index[edgeKey{e.Caller, e.Source, e.VersionConstraint}] = e.Target
 	}
 	return func(packageSource, versionConstraint, callerDir string) (string, string, error) {
 		caller := ""
