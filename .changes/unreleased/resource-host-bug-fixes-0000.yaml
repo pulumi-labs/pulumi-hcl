@@ -1,0 +1,6 @@
+kind: bug-fixes
+body: Include system in module package path
+time: 2026-08-06T10:34:17.292349+02:00
+custom:
+    Component: resource-host
+    PR: "0000"
