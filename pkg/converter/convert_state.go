@@ -527,21 +527,29 @@ func translateInstanceValues(
 	}
 	val = markSensitivePaths(val, current.AttrSensitivePaths)
 
-	m, err := transform.CtyToResourceOutputs(val, res, bridge.ResourceBodyMapping(info, tfType))
+	mapping := bridge.ResourceBodyMapping(info, tfType)
+	m, err := transform.CtyToResourceOutputs(val, res, mapping)
 	if err != nil {
 		return nil, nil, fmt.Errorf("translating attributes: %w", err)
 	}
 
 	outs = resource.ToResourcePropertyValue(property.New(m)).ObjectValue()
-	// Inputs are the outputs' input-property subset. Nested computed leaves
-	// are not stripped; revisit if the round-trip check flags diffs.
+	// Inputs are the outputs' input-property subset — minus the renamed id,
+	// which is provider-populated and never a program input. Nested computed
+	// leaves are not stripped; revisit if the round-trip check flags diffs.
+	idProp := transform.IDProperty(res, mapping)
 	ins = make(resource.PropertyMap, len(res.InputProperties))
 	for _, p := range res.InputProperties {
+		if idProp != nil && p.Name == idProp.Name {
+			continue
+		}
 		if pv, has := outs[resource.PropertyKey(p.Name)]; has {
 			ins[resource.PropertyKey(p.Name)] = pv
 		}
 	}
-	outs["id"] = resource.NewStringProperty(id)
+	if idProp == nil {
+		outs["id"] = resource.NewStringProperty(id)
+	}
 	return outs, ins, nil
 }
 
