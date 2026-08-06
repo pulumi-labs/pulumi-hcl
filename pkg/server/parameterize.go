@@ -478,7 +478,11 @@ func bundleResolver(unpackDir string, manifest bundleManifest) modules.ResolverF
 func defaultPackageName(source string) string {
 	pkgSource, _ := getmodules.SplitPackageSubdir(source)
 	if mod, err := regaddr.ParseModuleSource(pkgSource); err == nil {
-		return sanitizePackageName(mod.Package.Name)
+		pkg := sanitizePackageName(mod.Package.Name, "module")
+		if sys := sanitizePackageName(mod.Package.TargetSystem, ""); sys != "" {
+			pkg += "-" + sys
+		}
+		return pkg
 	}
 	s := pkgSource
 	if i := strings.IndexByte(s, '?'); i >= 0 {
@@ -489,12 +493,12 @@ func defaultPackageName(source string) string {
 		s = s[i+1:]
 	}
 	s = strings.TrimSuffix(s, ".git")
-	return sanitizePackageName(s)
+	return sanitizePackageName(s, "module")
 }
 
 // sanitizePackageName reduces a name to the lowercase alphanumeric-and-hyphen
 // form Pulumi package names use, falling back to "module" when nothing remains.
-func sanitizePackageName(name string) string {
+func sanitizePackageName(name, fallback string) string {
 	var b strings.Builder
 	for _, r := range strings.ToLower(name) {
 		switch {
@@ -507,7 +511,7 @@ func sanitizePackageName(name string) string {
 	if out := strings.Trim(b.String(), "-"); out != "" {
 		return out
 	}
-	return "module"
+	return fallback
 }
 
 // bundleEpoch is the fixed modification time stamped on every archive entry, so

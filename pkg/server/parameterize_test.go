@@ -41,8 +41,8 @@ func TestDefaultPackageName(t *testing.T) {
 		source string
 		want   string
 	}{
-		{"terraform-aws-modules/vpc/aws", "vpc"},
-		{"terraform-aws-modules/vpc/aws//modules/subnets", "vpc"},
+		{"terraform-aws-modules/vpc/aws", "vpc-aws"},
+		{"terraform-aws-modules/vpc/aws//modules/subnets", "vpc-aws"},
 		{"github.com/org/my-repo", "my-repo"},
 		{"git::https://github.com/org/repo.git//subdir", "repo"},
 		{"git::https://example.com/foo/Bar_Baz.git", "bar-baz"},
