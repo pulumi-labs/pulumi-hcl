@@ -534,10 +534,9 @@ func translateInstanceValues(
 	}
 
 	outs = resource.ToResourcePropertyValue(property.New(m)).ObjectValue()
-	// Inputs are the outputs' input-property subset. Nested computed leaves
-	// are not stripped; revisit if the round-trip check flags diffs. A renamed
-	// id (the dynamic bridge's <resource>Id) is provider-populated: programs
-	// never set it, so it stays an output only.
+	// Inputs are the outputs' input-property subset — minus the renamed id,
+	// which is provider-populated and never a program input. Nested computed
+	// leaves are not stripped; revisit if the round-trip check flags diffs.
 	idProp := transform.IDProperty(res, mapping)
 	ins = make(resource.PropertyMap, len(res.InputProperties))
 	for _, p := range res.InputProperties {
@@ -549,9 +548,8 @@ func translateInstanceValues(
 		}
 	}
 	if idProp == nil {
-		// Classic-bridge shape: the state's id becomes the plain `id` output.
-		// Under a renamed id the codec already projected the value, and native
-		// dynamic-bridge state carries no plain `id` output.
+		// No schema home for id (classic shape): it becomes the plain `id`
+		// output. A renamed id was already projected by the codec.
 		outs["id"] = resource.NewStringProperty(id)
 	}
 	return outs, ins, nil

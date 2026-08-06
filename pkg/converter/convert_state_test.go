@@ -411,12 +411,8 @@ func TestConvertTFState_SuppliesValues(t *testing.T) {
 }
 
 // TestConvertTFState_RenamedID pins the dynamic-bridge import shape (#512):
-// the parameterized terraform-provider maps the protocol schema, where SDKv2
-// injects `id` as Optional+Computed, and renames it to a per-resource
-// property (<resource>Id) that also carries the resource's identity. Imported
-// state must project the TF id onto that property — and only there — or the
-// provider's first Diff sees a null id and replaces the just-imported
-// resource.
+// the TF id must project onto the bridge's renamed id property — and only
+// there — or the provider's first Diff sees a null id and replaces.
 func TestConvertTFState_RenamedID(t *testing.T) {
 	t.Parallel()
 

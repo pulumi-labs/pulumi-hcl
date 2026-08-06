@@ -686,13 +686,9 @@ func ctyToResourceInputs(val cty.Value, r *schema.Resource, attrExprs map[string
 }
 
 // CtyToResourceOutputs converts a TF-shaped attributes object (e.g. decoded
-// state attributes) into the resource's Pulumi output property map, dropping
-// what TF stores but Pulumi does not project: SDKv2 keeps the resource's
-// `timeouts` block in state attributes (the name is reserved, so it is never
-// a real schema field), and the classic bridge keeps `id` outside a Pulumi
-// resource's schema properties. The dynamic bridge instead renames `id` to a
-// real schema property (aws_s3_bucket → s3BucketId), so `id` is dropped only
-// when it does not project into the schema.
+// state attributes) into the resource's Pulumi output property map. State
+// attributes with no schema property are dropped: `timeouts` always (SDKv2
+// bookkeeping), `id` unless the schema models it (see IDProperty).
 func CtyToResourceOutputs(val cty.Value, r *schema.Resource, mapping *bridge.BodyMapping) (property.Map, error) {
 	if ty := val.Type(); ty.IsObjectType() && (ty.HasAttribute("id") || ty.HasAttribute("timeouts")) {
 		attrs := val.AsValueMap()
@@ -705,11 +701,10 @@ func CtyToResourceOutputs(val cty.Value, r *schema.Resource, mapping *bridge.Bod
 	return ctyToObject(r.Token, val, r.Properties, nil, false /* already in a secret */, mapping)
 }
 
-// IDProperty returns the schema property the TF `id` attribute projects to,
-// or nil when id lives outside the schema's properties. The dynamic bridge
-// renames id per resource (fixID installs the rename in the mapping's field
-// overrides); resolve through the mapping, never by reconstructing the naming
-// rule — the rename's fallback candidates vary with the schema's other fields.
+// IDProperty returns the Pulumi property that models the TF `id` attribute —
+// the dynamic bridge's renamed <resource>Id — or nil when the schema does not
+// model id. Always resolve via the mapping: fixID's naming rule varies with
+// the schema's other fields.
 func IDProperty(r *schema.Resource, mapping *bridge.BodyMapping) *schema.Property {
 	_, p := resolvePulumiProperty("id", r.Properties, mapping)
 	return p
