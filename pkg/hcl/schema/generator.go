@@ -105,10 +105,23 @@ type ModuleSchema struct {
 	RequiredOutputs []string `json:"requiredOutputs,omitempty"`
 }
 
+// PropertyType enumerates the types a schema property can have.
+type PropertyType string
+
+const (
+	TypeString  PropertyType = "string"
+	TypeNumber  PropertyType = "number"
+	TypeBoolean PropertyType = "boolean"
+	TypeArray   PropertyType = "array"
+	TypeObject  PropertyType = "object"
+	// TypeAny is a dynamic or unconstrained value.
+	TypeAny PropertyType = "any"
+)
+
 // PropertySpec describes a property in the schema.
 type PropertySpec struct {
 	// Type is the property type.
-	Type string `json:"type,omitempty"`
+	Type PropertyType `json:"type,omitempty"`
 
 	// Description is the property description.
 	Description string `json:"description,omitempty"`
@@ -482,7 +495,7 @@ func variableToPropertySpec(v *ast.Variable) (*PropertySpec, error) {
 		prop.Properties = typeSpec.Properties
 	} else {
 		// Default to any type if no constraint specified
-		prop.Type = "object"
+		prop.Type = TypeAny
 	}
 
 	// A variable default is a constant expression (it cannot reference other
@@ -526,7 +539,7 @@ func ctyToConstant(val cty.Value) (any, bool) {
 // outputToPropertySpec converts an HCL output to a PropertySpec. val is the
 // unknown value inferred from the output's value expression; its type gives the
 // property shape and its per-attribute nullability gives nested required fields.
-// A DynamicPseudoType maps to the "object" (any) type.
+// A DynamicPseudoType maps to the any type.
 func outputToPropertySpec(o *ast.Output, val cty.Value) (*PropertySpec, error) {
 	prop, err := ctyValueToPropertySpec(val)
 	if err != nil {
@@ -560,23 +573,23 @@ func ctyValueToPropertySpec(v cty.Value) (*PropertySpec, error) {
 		}
 	}
 	sort.Strings(required)
-	return &PropertySpec{Type: "object", Properties: props, Required: required}, nil
+	return &PropertySpec{Type: TypeObject, Properties: props, Required: required}, nil
 }
 
 // ctyTypeToPropertySpec converts a cty.Type to a PropertySpec.
 func ctyTypeToPropertySpec(t cty.Type) (*PropertySpec, error) {
 	switch {
 	case t == cty.String:
-		return &PropertySpec{Type: "string"}, nil
+		return &PropertySpec{Type: TypeString}, nil
 
 	case t == cty.Number:
-		return &PropertySpec{Type: "number"}, nil
+		return &PropertySpec{Type: TypeNumber}, nil
 
 	case t == cty.Bool:
-		return &PropertySpec{Type: "boolean"}, nil
+		return &PropertySpec{Type: TypeBoolean}, nil
 
 	case t == cty.DynamicPseudoType:
-		return &PropertySpec{Type: "object"}, nil
+		return &PropertySpec{Type: TypeAny}, nil
 
 	case t.IsListType():
 		elemSpec, err := ctyTypeToPropertySpec(t.ElementType())
@@ -584,7 +597,7 @@ func ctyTypeToPropertySpec(t cty.Type) (*PropertySpec, error) {
 			return nil, err
 		}
 		return &PropertySpec{
-			Type:  "array",
+			Type:  TypeArray,
 			Items: elemSpec,
 		}, nil
 
@@ -595,7 +608,7 @@ func ctyTypeToPropertySpec(t cty.Type) (*PropertySpec, error) {
 			return nil, err
 		}
 		return &PropertySpec{
-			Type:  "array",
+			Type:  TypeArray,
 			Items: elemSpec,
 		}, nil
 
@@ -605,7 +618,7 @@ func ctyTypeToPropertySpec(t cty.Type) (*PropertySpec, error) {
 			return nil, err
 		}
 		return &PropertySpec{
-			Type:                 "object",
+			Type:                 TypeObject,
 			AdditionalProperties: elemSpec,
 		}, nil
 
@@ -623,7 +636,7 @@ func ctyTypeToPropertySpec(t cty.Type) (*PropertySpec, error) {
 			return nil, err
 		}
 		return &PropertySpec{
-			Type:  "array",
+			Type:  TypeArray,
 			Items: elemSpec,
 		}, nil
 
@@ -643,14 +656,14 @@ func ctyTypeToPropertySpec(t cty.Type) (*PropertySpec, error) {
 		}
 		sort.Strings(required)
 		return &PropertySpec{
-			Type:       "object",
+			Type:       TypeObject,
 			Properties: props,
 			Required:   required,
 		}, nil
 
 	default:
-		// Fall back to object type for unknown types
-		return &PropertySpec{Type: "object"}, nil
+		// Fall back to the any type for unknown types
+		return &PropertySpec{Type: TypeAny}, nil
 	}
 }
 
@@ -835,7 +848,7 @@ func (s *ModuleSchema) schemaType(
 	prop *PropertySpec, typeName string, types map[string]pulumischema.ComplexTypeSpec,
 ) pulumischema.TypeSpec {
 	switch {
-	case len(prop.Properties) > 0:
+	case prop.Properties != nil:
 		token := fmt.Sprintf("%s:%s:%s", s.PackageName, s.Module, typeName)
 		fields := make(map[string]pulumischema.PropertySpec, len(prop.Properties))
 		for name, field := range prop.Properties {
@@ -857,7 +870,9 @@ func (s *ModuleSchema) schemaType(
 	case prop.Items != nil:
 		elem := s.schemaType(prop.Items, typeName+"Item", types)
 		return pulumischema.TypeSpec{Type: "array", Items: &elem}
+	case prop.Type == TypeAny:
+		return pulumischema.TypeSpec{Ref: "pulumi.json#/Any"}
 	default:
-		return pulumischema.TypeSpec{Type: prop.Type}
+		return pulumischema.TypeSpec{Type: string(prop.Type)}
 	}
 }

@@ -133,7 +133,7 @@ output "count" {
 		t.Context(), config, &Binder{ModuleDir: moduleDir},
 		componentToken("pkg", "index", "pkg"), semver.MustParse("0.0.0-dev"))
 	require.NoError(t, err)
-	assert.Equal(t, &PropertySpec{Type: "number"}, moduleSchema.OutputProperties["count"])
+	assert.Equal(t, &PropertySpec{Type: TypeNumber}, moduleSchema.OutputProperties["count"])
 }
 
 // TestGenerateModuleSchemaFileLocalMissingFile shows that a file-backed local
@@ -158,7 +158,7 @@ output "count" {
 		t.Context(), config, &Binder{ModuleDir: moduleDir},
 		componentToken("pkg", "index", "pkg"), semver.MustParse("0.0.0-dev"))
 	require.NoError(t, err)
-	assert.Equal(t, &PropertySpec{Type: "object"}, moduleSchema.OutputProperties["count"])
+	assert.Equal(t, &PropertySpec{Type: TypeAny}, moduleSchema.OutputProperties["count"])
 }
 
 // stubResolver resolves a fixed set of resources by TF type, plus optionally a
@@ -231,9 +231,9 @@ output "length" {
 	require.NoError(t, err)
 
 	assert.Equal(t, map[string]*PropertySpec{
-		"id":       {Type: "string"},
-		"pet_name": {Type: "string"},
-		"length":   {Type: "number"},
+		"id":       {Type: TypeString},
+		"pet_name": {Type: TypeString},
+		"length":   {Type: TypeNumber},
 	}, moduleSchema.OutputProperties)
 }
 
@@ -275,14 +275,14 @@ output "keyed_id" {
 		t.Context(), config, &Binder{Resources: resolver}, componentToken("pkg", "index", "pkg"), semver.MustParse("0.0.0-dev"))
 	require.NoError(t, err)
 
-	elem := &PropertySpec{Type: "object", Properties: map[string]*PropertySpec{
-		"id":     {Type: "string"},
-		"length": {Type: "number"},
+	elem := &PropertySpec{Type: TypeObject, Properties: map[string]*PropertySpec{
+		"id":     {Type: TypeString},
+		"length": {Type: TypeNumber},
 	}, Required: []string{"length"}}
 	assert.Equal(t, map[string]*PropertySpec{
-		"counted_id":  {Type: "string"},
-		"keyed_id":    {Type: "string"},
-		"all_counted": {Type: "array", Items: elem},
+		"counted_id":  {Type: TypeString},
+		"keyed_id":    {Type: TypeString},
+		"all_counted": {Type: TypeArray, Items: elem},
 	}, moduleSchema.OutputProperties)
 }
 
@@ -358,7 +358,7 @@ output "mode" {
 		t.Context(), config, &Binder{Resources: resolver}, componentToken("pkg", "index", "pkg"), semver.MustParse("0.0.0-dev"))
 	require.NoError(t, err)
 
-	assert.Equal(t, map[string]*PropertySpec{"mode": {Type: "string"}}, moduleSchema.OutputProperties)
+	assert.Equal(t, map[string]*PropertySpec{"mode": {Type: TypeString}}, moduleSchema.OutputProperties)
 }
 
 func TestTryWrappedScalarOutputIsTyped(t *testing.T) {
@@ -388,8 +388,8 @@ output "try_id" {
 	require.NoError(t, err)
 
 	assert.Equal(t, map[string]*PropertySpec{
-		"bare_id": {Type: "string"},
-		"try_id":  {Type: "string"},
+		"bare_id": {Type: TypeString},
+		"try_id":  {Type: TypeString},
 	}, moduleSchema.OutputProperties)
 }
 
@@ -447,8 +447,8 @@ output "config"       { value = random_pet.this.config }
 		Type:     "object",
 		Required: []string{"host"},
 		Properties: map[string]*PropertySpec{
-			"host": {Type: "string"},
-			"port": {Type: "number"},
+			"host": {Type: TypeString},
+			"port": {Type: TypeNumber},
 		},
 	}, moduleSchema.OutputProperties["config"])
 }
@@ -512,8 +512,8 @@ output "n" {
 	require.NoError(t, err)
 
 	assert.Equal(t, map[string]*PropertySpec{
-		"greeting": {Type: "string"},
-		"n":        {Type: "number"},
+		"greeting": {Type: TypeString},
+		"n":        {Type: TypeNumber},
 	}, moduleSchema.OutputProperties)
 }
 
@@ -639,16 +639,16 @@ func TestBoundaryNameConversion(t *testing.T) {
 
 	s := &ModuleSchema{
 		InputProperties: map[string]*PropertySpec{
-			"object_in": {Type: "object", Properties: map[string]*PropertySpec{
-				"field_one": {Type: "string"},
+			"object_in": {Type: TypeObject, Properties: map[string]*PropertySpec{
+				"field_one": {Type: TypeString},
 			}},
-			"map_in": {Type: "object", AdditionalProperties: &PropertySpec{Type: "string"}},
+			"map_in": {Type: TypeObject, AdditionalProperties: &PropertySpec{Type: TypeString}},
 		},
 		OutputProperties: map[string]*PropertySpec{
-			"object_out": {Type: "object", Properties: map[string]*PropertySpec{
-				"field_two": {Type: "string"},
+			"object_out": {Type: TypeObject, Properties: map[string]*PropertySpec{
+				"field_two": {Type: TypeString},
 			}},
-			"map_out": {Type: "object", AdditionalProperties: &PropertySpec{Type: "string"}},
+			"map_out": {Type: TypeObject, AdditionalProperties: &PropertySpec{Type: TypeString}},
 		},
 	}
 
@@ -675,6 +675,46 @@ func TestBoundaryNameConversion(t *testing.T) {
 		"object_out": map[string]any{"field_two": "c"},
 		"map_out":    map[string]any{"user_key": "d"},
 	})))
+}
+
+// TestAnyTypedVariableIsAny reproduces
+// https://github.com/pulumi/pulumi-hcl/issues/515: a module input declared
+// `type = any` (or with no type constraint) must surface in the Pulumi schema
+// as the Any type, not as a bare `object` — a bare `object` type spec means a
+// map of string, so generated SDKs reject a plain string value. An empty
+// object type is not any: it stays a named object type.
+func TestAnyTypedVariableIsAny(t *testing.T) {
+	t.Parallel()
+
+	const src = `
+variable "source_path" {
+  type = any
+}
+
+variable "untyped" {
+}
+
+variable "empty_object" {
+  type = object({})
+}
+`
+	config, diags := parser.NewParser().ParseSource("main.tf", []byte(src))
+	require.False(t, diags.HasErrors(), diags.Error())
+
+	moduleSchema, err := GenerateModuleSchema(
+		t.Context(), config, nil, componentToken("lambda", "index", "Module"), semver.MustParse("0.0.0-dev"))
+	require.NoError(t, err)
+
+	pkgSpec := moduleSchema.ToPulumiPackageSchema()
+	_, bindDiags, err := pulumiSchema.BindSpec(pkgSpec, errLoader{}, pulumiSchema.ValidationOptions{})
+	require.NoError(t, err)
+	require.False(t, bindDiags.HasErrors(), bindDiags.Error())
+
+	inputs := pkgSpec.Resources["lambda:index:Module"].InputProperties
+	anyType := pulumiSchema.TypeSpec{Ref: "pulumi.json#/Any"}
+	assert.Equal(t, anyType, inputs["sourcePath"].TypeSpec)
+	assert.Equal(t, anyType, inputs["untyped"].TypeSpec)
+	assert.Equal(t, pulumiSchema.TypeSpec{Ref: "#/types/lambda:index:EmptyObject"}, inputs["emptyObject"].TypeSpec)
 }
 
 // TestProviderFunctionOutputIsTyped shows that an output calling a
@@ -714,7 +754,7 @@ output "arn" {
 	require.NoError(t, err)
 
 	assert.Equal(t, map[string]*PropertySpec{
-		"arn": {Type: "string"},
+		"arn": {Type: TypeString},
 	}, moduleSchema.OutputProperties)
 }
 
@@ -767,12 +807,12 @@ output "parsed" {
 	require.NoError(t, err)
 
 	assert.Equal(t, map[string]*PropertySpec{
-		"service": {Type: "string"},
+		"service": {Type: TypeString},
 		"parsed": {
-			Type: "object",
+			Type: TypeObject,
 			Properties: map[string]*PropertySpec{
-				"service":    {Type: "string"},
-				"account_id": {Type: "string"},
+				"service":    {Type: TypeString},
+				"account_id": {Type: TypeString},
 			},
 			Required: []string{"service"},
 		},
