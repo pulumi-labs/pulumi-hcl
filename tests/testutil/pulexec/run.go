@@ -21,12 +21,8 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"slices"
-	"strings"
-	"sync"
 	"testing"
 
-	"github.com/blang/semver"
 	goplugin "github.com/hashicorp/go-plugin"
 	"github.com/pulumi/providertest/providers"
 	"github.com/pulumi/providertest/pulumitest"
@@ -41,11 +37,9 @@ import (
 	"github.com/pulumi/pulumi/sdk/v3/go/common/apitype"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/util/contract"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/util/rpcutil"
-	"github.com/pulumi/pulumi/sdk/v3/go/common/workspace"
 	pulumirpc "github.com/pulumi/pulumi/sdk/v3/proto/go"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/grpc"
-	"google.golang.org/protobuf/types/known/emptypb"
 )
 
 // serveLanguageHost serves the pulumi-language-hcl runtime in-process on an
@@ -98,47 +92,6 @@ type Provider struct {
 	Name     string
 	Start    func(ctx context.Context) (pulumirpc.ResourceProviderServer, error)
 	Reattach *goplugin.ReattachConfig
-	// Parameterized serves the provider as a parameterized package standing in
-	// for a dynamically bridged one. Only meaningful with Start; Reattach
-	// providers run the real parameterization flow.
-	Parameterized bool
-}
-
-// parameterizedVersion is the version the fake parameterization reports; the
-// descriptor and the Parameterize response must agree on it.
-const parameterizedVersion = "0.0.1"
-
-// pluginName is the name the engine resolves the provider's plugin by: the
-// package name itself, or the base plugin's name when parameterized.
-func (p Provider) pluginName() string {
-	if p.Parameterized {
-		return p.Name + "-base"
-	}
-	return p.Name
-}
-
-// parameterizedServer wraps a provider server with a Parameterize
-// implementation that accepts any value and reports the package identity,
-// standing in for a dynamically bridged base plugin.
-type parameterizedServer struct {
-	pulumirpc.ResourceProviderServer
-	pkg string
-}
-
-func (s *parameterizedServer) Parameterize(
-	_ context.Context, _ *pulumirpc.ParameterizeRequest,
-) (*pulumirpc.ParameterizeResponse, error) {
-	return &pulumirpc.ParameterizeResponse{Name: s.pkg, Version: parameterizedVersion}, nil
-}
-
-// start returns the provider's server, wrapped for parameterization when
-// configured.
-func (p Provider) start(ctx context.Context) (pulumirpc.ResourceProviderServer, error) {
-	inner, err := p.Start(ctx)
-	if err != nil || !p.Parameterized {
-		return inner, err
-	}
-	return &parameterizedServer{ResourceProviderServer: inner, pkg: p.Name}, nil
 }
 
 // Result holds the outputs and resource state from a Pulumi deployment.
@@ -158,7 +111,6 @@ type Driver struct {
 	pt        *pulumitest.PulumiTest
 	dir       string
 	providers []Provider
-	mutations *mutationLog
 	// install is set when reattach providers are present: their SDKs are
 	// written by the real `pulumi install` flow, run once per stage.
 	install bool
@@ -172,37 +124,10 @@ type Driver struct {
 	lastProgramFiles []string
 }
 
-// rawDebugProvidersEnv starts an in-process server per Start provider and
-// returns the PULUMI_DEBUG_PROVIDERS value describing them: pulumitest only
-// attaches providers for the duration of its own engine operations, so raw
-// commands must bring their own. Reattach providers need no entry — the
-// engine reaches them through the terraform-provider plugin, configured by
-// the workspace env.
-func (d *Driver) rawDebugProvidersEnv(t *testing.T) string {
-	t.Helper()
-	parts := make([]string, 0, len(d.providers))
-	for _, p := range d.providers {
-		if p.Start == nil {
-			continue
-		}
-		handle, err := startProvider(t.Context(), p.start)
-		require.NoError(t, err)
-		parts = append(parts, fmt.Sprintf("%s:%d", p.pluginName(), handle.Port))
-	}
-	return strings.Join(parts, ",")
-}
-
 // NewDriver builds the project dir, attaches the bridged providers, and sets
 // any stack config. Call Driver.Apply once per stage.
 func NewDriver(t *testing.T, provs []Provider, config map[string]string) *Driver {
 	t.Helper()
-
-	mutations := &mutationLog{}
-	recorded := make([]Provider, len(provs))
-	for i, p := range provs {
-		recorded[i] = p.recorded(mutations)
-	}
-	provs = recorded
 
 	hostPort := serveLanguageHost(t)
 	dir := t.TempDir()
@@ -262,9 +187,9 @@ backend:
 			continue
 		}
 		opts = append(opts, opttest.AttachProvider(
-			p.pluginName(),
+			p.Name,
 			func(ctx context.Context, pt providers.PulumiTest) (providers.Port, error) {
-				handle, err := startProvider(ctx, p.start)
+				handle, err := startProvider(ctx, p.Start)
 				if err != nil {
 					return 0, err
 				}
@@ -280,7 +205,6 @@ backend:
 		pt:        pt,
 		dir:       dir,
 		providers: provs,
-		mutations: mutations,
 		install:   len(reattach) > 0,
 		extraEnv:  extraEnv,
 	}
@@ -425,23 +349,6 @@ func (d *Driver) writeStubSDKs(t *testing.T) {
 		sdkDir := filepath.Join(d.dir, "sdks", p.Name)
 		require.NoError(t, os.MkdirAll(sdkDir, 0o755))
 		desc := fmt.Appendf(nil, `{"name":%q,"kind":"resource"}`+"\n", p.Name)
-		if p.Parameterized {
-			version := semver.MustParse(parameterizedVersion)
-			var err error
-			desc, err = json.Marshal(workspace.PackageDescriptor{
-				PluginDescriptor: workspace.PluginDescriptor{
-					Name:    p.pluginName(),
-					Kind:    apitype.ResourcePlugin,
-					Version: &version,
-				},
-				Parameterization: &workspace.Parameterization{
-					Name:    p.Name,
-					Version: version,
-					Value:   []byte(p.Name),
-				},
-			})
-			require.NoError(t, err)
-		}
 		require.NoError(t, os.WriteFile(
 			filepath.Join(sdkDir, "hcl.sdk.json"), desc, 0o600,
 		))
@@ -502,10 +409,10 @@ func converterShim(t *testing.T, port int) string {
 
 // Import writes programFiles and runs `pulumi import --from hcl` with the
 // given converter arguments. The converter is served in-process behind a PATH
-// shim, and PULUMI_DEBUG_PROVIDERS points the CLI's mapper at the attached
-// in-process providers; the values themselves come from the state, so no
-// provider Read runs. Imports are unprotected for the same reason as
-// ImportFromFile.
+// shim, and the CLI's mapper resolves mappings through the providers the
+// workspace env configures (the terraform-provider reattach path for dynamic
+// providers); the values themselves come from the state, so no provider Read
+// runs. Imports are unprotected for the same reason as ImportFromFile.
 //
 // TODO[https://github.com/pulumi/pulumi/issues/24144]: This is a raw CLI invocation: the
 // Automation API's ImportResources appends `--stack` after the `--` separator, which the
@@ -532,89 +439,8 @@ func (d *Driver) Import(t *testing.T, programFiles map[string]string, converterA
 		}
 	}
 	shimDir := converterShim(t, d.serveConverter(t))
-	env = append(env,
-		"PATH="+shimDir+string(os.PathListSeparator)+envPath,
-		"PULUMI_DEBUG_PROVIDERS="+d.rawDebugProvidersEnv(t),
-	)
+	env = append(env, "PATH="+shimDir+string(os.PathListSeparator)+envPath)
 	cmd.Env = env
 	out, err := cmd.CombinedOutput()
 	return string(out), err
 }
-
-// mutationLog accumulates the resource-mutating provider RPCs a Driver's
-// providers receive across all engine operations.
-type mutationLog struct {
-	mu    sync.Mutex
-	calls []string
-}
-
-func (l *mutationLog) record(op, urn string) {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	l.calls = append(l.calls, op+" "+urn)
-}
-
-func (l *mutationLog) snapshot() []string {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	return slices.Clone(l.calls)
-}
-
-// mutationRecorder wraps a provider server, logging the RPCs that mutate (or,
-// with preview set, would mutate) a resource. Previews surface planned
-// creates and updates as Create/Update with preview=true, but planned deletes
-// never reach the provider — asserting no deletes requires a real up.
-type mutationRecorder struct {
-	pulumirpc.ResourceProviderServer
-	log *mutationLog
-}
-
-func previewOp(op string, preview bool) string {
-	if preview {
-		return op + "(preview)"
-	}
-	return op
-}
-
-func (m *mutationRecorder) Create(
-	ctx context.Context, req *pulumirpc.CreateRequest,
-) (*pulumirpc.CreateResponse, error) {
-	m.log.record(previewOp("create", req.Preview), req.Urn)
-	return m.ResourceProviderServer.Create(ctx, req)
-}
-
-func (m *mutationRecorder) Update(
-	ctx context.Context, req *pulumirpc.UpdateRequest,
-) (*pulumirpc.UpdateResponse, error) {
-	m.log.record(previewOp("update", req.Preview), req.Urn)
-	return m.ResourceProviderServer.Update(ctx, req)
-}
-
-func (m *mutationRecorder) Delete(
-	ctx context.Context, req *pulumirpc.DeleteRequest,
-) (*emptypb.Empty, error) {
-	m.log.record("delete", req.Urn)
-	return m.ResourceProviderServer.Delete(ctx, req)
-}
-
-// recorded returns a copy of p whose servers log mutating RPCs to log.
-// Reattach providers pass through unchanged: their RPCs flow through the
-// terraform-provider plugin, out of reach of an in-process wrapper.
-func (p Provider) recorded(log *mutationLog) Provider {
-	if p.Start == nil {
-		return p
-	}
-	start := p.Start
-	return Provider{Name: p.Name, Parameterized: p.Parameterized, Start: func(ctx context.Context) (pulumirpc.ResourceProviderServer, error) {
-		srv, err := start(ctx)
-		if err != nil {
-			return nil, err
-		}
-		return &mutationRecorder{ResourceProviderServer: srv, log: log}, nil
-	}}
-}
-
-// Mutations returns the create/update/delete provider calls recorded since
-// the driver was built, in arrival order, formatted "op urn" (preview-mode
-// calls as "op(preview) urn").
-func (d *Driver) Mutations() []string { return d.mutations.snapshot() }

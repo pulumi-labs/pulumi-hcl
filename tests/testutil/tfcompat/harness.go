@@ -64,11 +64,6 @@ type Provider struct {
 	Factory func() *schema.Provider
 	// PFFactory builds a terraform-plugin-framework provider.
 	PFFactory func() pfprovider.Provider
-	// Parameterized serves the state-import check's Pulumi-side provider as a
-	// parameterized package (see pulexec.Provider.Parameterized). The main
-	// comparison path always runs the real parameterization flow, and the TF
-	// path is unaffected: parameterization is a Pulumi deployment concept.
-	Parameterized bool
 }
 
 // buildTerraformProviders wires the tofu-side path: each provider records at
@@ -95,33 +90,11 @@ func buildTerraformProviders(
 	return tfProvs
 }
 
-// buildPulumiProviders wires the Pulumi-side path; the import check uses it
-// alone, having no tofu side.
-func buildPulumiProviders(
-	t *testing.T, provs []Provider, rec *tfexec.Recorder,
-) []pulexec.Provider {
-	t.Helper()
-	pulProvs := make([]pulexec.Provider, len(provs))
-	for i, p := range provs {
-		switch {
-		case p.Factory != nil && p.PFFactory == nil:
-			factory := p.Factory
-			pulProvs[i] = pulexec.SDKv2Provider(t, p.Name, func() *schema.Provider { return tfexec.Wrap(factory(), rec) }, nil)
-		case p.PFFactory != nil && p.Factory == nil:
-			pulProvs[i] = pulexec.PFProvider(t, p.Name, p.PFFactory, rec, nil)
-		default:
-			t.Fatalf("provider %q: exactly one of Factory or PFFactory must be set", p.Name)
-		}
-		pulProvs[i].Parameterized = p.Parameterized
-	}
-	return pulProvs
-}
-
-// buildDynamicPulumiProviders wires the Pulumi-side path used by the main
-// comparison: each provider is served in-process over go-plugin and the
-// engine reaches it through the real terraform-provider plugin
-// (pulexec.SDKv2ProviderDynamic / PFProviderDynamic), so the pulumi path runs
-// the full parameterization flow the production runtime does.
+// buildDynamicPulumiProviders wires the Pulumi-side path: each provider is
+// served in-process over go-plugin and the engine reaches it through the real
+// terraform-provider plugin (pulexec.SDKv2ProviderDynamic /
+// PFProviderDynamic), so the pulumi path runs the full parameterization flow
+// the production runtime does.
 func buildDynamicPulumiProviders(
 	t *testing.T, provs []Provider, rec *tfexec.Recorder,
 ) []pulexec.Provider {
