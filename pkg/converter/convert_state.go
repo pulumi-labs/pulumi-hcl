@@ -548,8 +548,6 @@ func translateInstanceValues(
 		}
 	}
 	if idProp == nil {
-		// No schema home for id (classic shape): it becomes the plain `id`
-		// output. A renamed id was already projected by the codec.
 		outs["id"] = resource.NewStringProperty(id)
 	}
 	return outs, ins, nil
