@@ -1,0 +1,6 @@
+kind: Improvements
+body: Fill in upstream version during `pulumi package add hcl module`
+time: 2026-08-06T12:02:08.253973+02:00
+custom:
+    Component: resource-host
+    PR: "520"

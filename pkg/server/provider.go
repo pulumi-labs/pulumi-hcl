@@ -152,7 +152,9 @@ func NewHCLProvider(ctx context.Context, modulePath, addr string) (*HCLProvider,
 
 // moduleIdentity derives a module's component token and version. The terraform
 // `package` and `component` blocks take precedence; absent them defaultName
-// supplies the package name.
+// supplies the package name and the version the module's source resolved to
+// supplies the version, falling back to "0.0.0-dev" for sources that carry no
+// version (local paths, git, http).
 //
 // The module segment defaults to "index" and the component name defaults to
 // "Module", so a module with no component block yields the token
@@ -161,7 +163,10 @@ func NewHCLProvider(ctx context.Context, modulePath, addr string) (*HCLProvider,
 func moduleIdentity(loaded *modules.LoadedModule, defaultName string, forceDefault bool) (tokens.Type, semver.Version, error) {
 	module := "index"
 	pkgName := defaultName
-	pkgVersion := "0.0.0-dev"
+	pkgVersion := loaded.Version
+	if pkgVersion == "" {
+		pkgVersion = "0.0.0-dev"
+	}
 	var explicitComponentName string
 	if tf := loaded.Config.Terraform; tf != nil {
 		if comp := tf.Component; comp != nil {

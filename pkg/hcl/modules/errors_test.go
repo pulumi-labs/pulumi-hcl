@@ -50,7 +50,7 @@ func TestRegistryHTTPErrorClassification(t *testing.T) {
 			t.Cleanup(srv.Close)
 			n := newTestNetworkResolver(t, srv.URL)
 
-			_, err := n.resolveRegistrySource("acme/thing/aws", "")
+			_, _, err := n.resolveRegistrySource("acme/thing/aws", "")
 			require.ErrorIs(t, err, tc.want)
 		})
 	}
@@ -62,7 +62,7 @@ func TestRegistryNetworkFailureIsTransient(t *testing.T) {
 	srv.Close() // connection refused from here on
 	n := newTestNetworkResolver(t, srv.URL)
 
-	_, err := n.resolveRegistrySource("acme/thing/aws", "")
+	_, _, err := n.resolveRegistrySource("acme/thing/aws", "")
 	require.ErrorIs(t, err, ErrTransient)
 }
 
@@ -73,18 +73,18 @@ func TestRegistryVersionErrorsAreNotFound(t *testing.T) {
 
 	t.Run("constraint unsatisfied", func(t *testing.T) {
 		t.Parallel()
-		_, err := n.resolveRegistrySource("acme/thing/aws", "~> 99.0")
+		_, _, err := n.resolveRegistrySource("acme/thing/aws", "~> 99.0")
 		require.ErrorIs(t, err, ErrNotFound)
 	})
 	t.Run("invalid constraint", func(t *testing.T) {
 		t.Parallel()
-		_, err := n.resolveRegistrySource("acme/thing/aws", "not-a-constraint")
+		_, _, err := n.resolveRegistrySource("acme/thing/aws", "not-a-constraint")
 		require.ErrorIs(t, err, ErrInvalid)
 	})
 	t.Run("no versions published", func(t *testing.T) {
 		t.Parallel()
 		empty, _ := newFakeRegistry(t, nil, map[string]string{})
-		_, err := newTestNetworkResolver(t, empty.URL).resolveRegistrySource("acme/thing/aws", "")
+		_, _, err := newTestNetworkResolver(t, empty.URL).resolveRegistrySource("acme/thing/aws", "")
 		require.ErrorIs(t, err, ErrNotFound)
 	})
 }
@@ -96,7 +96,7 @@ func TestHostWithoutModuleRegistryIsNotFound(t *testing.T) {
 	d.ForceHostServices(regaddr.DefaultModuleRegistryHost, map[string]any{})
 	n := &networkResolver{cacheDir: t.TempDir(), disco: d}
 
-	_, err := n.resolveRegistrySource("acme/thing/aws", "")
+	_, _, err := n.resolveRegistrySource("acme/thing/aws", "")
 	require.ErrorIs(t, err, ErrNotFound)
 }
 
@@ -110,8 +110,8 @@ func TestLocalModuleErrorsAreNotFound(t *testing.T) {
 	t.Run("missing subdir", func(t *testing.T) {
 		t.Parallel()
 		dir := t.TempDir()
-		l := NewLoader(func(string, string, string) (string, error) { return dir, nil })
-		_, err := l.resolveSource("acme/thing/aws//missing", "", ".")
+		l := NewLoader(func(string, string, string) (string, string, error) { return dir, "", nil })
+		_, _, err := l.resolveSource("acme/thing/aws//missing", "", ".")
 		require.ErrorIs(t, err, ErrNotFound)
 	})
 }

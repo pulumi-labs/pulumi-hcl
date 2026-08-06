@@ -182,7 +182,7 @@ func TestRegistryGetScopesTokenToDiscoveredHost(t *testing.T) {
 	}
 
 	// The discovered host receives the token.
-	_, err = n.getRegistryDownloadURL(regHost, srv.URL, "acme", "thing", "aws", "")
+	_, _, err = n.getRegistryDownloadURL(regHost, srv.URL, "acme", "thing", "aws", "")
 	require.NoError(t, err)
 	assert.Equal(t, "Bearer secret-token", gotAuth)
 
@@ -190,7 +190,7 @@ func TestRegistryGetScopesTokenToDiscoveredHost(t *testing.T) {
 	gotAuth = "sentinel"
 	other, err := svchost.ForComparison("registry.terraform.io")
 	require.NoError(t, err)
-	_, err = n.getRegistryDownloadURL(other, srv.URL, "acme", "thing", "aws", "")
+	_, _, err = n.getRegistryDownloadURL(other, srv.URL, "acme", "thing", "aws", "")
 	require.NoError(t, err)
 	assert.Equal(t, "", gotAuth)
 }
