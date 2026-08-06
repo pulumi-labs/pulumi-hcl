@@ -184,7 +184,7 @@ For example, `pulumi package add hcl module terraform-aws-modules/vpc/aws 5.0.0`
 generates a local SDK whose resource exposes that module's variables and outputs
 as first-class, typed properties in your language of choice.
 
-By default the package is named after the module source (`vpc-aws` in the
+By default the package is named after the module name and its system (`vpc-aws` in the
 example above). Pass `--name` to choose a different package name:
 
 ```bash
