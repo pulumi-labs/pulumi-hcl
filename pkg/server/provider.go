@@ -118,7 +118,7 @@ func NewHCLProvider(ctx context.Context, modulePath, addr string) (*HCLProvider,
 		return nil, fmt.Errorf("loading module: %w", err)
 	}
 
-	token, version, err := moduleIdentity(loaded, filepath.Base(modulePath))
+	token, version, err := moduleIdentity(loaded, filepath.Base(modulePath), false)
 	if err != nil {
 		return nil, err
 	}
@@ -158,7 +158,7 @@ func NewHCLProvider(ctx context.Context, modulePath, addr string) (*HCLProvider,
 // "Module", so a module with no component block yields the token
 // "<package>:index:Module", referenced in HCL as `<package>_module` (mirroring
 // the dynamic hcl:index:Module resource).
-func moduleIdentity(loaded *modules.LoadedModule, defaultName string) (tokens.Type, semver.Version, error) {
+func moduleIdentity(loaded *modules.LoadedModule, defaultName string, forceDefault bool) (tokens.Type, semver.Version, error) {
 	module := "index"
 	pkgName := defaultName
 	pkgVersion := "0.0.0-dev"
@@ -171,7 +171,7 @@ func moduleIdentity(loaded *modules.LoadedModule, defaultName string) (tokens.Ty
 			}
 		}
 		if pkg := tf.Package; pkg != nil {
-			if pkg.Name != "" {
+			if pkg.Name != "" && !forceDefault {
 				pkgName = pkg.Name
 			}
 			if pkg.Version != "" {

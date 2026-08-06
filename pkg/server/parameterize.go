@@ -38,6 +38,7 @@ import (
 	"github.com/pulumi/pulumi/sdk/v3/go/common/tokens"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/util/contract"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/workspace"
+	"github.com/spf13/cobra"
 	"google.golang.org/grpc/codes"
 
 	"github.com/pulumi/pulumi-hcl/pkg/grpcerr"
@@ -147,25 +148,26 @@ type resolvedEdge struct {
 }
 
 // parameterize configures the provider for a specific module source. Args is the
-// CLI path (`pulumi package add hcl module <source> [version]`): it downloads the
-// module tree and bundles it. Value is the usage path: it unpacks a previously
-// bundled tree and resolves everything from it.
+// CLI path (`pulumi package add hcl module <source> [version] [--name <name>]`):
+// it downloads the module tree and bundles it. Value is the usage path: it
+// unpacks a previously bundled tree and resolves everything from it, reusing the
+// package name the CLI path chose.
 func (m *moduleProvider) parameterize(ctx context.Context, req p.ParameterizeRequest) (p.ParameterizeResponse, error) {
 	switch {
 	case req.Args != nil:
 		return m.parameterizeArgs(ctx, req.Args.Args)
 	case req.Value != nil:
-		return m.parameterizeValue(ctx, req.Value.Value)
+		return m.parameterizeValue(ctx, req.Value.Name, req.Value.Value)
 	default:
 		return p.ParameterizeResponse{}, grpcerr.Errorf(codes.InvalidArgument,
 			"parameterize requires either arguments or a value")
 	}
 }
 
-// parameterizeArgs handles `pulumi package add hcl module <source> [version]`.
-// It downloads the module, generates its schema, and — recording every
-// resolution along the way — bundles the whole module tree into the
-// parameterization Value.
+// parameterizeArgs handles `pulumi package add hcl module <source> [version]
+// [--name <name>]`. It downloads the module, generates its schema, and —
+// recording every resolution along the way — bundles the whole module tree into
+// the parameterization Value.
 func (m *moduleProvider) parameterizeArgs(ctx context.Context, args []string) (p.ParameterizeResponse, error) {
 	if m.resolver == nil {
 		return p.ParameterizeResponse{}, grpcerr.Errorf(codes.FailedPrecondition,
@@ -179,16 +181,24 @@ func (m *moduleProvider) parameterizeArgs(ctx context.Context, args []string) (p
 			`the hcl provider is parameterized by a module: expected "module" as the first argument`)
 	}
 
-	var source, version string
-	switch rest := args[1:]; len(rest) {
-	case 1:
-		source = rest[0]
-	case 2:
-		source, version = rest[0], rest[1]
-	default:
+	cmd := &cobra.Command{Version: m.version, SilenceUsage: true, SilenceErrors: true}
+	cmd.SetArgs(args)
+	cmd.SetContext(ctx)
+
+	module := &cobra.Command{Use: "module <source> [version]", SilenceUsage: true, SilenceErrors: true}
+	var source, version, nameOverride string
+	module.Flags().StringVar(&nameOverride, "name", "", "override the package name")
+	module.Run = func(cmd *cobra.Command, args []string) {
+		source = args[0]
+		if len(args) >= 2 {
+			version = args[1]
+		}
+	}
+	module.Args = cobra.RangeArgs(1, 2)
+	cmd.AddCommand(module)
+	if err := cmd.Execute(); err != nil {
 		return p.ParameterizeResponse{}, grpcerr.Errorf(codes.InvalidArgument,
-			`the hcl provider is parameterized as "module <source> [version]": `+
-				"expected a source and an optional version constraint, got %d arguments after \"module\"", len(rest))
+			`the hcl provider is parameterized as "module <source> [version] [--name <name>]": %v`, err)
 	}
 
 	// A recording loader resolves sources live while capturing where each one
@@ -211,7 +221,7 @@ func (m *moduleProvider) parameterizeArgs(ctx context.Context, args []string) (p
 
 	// finishParameterize's schema walk drives the recorder too; bundle the
 	// recorded tree once it has run.
-	return m.finishParameterize(ctx, loader, loaded, source, version, "", resolved, func() ([]byte, error) {
+	return m.finishParameterize(ctx, loader, loaded, source, version, nameOverride, "", resolved, func() ([]byte, error) {
 		value, err := rec.bundle(moduleRef{Source: source, Version: version}, resolved)
 		if err != nil {
 			return nil, fmt.Errorf("bundling module %q: %w", source, err)
@@ -224,7 +234,7 @@ func (m *moduleProvider) parameterizeArgs(ctx context.Context, args []string) (p
 // the bundled module files, builds a loader that resolves every source from the
 // bundle's manifest with no network access, and reuses the bundle's baked
 // provider descriptors rather than re-resolving them through the engine.
-func (m *moduleProvider) parameterizeValue(ctx context.Context, value []byte) (p.ParameterizeResponse, error) {
+func (m *moduleProvider) parameterizeValue(ctx context.Context, name string, value []byte) (p.ParameterizeResponse, error) {
 	if m.resolver == nil {
 		return p.ParameterizeResponse{}, grpcerr.Errorf(codes.FailedPrecondition,
 			"parameterize called before a successful handshake")
@@ -259,7 +269,7 @@ func (m *moduleProvider) parameterizeValue(ctx context.Context, value []byte) (p
 		return p.ParameterizeResponse{}, fmt.Errorf("loading bundled module %q: %w", b.Manifest.Root.Source, err)
 	}
 
-	resp, err := m.finishParameterize(ctx, loader, loaded, b.Manifest.Root.Source, b.Manifest.Root.Version, dir,
+	resp, err := m.finishParameterize(ctx, loader, loaded, b.Manifest.Root.Source, b.Manifest.Root.Version, name, dir,
 		b.Packages, func() ([]byte, error) { return value, nil })
 	if err != nil {
 		return p.ParameterizeResponse{}, err
@@ -270,10 +280,14 @@ func (m *moduleProvider) parameterizeValue(ctx context.Context, value []byte) (p
 
 func (m *moduleProvider) finishParameterize(
 	ctx context.Context, loader *modules.Loader, loaded *modules.LoadedModule,
-	rootSource, rootVersion, tempDir string,
+	rootSource, rootVersion, pkgName, tempDir string,
 	resolved map[string]workspace.PackageDescriptor, makeValue func() ([]byte, error),
 ) (p.ParameterizeResponse, error) {
-	token, pkgVer, err := moduleIdentity(loaded, defaultPackageName(rootSource))
+	forceDefault := pkgName != ""
+	if pkgName == "" {
+		pkgName = defaultPackageName(rootSource)
+	}
+	token, pkgVer, err := moduleIdentity(loaded, pkgName, forceDefault)
 	if err != nil {
 		return p.ParameterizeResponse{}, err
 	}
@@ -291,7 +305,7 @@ func (m *moduleProvider) finishParameterize(
 		return p.ParameterizeResponse{}, err
 	}
 
-	pkgName := token.Package().Name().String()
+	pkgName = token.Package().Name().String()
 	m.param = &parameterizedModule{
 		schema:      sch,
 		loader:      loader,

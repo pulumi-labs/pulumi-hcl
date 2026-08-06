@@ -75,15 +75,15 @@ func TestParameterizeArgsRejected(t *testing.T) {
 	t.Run("no source", func(t *testing.T) {
 		t.Parallel()
 		_, err := (&moduleProvider{resolver: stubResolver{}}).parameterizeArgs(t.Context(), []string{"module"})
-		require.EqualError(t, err, `the hcl provider is parameterized as "module <source> [version]": `+
-			`expected a source and an optional version constraint, got 0 arguments after "module"`)
+		require.EqualError(t, err, `the hcl provider is parameterized as "module <source> [version] [--name <name>]": `+
+			`accepts between 1 and 2 arg(s), received 0`)
 	})
 
 	t.Run("too many args", func(t *testing.T) {
 		t.Parallel()
 		_, err := (&moduleProvider{resolver: stubResolver{}}).parameterizeArgs(t.Context(), []string{"module", "a", "b", "c"})
-		require.EqualError(t, err, `the hcl provider is parameterized as "module <source> [version]": `+
-			`expected a source and an optional version constraint, got 3 arguments after "module"`)
+		require.EqualError(t, err, `the hcl provider is parameterized as "module <source> [version] [--name <name>]": `+
+			`accepts between 1 and 2 arg(s), received 3`)
 	})
 }
 
@@ -120,6 +120,76 @@ func TestParameterizeArgsServesTypedSchema(t *testing.T) {
 	// "name" declares no `nullable = false`, so it is optional, matching the
 	// MLC's handling of a nullable variable.
 	require.Empty(t, res.RequiredInputs)
+}
+
+// TestParameterizeNameOverrideLifecycle drives `--name` through the full
+// lifecycle: the args path must name the package and its component token after
+// the override, and the usage path — re-parameterizing a fresh provider from the
+// returned name and Value, as the engine does for a generated SDK — must
+// preserve it.
+func TestParameterizeNameOverrideLifecycle(t *testing.T) {
+	t.Parallel()
+
+	dir, err := filepath.Abs(filepath.Join("testdata", "module-one-var"))
+	require.NoError(t, err)
+
+	m := &moduleProvider{version: "1.2.3", resolver: stubResolver{}}
+	resp, err := m.parameterizeArgs(t.Context(), []string{"module", dir, "--name", "greeter"})
+	require.NoError(t, err)
+	require.Equal(t, "greeter", resp.Name)
+
+	assertGreeterSchema := func(m *moduleProvider) pulumiSchema.PackageSpec {
+		out, err := m.getSchema(t.Context(), p.GetSchemaRequest{})
+		require.NoError(t, err)
+		var spec pulumiSchema.PackageSpec
+		require.NoError(t, json.Unmarshal([]byte(out.Schema), &spec))
+		require.Equal(t, "greeter", spec.Name)
+		res, ok := spec.Resources["greeter:index:Module"]
+		require.True(t, ok, "schema should declare the typed component under the overridden name")
+		require.True(t, res.IsComponent)
+		return spec
+	}
+	spec := assertGreeterSchema(m)
+
+	usage := &moduleProvider{version: "1.2.3", resolver: stubResolver{}}
+	resp2, err := usage.parameterize(t.Context(), p.ParameterizeRequest{
+		Value: &p.ParameterizeRequestValue{
+			Name:    resp.Name,
+			Version: resp.Version,
+			Value:   spec.Parameterization.Parameter,
+		},
+	})
+	require.NoError(t, err)
+	require.Equal(t, resp, resp2)
+	assertGreeterSchema(usage)
+}
+
+// TestParameterizeNameOverrideBeatsPackageBlock verifies precedence between the
+// terraform `package` block and the `--name` flag: the block names the package
+// by default, and `--name` overrides it.
+func TestParameterizeNameOverrideBeatsPackageBlock(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "main.tf"), []byte(`
+terraform {
+  package {
+    name    = "blockname"
+    version = "1.0.0"
+  }
+}
+output "x" { value = 1 }
+`), 0o600))
+
+	parameterize := func(args ...string) p.ParameterizeResponse {
+		m := &moduleProvider{version: "1.2.3", resolver: stubResolver{}}
+		resp, err := m.parameterizeArgs(t.Context(), append([]string{"module", dir}, args...))
+		require.NoError(t, err)
+		return resp
+	}
+
+	require.Equal(t, "blockname", parameterize().Name)
+	require.Equal(t, "greeter", parameterize("--name", "greeter").Name)
 }
 
 // TestBundleRoundTripResolvesOffline records a module tree — including a

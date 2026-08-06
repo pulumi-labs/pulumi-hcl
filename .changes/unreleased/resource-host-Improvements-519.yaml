@@ -1,0 +1,6 @@
+kind: Improvements
+body: Allow overriding the package name in `pulumi package add hcl module`
+time: 2026-08-06T11:20:45.058721+02:00
+custom:
+    Component: resource-host
+    PR: "519"
