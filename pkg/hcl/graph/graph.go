@@ -396,7 +396,7 @@ func (g *Graph) InjectAfter(f func(context.Context) error, match func(*Node) boo
 			err = g.dag.NewEdge(n, node.i)
 		}
 		if err != nil {
-			return err
+			return cycleError(err)
 		}
 	}
 	return nil
@@ -423,7 +423,7 @@ func (g *Graph) AddNode(node *Node, deps []pdag.Node) error {
 	n, i := g.newNode(node.Key)
 	*n = *node
 	for _, dep := range deps {
-		err := g.dag.NewEdge(dep, i)
+		err := cycleError(g.dag.NewEdge(dep, i))
 		if err != nil {
 			return err
 		}
@@ -766,7 +766,29 @@ func (g *Graph) NewJoinNode(key string) pdag.Node {
 
 // Order adds the edge from → to.
 func (g *Graph) Order(from, to pdag.Node) error {
-	return g.dag.NewEdge(from, to)
+	return cycleError(g.dag.NewEdge(from, to))
+}
+
+// cycleError rewraps a pdag cycle error to name the participating nodes in
+// dependency order, closing the loop back on the first node. Nodes without a
+// key (display or interned) are dropped from the report; other errors pass
+// through unchanged.
+func cycleError(err error) error {
+	var c pdag.ErrorCycle[dagNode]
+	if !errors.As(err, &c) {
+		return err
+	}
+	var parts []string
+	for _, n := range c.Cycle {
+		if s := n.key.String(); s != "" {
+			parts = append(parts, s)
+		}
+	}
+	if len(parts) == 0 {
+		return err
+	}
+	parts = append(parts, parts[0])
+	return fmt.Errorf("dependency cycle: %s", strings.Join(parts, " -> "))
 }
 
 // defaultProviderDeps returns an implicit dependency on the un-aliased
