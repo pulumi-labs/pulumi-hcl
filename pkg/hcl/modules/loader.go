@@ -64,16 +64,17 @@ type Loader struct {
 	cache     map[string]*LoadedModule
 	callStack []string
 
-	resolve func(packageSource, versionConstraint, callerDir string) (string, error)
+	resolve ResolverFunc
 }
 
 // LoadedModule represents a loaded and parsed module.
 type LoadedModule struct {
 	Config     *ast.Config
 	SourcePath string
+	Version    string
 }
 
-type ResolverFunc = func(packageSource, versionConstraint, callerDir string) (string, error)
+type ResolverFunc = func(packageSource, versionConstraint, callerDir string) (dir, version string, err error)
 
 // NewLoader creates a module loader that resolves sources from the filesystem,
 // the registry, and remote getters, downloading and caching as needed.
@@ -110,24 +111,27 @@ func LiveResolver(ctx context.Context) ResolverFunc {
 	return n.resolve
 }
 
-func (n *networkResolver) resolve(packageSource, versionConstraint, callerDir string) (string, error) {
+func (n *networkResolver) resolve(packageSource, versionConstraint, callerDir string) (string, string, error) {
 	switch {
 	case strings.HasPrefix(packageSource, "./") || strings.HasPrefix(packageSource, "../"):
 		resolved := filepath.Join(callerDir, packageSource)
 		absPath, err := filepath.Abs(resolved)
 		if err != nil {
-			return "", fmt.Errorf("resolving path: %w", err)
+			return "", "", fmt.Errorf("resolving path: %w", err)
 		}
-		return statDir(absPath)
+		dir, err := statDir(absPath)
+		return dir, "", err
 	case filepath.IsAbs(packageSource):
-		return statDir(packageSource)
+		dir, err := statDir(packageSource)
+		return dir, "", err
 	case isRegistrySource(packageSource):
 		return n.resolveRegistrySource(packageSource, versionConstraint)
 	default:
 		// Anything else (git::, github.com/..., bitbucket.org/..., http(s)://,
 		// s3::, gcs::, hg::, etc.) goes through the package fetcher, which
 		// runs the upstream opentofu detectors to normalize the address.
-		return n.fetchRemote(packageSource, "remote")
+		dir, err := n.fetchRemote(packageSource, "remote")
+		return dir, "", err
 	}
 }
 
@@ -152,7 +156,7 @@ func (l *Loader) LoadModule(ctx context.Context, source, versionConstraint, call
 	l.mu.Lock()
 	defer l.mu.Unlock()
 
-	resolvedPath, err := l.resolveSource(source, versionConstraint, callerDir)
+	resolvedPath, resolvedVersion, err := l.resolveSource(source, versionConstraint, callerDir)
 	if err != nil {
 		return nil, fmt.Errorf("resolving module source %q: %w", source, err)
 	}
@@ -176,28 +180,29 @@ func (l *Loader) LoadModule(ctx context.Context, source, versionConstraint, call
 		return nil, fmt.Errorf("parsing module: %s", diags.Error())
 	}
 
-	module := &LoadedModule{Config: config, SourcePath: resolvedPath}
+	module := &LoadedModule{Config: config, SourcePath: resolvedPath, Version: resolvedVersion}
 	l.cache[resolvedPath] = module
 	return module, nil
 }
 
-// resolveSource resolves a module source to an absolute path on disk.
-// versionConstraint applies only to registry sources.
-func (l *Loader) resolveSource(source, versionConstraint, callerDir string) (string, error) {
+// resolveSource resolves a module source to an absolute path on disk, plus the
+// concrete version a registry source resolved to. versionConstraint applies
+// only to registry sources.
+func (l *Loader) resolveSource(source, versionConstraint, callerDir string) (string, string, error) {
 	packageSource, subdir := getmodules.SplitPackageSubdir(source)
-	packageDir, err := l.resolve(packageSource, versionConstraint, callerDir)
+	packageDir, version, err := l.resolve(packageSource, versionConstraint, callerDir)
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
 
 	if subdir != "" {
 		resolved := filepath.Join(packageDir, subdir)
 		if info, statErr := os.Stat(resolved); statErr != nil || !info.IsDir() {
-			return "", classified(ErrNotFound, fmt.Errorf("subdir %q does not exist in module", subdir))
+			return "", "", classified(ErrNotFound, fmt.Errorf("subdir %q does not exist in module", subdir))
 		}
-		return resolved, nil
+		return resolved, version, nil
 	}
-	return packageDir, nil
+	return packageDir, version, nil
 }
 
 // SourceName is the name a module source declares: the subdirectory it selects,
@@ -284,10 +289,11 @@ type networkResolver struct {
 	disco    *disco.Disco
 }
 
-// resolveRegistrySource downloads a module via modules.v1. source is
+// resolveRegistrySource downloads a module via modules.v1, returning the
+// directory and the concrete version selected. source is
 // `[host/]namespace/name/provider` with an optional ?version=…; versionConstraint
 // takes precedence over the query string.
-func (l *networkResolver) resolveRegistrySource(source, versionConstraint string) (string, error) {
+func (l *networkResolver) resolveRegistrySource(source, versionConstraint string) (string, string, error) {
 	baseSource := source
 	if before, query, ok := strings.Cut(source, "?"); ok {
 		baseSource = before
@@ -300,22 +306,23 @@ func (l *networkResolver) resolveRegistrySource(source, versionConstraint string
 
 	mod, err := regaddr.ParseModuleSource(baseSource)
 	if err != nil {
-		return "", classified(ErrInvalid, fmt.Errorf("invalid registry source format %q: %w", source, err))
+		return "", "", classified(ErrInvalid, fmt.Errorf("invalid registry source format %q: %w", source, err))
 	}
 	pkg := mod.Package
 
 	baseURL, err := l.registryBaseURLForHost(pkg.Host)
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
 
-	downloadURL, err := l.getRegistryDownloadURL(pkg.Host, baseURL, pkg.Namespace, pkg.Name, pkg.TargetSystem, versionConstraint)
+	downloadURL, chosen, err := l.getRegistryDownloadURL(pkg.Host, baseURL, pkg.Namespace, pkg.Name, pkg.TargetSystem, versionConstraint)
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
 
 	// Cache by the resolved URL so different version constraints don't collide.
-	return l.fetchRemote(downloadURL, "registry")
+	dir, err := l.fetchRemote(downloadURL, "registry")
+	return dir, chosen, err
 }
 
 // registryBaseURLForHost resolves a registry host to its modules.v1 base URL
@@ -361,18 +368,19 @@ type registryModuleVersions struct {
 }
 
 // getRegistryDownloadURL resolves a concrete download URL via the modules.v1
-// protocol. Empty versionConstraint means "highest published version". host
-// identifies the registry for credential lookup; see registryGet.
-func (l *networkResolver) getRegistryDownloadURL(host svchost.Hostname, baseURL, namespace, name, provider, versionConstraint string) (string, error) {
+// protocol, returning it with the version it selected. Empty versionConstraint
+// means "highest published version". host identifies the registry for
+// credential lookup; see registryGet.
+func (l *networkResolver) getRegistryDownloadURL(host svchost.Hostname, baseURL, namespace, name, provider, versionConstraint string) (string, string, error) {
 	chosen, err := l.selectRegistryVersion(host, baseURL, namespace, name, provider, versionConstraint)
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
 
 	downloadURL := fmt.Sprintf("%s/%s/%s/%s/%s/download", baseURL, namespace, name, provider, chosen)
 	resp, err := l.registryGet(host, downloadURL)
 	if err != nil {
-		return "", classified(ErrTransient, fmt.Errorf("getting download URL: %w", err))
+		return "", "", classified(ErrTransient, fmt.Errorf("getting download URL: %w", err))
 	}
 	defer contract.IgnoreClose(resp.Body)
 
@@ -382,22 +390,22 @@ func (l *networkResolver) getRegistryDownloadURL(host svchost.Hostname, baseURL,
 	if resp.StatusCode == http.StatusNoContent {
 		actualURL := resp.Header.Get("X-Terraform-Get")
 		if actualURL == "" {
-			return "", fmt.Errorf("registry did not return download URL")
+			return "", "", fmt.Errorf("registry did not return download URL")
 		}
-		return actualURL, nil
+		return actualURL, chosen, nil
 	}
 
 	if resp.StatusCode != http.StatusOK {
-		return "", classifiedHTTP(resp.StatusCode, fmt.Errorf("getting download URL: HTTP %d", resp.StatusCode))
+		return "", "", classifiedHTTP(resp.StatusCode, fmt.Errorf("getting download URL: HTTP %d", resp.StatusCode))
 	}
 
 	if hdr := resp.Header.Get("X-Terraform-Get"); hdr != "" {
-		return hdr, nil
+		return hdr, chosen, nil
 	}
 
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return "", fmt.Errorf("reading download URL: %w", err)
+		return "", "", fmt.Errorf("reading download URL: %w", err)
 	}
 	trimmed := strings.TrimSpace(string(body))
 	if strings.HasPrefix(trimmed, "{") {
@@ -405,14 +413,14 @@ func (l *networkResolver) getRegistryDownloadURL(host svchost.Hostname, baseURL,
 			Location string `json:"location"`
 		}
 		if err := json.Unmarshal([]byte(trimmed), &parsed); err != nil {
-			return "", fmt.Errorf("parsing registry download response: %w", err)
+			return "", "", fmt.Errorf("parsing registry download response: %w", err)
 		}
 		if parsed.Location == "" {
-			return "", fmt.Errorf("registry download response missing 'location'")
+			return "", "", fmt.Errorf("registry download response missing 'location'")
 		}
-		return parsed.Location, nil
+		return parsed.Location, chosen, nil
 	}
-	return trimmed, nil
+	return trimmed, chosen, nil
 }
 
 // selectRegistryVersion returns the highest published version satisfying

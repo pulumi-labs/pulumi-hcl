@@ -167,9 +167,10 @@ func TestGetRegistryDownloadURL_NoConstraintPicksLatest(t *testing.T) {
 		map[string]string{"4.2.0": "https://example.com/v420.tar.gz"})
 	n := newTestNetworkResolver(t, srv.URL)
 
-	got, err := n.getRegistryDownloadURL(regaddr.DefaultModuleRegistryHost, srv.URL, "acme", "thing", "aws", "")
+	got, chosen, err := n.getRegistryDownloadURL(regaddr.DefaultModuleRegistryHost, srv.URL, "acme", "thing", "aws", "")
 	require.NoError(t, err)
 	require.Equal(t, "https://example.com/v420.tar.gz", got)
+	require.Equal(t, "4.2.0", chosen)
 	require.Equal(t, 1, reg.versionsHitCount())
 	require.Equal(t, 1, reg.downloadHitCount("4.2.0"))
 }
@@ -181,9 +182,10 @@ func TestGetRegistryDownloadURL_ConstraintPicksHighestMatching(t *testing.T) {
 		map[string]string{"4.1.0": "https://example.com/v410.tar.gz"})
 	n := newTestNetworkResolver(t, srv.URL)
 
-	got, err := n.getRegistryDownloadURL(regaddr.DefaultModuleRegistryHost, srv.URL, "acme", "thing", "aws", "~> 4.0")
+	got, chosen, err := n.getRegistryDownloadURL(regaddr.DefaultModuleRegistryHost, srv.URL, "acme", "thing", "aws", "~> 4.0")
 	require.NoError(t, err)
 	require.Equal(t, "https://example.com/v410.tar.gz", got)
+	require.Equal(t, "4.1.0", chosen)
 	require.Equal(t, 1, reg.downloadHitCount("4.1.0"))
 }
 
@@ -194,9 +196,10 @@ func TestGetRegistryDownloadURL_ExactVersionPin(t *testing.T) {
 		map[string]string{"2.0.0": "https://example.com/v200.tar.gz"})
 	n := newTestNetworkResolver(t, srv.URL)
 
-	got, err := n.getRegistryDownloadURL(regaddr.DefaultModuleRegistryHost, srv.URL, "acme", "thing", "aws", "2.0.0")
+	got, chosen, err := n.getRegistryDownloadURL(regaddr.DefaultModuleRegistryHost, srv.URL, "acme", "thing", "aws", "2.0.0")
 	require.NoError(t, err)
 	require.Equal(t, "https://example.com/v200.tar.gz", got)
+	require.Equal(t, "2.0.0", chosen)
 }
 
 func TestGetRegistryDownloadURL_NoMatchingVersionErrors(t *testing.T) {
@@ -206,7 +209,7 @@ func TestGetRegistryDownloadURL_NoMatchingVersionErrors(t *testing.T) {
 		map[string]string{})
 	n := newTestNetworkResolver(t, srv.URL)
 
-	_, err := n.getRegistryDownloadURL(regaddr.DefaultModuleRegistryHost, srv.URL, "acme", "thing", "aws", "~> 99.0")
+	_, _, err := n.getRegistryDownloadURL(regaddr.DefaultModuleRegistryHost, srv.URL, "acme", "thing", "aws", "~> 99.0")
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "no published version")
 	require.Contains(t, err.Error(), "~> 99.0")
@@ -241,7 +244,7 @@ func TestGetRegistryDownloadURL_OpenTofuStyle_JSONBody(t *testing.T) {
 	t.Cleanup(srv.Close)
 
 	n := newTestNetworkResolver(t, srv.URL)
-	got, err := n.getRegistryDownloadURL(regaddr.DefaultModuleRegistryHost, srv.URL, "acme", "thing", "aws", "")
+	got, _, err := n.getRegistryDownloadURL(regaddr.DefaultModuleRegistryHost, srv.URL, "acme", "thing", "aws", "")
 	require.NoError(t, err)
 	require.Equal(t, wantURL, got)
 }
@@ -253,7 +256,7 @@ func TestGetRegistryDownloadURL_InvalidConstraintErrors(t *testing.T) {
 		map[string]string{"1.0.0": "https://example.com/x.tar.gz"})
 	n := newTestNetworkResolver(t, srv.URL)
 
-	_, err := n.getRegistryDownloadURL(regaddr.DefaultModuleRegistryHost, srv.URL, "acme", "thing", "aws", "not-a-constraint")
+	_, _, err := n.getRegistryDownloadURL(regaddr.DefaultModuleRegistryHost, srv.URL, "acme", "thing", "aws", "not-a-constraint")
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "parsing version constraint")
 }
@@ -286,6 +289,7 @@ func TestLoadModule_VersionConstraintPlumbedThroughToRegistry(t *testing.T) {
 	require.NotNil(t, loaded.Config)
 	require.Contains(t, loaded.Config.Outputs, "ok",
 		"the module body fetched should be the 4.0.1 fixture")
+	require.Equal(t, "4.0.1", loaded.Version)
 	require.Equal(t, 1, reg.downloadHitCount("4.0.1"),
 		"constraint ~> 4.0 should resolve to 4.0.1 (highest 4.x), not 5.1.0 or 3.x")
 }
@@ -306,8 +310,9 @@ func TestLoadModule_VersionQueryStringStillSupported(t *testing.T) {
 		map[string]string{"3.0.0": tarURL})
 	l := newTestLoader(t, regSrv.URL)
 
-	_, err := l.LoadModule(t.Context(), "acme/thing/aws?version=3.0.0", "", t.TempDir())
+	loaded, err := l.LoadModule(t.Context(), "acme/thing/aws?version=3.0.0", "", t.TempDir())
 	require.NoError(t, err)
+	require.Equal(t, "3.0.0", loaded.Version)
 	require.Equal(t, 1, reg.downloadHitCount("3.0.0"))
 }
 
@@ -424,10 +429,10 @@ func TestLoaderResolvesViaCustomResolver(t *testing.T) {
 			filepath.Join(dir, "main.tf"), []byte(`output "leaf" { value = 1 }`), 0o600))
 	}
 
-	l := NewLoader(func(packageSource, versionConstraint, _ string) (string, error) {
+	l := NewLoader(func(packageSource, versionConstraint, _ string) (string, string, error) {
 		require.Equal(t, "acme/widget/aws", packageSource)
 		require.Equal(t, "~> 4.0", versionConstraint)
-		return pkg, nil
+		return pkg, "4.2.0", nil
 	})
 
 	root, err := l.LoadModule(t.Context(), "acme/widget/aws", "~> 4.0", t.TempDir())

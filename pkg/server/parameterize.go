@@ -137,14 +137,14 @@ type moduleRef struct {
 	Version string `json:"version,omitempty"`
 }
 
-// resolvedEdge records that a module reference — the (Source, Version) requested
-// from the module at archive-relative directory Caller ("" for the root) —
-// resolves to the archive-relative package directory Target.
+// resolvedEdge records that a module reference — the (Source, VersionConstraint)
+// requested from the module at archive-relative directory Caller ("" for the
+// root) — resolves to the archive-relative package directory Target.
 type resolvedEdge struct {
-	Caller  string `json:"caller"`
-	Source  string `json:"source"`
-	Version string `json:"version,omitempty"`
-	Target  string `json:"target"`
+	Caller            string `json:"caller"`
+	Source            string `json:"source"`
+	VersionConstraint string `json:"version,omitempty"`
+	Target            string `json:"target"`
 }
 
 // parameterize configures the provider for a specific module source. Args is the
@@ -157,7 +157,7 @@ func (m *moduleProvider) parameterize(ctx context.Context, req p.ParameterizeReq
 	case req.Args != nil:
 		return m.parameterizeArgs(ctx, req.Args.Args)
 	case req.Value != nil:
-		return m.parameterizeValue(ctx, req.Value.Name, req.Value.Value)
+		return m.parameterizeValue(ctx, req.Value.Name, req.Value.Version, req.Value.Value)
 	default:
 		return p.ParameterizeResponse{}, grpcerr.Errorf(codes.InvalidArgument,
 			"parameterize requires either arguments or a value")
@@ -221,7 +221,7 @@ func (m *moduleProvider) parameterizeArgs(ctx context.Context, args []string) (p
 
 	// finishParameterize's schema walk drives the recorder too; bundle the
 	// recorded tree once it has run.
-	return m.finishParameterize(ctx, loader, loaded, source, version, nameOverride, "", resolved, func() ([]byte, error) {
+	return m.finishParameterize(ctx, loader, loaded, source, version, nameOverride, "", nil, resolved, func() ([]byte, error) {
 		value, err := rec.bundle(moduleRef{Source: source, Version: version}, resolved)
 		if err != nil {
 			return nil, fmt.Errorf("bundling module %q: %w", source, err)
@@ -233,8 +233,12 @@ func (m *moduleProvider) parameterizeArgs(ctx context.Context, args []string) (p
 // parameterizeValue handles re-parameterization from a generated SDK. It unpacks
 // the bundled module files, builds a loader that resolves every source from the
 // bundle's manifest with no network access, and reuses the bundle's baked
-// provider descriptors rather than re-resolving them through the engine.
-func (m *moduleProvider) parameterizeValue(ctx context.Context, name string, value []byte) (p.ParameterizeResponse, error) {
+// provider descriptors rather than re-resolving them through the engine. name
+// and version are the identity the args path originally returned, echoed back
+// by the engine; both are reused as-is.
+func (m *moduleProvider) parameterizeValue(
+	ctx context.Context, name string, version semver.Version, value []byte,
+) (p.ParameterizeResponse, error) {
 	if m.resolver == nil {
 		return p.ParameterizeResponse{}, grpcerr.Errorf(codes.FailedPrecondition,
 			"parameterize called before a successful handshake")
@@ -270,7 +274,7 @@ func (m *moduleProvider) parameterizeValue(ctx context.Context, name string, val
 	}
 
 	resp, err := m.finishParameterize(ctx, loader, loaded, b.Manifest.Root.Source, b.Manifest.Root.Version, name, dir,
-		b.Packages, func() ([]byte, error) { return value, nil })
+		&version, b.Packages, func() ([]byte, error) { return value, nil })
 	if err != nil {
 		return p.ParameterizeResponse{}, err
 	}
@@ -278,9 +282,13 @@ func (m *moduleProvider) parameterizeValue(ctx context.Context, name string, val
 	return resp, nil
 }
 
+// finishParameterize derives the package identity, generates the schema, and
+// installs the parameterized state. A non-nil pkgVersion (the usage path, where
+// the engine echoes the version the args path returned) overrides the version
+// moduleIdentity derives.
 func (m *moduleProvider) finishParameterize(
 	ctx context.Context, loader *modules.Loader, loaded *modules.LoadedModule,
-	rootSource, rootVersion, pkgName, tempDir string,
+	rootSource, rootVersion, pkgName, tempDir string, pkgVersion *semver.Version,
 	resolved map[string]workspace.PackageDescriptor, makeValue func() ([]byte, error),
 ) (p.ParameterizeResponse, error) {
 	forceDefault := pkgName != ""
@@ -290,6 +298,9 @@ func (m *moduleProvider) finishParameterize(
 	token, pkgVer, err := moduleIdentity(loaded, pkgName, forceDefault)
 	if err != nil {
 		return p.ParameterizeResponse{}, err
+	}
+	if pkgVersion != nil {
+		pkgVer = *pkgVersion
 	}
 
 	sch, err := m.generateModuleSchema(ctx, loader, loaded, resolved, token, pkgVer)
@@ -384,18 +395,18 @@ func newResolveRecorder(inner modules.ResolverFunc) *resolveRecorder {
 
 // resolve resolves a source through the wrapped resolver and records the edge.
 // The loader serializes calls under its lock, so the recorder needs none.
-func (r *resolveRecorder) resolve(packageSource, versionConstraint, callerDir string) (string, error) {
-	target, err := r.inner(packageSource, versionConstraint, callerDir)
+func (r *resolveRecorder) resolve(packageSource, versionConstraint, callerDir string) (string, string, error) {
+	target, resolved, err := r.inner(packageSource, versionConstraint, callerDir)
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
 	r.edges = append(r.edges, resolvedEdge{
-		Caller:  r.rel(callerDir),
-		Source:  packageSource,
-		Version: versionConstraint,
-		Target:  r.rel(target),
+		Caller:            r.rel(callerDir),
+		Source:            packageSource,
+		VersionConstraint: versionConstraint,
+		Target:            r.rel(target),
 	})
-	return target, nil
+	return target, resolved, nil
 }
 
 // rel returns the archive-relative path for an absolute module directory. The
@@ -453,7 +464,7 @@ func dedupeEdges(edges []resolvedEdge) []resolvedEdge {
 		return cmp.Or(
 			cmp.Compare(a.Caller, b.Caller),
 			cmp.Compare(a.Source, b.Source),
-			cmp.Compare(a.Version, b.Version),
+			cmp.Compare(a.VersionConstraint, b.VersionConstraint),
 			cmp.Compare(a.Target, b.Target),
 		)
 	})
@@ -462,27 +473,29 @@ func dedupeEdges(edges []resolvedEdge) []resolvedEdge {
 
 // bundleResolver resolves module sources from an unpacked bundle's manifest, with
 // no network access. callerDir is mapped back to its archive-relative form so the
-// recorded edge matches regardless of where the bundle was unpacked.
+// recorded edge matches regardless of where the bundle was unpacked. It reports
+// no resolved version: on the usage path the package version comes from the
+// engine's ParameterizeRequest, not from re-resolution.
 func bundleResolver(unpackDir string, manifest bundleManifest) modules.ResolverFunc {
 	type edgeKey struct{ caller, source, version string }
 	index := make(map[edgeKey]string, len(manifest.Edges))
 	for _, e := range manifest.Edges {
-		index[edgeKey{e.Caller, e.Source, e.Version}] = e.Target
+		index[edgeKey{e.Caller, e.Source, e.VersionConstraint}] = e.Target
 	}
-	return func(packageSource, versionConstraint, callerDir string) (string, error) {
+	return func(packageSource, versionConstraint, callerDir string) (string, string, error) {
 		caller := ""
 		if callerDir != "." && callerDir != "" {
 			rel, err := filepath.Rel(unpackDir, callerDir)
 			if err != nil {
-				return "", err
+				return "", "", err
 			}
 			caller = filepath.ToSlash(rel)
 		}
 		target, ok := index[edgeKey{caller, packageSource, versionConstraint}]
 		if !ok {
-			return "", fmt.Errorf("module source %q is not present in the parameterization bundle", packageSource)
+			return "", "", fmt.Errorf("module source %q is not present in the parameterization bundle", packageSource)
 		}
-		return filepath.Join(unpackDir, filepath.FromSlash(target)), nil
+		return filepath.Join(unpackDir, filepath.FromSlash(target)), "", nil
 	}
 }
 

@@ -32,8 +32,40 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
+	"github.com/pulumi/pulumi-hcl/pkg/hcl/ast"
 	"github.com/pulumi/pulumi-hcl/pkg/hcl/modules"
 )
+
+// TestModuleIdentityVersion verifies version precedence: an explicit terraform
+// `package` block wins, then the concrete version the module's source resolved
+// to, then the "0.0.0-dev" fallback.
+func TestModuleIdentityVersion(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name     string
+		config   *ast.Config
+		resolved string
+		want     string
+	}{
+		{"fallback", &ast.Config{}, "", "0.0.0-dev"},
+		{"resolved registry version", &ast.Config{}, "4.0.1", "4.0.1"},
+		{
+			"package block wins",
+			&ast.Config{Terraform: &ast.Terraform{Package: &ast.PackageBlock{Version: "1.0.0"}}},
+			"4.0.1",
+			"1.0.0",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			loaded := &modules.LoadedModule{Config: tc.config, Version: tc.resolved}
+			_, version, err := moduleIdentity(loaded, "pkg", false)
+			require.NoError(t, err)
+			require.Equal(t, semver.MustParse(tc.want), version)
+		})
+	}
+}
 
 func TestDefaultPackageName(t *testing.T) {
 	t.Parallel()
@@ -164,6 +196,33 @@ func TestParameterizeNameOverrideLifecycle(t *testing.T) {
 	assertGreeterSchema(usage)
 }
 
+// TestParameterizeValueEchoesEngineVersion verifies the usage path reports the
+// version the engine echoes from the original ParameterizeResponse, not one
+// re-derived from the bundle — offline, nothing else knows the concrete version
+// a registry constraint resolved to at `package add` time.
+func TestParameterizeValueEchoesEngineVersion(t *testing.T) {
+	t.Parallel()
+
+	dir, err := filepath.Abs(filepath.Join("testdata", "module-one-var"))
+	require.NoError(t, err)
+
+	m := &moduleProvider{version: "1.2.3", resolver: stubResolver{}}
+	resp, err := m.parameterizeArgs(t.Context(), []string{"module", dir})
+	require.NoError(t, err)
+	require.Equal(t, semver.MustParse("0.0.0-dev"), resp.Version)
+
+	usage := &moduleProvider{version: "1.2.3", resolver: stubResolver{}}
+	resp2, err := usage.parameterize(t.Context(), p.ParameterizeRequest{
+		Value: &p.ParameterizeRequestValue{
+			Name:    resp.Name,
+			Version: semver.MustParse("4.0.1"),
+			Value:   m.param.value,
+		},
+	})
+	require.NoError(t, err)
+	require.Equal(t, p.ParameterizeResponse{Name: resp.Name, Version: semver.MustParse("4.0.1")}, resp2)
+}
+
 // TestParameterizeNameOverrideBeatsPackageBlock verifies precedence between the
 // terraform `package` block and the `--name` flag: the block names the package
 // by default, and `--name` overrides it.
@@ -209,14 +268,14 @@ func TestBundleRoundTripResolvesOffline(t *testing.T) {
 
 	// A custom resolver stands in for the network: the absolute-path root
 	// resolves to itself and the submodule to the child package.
-	rec := newResolveRecorder(func(packageSource, _, _ string) (string, error) {
+	rec := newResolveRecorder(func(packageSource, _, _ string) (string, string, error) {
 		switch packageSource {
 		case root:
-			return root, nil
+			return root, "", nil
 		case "acme/widget/aws":
-			return child, nil
+			return child, "", nil
 		default:
-			return "", fmt.Errorf("unexpected source %q", packageSource)
+			return "", "", fmt.Errorf("unexpected source %q", packageSource)
 		}
 	})
 	loader := modules.NewLoader(rec.resolve)
@@ -451,7 +510,7 @@ func TestBundleBakesPackages(t *testing.T) {
 
 	dir := t.TempDir()
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "main.tf"), []byte(`output "x" { value = 1 }`), 0o600))
-	rec := newResolveRecorder(func(string, string, string) (string, error) { return dir, nil })
+	rec := newResolveRecorder(func(string, string, string) (string, string, error) { return dir, "", nil })
 	loader := modules.NewLoader(rec.resolve)
 	_, err := loader.LoadModule(t.Context(), dir, "", ".")
 	require.NoError(t, err)

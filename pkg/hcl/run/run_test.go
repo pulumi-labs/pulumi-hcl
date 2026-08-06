@@ -57,9 +57,9 @@ func (errLoader) LoadPackageV2(
 // not exercise child modules, so it is never invoked; the engine just requires a
 // non-nil loader.
 func testModuleLoader(t *testing.T) *modules.Loader {
-	return modules.NewLoader(func(packageSource, versionConstraint, callerDir string) (string, error) {
+	return modules.NewLoader(func(packageSource, versionConstraint, callerDir string) (string, string, error) {
 		t.Fail()
-		return "", fmt.Errorf("attempted to load (%q, %q, %q)",
+		return "", "", fmt.Errorf("attempted to load (%q, %q, %q)",
 			packageSource, versionConstraint, callerDir)
 	})
 }
@@ -2981,8 +2981,8 @@ module "net" {
 	engine := newTestEngine(t, config, &run.EngineOptions{
 		// Stands in for the bundle resolver: every source resolves to a
 		// numbered directory under the unpacked bundle.
-		ModuleLoader: modules.NewLoader(func(source, version, callerDir string) (string, error) {
-			return unpackDir, nil
+		ModuleLoader: modules.NewLoader(func(source, version, callerDir string) (string, string, error) {
+			return unpackDir, "", nil
 		}),
 		ProjectName:     "test-project",
 		StackName:       "dev",
