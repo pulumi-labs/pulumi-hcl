@@ -707,14 +707,34 @@ func (g *Graph) classifyPlanTimeReads() {
 			return v
 		}
 		memo[n] = false
-		if in, ok := g.seen[g.keyByDagNode[n]]; ok && in.n.Type == NodeTypeResource {
-			memo[n] = true
-			return true
+		var node *Node
+		if in, ok := g.seen[g.keyByDagNode[n]]; ok {
+			node = in.n
+			if node.Type == NodeTypeResource {
+				memo[n] = true
+				return true
+			}
 		}
 		for p := range g.dag.Predecessors(n) {
 			if reachesResource(p) {
 				memo[n] = true
 				return true
+			}
+		}
+		// A node whose classified deps omit block-level edges (root locals)
+		// still reads the blocks those deps name.
+		if node != nil && node.Deps != nil {
+			for _, whole := range node.Deps.Whole {
+				if in, ok := g.seen[whole]; ok && reachesResource(in.i) {
+					memo[n] = true
+					return true
+				}
+			}
+			for _, narrow := range node.Deps.Narrow {
+				if in, ok := g.seen[narrow.Node]; ok && reachesResource(in.i) {
+					memo[n] = true
+					return true
+				}
 			}
 		}
 		return false
