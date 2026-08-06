@@ -71,6 +71,9 @@ type parameterizedModule struct {
 	// schema so a generated SDK can re-parameterize without re-downloading.
 	value []byte
 	name  string
+	// namespace is the Pulumi package namespace, derived from the registry
+	// publisher for registry module sources; empty otherwise.
+	namespace string
 	// tempDir is the directory the bundle was unpacked into, removed on Cancel.
 	// Empty on the args (CLI) path, which reads the freshly-downloaded module.
 	tempDir string
@@ -325,6 +328,7 @@ func (m *moduleProvider) finishParameterize(
 		packages:    resolved,
 		value:       value,
 		name:        pkgName,
+		namespace:   packageNamespace(rootSource),
 		tempDir:     tempDir,
 	}
 	return p.ParameterizeResponse{Name: pkgName, Version: pkgVer}, nil
@@ -521,6 +525,18 @@ func defaultPackageName(source string) string {
 	}
 	s = strings.TrimSuffix(s, ".git")
 	return sanitizePackageName(s, "module")
+}
+
+// packageNamespace derives a Pulumi package namespace from a module source.
+// Registry sources use their publisher (the address's namespace segment);
+// other sources have no publisher and get no namespace.
+func packageNamespace(source string) string {
+	pkgSource, _ := getmodules.SplitPackageSubdir(source)
+	mod, err := regaddr.ParseModuleSource(pkgSource)
+	if err != nil {
+		return ""
+	}
+	return sanitizePackageName(mod.Package.Namespace, "")
 }
 
 // sanitizePackageName reduces a name to the lowercase alphanumeric-and-hyphen
