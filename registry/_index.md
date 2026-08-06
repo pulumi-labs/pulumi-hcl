@@ -20,7 +20,7 @@ The following program instantiates the community
 [`terraform-aws-modules/vpc/aws`](https://registry.terraform.io/modules/terraform-aws-modules/vpc/aws)
 module and exports the resulting VPC id.
 
-{{< chooser language "typescript,python,go,csharp,yaml" / >}}
+{{< chooser language "typescript,python,go,csharp,java,yaml" / >}}
 
 {{% choosable language typescript %}}
 
@@ -121,6 +121,35 @@ return await Deployment.RunAsync(() =>
 
 {{% /choosable %}}
 
+{{% choosable language java %}}
+
+```java
+package myproject;
+
+import com.pulumi.Pulumi;
+import com.pulumi.hcl.Module;
+import com.pulumi.hcl.ModuleArgs;
+import java.util.Map;
+
+public class App {
+    public static void main(String[] args) {
+        Pulumi.run(ctx -> {
+            var vpc = new Module("vpc", ModuleArgs.builder()
+                .source("terraform-aws-modules/vpc/aws")
+                .version("5.0.0")
+                .inputs(Map.of(
+                    "name", "example-vpc",
+                    "cidr", "10.0.0.0/16"))
+                .build());
+
+            ctx.export("vpcId", vpc.outputs().applyValue(o -> o.get("vpc_id")));
+        });
+    }
+}
+```
+
+{{% /choosable %}}
+
 {{% choosable language yaml %}}
 
 ```yaml
@@ -148,9 +177,16 @@ outputs are untyped maps. To get a strongly typed SDK for a specific module,
 generate a parameterized provider for it:
 
 ```bash
-pulumi package add hcl module <source> [version]
+pulumi package add hcl module <source> [version] [--name <name>]
 ```
 
 For example, `pulumi package add hcl module terraform-aws-modules/vpc/aws 5.0.0`
 generates a local SDK whose resource exposes that module's variables and outputs
 as first-class, typed properties in your language of choice.
+
+By default the package is named after the module name and its system (`vpc-aws` in the
+example above). Pass `--name` to choose a different package name:
+
+```bash
+pulumi package add hcl module terraform-aws-modules/vpc/aws 5.0.0 --name vpc
+```
