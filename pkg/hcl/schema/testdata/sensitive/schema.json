@@ -14,8 +14,8 @@
           "secret": true
         },
         "untypedValue": {
-          "type": "object",
-          "description": "No type constraint, so it defaults to the object (any) type."
+          "$ref": "pulumi.json#/Any",
+          "description": "No type constraint, so it defaults to the any type."
         }
       },
       "type": "object",
@@ -29,8 +29,8 @@
           "secret": true
         },
         "untypedValue": {
-          "type": "object",
-          "description": "No type constraint, so it defaults to the object (any) type."
+          "$ref": "pulumi.json#/Any",
+          "description": "No type constraint, so it defaults to the any type."
         }
       },
       "requiredInputs": [

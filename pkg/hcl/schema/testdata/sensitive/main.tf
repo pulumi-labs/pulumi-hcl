@@ -5,7 +5,7 @@ variable "sensitive_string" {
 }
 
 variable "untyped_value" {
-  description = "No type constraint, so it defaults to the object (any) type."
+  description = "No type constraint, so it defaults to the any type."
 }
 
 output "sensitive_output" {
