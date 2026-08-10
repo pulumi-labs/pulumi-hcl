@@ -19,6 +19,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	gotoken "go/token"
 	"maps"
 	"slices"
 	"sort"
@@ -756,12 +757,89 @@ func convertPropertyNames(v property.Value, spec *PropertySpec, toPulumi bool) p
 }
 
 // ToPulumiPackageSchema converts the module schema to a full Pulumi package
-// schema. Variable and output names, which are snake_case in HCL, are exposed
-// under their camelCase Pulumi property names. Object types are emitted as named
-// types in the `types` section and referenced via `$ref`, so a consumer binds
-// them as proper object types (a property's inline type spec cannot carry
-// `properties`).
+// schema serving this single component.
 func (s *ModuleSchema) ToPulumiPackageSchema() pulumischema.PackageSpec {
+	spec, err := PackageSchema(s, []*ModuleSchema{s})
+	if err != nil {
+		panic(err)
+	}
+	return spec
+}
+
+// PackageSchema builds the package schema serving components, one component
+// resource each. Package identity comes from the first component; the package
+// description comes from root, which is nil for a package whose root directory
+// holds no component.
+func PackageSchema(root *ModuleSchema, components []*ModuleSchema) (pulumischema.PackageSpec, error) {
+	if len(components) == 0 {
+		return pulumischema.PackageSpec{}, fmt.Errorf("no components to combine")
+	}
+	spec := pulumischema.PackageSpec{
+		Name:      components[0].PackageName,
+		Version:   components[0].Version,
+		Types:     map[string]pulumischema.ComplexTypeSpec{},
+		Resources: map[string]pulumischema.ResourceSpec{},
+	}
+	if root != nil {
+		spec.Description = root.Description
+	}
+	for _, c := range components {
+		token, res, types := c.resourceSpec()
+		if _, ok := spec.Resources[token]; ok {
+			return pulumischema.PackageSpec{}, fmt.Errorf("component token %q is defined twice", token)
+		}
+		spec.Resources[token] = res
+		for t, typ := range types {
+			if _, ok := spec.Types[t]; ok {
+				return pulumischema.PackageSpec{}, fmt.Errorf("type token %q is defined twice", t)
+			}
+			spec.Types[t] = typ
+		}
+	}
+	overrides, err := goModuleOverrides(components)
+	if err != nil {
+		return pulumischema.PackageSpec{}, err
+	}
+	if len(overrides) > 0 {
+		info, err := json.Marshal(map[string]any{
+			"moduleToPackage":      overrides,
+			"respectSchemaVersion": true,
+		})
+		if err != nil {
+			return pulumischema.PackageSpec{}, err
+		}
+		spec.Language = map[string]pulumischema.RawMessage{"go": info}
+	}
+	return spec, nil
+}
+
+// goModuleOverrides maps module segments that would render as invalid Go
+// package names to valid ones, so the generated Go SDK parses.
+func goModuleOverrides(components []*ModuleSchema) (map[string]string, error) {
+	overrides := map[string]string{}
+	seen := map[string]string{}
+	for _, c := range components {
+		pkg := strings.ReplaceAll(c.Module, "-", "")
+		if !gotoken.IsIdentifier(pkg) {
+			pkg = "_" + pkg
+		}
+		if prev, ok := seen[pkg]; ok && prev != c.Module {
+			return nil, fmt.Errorf("modules %q and %q both map to Go package %q", prev, c.Module, pkg)
+		}
+		seen[pkg] = c.Module
+		if pkg != c.Module {
+			overrides[c.Module] = pkg
+		}
+	}
+	return overrides, nil
+}
+
+// resourceSpec renders the component's resource spec and the named types it
+// references. Variable and output names, which are snake_case in HCL, are
+// exposed under their camelCase Pulumi property names. Object types are emitted
+// as named types and referenced via `$ref`, so a consumer binds them as proper
+// object types (a property's inline type spec cannot carry `properties`).
+func (s *ModuleSchema) resourceSpec() (string, pulumischema.ResourceSpec, map[string]pulumischema.ComplexTypeSpec) {
 	componentToken := fmt.Sprintf("%s:%s:%s", s.PackageName, s.Module, s.ComponentName)
 	types := make(map[string]pulumischema.ComplexTypeSpec)
 
@@ -797,25 +875,17 @@ func (s *ModuleSchema) ToPulumiPackageSchema() pulumischema.PackageSpec {
 	}
 	sort.Strings(requiredOutputs)
 
-	return pulumischema.PackageSpec{
-		Name:        s.PackageName,
-		Version:     s.Version,
-		Description: s.Description,
-		Types:       types,
-		Resources: map[string]pulumischema.ResourceSpec{
-			componentToken: {
-				ObjectTypeSpec: pulumischema.ObjectTypeSpec{
-					Type:        "object",
-					Description: s.Description,
-					Properties:  outputProps,
-					Required:    requiredOutputs,
-				},
-				IsComponent:     true,
-				InputProperties: inputProps,
-				RequiredInputs:  requiredInputs,
-			},
+	return componentToken, pulumischema.ResourceSpec{
+		ObjectTypeSpec: pulumischema.ObjectTypeSpec{
+			Type:        "object",
+			Description: s.Description,
+			Properties:  outputProps,
+			Required:    requiredOutputs,
 		},
-	}
+		IsComponent:     true,
+		InputProperties: inputProps,
+		RequiredInputs:  requiredInputs,
+	}, types
 }
 
 // pascalCase upper-cases the first letter of a camelCase name, for use in a type

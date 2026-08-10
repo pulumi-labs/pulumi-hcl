@@ -109,6 +109,26 @@ func (l *Loader) Files() map[string]*hcl.File {
 	return l.parser.Files()
 }
 
+// DirHasTerraformFiles reports whether dir contains at least one regular file
+// that LoadDirectory would parse. Symlinks are not counted: the
+// parameterization archive preserves only regular files, and discovery must
+// agree with what the archive replays.
+func DirHasTerraformFiles(dir string) (bool, error) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return false, err
+	}
+	for _, entry := range entries {
+		if !entry.Type().IsRegular() {
+			continue
+		}
+		if name := entry.Name(); !isIgnoredFile(name) && isTerraformFile(name) {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
 // isTerraformFile returns true if the filename indicates a Terraform configuration file.
 func isTerraformFile(name string) bool {
 	return strings.HasSuffix(name, ".tf") || strings.HasSuffix(name, ".tf.json")

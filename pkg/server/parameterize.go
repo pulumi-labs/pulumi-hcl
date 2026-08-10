@@ -53,20 +53,20 @@ import (
 
 // parameterizedModule is the state of a moduleProvider that has been
 // parameterized by a specific module source. While set, the provider serves that
-// module's typed component schema rather than the generic hcl:index:Module.
+// module package's typed component schemas rather than the generic
+// hcl:index:Module.
 type parameterizedModule struct {
-	// schema is the typed schema, identical to the one the local-path MLC
-	// (HCLProvider) generates for the same module.
-	schema *schema.ModuleSchema
-	// loader resolves the module and its children. On the usage path it resolves
-	// entirely from the unpacked bundle, with no network access.
+	// spec is the combined package schema of every component.
+	spec pulumiSchema.PackageSpec
+	// components maps each component token to the schema and source Construct
+	// dispatches on.
+	components map[tokens.Type]component
+	// loader resolves the components and their children. On the usage path it
+	// resolves entirely from the unpacked bundle, with no network access.
 	loader *modules.Loader
-	// rootSource and rootVersion address the root module through loader.
-	rootSource  string
-	rootVersion string
-	// packages are the resolved provider descriptors, baked into the bundle at
-	// `package add` time.
-	packages map[string]workspace.PackageDescriptor
+	// versionConstraint is the constraint component sources are loaded under
+	// through loader, as passed to `pulumi package add`.
+	versionConstraint string
 	// value is the parameterization Value (the encoded bundle), surfaced in the
 	// schema so a generated SDK can re-parameterize without re-downloading.
 	value []byte
@@ -82,9 +82,10 @@ type bundle struct {
 	// Manifest records how every module reference resolves within Archive, and
 	// how to reach the root module.
 	Manifest bundleManifest `json:"manifest"`
-	// Packages are the resolved provider descriptors, keyed by local provider
-	// name, computed once at `package add` time.
-	Packages map[string]workspace.PackageDescriptor `json:"packages"`
+	// Packages are each component's resolved provider descriptors, keyed by the
+	// component's root-relative directory ("" for the root) and then by local
+	// provider name, computed once at `package add` time.
+	Packages map[string]map[string]workspace.PackageDescriptor `json:"packages"`
 	// Archive is the deterministic tar.gz of the module package directories.
 	Archive []byte `json:"archive"`
 }
@@ -207,27 +208,41 @@ func (m *moduleProvider) parameterizeArgs(ctx context.Context, args []string) (p
 	rec := newResolveRecorder(modules.LiveResolver(ctx))
 	loader := modules.NewLoader(rec.resolve)
 
-	loaded, err := loader.LoadModule(ctx, source, version, ".")
+	comps, resolvedVersion, err := loadComponents(ctx, loader, source, version)
 	if err != nil {
 		return p.ParameterizeResponse{}, fmt.Errorf("loading module %q: %w", source, err)
 	}
 
-	// Resolve every provider now, while the recording loader is active, so the
+	// Resolve each component's providers now — independently, as the separate
+	// configurations they are — while the recording loader is active, so the
 	// descriptors can be baked into the bundle and reused offline at usage.
-	resolved, err := m.resolvePackages(ctx, loader, loaded.Config, loaded.SourcePath)
-	if err != nil {
-		return p.ParameterizeResponse{}, err
+	for i := range comps {
+		comps[i].packages, err = m.resolvePackages(ctx, loader, comps[i].loaded.Config, comps[i].loaded.SourcePath)
+		if err != nil {
+			return p.ParameterizeResponse{}, fmt.Errorf("%s: %w", comps[i].dir.describe(), err)
+		}
 	}
 
 	// finishParameterize's schema walk drives the recorder too; bundle the
 	// recorded tree once it has run.
-	return m.finishParameterize(ctx, loader, loaded, source, version, nameOverride, "", nil, resolved, func() ([]byte, error) {
-		value, err := rec.bundle(moduleRef{Source: source, Version: version}, resolved)
-		if err != nil {
-			return nil, fmt.Errorf("bundling module %q: %w", source, err)
-		}
-		return value, nil
-	})
+	return m.finishParameterize(ctx, loader, comps, resolvedVersion, source, version, nameOverride, "", nil,
+		func() ([]byte, error) {
+			value, err := rec.bundle(moduleRef{Source: source, Version: version}, componentPackages(comps))
+			if err != nil {
+				return nil, fmt.Errorf("bundling module %q: %w", source, err)
+			}
+			return value, nil
+		})
+}
+
+// componentPackages collects each component's resolved descriptors, keyed by
+// the component's root-relative directory ("" for the root).
+func componentPackages(comps []loadedComponent) map[string]map[string]workspace.PackageDescriptor {
+	out := make(map[string]map[string]workspace.PackageDescriptor, len(comps))
+	for _, c := range comps {
+		out[c.dir.Subdir] = c.packages
+	}
+	return out
 }
 
 // parameterizeValue handles re-parameterization from a generated SDK. It unpacks
@@ -268,13 +283,13 @@ func (m *moduleProvider) parameterizeValue(
 	}
 
 	loader := modules.NewLoader(bundleResolver(dir, b.Manifest))
-	loaded, err := loader.LoadModule(ctx, b.Manifest.Root.Source, b.Manifest.Root.Version, ".")
+	comps, err := loadRecordedComponents(ctx, loader, b.Manifest.Root, b.Packages)
 	if err != nil {
 		return p.ParameterizeResponse{}, fmt.Errorf("loading bundled module %q: %w", b.Manifest.Root.Source, err)
 	}
 
-	resp, err := m.finishParameterize(ctx, loader, loaded, b.Manifest.Root.Source, b.Manifest.Root.Version, name, dir,
-		&version, b.Packages, func() ([]byte, error) { return value, nil })
+	resp, err := m.finishParameterize(ctx, loader, comps, "", b.Manifest.Root.Source,
+		b.Manifest.Root.Version, name, dir, &version, func() ([]byte, error) { return value, nil })
 	if err != nil {
 		return p.ParameterizeResponse{}, err
 	}
@@ -282,20 +297,22 @@ func (m *moduleProvider) parameterizeValue(
 	return resp, nil
 }
 
-// finishParameterize derives the package identity, generates the schema, and
-// installs the parameterized state. A non-nil pkgVersion (the usage path, where
-// the engine echoes the version the args path returned) overrides the version
-// moduleIdentity derives.
+// finishParameterize derives the package identity, generates every component's
+// schema, and installs the parameterized state. A non-nil pkgVersion (the usage
+// path, where the engine echoes the version the args path returned) overrides
+// the version derived from the package. resolvedVersion is the concrete version
+// the package's source resolved to, naming the package version when there is no
+// root module to carry a terraform `package` block.
 func (m *moduleProvider) finishParameterize(
-	ctx context.Context, loader *modules.Loader, loaded *modules.LoadedModule,
-	rootSource, rootVersion, pkgName, tempDir string, pkgVersion *semver.Version,
-	resolved map[string]workspace.PackageDescriptor, makeValue func() ([]byte, error),
+	ctx context.Context, loader *modules.Loader, comps []loadedComponent, resolvedVersion,
+	rootSource, versionConstraint, pkgName, tempDir string, pkgVersion *semver.Version,
+	makeValue func() ([]byte, error),
 ) (p.ParameterizeResponse, error) {
 	forceDefault := pkgName != ""
 	if pkgName == "" {
 		pkgName = defaultPackageName(rootSource)
 	}
-	token, pkgVer, err := moduleIdentity(loaded, pkgName, forceDefault)
+	pkgName, rootToken, pkgVer, err := packageIdentity(comps, pkgName, forceDefault, resolvedVersion)
 	if err != nil {
 		return p.ParameterizeResponse{}, err
 	}
@@ -303,12 +320,13 @@ func (m *moduleProvider) finishParameterize(
 		pkgVer = *pkgVersion
 	}
 
-	sch, err := m.generateModuleSchema(ctx, loader, loaded, resolved, token, pkgVer)
+	components, spec, err := buildComponents(ctx, comps, pkgName, rootToken, pkgVer,
+		m.componentBinderFactory(loader))
 	if err != nil {
 		// A module that loaded but cannot be typed uses something the
 		// conversion does not support, unless the chain pins a more specific
 		// cause (a registry or network failure resolving a child module).
-		return p.ParameterizeResponse{}, grpcerr.Classify(fmt.Errorf("generating schema: %w", err), codes.Unimplemented)
+		return p.ParameterizeResponse{}, grpcerr.Classify(err, codes.Unimplemented)
 	}
 
 	value, err := makeValue()
@@ -316,22 +334,20 @@ func (m *moduleProvider) finishParameterize(
 		return p.ParameterizeResponse{}, err
 	}
 
-	pkgName = token.Package().Name().String()
 	m.param = &parameterizedModule{
-		schema:      sch,
-		loader:      loader,
-		rootSource:  rootSource,
-		rootVersion: rootVersion,
-		packages:    resolved,
-		value:       value,
-		name:        pkgName,
-		tempDir:     tempDir,
+		spec:              spec,
+		components:        components,
+		loader:            loader,
+		versionConstraint: versionConstraint,
+		value:             value,
+		name:              pkgName,
+		tempDir:           tempDir,
 	}
 	return p.ParameterizeResponse{Name: pkgName, Version: pkgVer}, nil
 }
 
-// resolvePackages resolves every provider the module tree references to a
-// concrete descriptor, walking child modules through loader.
+// resolvePackages resolves every provider the module tree rooted at config
+// references to a concrete descriptor, walking child modules through loader.
 func (m *moduleProvider) resolvePackages(
 	ctx context.Context, loader *modules.Loader, config *ast.Config, workDir string,
 ) (map[string]workspace.PackageDescriptor, error) {
@@ -344,25 +360,20 @@ func (m *moduleProvider) resolvePackages(
 	return resolved, nil
 }
 
-// generateModuleSchema builds the typed schema for a loaded module, resolving
-// resource/data source references through the handshake schema loader and bridge
-// mapper, and child modules through loader, exactly as the local-path MLC
-// (NewHCLProvider) does.
-func (m *moduleProvider) generateModuleSchema(
-	ctx context.Context, loader *modules.Loader, loaded *modules.LoadedModule,
-	resolved map[string]workspace.PackageDescriptor,
-	token tokens.Type, version semver.Version,
-) (*schema.ModuleSchema, error) {
-	ctx, span := potel.Start(ctx, "generateModuleSchema")
-	defer span.End()
-	cachedLoader := pulumiSchema.NewCachedLoader(
-		packages.NewParameterizationAwareLoader(m.schemaLoader, resolved))
-	binder := &schema.Binder{
-		Resources: packages.NewResolver(cachedLoader, m.providerInfoSource, resolved, knownProviderNames(loaded.Config)),
-		Modules:   moduleLoaderAdapter{loader},
-		ModuleDir: loaded.SourcePath,
+// componentBinderFactory builds the per-component binder schema generation
+// resolves resource, data source, and child-module references through.
+func (m *moduleProvider) componentBinderFactory(
+	loader *modules.Loader,
+) func(loadedComponent) *schema.Binder {
+	return func(c loadedComponent) *schema.Binder {
+		cachedLoader := pulumiSchema.NewCachedLoader(
+			packages.NewParameterizationAwareLoader(m.schemaLoader, c.packages))
+		return &schema.Binder{
+			Resources: packages.NewResolver(cachedLoader, m.providerInfoSource, c.packages, knownProviderNames(c.loaded.Config)),
+			Modules:   moduleLoaderAdapter{loader},
+			ModuleDir: c.loaded.SourcePath,
+		}
 	}
-	return schema.GenerateModuleSchema(ctx, loaded.Config, binder, token, version)
 }
 
 // knownProviderNames lists the local names the module's terraform block declares,
@@ -431,7 +442,9 @@ func (r *resolveRecorder) rel(dir string) string {
 	return rel
 }
 
-func (r *resolveRecorder) bundle(root moduleRef, packages map[string]workspace.PackageDescriptor) ([]byte, error) {
+func (r *resolveRecorder) bundle(
+	root moduleRef, packages map[string]map[string]workspace.PackageDescriptor,
+) ([]byte, error) {
 	dirs := make(map[string]string, len(r.pkgRel))
 	for absDir, rel := range r.pkgRel {
 		dirs[rel] = absDir
@@ -504,6 +517,9 @@ func bundleResolver(unpackDir string, manifest bundleManifest) modules.ResolverF
 // their module name segment; other sources use the last path component.
 func defaultPackageName(source string) string {
 	pkgSource, _ := getmodules.SplitPackageSubdir(source)
+	if i := strings.IndexByte(pkgSource, '?'); i >= 0 {
+		pkgSource = pkgSource[:i]
+	}
 	if mod, err := regaddr.ParseModuleSource(pkgSource); err == nil {
 		pkg := sanitizePackageName(mod.Package.Name, "module")
 		if sys := sanitizePackageName(mod.Package.TargetSystem, ""); sys != "" {
@@ -511,11 +527,7 @@ func defaultPackageName(source string) string {
 		}
 		return pkg
 	}
-	s := pkgSource
-	if i := strings.IndexByte(s, '?'); i >= 0 {
-		s = s[:i]
-	}
-	s = strings.TrimRight(s, "/")
+	s := strings.TrimRight(pkgSource, "/")
 	if i := strings.LastIndexByte(s, '/'); i >= 0 {
 		s = s[i+1:]
 	}
@@ -531,7 +543,7 @@ func sanitizePackageName(name, fallback string) string {
 		switch {
 		case r >= 'a' && r <= 'z', r >= '0' && r <= '9', r == '-':
 			b.WriteRune(r)
-		case r == '_' || r == ' ':
+		case r == '_' || r == ' ' || r == '.':
 			b.WriteByte('-')
 		}
 	}

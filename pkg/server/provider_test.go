@@ -17,7 +17,10 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"maps"
+	"os"
 	"path/filepath"
+	"slices"
 	"sync"
 	"testing"
 
@@ -82,7 +85,6 @@ func TestNewLocalProvider(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, "hello world", resp.State.Fields["greeting"].GetStringValue())
 
-	// The component registration carries the forwarded resource options.
 	component := mon.registeredType("module-one-var:index:Module")
 	require.NotNil(t, component, "the component itself must be registered")
 	require.Equal(t, []string{"urn:pulumi:test::proj::pkg:index:Other::sibling"}, component.ReplaceWith)
@@ -185,4 +187,73 @@ func TestConstructForwardsResourceHooks(t *testing.T) {
 		AfterDelete:  []string{"after-delete"},
 		OnError:      []string{"on-error"},
 	}, component.Hooks, protocmp.Transform()))
+}
+
+// TestNewLocalProviderMultiComponent verifies the local package serves one
+// component per consumable directory and dispatches Construct on the request's
+// type token.
+func TestNewLocalProviderMultiComponent(t *testing.T) {
+	t.Parallel()
+
+	base := t.TempDir()
+	pkgDir := filepath.Join(base, "mypkg")
+	require.NoError(t, os.Rename(writeMultiComponentModule(t, true), pkgDir))
+
+	prov, err := NewLocalProvider(t.Context(), pkgDir, "127.0.0.1:1")
+	require.NoError(t, err)
+
+	out, err := prov.GetSchema(t.Context(), &pulumirpc.GetSchemaRequest{})
+	require.NoError(t, err)
+	var spec pulumiSchema.PackageSpec
+	require.NoError(t, json.Unmarshal([]byte(out.Schema), &spec))
+	require.Equal(t, "mypkg", spec.Name)
+	require.Equal(t,
+		[]string{"mypkg:greeter:Module", "mypkg:index:Module", "mypkg:user-data:Module"},
+		slices.Sorted(maps.Keys(spec.Resources)))
+
+	_, _, endpoint := serveMonitor(t)
+	inputs, err := structpb.NewStruct(map[string]any{"who": "world"})
+	require.NoError(t, err)
+	resp, err := prov.Construct(t.Context(), &pulumirpc.ConstructRequest{
+		Type:                "mypkg:greeter:Module",
+		Name:                "g",
+		Project:             "proj",
+		Stack:               "test",
+		MonitorEndpoint:     endpoint,
+		Inputs:              inputs,
+		AcceptsOutputValues: true,
+	})
+	require.NoError(t, err)
+	require.Equal(t, "hi world", resp.State.Fields["hello"].GetStringValue())
+
+	_, err = prov.Construct(t.Context(), &pulumirpc.ConstructRequest{
+		Type:                "mypkg:nope:Module",
+		Name:                "x",
+		MonitorEndpoint:     endpoint,
+		AcceptsOutputValues: true,
+	})
+	require.ErrorContains(t, err, `unknown resource type: "mypkg:nope:Module"`)
+}
+
+// TestNewLocalProviderSubmodulesOnly verifies a local package whose root holds
+// no .tf files — previously a hard failure — serves its submodule components.
+func TestNewLocalProviderSubmodulesOnly(t *testing.T) {
+	t.Parallel()
+
+	base := t.TempDir()
+	pkgDir := filepath.Join(base, "mypkg")
+	require.NoError(t, os.Rename(writeMultiComponentModule(t, false), pkgDir))
+
+	prov, err := NewLocalProvider(t.Context(), pkgDir, "127.0.0.1:1")
+	require.NoError(t, err)
+
+	out, err := prov.GetSchema(t.Context(), &pulumirpc.GetSchemaRequest{})
+	require.NoError(t, err)
+	var spec pulumiSchema.PackageSpec
+	require.NoError(t, json.Unmarshal([]byte(out.Schema), &spec))
+	require.Equal(t, "mypkg", spec.Name)
+	require.Equal(t, "0.0.0-dev", spec.Version)
+	require.Equal(t,
+		[]string{"mypkg:greeter:Module", "mypkg:user-data:Module"},
+		slices.Sorted(maps.Keys(spec.Resources)))
 }

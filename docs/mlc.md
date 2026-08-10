@@ -85,6 +85,34 @@ The component's resource token is formed as:
 
 For the example above, the token would be `my-networking:index:VpcNetwork`.
 
+## Submodules
+
+A module package serves one component per consumable directory, following the
+registry convention that both the root and `modules/<name>` directories are
+consumed directly:
+
+| Terraform directory                 | Pulumi component token    |
+|-------------------------------------|---------------------------|
+| the root, when it holds `.tf` files | `{package}:index:Module`  |
+| `modules/<name>`                    | `{package}:<name>:Module` |
+
+The root module names the package (its `package` and `component` blocks apply
+as described above); submodules are always served as `Module` under a module
+segment derived from their directory name, sanitized to lowercase
+alphanumerics and hyphens (`modules/_user_data` becomes `user-data`,
+`modules/a.b` becomes `a-b`). In generated Go SDKs, a module segment that is
+not a valid Go package name maps to one (`user-data` becomes package
+`userdata`, `2fa` becomes `_2fa`). A package whose root holds no `.tf` files at
+all — common for registry packages such as `terraform-aws-modules/iam/aws` —
+serves only its submodule components, named after its source (or directory)
+and versioned by the resolved source version.
+
+Each component resolves its providers independently, as the separate
+configuration it is: sibling submodules may pin the same provider to
+different versions, or use one local name for different providers. Local
+packages are the exception — their components share the package's `sdks/`
+descriptor pool, which holds one descriptor per provider name.
+
 ## Validation Rules
 
 - `component.name` and `component.module` must be valid Pulumi names: one or more
