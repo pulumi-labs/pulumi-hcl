@@ -279,3 +279,21 @@ moved {
 	require.Len(t, diags, 1)
 	assert.Equal(t, `Cannot override "moved" blocks`, diags[0].Summary)
 }
+
+func TestOverrideLanguageRejected(t *testing.T) {
+	t.Parallel()
+
+	_, diags := parseDir(t, map[string]string{
+		"main.tf": `resource "simple_resource" "r" { input_one = "base" }`,
+		"override.tf": `
+language {
+  compatible_with {
+    pulumi = ">= 3.0.0"
+  }
+}
+`,
+	})
+
+	require.Len(t, diags, 1)
+	assert.Equal(t, "Language selections in override file", diags[0].Summary)
+}

@@ -528,6 +528,92 @@ terraform {
 	})
 }
 
+func TestLanguageBlock(t *testing.T) {
+	t.Parallel()
+
+	t.Run("pulumi_constraint_parsed", func(t *testing.T) {
+		t.Parallel()
+		src := `
+language {
+  compatible_with {
+    opentofu = ">= 1.12"
+    pulumi   = ">= 3.0.0"
+  }
+}`
+		cfg, diags := NewParser().ParseSource("test.hcl", []byte(src))
+		require.False(t, diags.HasErrors(), "unexpected errors: %v", diags)
+		require.NotNil(t, cfg.Language)
+		val, valDiags := cfg.Language.CompatibleWithPulumi.Value(nil)
+		require.False(t, valDiags.HasErrors(), valDiags.Error())
+		assert.Equal(t, cty.StringVal(">= 3.0.0"), val)
+	})
+
+	t.Run("other_software_ignored", func(t *testing.T) {
+		t.Parallel()
+		src := `
+language {
+  compatible_with {
+    opentofu       = ">= 1.12"
+    other_software = ["not", "a", "version"]
+  }
+}`
+		cfg, diags := NewParser().ParseSource("test.hcl", []byte(src))
+		require.False(t, diags.HasErrors(), "unexpected errors: %v", diags)
+		assert.Nil(t, cfg.Language)
+	})
+
+	t.Run("duplicate_pulumi_across_blocks", func(t *testing.T) {
+		t.Parallel()
+		src := `
+language {
+  compatible_with {
+    pulumi = ">= 3.0.0"
+  }
+}
+
+language {
+  compatible_with {
+    pulumi = ">= 4.0.0"
+  }
+}`
+		_, diags := NewParser().ParseSource("test.hcl", []byte(src))
+		require.True(t, diags.HasErrors(), "expected duplicate-pulumi error, got %v", diags)
+		require.Equal(t, "Duplicate compatible_with pulumi argument", diags[0].Summary)
+	})
+
+	t.Run("current_edition_accepted", func(t *testing.T) {
+		t.Parallel()
+		src := `
+language {
+  edition = tofu2024
+}`
+		_, diags := NewParser().ParseSource("test.hcl", []byte(src))
+		require.False(t, diags.HasErrors(), "unexpected errors: %v", diags)
+	})
+
+	t.Run("future_edition_rejected", func(t *testing.T) {
+		t.Parallel()
+		src := `
+language {
+  edition = tofu2030
+}`
+		_, diags := NewParser().ParseSource("test.hcl", []byte(src))
+		require.True(t, diags.HasErrors(), "expected unsupported-edition error, got %v", diags)
+		require.Equal(t, "Unsupported language edition", diags[0].Summary)
+	})
+
+	t.Run("experiments_rejected", func(t *testing.T) {
+		t.Parallel()
+		src := `
+language {
+  experiments = [some_experiment]
+}`
+		_, diags := NewParser().ParseSource("test.hcl", []byte(src))
+		require.True(t, diags.HasErrors(), "expected unknown-experiment error, got %v", diags)
+		require.Equal(t, "Unknown experiment keyword", diags[0].Summary)
+	})
+}
+
 func TestParseUnknownBlockType(t *testing.T) {
 	t.Parallel()
 	src := []byte(`

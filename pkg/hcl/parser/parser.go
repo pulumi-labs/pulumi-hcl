@@ -139,6 +139,8 @@ func (p *Parser) parseBlock(config *ast.Config, block *hcl.Block) hcl.Diagnostic
 	switch block.Type {
 	case "terraform":
 		return p.parseTerraformBlock(config, block)
+	case "language":
+		return p.parseLanguageBlock(config, block)
 	case "provider":
 		return p.parseProviderBlock(config, block)
 	case "variable":
@@ -282,6 +284,85 @@ func (p *Parser) parseTerraformBlock(config *ast.Config, block *hcl.Block) hcl.D
 	}
 
 	config.Terraform = tf
+	return diags
+}
+
+// parseLanguageBlock parses a language block, OpenTofu's extensible syntax
+// for declaring implementation compatibility. Only the `pulumi` argument of a
+// compatible_with block is interpreted; arguments addressed to other software
+// (such as opentofu) are ignored without validation so the same module can
+// declare compatibility with several implementations at once.
+func (p *Parser) parseLanguageBlock(config *ast.Config, block *hcl.Block) hcl.Diagnostics {
+	content, diags := block.Body.Content(languageSchema)
+
+	if attr, ok := content.Attributes["edition"]; ok {
+		const currentEdition = "tofu2024"
+		switch kw := hcl.ExprAsKeyword(attr.Expr); {
+		case kw == "":
+			diags = append(diags, &hcl.Diagnostic{
+				Severity: hcl.DiagError,
+				Summary:  "Invalid language edition",
+				Detail: fmt.Sprintf("The \"edition\" argument expects a bare language edition keyword. "+
+					"Pulumi HCL supports only language edition %s, which is the default.", currentEdition),
+				Subject: attr.Expr.Range().Ptr(),
+			})
+		case kw != currentEdition:
+			diags = append(diags, &hcl.Diagnostic{
+				Severity: hcl.DiagError,
+				Summary:  "Unsupported language edition",
+				Detail: fmt.Sprintf("Pulumi HCL does not support language edition %q; only %s is supported. "+
+					"This module may be intended for use with other software.", kw, currentEdition),
+				Subject: attr.Expr.Range().Ptr(),
+			})
+		}
+	}
+
+	if attr, ok := content.Attributes["experiments"]; ok {
+		exprs, moreDiags := hcl.ExprList(attr.Expr)
+		diags = append(diags, moreDiags...)
+		for _, expr := range exprs {
+			kw := hcl.ExprAsKeyword(expr)
+			if kw == "" {
+				diags = append(diags, &hcl.Diagnostic{
+					Severity: hcl.DiagError,
+					Summary:  "Invalid experiment keyword",
+					Detail:   "Elements of \"experiments\" must all be keywords representing active experiments.",
+					Subject:  expr.Range().Ptr(),
+				})
+				continue
+			}
+			diags = append(diags, &hcl.Diagnostic{
+				Severity: hcl.DiagError,
+				Summary:  "Unknown experiment keyword",
+				Detail:   fmt.Sprintf("There is no current experiment with the keyword %q.", kw),
+				Subject:  expr.Range().Ptr(),
+			})
+		}
+	}
+
+	for _, subBlock := range content.Blocks {
+		sub, _, subDiags := subBlock.Body.PartialContent(languageCompatibleWithSchema)
+		diags = append(diags, subDiags...)
+		attr, ok := sub.Attributes["pulumi"]
+		if !ok {
+			continue
+		}
+		if config.Language != nil {
+			diags = append(diags, &hcl.Diagnostic{
+				Severity: hcl.DiagError,
+				Summary:  "Duplicate compatible_with pulumi argument",
+				Detail: fmt.Sprintf("The Pulumi version constraint was already declared at %s.",
+					config.Language.DeclRange),
+				Subject: attr.Range.Ptr(),
+			})
+			continue
+		}
+		config.Language = &ast.Language{
+			CompatibleWithPulumi: attr.Expr,
+			DeclRange:            attr.Range,
+		}
+	}
+
 	return diags
 }
 

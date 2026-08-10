@@ -26,6 +26,10 @@ type Config struct {
 	// and provider requirements).
 	Terraform *Terraform
 
+	// Language contains the language block's Pulumi compatibility
+	// declaration, if any.
+	Language *Language
+
 	// Providers maps provider alias to provider configuration.
 	// The key is the provider local name (e.g., "aws") or alias (e.g., "aws.west").
 	Providers map[string]*Provider

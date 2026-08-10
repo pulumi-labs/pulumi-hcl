@@ -879,6 +879,21 @@ terraform {
 }
 ```
 
+The Pulumi CLI version can also be constrained with OpenTofu's extensible
+[`language` block](https://opentofu.org/docs/language/settings/#declaring-implementation-compatibility). Only the
+`pulumi` argument of a `compatible_with` block is interpreted; arguments addressed to other software (such as
+`opentofu`) are ignored without validation, so a single module can declare compatibility with several implementations
+at once:
+
+```hcl
+language {
+  compatible_with {
+    opentofu = ">= 1.12"
+    pulumi   = ">= 3.0.0"
+  }
+}
+```
+
 ### Multi-Language Components
 
 The `component` and `package` blocks declare an HCL module as a reusable component consumable from any Pulumi
@@ -950,7 +965,7 @@ Differences from Terraform to be aware of:
 
 ### Unsupported Features
 
-- **`backend`, `required_version`, `provider_meta`, `experiments`** — Accepted inside the `terraform` block but ignored with a warning; Pulumi manages state independently and tracks its own version constraints via `required_version_range`, and language experiments have no Pulumi HCL equivalent.
+- **`backend`, `required_version`, `provider_meta`, `experiments`** — Accepted inside the `terraform` block but ignored with a warning; Pulumi manages state independently and tracks its own version constraints via `required_version_range` or a `language` block's `compatible_with { pulumi = ... }` argument, and language experiments have no Pulumi HCL equivalent.
 - **`cloud`** — Not accepted inside the `terraform` block at all. It is absent from the block's schema, so a `cloud` block is a parse error rather than a warning.
 - **WinRM connections** — Only `type = "ssh"` is supported in `connection` blocks.
 - **`List<Object>` empty vs null** — HCL block syntax cannot distinguish between an empty and null `List<Object>`, a known incompatibility with some Pulumi programs.

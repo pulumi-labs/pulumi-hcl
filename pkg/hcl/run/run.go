@@ -831,7 +831,11 @@ func (e *Engine) processNode(ctx context.Context, node *graph.Node) error {
 }
 
 func (e *Engine) processGraph(ctx context.Context, g *graph.Graph) error {
-	if err := g.InjectAfter(e.checkPulumiVersion, func(n *graph.Node) bool {
+	check := func(ctx context.Context) error {
+		return e.checkConfigPulumiVersion(ctx,
+			e.config, e.evaluator.EvaluateExpression)
+	}
+	if err := g.InjectAfter(check, func(n *graph.Node) bool {
 		return n.Type == graph.NodeTypeVariable && n.ModuleInfo == nil
 	}); err != nil {
 		return err
@@ -4077,6 +4081,10 @@ func (e *Engine) processModuleInit(ctx context.Context, node *graph.Node) error 
 		return fmt.Errorf("loading module %s for input types: %w", mod.Source, err)
 	}
 
+	if err := e.checkModulePulumiVersion(ctx, mod.Source, childMod.Config); err != nil {
+		return err
+	}
+
 	// One table serves every instance: the functions a module can call depend
 	// on its config and call site, not on the count/for_each iteration.
 	moduleFunctions, err := e.providerFunctionTable(ctx, childMod.Config, modInfo)
@@ -4937,32 +4945,49 @@ func evaluateCheckAssert(evaluator *eval.Evaluator, rule *ast.CheckRule) string 
 	return "assertion failed"
 }
 
-// checkPulumiVersion checks if the Pulumi CLI version satisfies the required version range.
-// The version requirement is specified via the pulumi block's requiredVersionRange attribute.
-func (e *Engine) checkPulumiVersion(ctx context.Context) error {
-	// Check if the pulumi block exists and has a version requirement
-	if e.config.Terraform == nil || e.config.Terraform.RequiredVersionRange == nil {
-		// No version requirement specified
-		return nil
+// checkModulePulumiVersion enforces a child module's declared version
+// constraints. The module's own scope does not exist yet when its call is
+// initialized, so the constraint expressions evaluate statically.
+func (e *Engine) checkModulePulumiVersion(ctx context.Context, source string, config *ast.Config) error {
+	err := e.checkConfigPulumiVersion(ctx, config, func(expr hcl.Expression) (cty.Value, hcl.Diagnostics) {
+		return expr.Value(nil)
+	})
+	if err != nil {
+		return fmt.Errorf("module %s: %w", source, err)
+	}
+	return nil
+}
+
+func (e *Engine) checkConfigPulumiVersion(
+	ctx context.Context, config *ast.Config,
+	evalExpr func(hcl.Expression) (cty.Value, hcl.Diagnostics),
+) error {
+	var exprs []hcl.Expression
+	if tf := config.Terraform; tf != nil && tf.RequiredVersionRange != nil {
+		exprs = append(exprs, tf.RequiredVersionRange)
+	}
+	if l := config.Language; l != nil {
+		exprs = append(exprs, l.CompatibleWithPulumi)
 	}
 
-	// Evaluate the requiredVersionRange expression
-	versionVal, diags := e.evaluator.EvaluateExpression(e.config.Terraform.RequiredVersionRange)
-	if diags.HasErrors() {
-		return fmt.Errorf("evaluating requiredVersionRange: %s", diags.Error())
+	for _, expr := range exprs {
+		versionVal, diags := evalExpr(expr)
+		if diags.HasErrors() {
+			return fmt.Errorf("evaluating Pulumi version constraint: %s", diags.Error())
+		}
+		if versionVal.Type() != cty.String {
+			return fmt.Errorf("the Pulumi version constraint must be a string, got %s",
+				versionVal.Type().FriendlyName())
+		}
+		versionRange := versionVal.AsString()
+		if versionRange == "" {
+			continue
+		}
+		if err := e.resmon.CheckPulumiVersion(ctx, versionRange); err != nil {
+			return err
+		}
 	}
-
-	// Get the version range string
-	if versionVal.Type() != cty.String {
-		return fmt.Errorf("requiredVersionRange must be a string, got %s", versionVal.Type().FriendlyName())
-	}
-
-	versionRange := versionVal.AsString()
-	if versionRange == "" {
-		return nil
-	}
-
-	return e.resmon.CheckPulumiVersion(ctx, versionRange)
+	return nil
 }
 
 func ptr[T any](v T) *T { return &v }

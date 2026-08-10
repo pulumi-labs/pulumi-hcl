@@ -60,6 +60,25 @@ type Terraform struct {
 	DeclRange hcl.Range
 }
 
+// Language represents a language block declaring implementation
+// compatibility (OpenTofu's extensible successor to required_version).
+//
+// Syntax:
+//
+//	language {
+//	  compatible_with {
+//	    opentofu = ">= 1.12"
+//	    pulumi   = ">= 3.0.0"
+//	  }
+//	}
+type Language struct {
+	// CompatibleWithPulumi is the version range expression for the Pulumi CLI.
+	CompatibleWithPulumi hcl.Expression
+
+	// DeclRange is the source range of the compatible_with pulumi argument.
+	DeclRange hcl.Range
+}
+
 // ComponentBlock declares a component within a terraform block.
 type ComponentBlock struct {
 	// Name is the component name (required). Must be a valid Pulumi name.
