@@ -294,6 +294,42 @@ func TestSmokeDestroyHooks(t *testing.T) {
 		"destroy-time provisioner should have run during destroy --run-program")
 }
 
+// TestSmokeComponentPrecondition proves resource hooks the consuming program
+// attaches to an MLC component instance itself are honored. A lifecycle
+// precondition on the component-typed resource block is a before-create hook
+// the engine hands to Construct via ConstructRequest.resource_hooks, and the
+// provider must re-attach it to the component's own registration — otherwise
+// the guard is silently dropped and the update succeeds where it must fail.
+// https://github.com/pulumi/pulumi-hcl/issues/542
+func TestSmokeComponentPrecondition(t *testing.T) {
+	t.Parallel()
+	pulumiBin := lookPath(t, "pulumi")
+
+	base := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(base, "state"), 0o755))
+	env := []string{
+		"PULUMI_CONFIG_PASSPHRASE=test",
+		"PULUMI_BACKEND_URL=file://" + filepath.Join(base, "state"),
+		"PULUMI_HOME=" + filepath.Join(base, "home"),
+	}
+
+	// `pulumi package add` derives the package name from the directory name and
+	// mutates the program dir, so copy both fixtures out of testdata.
+	moduleDir := filepath.Join(base, "guardedmodule")
+	copyDir(t, filepath.Join("testdata", "component-hooks", "module"), moduleDir)
+	progDir := filepath.Join(base, "program")
+	copyDir(t, filepath.Join("testdata", "component-hooks", "program"), progDir)
+
+	mustRun(t, progDir, env, pulumiBin, "stack", "init", "dev")
+	mustRun(t, progDir, env, pulumiBin, "package", "add", moduleDir)
+
+	out, err := runCapture(progDir, env, pulumiBin, "up", "--yes", "--skip-preview")
+	require.Error(t, err,
+		"a false precondition on the component must fail the update, but it succeeded:\n%s", out)
+	require.Contains(t, out, "PRECONDITION_FAILED: the module must be enabled",
+		"the update must fail with the precondition's error message")
+}
+
 func copyDir(t *testing.T, src, dst string) {
 	t.Helper()
 	require.NoError(t, filepath.WalkDir(src, func(path string, d os.DirEntry, err error) error {
@@ -460,4 +496,14 @@ func run(dir string, env []string, name string, args ...string) error {
 func mustRun(t *testing.T, dir string, env []string, name string, args ...string) {
 	t.Helper()
 	require.NoError(t, run(dir, env, name, args...))
+}
+
+// runCapture is run, but returns the combined output so tests can assert on
+// the failure message of a command that is expected to fail.
+func runCapture(dir string, env []string, name string, args ...string) (string, error) {
+	cmd := exec.Command(name, args...)
+	cmd.Dir = dir
+	cmd.Env = append(os.Environ(), env...)
+	out, err := cmd.CombinedOutput()
+	return string(out), err
 }

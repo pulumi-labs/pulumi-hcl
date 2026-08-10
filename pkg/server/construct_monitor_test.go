@@ -115,9 +115,9 @@ func TestConstructMonitorForwardsCallRouting(t *testing.T) {
 	}, capture.callReq, protocmp.Transform()))
 }
 
-// newTestConstructMonitor serves the given monitor implementation over gRPC and
-// returns a constructResourceMonitor connected to it.
-func newTestConstructMonitor(t *testing.T, srv pulumirpc.ResourceMonitorServer) *constructResourceMonitor {
+// serveResourceMonitor serves the given monitor implementation over gRPC for
+// the duration of the test and returns its endpoint.
+func serveResourceMonitor(t *testing.T, srv pulumirpc.ResourceMonitorServer) string {
 	t.Helper()
 
 	lis, err := net.Listen("tcp", "127.0.0.1:0")
@@ -126,8 +126,15 @@ func newTestConstructMonitor(t *testing.T, srv pulumirpc.ResourceMonitorServer) 
 	pulumirpc.RegisterResourceMonitorServer(grpcServer, srv)
 	go func() { _ = grpcServer.Serve(lis) }()
 	t.Cleanup(grpcServer.Stop)
+	return lis.Addr().String()
+}
 
-	conn, err := grpc.NewClient(lis.Addr().String(), grpc.WithTransportCredentials(insecure.NewCredentials()))
+// newTestConstructMonitor serves the given monitor implementation over gRPC and
+// returns a constructResourceMonitor connected to it.
+func newTestConstructMonitor(t *testing.T, srv pulumirpc.ResourceMonitorServer) *constructResourceMonitor {
+	t.Helper()
+
+	conn, err := grpc.NewClient(serveResourceMonitor(t, srv), grpc.WithTransportCredentials(insecure.NewCredentials()))
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = conn.Close() })
 

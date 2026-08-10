@@ -1,0 +1,3 @@
+name: smoke-component-hooks
+runtime: hcl
+description: Attaches a lifecycle precondition to an MLC component instance.

@@ -184,6 +184,7 @@ type constructResourceMonitor struct {
 	replaceWith             []string
 	customTimeouts          *pulumirpc.ConstructRequest_CustomTimeouts
 	replacementTrigger      *structpb.Value
+	resourceHooks           *pulumirpc.RegisterResourceRequest_ResourceHooksBinding
 
 	componentURN urn.URN
 	outputs      property.Map
@@ -233,6 +234,7 @@ func (m *constructResourceMonitor) RegisterResource(
 			RetainOnDelete:          m.retainOnDelete,
 			ReplaceOnChanges:        m.replaceOnChanges,
 			ReplaceWith:             m.replaceWith,
+			Hooks:                   m.resourceHooks,
 			AcceptSecrets:           true,
 			AcceptResources:         true,
 			AcceptsByteString:       true,
