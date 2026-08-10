@@ -16,76 +16,32 @@ package server
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"path/filepath"
 
 	"github.com/blang/semver"
+	p "github.com/pulumi/pulumi-go-provider"
 	"github.com/pulumi/pulumi-hcl/pkg/hcl/ast"
 	"github.com/pulumi/pulumi-hcl/pkg/hcl/bridge"
 	"github.com/pulumi/pulumi-hcl/pkg/hcl/modules"
-	"github.com/pulumi/pulumi-hcl/pkg/hcl/packages"
 	"github.com/pulumi/pulumi-hcl/pkg/hcl/run"
-	"github.com/pulumi/pulumi-hcl/pkg/hcl/schema"
-	"github.com/pulumi/pulumi-hcl/pkg/hcl/transform"
 	"github.com/pulumi/pulumi/pkg/v3/codegen/convert"
 	pulumiSchema "github.com/pulumi/pulumi/pkg/v3/codegen/schema"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/resource"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/resource/plugin"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/resource/urn"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/tokens"
-	"github.com/pulumi/pulumi/sdk/v3/go/common/util/contract"
-	"github.com/pulumi/pulumi/sdk/v3/go/common/util/logging"
-	"github.com/pulumi/pulumi/sdk/v3/go/common/util/rpcutil"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/workspace"
 	"github.com/pulumi/pulumi/sdk/v3/go/property"
 	pulumirpc "github.com/pulumi/pulumi/sdk/v3/proto/go"
-	"google.golang.org/grpc"
-	"google.golang.org/grpc/credentials/insecure"
-	"google.golang.org/protobuf/types/known/emptypb"
 	"google.golang.org/protobuf/types/known/structpb"
 )
 
-// HCLProvider implements a Pulumi provider that serves HCL modules as components.
-type HCLProvider struct {
-	pulumirpc.UnimplementedResourceProviderServer
-
-	// modulePath is the path to the HCL module directory.
-	modulePath string
-
-	// moduleLoader loads HCL modules.
-	moduleLoader *modules.Loader
-
-	// pkgLoader loads provider schemas.
-	pkgLoader pulumiSchema.ReferenceLoader
-
-	// providerInfoSource resolves bridge mappings for the TF providers a
-	// component uses internally. The gRPC target that serves the schema loader
-	// also serves the mapper, so it is built from the same address.
-	providerInfoSource bridge.ProviderInfoSource
-
-	// packages maps a parameterized package alias to its descriptor, read from
-	// the module's own sdks folder.
-	packages map[string]workspace.PackageDescriptor
-
-	// host is the host callback client.
-	host pulumirpc.EngineClient
-
-	// version is the provider version.
-	version semver.Version
-
-	// schema is the generated schema for the module.
-	schema *schema.ModuleSchema
-
-	hooks lazyCallbackServer
-
-	// dispatchers holds each deployment's destroy-provisioner dispatcher,
-	// shared by that deployment's Constructs.
-	dispatchers dispatcherSet
-}
-
-// NewHCLProvider creates a new HCL component provider.
-func NewHCLProvider(ctx context.Context, modulePath, addr string) (*HCLProvider, error) {
+// NewLocalProvider serves the HCL module at modulePath as a source MLC: the
+// module provider born parameterized by the local module, reading provider
+// descriptors from the module's own sdks folder. addr is the engine's
+// schema-loader target, which also serves the mapper.
+func NewLocalProvider(ctx context.Context, modulePath, addr string) (pulumirpc.ResourceProviderServer, error) {
 	loader := modules.NewLoader(modules.LiveResolver(ctx))
 	pkgLoader, err := pulumiSchema.NewLoaderClient(addr)
 	if err != nil {
@@ -107,12 +63,7 @@ func NewHCLProvider(ctx context.Context, modulePath, addr string) (*HCLProvider,
 		return nil, fmt.Errorf("reading parameterization: %w", err)
 	}
 	paramDescriptors := sdkDescriptors(sdkInfos)
-	schemaLoader := pulumiSchema.ReferenceLoader(pkgLoader)
-	if len(paramDescriptors) > 0 {
-		schemaLoader = packages.NewParameterizationAwareLoader(pkgLoader, paramDescriptors)
-	}
 
-	// Load the module to generate schema
 	loaded, err := loader.LoadModule(ctx, modulePath, "", ".")
 	if err != nil {
 		return nil, fmt.Errorf("loading module: %w", err)
@@ -123,31 +74,26 @@ func NewHCLProvider(ctx context.Context, modulePath, addr string) (*HCLProvider,
 		return nil, err
 	}
 
-	// Resolve resource/data source references in outputs against provider
-	// schemas, using the same loader, bridge source, and required-provider hints
-	// the engine uses, so schema generation types them the way Run resolves them.
-	// The same module loader types references to child modules.
-	cachedLoader := pulumiSchema.NewCachedLoader(schemaLoader)
-	binder := &schema.Binder{
-		Resources: packages.NewResolver(cachedLoader, providerInfoSource, paramDescriptors, knownProviderNames(loaded.Config)),
-		Modules:   moduleLoaderAdapter{loader},
-		ModuleDir: loaded.SourcePath,
+	m := &moduleProvider{
+		version:            version.String(),
+		moduleLoader:       loader,
+		schemaLoader:       pkgLoader,
+		providerInfoSource: providerInfoSource,
 	}
-
-	moduleSchema, err := schema.GenerateModuleSchema(ctx, loaded.Config, binder, token, version)
+	moduleSchema, err := m.generateModuleSchema(ctx, loader, loaded, paramDescriptors, token, version)
 	if err != nil {
 		return nil, fmt.Errorf("generating schema: %w", err)
 	}
 
-	return &HCLProvider{
-		modulePath:         modulePath,
-		moduleLoader:       loader,
-		pkgLoader:          cachedLoader,
-		providerInfoSource: providerInfoSource,
-		packages:           paramDescriptors,
-		version:            version,
-		schema:             moduleSchema,
-	}, nil
+	pkgName := token.Package().Name().String()
+	m.param = &parameterizedModule{
+		schema:     moduleSchema,
+		loader:     loader,
+		rootSource: modulePath,
+		packages:   paramDescriptors,
+		name:       pkgName,
+	}
+	return p.RawServer(pkgName, version.String(), m.asProvider())(nil)
 }
 
 // moduleIdentity derives a module's component token and version. The terraform
@@ -210,212 +156,6 @@ func (a moduleLoaderAdapter) LoadModule(
 		return nil, "", err
 	}
 	return m.Config, m.SourcePath, nil
-}
-
-func (p *HCLProvider) Handshake(
-	ctx context.Context, req *pulumirpc.ProviderHandshakeRequest,
-) (*pulumirpc.ProviderHandshakeResponse, error) {
-	return &pulumirpc.ProviderHandshakeResponse{
-		AcceptSecrets:     true,
-		AcceptsByteString: true,
-	}, nil
-}
-
-// Attach configures the provider with a host callback.
-func (p *HCLProvider) Attach(ctx context.Context, req *pulumirpc.PluginAttach) (*emptypb.Empty, error) {
-	conn, err := grpc.NewClient(
-		req.Address,
-		grpc.WithTransportCredentials(insecure.NewCredentials()),
-		grpc.WithUnaryInterceptor(rpcutil.OpenTracingClientInterceptor()),
-		grpc.WithStreamInterceptor(rpcutil.OpenTracingStreamClientInterceptor()),
-	)
-	if err != nil {
-		return nil, fmt.Errorf("connecting to host: %w", err)
-	}
-	p.host = pulumirpc.NewEngineClient(conn)
-	return &emptypb.Empty{}, nil
-}
-
-// GetSchema returns the schema for the HCL module.
-func (p *HCLProvider) GetSchema(ctx context.Context, req *pulumirpc.GetSchemaRequest) (*pulumirpc.GetSchemaResponse, error) {
-	schemaJSON, err := json.Marshal(p.schema.ToPulumiPackageSchema())
-	if err != nil {
-		return nil, fmt.Errorf("marshaling schema: %w", err)
-	}
-	return &pulumirpc.GetSchemaResponse{
-		Schema: string(schemaJSON),
-	}, nil
-}
-
-// CheckConfig validates provider configuration.
-func (p *HCLProvider) CheckConfig(ctx context.Context, req *pulumirpc.CheckRequest) (*pulumirpc.CheckResponse, error) {
-	return &pulumirpc.CheckResponse{Inputs: req.News}, nil
-}
-
-// DiffConfig computes configuration differences.
-func (p *HCLProvider) DiffConfig(ctx context.Context, req *pulumirpc.DiffRequest) (*pulumirpc.DiffResponse, error) {
-	return &pulumirpc.DiffResponse{}, nil
-}
-
-// Configure configures the provider.
-func (p *HCLProvider) Configure(ctx context.Context, req *pulumirpc.ConfigureRequest) (*pulumirpc.ConfigureResponse, error) {
-	return &pulumirpc.ConfigureResponse{
-		AcceptSecrets:   true,
-		SupportsPreview: true,
-	}, nil
-}
-
-// Check validates resource inputs.
-func (p *HCLProvider) Check(ctx context.Context, req *pulumirpc.CheckRequest) (*pulumirpc.CheckResponse, error) {
-	return &pulumirpc.CheckResponse{Inputs: req.News}, nil
-}
-
-// Diff computes resource differences.
-func (p *HCLProvider) Diff(ctx context.Context, req *pulumirpc.DiffRequest) (*pulumirpc.DiffResponse, error) {
-	return &pulumirpc.DiffResponse{}, nil
-}
-
-// Read reads resource state.
-func (p *HCLProvider) Read(ctx context.Context, req *pulumirpc.ReadRequest) (*pulumirpc.ReadResponse, error) {
-	return &pulumirpc.ReadResponse{
-		Id:         req.Id,
-		Properties: req.Properties,
-	}, nil
-}
-
-// Delete deletes a resource.
-func (p *HCLProvider) Delete(ctx context.Context, req *pulumirpc.DeleteRequest) (*emptypb.Empty, error) {
-	return &emptypb.Empty{}, nil
-}
-
-// Construct creates a component resource by executing the HCL module.
-func (p *HCLProvider) Construct(ctx context.Context, req *pulumirpc.ConstructRequest) (*pulumirpc.ConstructResponse, error) {
-	logging.V(5).Infof("Construct: type=%s name=%s", req.Type, req.Name)
-
-	// Connect to the resource monitor
-	monitorConn, err := grpc.NewClient(
-		req.MonitorEndpoint,
-		grpc.WithTransportCredentials(insecure.NewCredentials()),
-		grpc.WithUnaryInterceptor(rpcutil.OpenTracingClientInterceptor()),
-		grpc.WithStreamInterceptor(rpcutil.OpenTracingStreamClientInterceptor()),
-	)
-	if err != nil {
-		return nil, fmt.Errorf("connecting to monitor: %w", err)
-	}
-	defer contract.IgnoreClose(monitorConn)
-
-	monitor := pulumirpc.NewResourceMonitorClient(monitorConn)
-
-	// Load the module
-	loaded, err := p.moduleLoader.LoadModule(ctx, p.modulePath, "", ".")
-	if err != nil {
-		return nil, fmt.Errorf("loading module: %w", err)
-	}
-
-	// Convert inputs from protobuf to PropertyMap
-	inputs := resource.PropertyMap{}
-	if req.Inputs != nil {
-		inputs, err = plugin.UnmarshalProperties(req.Inputs, constructMarshalOptions())
-		if err != nil {
-			return nil, fmt.Errorf("unmarshaling inputs: %w", err)
-		}
-	}
-
-	// Create resource monitor adapter
-	resmon := &constructResourceMonitor{
-		client:                  monitor,
-		engine:                  p.host,
-		ctx:                     ctx,
-		parentURN:               req.Parent,
-		componentType:           req.Type,
-		componentName:           req.Name,
-		componentInputs:         req.Inputs,
-		aliases:                 req.Aliases,
-		protect:                 req.Protect,
-		dependencies:            req.Dependencies,
-		providers:               req.Providers,
-		ignoreChanges:           req.IgnoreChanges,
-		additionalSecretOutputs: req.AdditionalSecretOutputs,
-		deleteBeforeReplace:     req.DeleteBeforeReplace,
-		deletedWith:             req.DeletedWith,
-		retainOnDelete:          req.RetainOnDelete,
-		replaceOnChanges:        req.ReplaceOnChanges,
-		replaceWith:             req.ReplaceWith,
-		customTimeouts:          req.CustomTimeouts,
-		replacementTrigger:      req.ReplacementTrigger,
-		mapOutputs:              p.schema.OutputsToPulumi,
-	}
-	if resmon.hooks, err = p.hooks.get(); err != nil {
-		return nil, fmt.Errorf("starting hook callback server: %w", err)
-	}
-
-	// Set up config from inputs, prefixing with project name as the engine
-	// expects. Inputs arrive under their camelCase schema property names (with
-	// camelCase object fields); map them to the snake_case names the HCL module
-	// declares, at every nesting depth. Values are passed through as already-typed
-	// cty values, preserving structure, unknowns, and marks (e.g. secrets).
-	config := make(map[string]run.ConfigValue)
-	for k, v := range p.schema.InputsToHCL(resource.FromResourcePropertyMap(inputs)).All {
-		config[req.Project+":"+string(k)] = run.TypedConfigValue(transform.PropertyValueToCty(v))
-	}
-
-	// Create and run the engine
-	engine, err := run.NewEngine(ctx, loaded.Config, &run.EngineOptions{
-		ProjectName:        req.Project,
-		StackName:          req.Stack,
-		Organization:       req.Organization,
-		DryRun:             req.DryRun,
-		DestroyDispatcher:  p.dispatchers.get(req.MonitorEndpoint),
-		WorkDir:            loaded.SourcePath,
-		RootDir:            loaded.SourcePath,
-		AbsolutePaths:      true,
-		Config:             config,
-		ResourceMonitor:    resmon,
-		SchemaLoader:       p.pkgLoader,
-		ModuleLoader:       modules.NewLoader(modules.LiveResolver(ctx)),
-		ProviderInfoSource: p.providerInfoSource,
-		Packages:           p.packages,
-	})
-	if err != nil {
-		return nil, fmt.Errorf("creating engine: %w", err)
-	}
-
-	if err := engine.Run(ctx); err != nil {
-		return nil, fmt.Errorf("executing module: %w", err)
-	}
-
-	// Get the component URN (registered by the engine)
-	componentURN := resmon.componentURN
-
-	// Collect outputs from the resource monitor
-	outputsStruct, err := plugin.MarshalProperties(resource.ToResourcePropertyMap(resmon.outputs), constructMarshalOptions())
-	if err != nil {
-		return nil, fmt.Errorf("marshaling outputs: %w", err)
-	}
-
-	return &pulumirpc.ConstructResponse{
-		Urn:               string(componentURN),
-		State:             outputsStruct,
-		StateDependencies: buildStateDependencies(outputsStruct),
-	}, nil
-}
-
-// GetPluginInfo returns plugin metadata.
-func (p *HCLProvider) GetPluginInfo(ctx context.Context, req *emptypb.Empty) (*pulumirpc.PluginInfo, error) {
-	return &pulumirpc.PluginInfo{
-		Version: p.version.String(),
-	}, nil
-}
-
-// Cancel cancels any in-flight operations.
-func (p *HCLProvider) Cancel(ctx context.Context, req *emptypb.Empty) (*emptypb.Empty, error) {
-	p.hooks.close()
-	return &emptypb.Empty{}, nil
-}
-
-// GetMapping returns provider mappings.
-func (p *HCLProvider) GetMapping(ctx context.Context, req *pulumirpc.GetMappingRequest) (*pulumirpc.GetMappingResponse, error) {
-	return &pulumirpc.GetMappingResponse{}, nil
 }
 
 // constructResourceMonitor wraps the resource monitor for Construct calls.
@@ -789,23 +529,6 @@ func (m *constructResourceMonitor) LogWarning(ctx context.Context, message strin
 	})
 	return err
 }
-
-// buildStateDependencies builds the state dependencies map from outputs.
-func buildStateDependencies(outputs *structpb.Struct) map[string]*pulumirpc.ConstructResponse_PropertyDependencies {
-	deps := make(map[string]*pulumirpc.ConstructResponse_PropertyDependencies)
-	if outputs == nil {
-		return deps
-	}
-	for k := range outputs.Fields {
-		deps[k] = &pulumirpc.ConstructResponse_PropertyDependencies{
-			Urns: []string{},
-		}
-	}
-	return deps
-}
-
-// Ensure HCLProvider implements the interface.
-var _ pulumirpc.ResourceProviderServer = (*HCLProvider)(nil)
 
 // Ensure constructResourceMonitor implements run.ResourceMonitor.
 var _ run.ResourceMonitor = (*constructResourceMonitor)(nil)

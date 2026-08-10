@@ -42,9 +42,9 @@ import (
 	"github.com/pulumi/pulumi/pkg/v3/codegen/schema"
 	"github.com/pulumi/pulumi/pkg/v3/resource/plugin"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/apitype"
-	"github.com/pulumi/pulumi/sdk/v3/go/common/resource"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/util/rpcutil"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/workspace"
+	"github.com/pulumi/pulumi/sdk/v3/go/property"
 	pulumirpc "github.com/pulumi/pulumi/sdk/v3/proto/go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -390,24 +390,24 @@ func TestConvertTFState_SuppliesValues(t *testing.T) {
 	require.Len(t, resp.Resources, 1)
 	got := resp.Resources[0]
 
-	outs := got.Outputs
-	assert.Equal(t, resource.NewStringProperty("res-1"), outs["id"])
-	assert.Equal(t, resource.MakeSecret(resource.NewStringProperty("hello")), outs["inputOne"],
+	outs := got.Outputs.AsMap()
+	assert.Equal(t, property.New("res-1"), outs["id"])
+	assert.Equal(t, property.New("hello").WithSecret(true), outs["inputOne"],
 		"dynamically-marked sensitive path")
-	assert.Equal(t, resource.MakeSecret(resource.NewStringProperty("hunter2")), outs["secretSauce"],
+	assert.Equal(t, property.New("hunter2").WithSecret(true), outs["secretSauce"],
 		"schema-sensitive field")
-	assert.Equal(t, resource.NewStringProperty("made-up-by-the-cloud"), outs["computedOut"])
-	require.True(t, outs["settings"].IsObject(), "MaxItemsOne block flattens to an object")
-	assert.NotContains(t, outs, resource.PropertyKey("timeouts"), "SDKv2's timeouts state attribute is dropped")
-	assert.Equal(t, resource.MakeSecret(resource.NewBoolProperty(true)), outs["settings"].ObjectValue()["enabled"],
+	assert.Equal(t, property.New("made-up-by-the-cloud"), outs["computedOut"])
+	require.True(t, outs["settings"].IsMap(), "MaxItemsOne block flattens to an object")
+	assert.NotContains(t, outs, "timeouts", "SDKv2's timeouts state attribute is dropped")
+	assert.Equal(t, property.New(true).WithSecret(true), outs["settings"].AsMap().Get("enabled"),
 		"the sensitive path's index step drops with the MaxItemsOne flattening")
 
-	ins := got.Inputs
-	assert.Contains(t, ins, resource.PropertyKey("inputOne"))
-	assert.Contains(t, ins, resource.PropertyKey("secretSauce"))
-	assert.Contains(t, ins, resource.PropertyKey("settings"))
-	assert.NotContains(t, ins, resource.PropertyKey("computedOut"), "computed-only fields are not inputs")
-	assert.NotContains(t, ins, resource.PropertyKey("id"))
+	ins := got.Inputs.AsMap()
+	assert.Contains(t, ins, "inputOne")
+	assert.Contains(t, ins, "secretSauce")
+	assert.Contains(t, ins, "settings")
+	assert.NotContains(t, ins, "computedOut", "computed-only fields are not inputs")
+	assert.NotContains(t, ins, "id")
 }
 
 // TestConvertTFState_RenamedID pins the dynamic-bridge import shape (#512):
@@ -471,13 +471,15 @@ func TestConvertTFState_RenamedID(t *testing.T) {
 	got := resp.Resources[0]
 
 	assert.Equal(t, "t-1", got.ID)
-	assert.Equal(t, resource.NewStringProperty("t-1"), got.Outputs["thingId"],
+	outs := got.Outputs.AsMap()
+	ins := got.Inputs.AsMap()
+	assert.Equal(t, property.New("t-1"), outs["thingId"],
 		"the TF id projects onto the renamed property")
-	assert.NotContains(t, got.Outputs, resource.PropertyKey("id"),
+	assert.NotContains(t, outs, "id",
 		"native dynamic-bridge state carries no plain id output")
-	assert.Equal(t, resource.NewStringProperty("hello"), got.Outputs["name"])
-	assert.Contains(t, got.Inputs, resource.PropertyKey("name"))
-	assert.NotContains(t, got.Inputs, resource.PropertyKey("thingId"),
+	assert.Equal(t, property.New("hello"), outs["name"])
+	assert.Contains(t, ins, "name")
+	assert.NotContains(t, ins, "thingId",
 		"the renamed id is provider-populated, never a program input")
 }
 
@@ -527,19 +529,17 @@ func TestConvertTFState_TerraformData(t *testing.T) {
 	assert.Equal(t, "aaaa-bbbb", got.ID)
 	assert.Empty(t, got.Version)
 	assert.Nil(t, got.Parameterization, "the engine's builtin provider serves Stash; no plugin identity")
-	wrapped := resource.NewObjectProperty(resource.PropertyMap{
-		"type": resource.NewStringProperty(`["set","string"]`),
-		"value": resource.NewArrayProperty([]resource.PropertyValue{
-			resource.NewStringProperty("x"), resource.NewStringProperty("y"),
-		}),
+	wrapped := property.New(map[string]property.Value{
+		"type":  property.New(`["set","string"]`),
+		"value": property.New([]property.Value{property.New("x"), property.New("y")}),
 	})
-	assert.Equal(t, resource.PropertyMap{"input": wrapped}, got.Inputs,
+	assert.Equal(t, property.NewMap(map[string]property.Value{"input": wrapped}), *got.Inputs,
 		"the cty type survives in the wrapper; triggers_replace is not an input")
-	assert.Equal(t, resource.PropertyMap{"input": wrapped, "output": wrapped}, got.Outputs)
+	assert.Equal(t, property.NewMap(map[string]property.Value{"input": wrapped, "output": wrapped}), *got.Outputs)
 
 	trigger := resp.Resources[1]
 	assert.Equal(t, "cccc-dddd", trigger.ID)
-	assert.Equal(t, resource.PropertyMap{"input": resource.NewNullProperty()}, trigger.Inputs,
+	assert.Equal(t, property.NewMap(map[string]property.Value{"input": property.New(property.Null)}), *trigger.Inputs,
 		"an absent input imports as the explicit null the runtime registers")
 }
 

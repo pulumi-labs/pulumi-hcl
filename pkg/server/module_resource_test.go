@@ -52,7 +52,7 @@ func TestModuleConstructValidation(t *testing.T) {
 			Urn:    urn,
 			Inputs: property.NewMap(map[string]property.Value{"source": property.New("./mod")}),
 		})
-		require.EqualError(t, err, "Construct called before a successful Handshake")
+		require.EqualError(t, err, "construct called before a successful handshake")
 	})
 
 	t.Run("missing source", func(t *testing.T) {
