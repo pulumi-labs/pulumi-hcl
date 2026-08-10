@@ -15,13 +15,18 @@
 package server
 
 import (
+	"context"
 	"encoding/json"
 	"path/filepath"
+	"sync"
 	"testing"
 
+	"github.com/google/go-cmp/cmp"
 	pulumiSchema "github.com/pulumi/pulumi/pkg/v3/codegen/schema"
 	pulumirpc "github.com/pulumi/pulumi/sdk/v3/proto/go"
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"google.golang.org/protobuf/testing/protocmp"
 	"google.golang.org/protobuf/types/known/emptypb"
 	"google.golang.org/protobuf/types/known/structpb"
 )
@@ -82,4 +87,102 @@ func TestNewLocalProvider(t *testing.T) {
 	require.NotNil(t, component, "the component itself must be registered")
 	require.Equal(t, []string{"urn:pulumi:test::proj::pkg:index:Other::sibling"}, component.ReplaceWith)
 	require.Equal(t, structpb.NewStringValue("trigger"), component.ReplacementTrigger)
+}
+
+// captureMonitor records registrations without invoking bound hooks, so a
+// forwarding test can bind hook names no program ever registered.
+type captureMonitor struct {
+	pulumirpc.UnimplementedResourceMonitorServer
+	mu         sync.Mutex
+	registered []*pulumirpc.RegisterResourceRequest
+}
+
+func (s *captureMonitor) RegisterResource(
+	_ context.Context, req *pulumirpc.RegisterResourceRequest,
+) (*pulumirpc.RegisterResourceResponse, error) {
+	s.mu.Lock()
+	s.registered = append(s.registered, req)
+	s.mu.Unlock()
+	return &pulumirpc.RegisterResourceResponse{
+		Urn:    "urn:pulumi:test::proj::" + req.Type + "::" + req.Name,
+		Object: req.Object,
+	}, nil
+}
+
+func (s *captureMonitor) RegisterResourceHook(
+	_ context.Context, _ *pulumirpc.RegisterResourceHookRequest,
+) (*emptypb.Empty, error) {
+	return &emptypb.Empty{}, nil
+}
+
+func (s *captureMonitor) RegisterResourceOutputs(
+	_ context.Context, _ *pulumirpc.RegisterResourceOutputsRequest,
+) (*emptypb.Empty, error) {
+	return &emptypb.Empty{}, nil
+}
+
+// registeredType returns the recorded registration for the given type token.
+func (s *captureMonitor) registeredType(typ string) *pulumirpc.RegisterResourceRequest {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, req := range s.registered {
+		if req.Type == typ {
+			return req
+		}
+	}
+	return nil
+}
+
+// TestConstructForwardsResourceHooks guards against dropping the consumer's
+// hook binding on the component: the engine sends it on the ConstructRequest
+// and expects the provider to re-attach it to the component's own
+// RegisterResourceRequest, where it flows into state and fires around the
+// component's lifecycle steps.
+// https://github.com/pulumi/pulumi-hcl/issues/542
+func TestConstructForwardsResourceHooks(t *testing.T) {
+	t.Parallel()
+
+	dir, err := filepath.Abs(filepath.Join("testdata", "module-one-var"))
+	require.NoError(t, err)
+
+	prov, err := NewLocalProvider(t.Context(), dir, "127.0.0.1:1")
+	require.NoError(t, err)
+	_, err = prov.Handshake(t.Context(), &pulumirpc.ProviderHandshakeRequest{})
+	require.NoError(t, err)
+
+	mon := &captureMonitor{}
+	endpoint := serveResourceMonitor(t, mon)
+	inputs, err := structpb.NewStruct(map[string]any{"name": "world"})
+	require.NoError(t, err)
+	_, err = prov.Construct(t.Context(), &pulumirpc.ConstructRequest{
+		Type:            "module-one-var:index:Module",
+		Name:            "greet",
+		Project:         "proj",
+		Stack:           "test",
+		MonitorEndpoint: endpoint,
+		Inputs:          inputs,
+		ResourceHooks: &pulumirpc.ConstructRequest_ResourceHooksBinding{
+			BeforeCreate: []string{"notify-start"},
+			AfterCreate:  []string{"notify-done"},
+			BeforeUpdate: []string{"before-update"},
+			AfterUpdate:  []string{"after-update"},
+			BeforeDelete: []string{"prevent-destroy"},
+			AfterDelete:  []string{"after-delete"},
+			OnError:      []string{"on-error"},
+		},
+		AcceptsOutputValues: true,
+	})
+	require.NoError(t, err)
+
+	component := mon.registeredType("module-one-var:index:Module")
+	require.NotNil(t, component, "the component itself must be registered")
+	assert.Empty(t, cmp.Diff(&pulumirpc.RegisterResourceRequest_ResourceHooksBinding{
+		BeforeCreate: []string{"notify-start"},
+		AfterCreate:  []string{"notify-done"},
+		BeforeUpdate: []string{"before-update"},
+		AfterUpdate:  []string{"after-update"},
+		BeforeDelete: []string{"prevent-destroy"},
+		AfterDelete:  []string{"after-delete"},
+		OnError:      []string{"on-error"},
+	}, component.Hooks, protocmp.Transform()))
 }

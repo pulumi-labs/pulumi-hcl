@@ -1,0 +1,6 @@
+kind: bug-fixes
+body: Forward resource hooks attached to an HCL component
+time: 2026-08-10T18:00:00.000000-04:00
+custom:
+    Component: resource-host
+    PR: "542"

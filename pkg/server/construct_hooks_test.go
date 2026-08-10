@@ -17,7 +17,6 @@ package server
 import (
 	"context"
 	"fmt"
-	"net"
 	"path/filepath"
 	"sync"
 	"testing"
@@ -195,18 +194,13 @@ func (s *hookInvokingMonitor) invokeHook(
 func serveMonitor(t *testing.T) (*hookInvokingMonitor, *moduleProvider, string) {
 	t.Helper()
 	mon := newHookInvokingMonitor()
-	lis, err := net.Listen("tcp", "127.0.0.1:0")
-	require.NoError(t, err)
-	srv := grpc.NewServer()
-	pulumirpc.RegisterResourceMonitorServer(srv, mon)
-	go func() { _ = srv.Serve(lis) }()
-	t.Cleanup(srv.Stop)
+	endpoint := serveResourceMonitor(t, mon)
 
 	m := &moduleProvider{
 		moduleLoader: modules.NewLoader(modules.LiveResolver(t.Context())),
 		resolver:     stubResolver{},
 	}
-	return mon, m, lis.Addr().String()
+	return mon, m, endpoint
 }
 
 func construct(

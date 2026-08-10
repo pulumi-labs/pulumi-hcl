@@ -401,7 +401,26 @@ func (m *moduleProvider) newConstructMonitor(
 		replaceWith:             urnsToStrings(req.ReplaceWith),
 		replacementTrigger:      replacementTriggerToProto(req.ReplacementTrigger),
 		customTimeouts:          customTimeoutsToProto(req.CustomTimeouts),
+		resourceHooks:           resourceHooksToProto(req.ResourceHooks),
 		mapOutputs:              mapOutputs,
+	}
+}
+
+// resourceHooksToProto converts the hook binding the engine sent on the
+// ConstructRequest into the form the component's own registration carries;
+// nil stays nil so the field is omitted.
+func resourceHooksToProto(h *p.ResourceHooksBinding) *pulumirpc.RegisterResourceRequest_ResourceHooksBinding {
+	if h == nil {
+		return nil
+	}
+	return &pulumirpc.RegisterResourceRequest_ResourceHooksBinding{
+		BeforeCreate: h.BeforeCreate,
+		AfterCreate:  h.AfterCreate,
+		BeforeUpdate: h.BeforeUpdate,
+		AfterUpdate:  h.AfterUpdate,
+		BeforeDelete: h.BeforeDelete,
+		AfterDelete:  h.AfterDelete,
+		OnError:      h.OnError,
 	}
 }
 
