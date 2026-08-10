@@ -65,6 +65,18 @@ func applyOverrides(primary, override []*hcl.Block) (blocks, deferred []*hcl.Blo
 		case "locals", "terraform":
 			deferred = append(deferred, block)
 			continue
+		case "language":
+			// Language blocks have whole-module scope, so allowing overrides
+			// would have surprising effects on declarations elsewhere in the
+			// module.
+			diags = append(diags, &hcl.Diagnostic{
+				Severity: hcl.DiagError,
+				Summary:  "Language selections in override file",
+				Detail: "Language-related settings in \"language\" blocks are not allowed in " +
+					"override files. Place these settings in a normal configuration file.",
+				Subject: &block.DefRange,
+			})
+			continue
 		case "moved", "import", "removed":
 			diags = append(diags, &hcl.Diagnostic{
 				Severity: hcl.DiagError,

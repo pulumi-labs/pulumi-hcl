@@ -23,6 +23,7 @@ import (
 var rootSchema = &hcl.BodySchema{
 	Blocks: []hcl.BlockHeaderSchema{
 		{Type: "terraform"},
+		{Type: "language"},
 		{Type: "provider", LabelNames: []string{"name"}},
 		{Type: "variable", LabelNames: []string{"name"}},
 		{Type: "locals"},
@@ -63,6 +64,30 @@ var terraformSchema = &hcl.BodySchema{
 		{Type: "package"},
 		{Type: "backend", LabelNames: []string{"type"}},
 		{Type: "provider_meta", LabelNames: []string{"provider"}},
+	},
+}
+
+// languageSchema defines the structure of a language block. `edition` and
+// `experiments` are reserved arguments validated like OpenTofu validates
+// them, so a module written for a future language edition fails loudly
+// instead of misbehaving.
+var languageSchema = &hcl.BodySchema{
+	Attributes: []hcl.AttributeSchema{
+		{Name: "edition"},
+		{Name: "experiments"},
+	},
+	Blocks: []hcl.BlockHeaderSchema{
+		{Type: "compatible_with"},
+	},
+}
+
+// languageCompatibleWithSchema lists only the argument Pulumi HCL interprets
+// in a compatible_with block. The block is decoded with PartialContent so
+// arguments addressed to other software (e.g. opentofu) are ignored without
+// validation.
+var languageCompatibleWithSchema = &hcl.BodySchema{
+	Attributes: []hcl.AttributeSchema{
+		{Name: "pulumi"},
 	},
 }
 

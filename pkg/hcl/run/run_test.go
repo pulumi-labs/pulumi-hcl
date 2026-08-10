@@ -21,6 +21,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/blang/semver"
@@ -508,6 +509,93 @@ module "keyed" {
 		"renamed.derived", "renamed-pinned", "renamed.null_override",
 		"keyed-k.derived", "keyed-k-pinned", "keyed-k.null_override",
 	}, instanceNames)
+}
+
+// Version constraints are enforced per module: the root's
+// required_version_range and a child module's language block both reach
+// CheckPulumiVersion, and a failing child constraint names the module.
+func TestEngine_ModulePulumiVersionCheck(t *testing.T) {
+	t.Parallel()
+
+	setup := func(t *testing.T) (*ast.Config, string) {
+		tmpDir := t.TempDir()
+		moduleDir := tmpDir + "/modules/child"
+		require.NoError(t, os.MkdirAll(moduleDir, 0o755))
+
+		moduleMain := `
+language {
+  compatible_with {
+    opentofu = ">= 1.12"
+    pulumi   = ">= 999.0.0"
+  }
+}
+`
+		require.NoError(t, os.WriteFile(moduleDir+"/main.tf", []byte(moduleMain), 0o644))
+
+		rootMain := `
+terraform {
+  required_version_range = ">= 3.0.0"
+}
+
+module "child" {
+  source = "./modules/child"
+}
+`
+		require.NoError(t, os.WriteFile(tmpDir+"/main.tf", []byte(rootMain), 0o644))
+
+		config, diags := parser.NewParser().ParseDirectory(tmpDir)
+		require.False(t, diags.HasErrors(), "parse error: %s", diags.Error())
+		return config, tmpDir
+	}
+
+	newEngine := func(t *testing.T, config *ast.Config, tmpDir string, mock *testutil.MockResourceMonitor) *run.Engine {
+		return newTestEngine(t, config, &run.EngineOptions{
+			ModuleLoader:    testLiveModuleLoader(t),
+			ProjectName:     "test-project",
+			StackName:       "dev",
+			ResourceMonitor: mock,
+			WorkDir:         tmpDir,
+			RootDir:         tmpDir,
+			SchemaLoader:    schemaloader.New(t, schema.PackageSpec{Name: "aws"}),
+		})
+	}
+
+	t.Run("both_constraints_checked", func(t *testing.T) {
+		t.Parallel()
+		config, tmpDir := setup(t)
+
+		var mu sync.Mutex
+		var ranges []string
+		mock := &testutil.MockResourceMonitor{
+			CheckPulumiVersionHandler: func(ctx context.Context, versionRange string) error {
+				mu.Lock()
+				defer mu.Unlock()
+				ranges = append(ranges, versionRange)
+				return nil
+			},
+		}
+
+		require.NoError(t, newEngine(t, config, tmpDir, mock).Run(t.Context()))
+		assert.ElementsMatch(t, []string{">= 3.0.0", ">= 999.0.0"}, ranges)
+	})
+
+	t.Run("failing_child_constraint_names_module", func(t *testing.T) {
+		t.Parallel()
+		config, tmpDir := setup(t)
+
+		mock := &testutil.MockResourceMonitor{
+			CheckPulumiVersionHandler: func(ctx context.Context, versionRange string) error {
+				if versionRange == ">= 999.0.0" {
+					return fmt.Errorf("Pulumi CLI version does not satisfy %q", versionRange)
+				}
+				return nil
+			},
+		}
+
+		err := newEngine(t, config, tmpDir, mock).Run(t.Context())
+		require.Error(t, err)
+		assert.ErrorContains(t, err, `module ./modules/child: Pulumi CLI version does not satisfy ">= 999.0.0"`)
+	})
 }
 
 // Distinct addresses must derive distinct names even when labels and keys

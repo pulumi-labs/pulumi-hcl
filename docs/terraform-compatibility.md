@@ -6,7 +6,7 @@ Pulumi HCL should be able to run all valid Terraform config programs without cha
 
 A small number of Terraform features are not modeled:
 
-- **`backend`, `required_version`, `provider_meta`, and `experiments`** in the `terraform` block are accepted but ignored with a warning. Pulumi manages state independently and tracks its own version constraints via `required_version_range`; language experiments have no Pulumi HCL equivalent.
+- **`backend`, `required_version`, `provider_meta`, and `experiments`** in the `terraform` block are accepted but ignored with a warning. Pulumi manages state independently and tracks its own version constraints via `required_version_range` or a `language` block's `compatible_with { pulumi = ... }` argument; language experiments have no Pulumi HCL equivalent.
 - **`cloud`** in the `terraform` block is not accepted at all. Unlike the arguments above it is not part of the `terraform` block's schema, so a `cloud` block is a parse error rather than a warning. Remove it — Pulumi's own backend configuration lives outside the program.
 - **WinRM `connection` blocks** are not supported — `connection` accepts `type = "ssh"` only.
 - **`List<Object>` empty vs null** — HCL block syntax cannot distinguish an empty `List<Object>` from a null one, a known incompatibility with some Pulumi programs.

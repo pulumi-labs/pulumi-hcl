@@ -44,6 +44,9 @@ type MockResourceMonitor struct {
 
 	// RegisterResourceHandler, if  set, is  called for each  RegisterResource instead of the default behavior.
 	RegisterResourceHandler func(ctx context.Context, req run.RegisterResourceRequest) (*run.RegisterResourceResponse, error)
+
+	// CheckPulumiVersionHandler, if set, is called for each CheckPulumiVersion instead of the default behavior.
+	CheckPulumiVersionHandler func(ctx context.Context, versionRange string) error
 }
 
 type registeredHook struct {
@@ -180,6 +183,9 @@ func (m *MockResourceMonitor) Call(ctx context.Context, req run.CallRequest) (*r
 }
 
 func (m *MockResourceMonitor) CheckPulumiVersion(ctx context.Context, versionRange string) error {
+	if m.CheckPulumiVersionHandler != nil {
+		return m.CheckPulumiVersionHandler(ctx, versionRange)
+	}
 	return nil
 }
 
