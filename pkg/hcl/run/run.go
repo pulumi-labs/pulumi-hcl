@@ -4981,7 +4981,7 @@ func (e *Engine) checkConfigPulumiVersion(
 			return fmt.Errorf("evaluating Pulumi version constraint: %s", diags.Error())
 		}
 		if versionVal.Type() != cty.String {
-			return fmt.Errorf("Pulumi version constraint must be a string, got %s",
+			return fmt.Errorf("the Pulumi version constraint must be a string, got %s",
 				versionVal.Type().FriendlyName())
 		}
 		versionRange := versionVal.AsString()
