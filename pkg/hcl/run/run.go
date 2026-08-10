@@ -4951,8 +4951,7 @@ func (e *Engine) checkPulumiVersion(ctx context.Context) error {
 
 // checkModulePulumiVersion enforces a child module's declared version
 // constraints. The module's own scope does not exist yet when its call is
-// initialized, so the constraint expressions evaluate statically — matching
-// Terraform, which requires them to be literal strings.
+// initialized, so the constraint expressions evaluate statically.
 func (e *Engine) checkModulePulumiVersion(ctx context.Context, source string, config *ast.Config) error {
 	err := e.checkConfigPulumiVersion(ctx, config, func(expr hcl.Expression) (cty.Value, hcl.Diagnostics) {
 		return expr.Value(nil)

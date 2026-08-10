@@ -71,10 +71,6 @@ type Terraform struct {
 //	    pulumi   = ">= 3.0.0"
 //	  }
 //	}
-//
-// Only the pulumi argument is interpreted; arguments addressed to other
-// software (such as opentofu) are ignored without validation so a module can
-// declare compatibility with several implementations at once.
 type Language struct {
 	// CompatibleWithPulumi is the version range expression for the Pulumi CLI.
 	CompatibleWithPulumi hcl.Expression

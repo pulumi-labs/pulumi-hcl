@@ -68,9 +68,8 @@ var terraformSchema = &hcl.BodySchema{
 }
 
 // languageSchema defines the structure of a language block. `edition` and
-// `experiments` are reserved arguments validated like OpenTofu validates
-// them, so a module written for a future language edition fails loudly
-// instead of misbehaving.
+// `experiments` are reserved: a module targeting a future language edition or
+// an active experiment fails loudly instead of misbehaving.
 var languageSchema = &hcl.BodySchema{
 	Attributes: []hcl.AttributeSchema{
 		{Name: "edition"},
@@ -82,9 +81,8 @@ var languageSchema = &hcl.BodySchema{
 }
 
 // languageCompatibleWithSchema lists only the argument Pulumi HCL interprets
-// in a compatible_with block. The block is decoded with PartialContent so
-// arguments addressed to other software (e.g. opentofu) are ignored without
-// validation.
+// in a compatible_with block; decode with PartialContent so the rest is
+// ignored.
 var languageCompatibleWithSchema = &hcl.BodySchema{
 	Attributes: []hcl.AttributeSchema{
 		{Name: "pulumi"},

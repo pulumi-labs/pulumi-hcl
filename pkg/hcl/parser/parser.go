@@ -296,9 +296,6 @@ func (p *Parser) parseLanguageBlock(config *ast.Config, block *hcl.Block) hcl.Di
 	content, diags := block.Body.Content(languageSchema)
 
 	if attr, ok := content.Attributes["edition"]; ok {
-		// Language editions are reserved for future use; the only living
-		// edition is the default, so naming any other one means the module
-		// targets a language this version does not implement.
 		const currentEdition = "tofu2024"
 		switch kw := hcl.ExprAsKeyword(attr.Expr); {
 		case kw == "":
