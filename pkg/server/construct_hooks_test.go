@@ -48,6 +48,20 @@ type hookInvokingMonitor struct {
 	// RegisterResource; runDeletes fires them later, as the engine deletes the
 	// component's children during `destroy --run-program`.
 	deferredDeletes []func(context.Context) error
+	// registered records every RegisterResource request.
+	registered []*pulumirpc.RegisterResourceRequest
+}
+
+// registeredType returns the recorded registration for the given type token.
+func (s *hookInvokingMonitor) registeredType(typ string) *pulumirpc.RegisterResourceRequest {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, req := range s.registered {
+		if req.Type == typ {
+			return req
+		}
+	}
+	return nil
 }
 
 func newHookInvokingMonitor() *hookInvokingMonitor {
@@ -75,6 +89,10 @@ func (s *hookInvokingMonitor) RegisterResourceHook(
 func (s *hookInvokingMonitor) RegisterResource(
 	ctx context.Context, req *pulumirpc.RegisterResourceRequest,
 ) (*pulumirpc.RegisterResourceResponse, error) {
+	s.mu.Lock()
+	s.registered = append(s.registered, req)
+	s.mu.Unlock()
+
 	// Chain the parent's qualified type the way the engine's generateURN
 	// does; the dispatcher keys instance entries by that URN.
 	parentChain := ""

@@ -85,6 +85,11 @@ func NewModuleProvider(ctx context.Context, version string) p.Provider {
 		version:      version,
 		moduleLoader: modules.NewLoader(modules.LiveResolver(ctx)),
 	}
+	return m.asProvider()
+}
+
+// asProvider wires the moduleProvider into the raw pulumi-go-provider surface.
+func (m *moduleProvider) asProvider() p.Provider {
 	return grpcerr.Wrap(p.Provider{
 		Handshake:    m.handshake,
 		Parameterize: m.parameterize,
@@ -102,9 +107,19 @@ func NewModuleProvider(ctx context.Context, version string) p.Provider {
 }
 
 // handshake captures the schema loader, bridge mapper, and package resolver the
-// engine exposes. All three are required: the dynamic Module cannot resolve or
-// type a module's providers without them.
+// engine exposes. All three are required for the dynamic provider; a
+// locally-born provider (NewLocalProvider) already carries its services, so for
+// it the handshake only negotiates capabilities.
 func (m *moduleProvider) handshake(ctx context.Context, req p.HandshakeRequest) (p.HandshakeResponse, error) {
+	if req.EngineAddress != "" && m.engine == nil {
+		if engineConn, err := grpc.NewClient(req.EngineAddress,
+			grpc.WithTransportCredentials(insecure.NewCredentials())); err == nil {
+			m.engine = pulumirpc.NewEngineClient(engineConn)
+		}
+	}
+	if m.param != nil {
+		return p.HandshakeResponse{}, nil
+	}
 	if req.LoaderAddress == nil || *req.LoaderAddress == "" {
 		return p.HandshakeResponse{}, fmt.Errorf("no loader target received during handshake")
 	}
@@ -133,26 +148,23 @@ func (m *moduleProvider) handshake(ctx context.Context, req p.HandshakeRequest) 
 	m.schemaLoader = schemaLoader
 	m.providerInfoSource = bridge.NewCache(bridge.NewMapperSource(mapperClient))
 	m.resolver = resolve.NewCache(resolverClient)
-	if req.EngineAddress != "" && m.engine == nil {
-		if engineConn, err := grpc.NewClient(req.EngineAddress,
-			grpc.WithTransportCredentials(insecure.NewCredentials())); err == nil {
-			m.engine = pulumirpc.NewEngineClient(engineConn)
-		}
-	}
 
 	return p.HandshakeResponse{}, nil
 }
 
 // getSchema returns the static hcl:index:Module schema, or — once the provider
-// has been parameterized — the parameterized module's typed component schema with
-// its parameterization Value attached so a generated SDK can re-parameterize.
+// has been parameterized — the parameterized module's typed component schema. A
+// bundle-backed parameterization carries its Value so a generated SDK can
+// re-parameterize; a locally-born provider has no bundle.
 func (m *moduleProvider) getSchema(context.Context, p.GetSchemaRequest) (p.GetSchemaResponse, error) {
 	spec := moduleResourceSchema(m.version)
 	if m.param != nil {
 		spec = m.param.schema.ToPulumiPackageSchema()
-		spec.Parameterization = &pulumiSchema.ParameterizationSpec{
-			BaseProvider: pulumiSchema.BaseProviderSpec{Name: "hcl", Version: m.version},
-			Parameter:    m.param.value,
+		if m.param.value != nil {
+			spec.Parameterization = &pulumiSchema.ParameterizationSpec{
+				BaseProvider: pulumiSchema.BaseProviderSpec{Name: "hcl", Version: m.version},
+				Parameter:    m.param.value,
+			}
 		}
 	}
 	b, err := json.Marshal(spec)
@@ -185,7 +197,7 @@ func (m *moduleProvider) construct(ctx context.Context, req p.ConstructRequest) 
 
 	schemaLoader, providerInfoSource, resolver := m.schemaLoader, m.providerInfoSource, m.resolver
 	if resolver == nil {
-		return p.ConstructResponse{}, fmt.Errorf("Construct called before a successful Handshake")
+		return p.ConstructResponse{}, fmt.Errorf("construct called before a successful handshake")
 	}
 
 	sourceVal, ok := req.Inputs.GetOk("source")
@@ -258,6 +270,7 @@ func (m *moduleProvider) construct(ctx context.Context, req p.ConstructRequest) 
 	engineRun, err := run.NewEngine(ctx, loaded.Config, &run.EngineOptions{
 		ProjectName:        string(req.Urn.Project()),
 		StackName:          string(req.Urn.Stack()),
+		Organization:       req.Organization,
 		DryRun:             req.DryRun,
 		DestroyDispatcher:  m.dispatchers.get(req.MonitorEndpoint),
 		WorkDir:            loaded.SourcePath,
@@ -291,8 +304,8 @@ func (m *moduleProvider) construct(ctx context.Context, req p.ConstructRequest) 
 // typed schema property names. It mirrors HCLProvider.Construct, the local-path
 // MLC equivalent.
 func (m *moduleProvider) constructParameterized(ctx context.Context, req p.ConstructRequest) (p.ConstructResponse, error) {
-	if m.resolver == nil {
-		return p.ConstructResponse{}, fmt.Errorf("Construct called before a successful Handshake")
+	if m.schemaLoader == nil || m.providerInfoSource == nil {
+		return p.ConstructResponse{}, fmt.Errorf("construct called before a successful handshake")
 	}
 	param := m.param
 
@@ -330,6 +343,7 @@ func (m *moduleProvider) constructParameterized(ctx context.Context, req p.Const
 	engineRun, err := run.NewEngine(ctx, loaded.Config, &run.EngineOptions{
 		ProjectName:        string(req.Urn.Project()),
 		StackName:          string(req.Urn.Stack()),
+		Organization:       req.Organization,
 		DryRun:             req.DryRun,
 		DestroyDispatcher:  m.dispatchers.get(req.MonitorEndpoint),
 		WorkDir:            loaded.SourcePath,
@@ -384,9 +398,23 @@ func (m *moduleProvider) newConstructMonitor(
 		ignoreChanges:           req.IgnoreChanges,
 		replaceOnChanges:        req.ReplaceOnChanges,
 		retainOnDelete:          req.RetainOnDelete,
+		replaceWith:             urnsToStrings(req.ReplaceWith),
+		replacementTrigger:      replacementTriggerToProto(req.ReplacementTrigger),
 		customTimeouts:          customTimeoutsToProto(req.CustomTimeouts),
 		mapOutputs:              mapOutputs,
 	}
+}
+
+// replacementTriggerToProto marshals the replacement trigger; a null trigger
+// means none is set and stays absent, matching the engine's convention.
+func replacementTriggerToProto(v property.Value) *structpb.Value {
+	if v.IsNull() {
+		return nil
+	}
+	trigger, err := plugin.MarshalPropertyValue("replacementTrigger",
+		resource.ToResourcePropertyValue(v), constructMarshalOptions())
+	contract.AssertNoErrorf(err, "marshaling a fully-kept property value cannot fail")
+	return trigger
 }
 
 // RequirementSpecs turns every provider the module tree references into a

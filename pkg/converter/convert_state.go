@@ -325,8 +325,8 @@ func convertTFState(
 				Name:              component.Append(instanceStep(res.Addr.Resource.Name, key)).LogicalName(),
 				Parent:            component.LogicalName(),
 				ID:                id,
-				Inputs:            ins,
-				Outputs:           outs,
+				Inputs:            propertyMapPtr(ins),
+				Outputs:           propertyMapPtr(outs),
 				Version:           version,
 				PluginDownloadURL: pluginDownloadURL,
 				Parameterization:  parameterization,
@@ -576,6 +576,16 @@ var terraformDataStateType = cty.Object(map[string]cty.Type{
 	"output":           cty.DynamicPseudoType,
 	"triggers_replace": cty.DynamicPseudoType,
 })
+
+// propertyMapPtr converts to the pointer form plugin.ResourceImport carries,
+// preserving nil (an id-only import).
+func propertyMapPtr(m resource.PropertyMap) *property.Map {
+	if m == nil {
+		return nil
+	}
+	pm := resource.FromResourcePropertyMap(m)
+	return &pm
+}
 
 // stashValues translates a terraform_data instance's attributes into Stash's
 // property surface — the resource the runtime lowers terraform_data onto,
