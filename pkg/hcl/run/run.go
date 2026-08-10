@@ -831,7 +831,11 @@ func (e *Engine) processNode(ctx context.Context, node *graph.Node) error {
 }
 
 func (e *Engine) processGraph(ctx context.Context, g *graph.Graph) error {
-	if err := g.InjectAfter(e.checkPulumiVersion, func(n *graph.Node) bool {
+	check := func(ctx context.Context) error {
+		return e.checkConfigPulumiVersion(ctx,
+			e.config, e.evaluator.EvaluateExpression)
+	}
+	if err := g.InjectAfter(check, func(n *graph.Node) bool {
 		return n.Type == graph.NodeTypeVariable && n.ModuleInfo == nil
 	}); err != nil {
 		return err
@@ -4939,14 +4943,6 @@ func evaluateCheckAssert(evaluator *eval.Evaluator, rule *ast.CheckRule) string 
 		return msg
 	}
 	return "assertion failed"
-}
-
-// checkPulumiVersion checks if the Pulumi CLI version satisfies the root
-// config's declared version constraints: the terraform block's
-// required_version_range attribute and the language block's compatible_with
-// pulumi argument.
-func (e *Engine) checkPulumiVersion(ctx context.Context) error {
-	return e.checkConfigPulumiVersion(ctx, e.config, e.evaluator.EvaluateExpression)
 }
 
 // checkModulePulumiVersion enforces a child module's declared version
