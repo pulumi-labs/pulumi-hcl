@@ -65,6 +65,21 @@ type Loader struct {
 	callStack []string
 
 	resolve ResolverFunc
+	// resolved caches successful package resolutions, so one package resolves
+	// (and, for registry sources, selects a version) once per Loader no matter
+	// how many of its subdirectories are loaded.
+	resolved map[resolveKey]resolvedPackage
+}
+
+type resolveKey struct {
+	packageSource     string
+	versionConstraint string
+	callerDir         string
+}
+
+type resolvedPackage struct {
+	dir     string
+	version string
 }
 
 // LoadedModule represents a loaded and parsed module.
@@ -80,9 +95,10 @@ type ResolverFunc = func(packageSource, versionConstraint, callerDir string) (di
 // the registry, and remote getters, downloading and caching as needed.
 func NewLoader(resolver ResolverFunc) *Loader {
 	return &Loader{
-		parser:  parser.NewParser(),
-		cache:   make(map[string]*LoadedModule),
-		resolve: resolver,
+		parser:   parser.NewParser(),
+		cache:    make(map[string]*LoadedModule),
+		resolve:  resolver,
+		resolved: make(map[resolveKey]resolvedPackage),
 	}
 }
 
@@ -185,15 +201,31 @@ func (l *Loader) LoadModule(ctx context.Context, source, versionConstraint, call
 	return module, nil
 }
 
+// ResolveDir resolves a module source to its directory on disk — downloading it
+// if necessary — without parsing it, plus the concrete version a registry source
+// resolved to.
+func (l *Loader) ResolveDir(source, versionConstraint, callerDir string) (string, string, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.resolveSource(source, versionConstraint, callerDir)
+}
+
 // resolveSource resolves a module source to an absolute path on disk, plus the
 // concrete version a registry source resolved to. versionConstraint applies
 // only to registry sources.
 func (l *Loader) resolveSource(source, versionConstraint, callerDir string) (string, string, error) {
 	packageSource, subdir := getmodules.SplitPackageSubdir(source)
-	packageDir, version, err := l.resolve(packageSource, versionConstraint, callerDir)
-	if err != nil {
-		return "", "", err
+	key := resolveKey{packageSource, versionConstraint, callerDir}
+	pkg, ok := l.resolved[key]
+	if !ok {
+		packageDir, version, err := l.resolve(packageSource, versionConstraint, callerDir)
+		if err != nil {
+			return "", "", err
+		}
+		pkg = resolvedPackage{dir: packageDir, version: version}
+		l.resolved[key] = pkg
 	}
+	packageDir, version := pkg.dir, pkg.version
 
 	if subdir != "" {
 		resolved := filepath.Join(packageDir, subdir)

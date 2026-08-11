@@ -171,15 +171,14 @@ func (host *LanguageHost) GetRequiredPackages(
 ) (*pulumirpc.GetRequiredPackagesResponse, error) {
 	logging.V(5).Infof("GetRequiredPackages: program=%s", req.Info.ProgramDirectory)
 
-	p := parser.NewParser()
-	config, diags := p.ParseDirectory(req.Info.ProgramDirectory)
-	if diags.HasErrors() {
-		return &pulumirpc.GetRequiredPackagesResponse{}, nil
-	}
-
 	sdks, err := readSDKInfos(req.Info.ProgramDirectory)
 	if err != nil {
 		return &pulumirpc.GetRequiredPackagesResponse{}, fmt.Errorf("unable to read SDKs folder: %w", err)
+	}
+
+	dirs, err := requirementDirs(req.Info.ProgramDirectory)
+	if err != nil {
+		return &pulumirpc.GetRequiredPackagesResponse{}, err
 	}
 
 	// Resolve every provider referenced anywhere in the module tree to its
@@ -189,8 +188,19 @@ func (host *LanguageHost) GetRequiredPackages(
 	// (the terraform-provider plugin intersects them at resolve time, erroring on
 	// an empty intersection just as tofu does), and distinct sources are distinct
 	// installs.
-	tfReqs, pulumiPkgs, _ := collectRequirements(ctx, modules.NewLoader(modules.LiveResolver(ctx)),
-		config, req.Info.ProgramDirectory)
+	p := parser.NewParser()
+	loader := modules.NewLoader(modules.LiveResolver(ctx))
+	tfReqs := map[string]*tfRequirement{}
+	pulumiPkgs := map[string]string{}
+	aliases := map[string]*ast.RequiredProvider{}
+	visited := map[string]struct{}{}
+	for _, dir := range dirs {
+		config, diags := p.ParseDirectory(dir)
+		if diags.HasErrors() {
+			continue
+		}
+		collectRequirementsRec(ctx, config, dir, tfReqs, pulumiPkgs, aliases, loader, visited)
+	}
 
 	// Distinct sources resolving to one package name cannot both live at
 	// sdks/<name>: `pulumi install` would overwrite one SDK with the other

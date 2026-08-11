@@ -18,8 +18,10 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
+	"slices"
 	"testing"
 
 	"github.com/blang/semver"
@@ -858,4 +860,88 @@ func (errLoader) LoadPackageV2(
 	ctx context.Context, descriptor *pulumiSchema.PackageDescriptor,
 ) (*pulumiSchema.Package, error) {
 	return nil, assert.AnError
+}
+
+func TestPackageSchema(t *testing.T) {
+	t.Parallel()
+
+	makeComponent := func(module string) *ModuleSchema {
+		return &ModuleSchema{
+			PackageName:   "pkg",
+			Version:       "1.0.0",
+			ComponentName: "Module",
+			Module:        module,
+			Description:   module + " description",
+			InputProperties: map[string]*PropertySpec{
+				"nested": {
+					Type:       TypeObject,
+					Properties: map[string]*PropertySpec{"field": {Type: TypeString}},
+				},
+			},
+		}
+	}
+
+	t.Run("merges components and types", func(t *testing.T) {
+		t.Parallel()
+		root := makeComponent("index")
+		spec, err := PackageSchema(root, []*ModuleSchema{root, makeComponent("alpha")})
+		require.NoError(t, err)
+		require.Equal(t, "pkg", spec.Name)
+		require.Equal(t, "index description", spec.Description)
+		require.Equal(t, []string{"pkg:alpha:Module", "pkg:index:Module"}, slices.Sorted(maps.Keys(spec.Resources)))
+		require.Equal(t, []string{"pkg:alpha:Nested", "pkg:index:Nested"}, slices.Sorted(maps.Keys(spec.Types)))
+		require.Empty(t, spec.Language)
+	})
+
+	t.Run("no root leaves the description empty", func(t *testing.T) {
+		t.Parallel()
+		spec, err := PackageSchema(nil, []*ModuleSchema{makeComponent("alpha")})
+		require.NoError(t, err)
+		require.Equal(t, "", spec.Description)
+	})
+
+	t.Run("duplicate component token", func(t *testing.T) {
+		t.Parallel()
+		_, err := PackageSchema(nil, []*ModuleSchema{makeComponent("alpha"), makeComponent("alpha")})
+		require.EqualError(t, err, `component token "pkg:alpha:Module" is defined twice`)
+	})
+
+	t.Run("duplicate type token across module segment", func(t *testing.T) {
+		t.Parallel()
+		other := makeComponent("alpha")
+		other.ComponentName = "Other"
+		_, err := PackageSchema(nil, []*ModuleSchema{makeComponent("alpha"), other})
+		require.EqualError(t, err, `type token "pkg:alpha:Nested" is defined twice`)
+	})
+
+	t.Run("empty", func(t *testing.T) {
+		t.Parallel()
+		_, err := PackageSchema(nil, nil)
+		require.EqualError(t, err, "no components to combine")
+	})
+
+	t.Run("go overrides for invalid package names", func(t *testing.T) {
+		t.Parallel()
+		spec, err := PackageSchema(nil, []*ModuleSchema{
+			makeComponent("index"), makeComponent("user-data"), makeComponent("2fa"), makeComponent("type"),
+		})
+		require.NoError(t, err)
+		var info struct {
+			ModuleToPackage      map[string]string `json:"moduleToPackage"`
+			RespectSchemaVersion bool              `json:"respectSchemaVersion"`
+		}
+		require.NoError(t, json.Unmarshal(spec.Language["go"], &info))
+		require.Equal(t, map[string]string{
+			"user-data": "userdata",
+			"2fa":       "_2fa",
+			"type":      "_type",
+		}, info.ModuleToPackage)
+		require.True(t, info.RespectSchemaVersion)
+	})
+
+	t.Run("colliding go package names", func(t *testing.T) {
+		t.Parallel()
+		_, err := PackageSchema(nil, []*ModuleSchema{makeComponent("user-data"), makeComponent("userdata")})
+		require.EqualError(t, err, `modules "user-data" and "userdata" both map to Go package "userdata"`)
+	})
 }

@@ -37,10 +37,11 @@ import (
 	"google.golang.org/protobuf/types/known/structpb"
 )
 
-// NewLocalProvider serves the HCL module at modulePath as a source MLC: the
-// module provider born parameterized by the local module, reading provider
-// descriptors from the module's own sdks folder. addr is the engine's
-// schema-loader target, which also serves the mapper.
+// NewLocalProvider serves the HCL module package at modulePath as a source
+// MLC: the module provider born parameterized by the local package — one
+// component per consumable directory — reading provider descriptors from the
+// package's own sdks folder. addr is the engine's schema-loader target, which
+// also serves the mapper.
 func NewLocalProvider(ctx context.Context, modulePath, addr string) (pulumirpc.ResourceProviderServer, error) {
 	loader := modules.NewLoader(modules.LiveResolver(ctx))
 	pkgLoader, err := pulumiSchema.NewLoaderClient(addr)
@@ -64,12 +65,16 @@ func NewLocalProvider(ctx context.Context, modulePath, addr string) (pulumirpc.R
 	}
 	paramDescriptors := sdkDescriptors(sdkInfos)
 
-	loaded, err := loader.LoadModule(ctx, modulePath, "", ".")
+	comps, resolvedVersion, err := loadComponents(ctx, loader, modulePath, "")
 	if err != nil {
 		return nil, fmt.Errorf("loading module: %w", err)
 	}
-
-	token, version, err := moduleIdentity(loaded, filepath.Base(modulePath), false)
+	// The sdks folder is the package's shared descriptor pool; every component
+	// draws from it.
+	for i := range comps {
+		comps[i].packages = paramDescriptors
+	}
+	pkgName, rootToken, version, err := packageIdentity(comps, filepath.Base(modulePath), false, resolvedVersion)
 	if err != nil {
 		return nil, err
 	}
@@ -80,17 +85,16 @@ func NewLocalProvider(ctx context.Context, modulePath, addr string) (pulumirpc.R
 		schemaLoader:       pkgLoader,
 		providerInfoSource: providerInfoSource,
 	}
-	moduleSchema, err := m.generateModuleSchema(ctx, loader, loaded, paramDescriptors, token, version)
+	components, spec, err := buildComponents(ctx, comps, pkgName, rootToken, version,
+		m.componentBinderFactory(loader))
 	if err != nil {
-		return nil, fmt.Errorf("generating schema: %w", err)
+		return nil, err
 	}
 
-	pkgName := token.Package().Name().String()
 	m.param = &parameterizedModule{
-		schema:     moduleSchema,
+		spec:       spec,
+		components: components,
 		loader:     loader,
-		rootSource: modulePath,
-		packages:   paramDescriptors,
 		name:       pkgName,
 	}
 	return p.RawServer(pkgName, version.String(), m.asProvider())(nil)

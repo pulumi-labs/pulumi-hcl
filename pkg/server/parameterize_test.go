@@ -15,20 +15,27 @@
 package server
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/blang/semver"
 	p "github.com/pulumi/pulumi-go-provider"
 	pulumiSchema "github.com/pulumi/pulumi/pkg/v3/codegen/schema"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/apitype"
+	"github.com/pulumi/pulumi/sdk/v3/go/common/resource"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/workspace"
+	"github.com/pulumi/pulumi/sdk/v3/go/property"
 	pulumirpc "github.com/pulumi/pulumi/sdk/v3/proto/go"
 	"github.com/stretchr/testify/require"
+	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
@@ -73,8 +80,9 @@ func TestDefaultPackageName(t *testing.T) {
 		source string
 		want   string
 	}{
-		{"terraform-aws-modules/vpc/aws", "vpc-aws"},
-		{"terraform-aws-modules/vpc/aws//modules/subnets", "vpc-aws"},
+		{"acme-modules/widget/cloud", "widget-cloud"},
+		{"acme-modules/widget/cloud?version=1.2.3", "widget-cloud"},
+		{"acme-modules/widget/cloud//modules/subnets", "widget-cloud"},
 		{"github.com/org/my-repo", "my-repo"},
 		{"git::https://github.com/org/repo.git//subdir", "repo"},
 		{"git::https://example.com/foo/Bar_Baz.git", "bar-baz"},
@@ -93,13 +101,13 @@ func TestParameterizeArgsRejected(t *testing.T) {
 
 	t.Run("before handshake", func(t *testing.T) {
 		t.Parallel()
-		_, err := (&moduleProvider{}).parameterizeArgs(t.Context(), []string{"module", "acme/widget/aws"})
+		_, err := (&moduleProvider{}).parameterizeArgs(t.Context(), []string{"module", "acme/widget/cloud"})
 		require.EqualError(t, err, "parameterize called before a successful handshake")
 	})
 
 	t.Run("missing module keyword", func(t *testing.T) {
 		t.Parallel()
-		_, err := (&moduleProvider{resolver: stubResolver{}}).parameterizeArgs(t.Context(), []string{"acme/widget/aws"})
+		_, err := (&moduleProvider{resolver: stubResolver{}}).parameterizeArgs(t.Context(), []string{"acme/widget/cloud"})
 		require.EqualError(t, err,
 			`the hcl provider is parameterized by a module: expected "module" as the first argument`)
 	})
@@ -264,7 +272,7 @@ func TestBundleRoundTripResolvesOffline(t *testing.T) {
 
 	root := t.TempDir()
 	require.NoError(t, os.WriteFile(
-		filepath.Join(root, "main.tf"), []byte(`module "c" { source = "acme/widget/aws" }`), 0o600))
+		filepath.Join(root, "main.tf"), []byte(`module "c" { source = "acme/widget/cloud" }`), 0o600))
 
 	// A custom resolver stands in for the network: the absolute-path root
 	// resolves to itself and the submodule to the child package.
@@ -272,7 +280,7 @@ func TestBundleRoundTripResolvesOffline(t *testing.T) {
 		switch packageSource {
 		case root:
 			return root, "", nil
-		case "acme/widget/aws":
+		case "acme/widget/cloud":
 			return child, "", nil
 		default:
 			return "", "", fmt.Errorf("unexpected source %q", packageSource)
@@ -283,7 +291,7 @@ func TestBundleRoundTripResolvesOffline(t *testing.T) {
 	// Loading the tree records every resolution into the recorder.
 	loaded, err := loader.LoadModule(t.Context(), root, "", ".")
 	require.NoError(t, err)
-	_, err = loader.LoadModule(t.Context(), "acme/widget/aws", "", loaded.SourcePath)
+	_, err = loader.LoadModule(t.Context(), "acme/widget/cloud", "", loaded.SourcePath)
 	require.NoError(t, err)
 
 	value, err := rec.bundle(moduleRef{Source: root}, nil)
@@ -304,7 +312,7 @@ func TestBundleRoundTripResolvesOffline(t *testing.T) {
 	require.True(t, strings.HasPrefix(rootAgain.SourcePath, dest),
 		"root must resolve inside the unpacked bundle, got %q", rootAgain.SourcePath)
 
-	childAgain, err := offline.LoadModule(t.Context(), "acme/widget/aws", "", rootAgain.SourcePath)
+	childAgain, err := offline.LoadModule(t.Context(), "acme/widget/cloud", "", rootAgain.SourcePath)
 	require.NoError(t, err)
 	require.Contains(t, childAgain.Config.Outputs, "id")
 	require.True(t, strings.HasPrefix(childAgain.SourcePath, dest),
@@ -491,21 +499,21 @@ func TestPackArchiveExcludesVCSArtifacts(t *testing.T) {
 func TestBundleBakesPackages(t *testing.T) {
 	t.Parallel()
 
-	awsVer := semver.MustParse("6.46.0")
+	bridgedVer := semver.MustParse("1.2.3")
 	tfVer := semver.MustParse("0.9.0")
-	packages := map[string]workspace.PackageDescriptor{
-		"aws": {
+	packages := map[string]map[string]workspace.PackageDescriptor{
+		"": {"bridged": {
 			PluginDescriptor: workspace.PluginDescriptor{
 				Name:    "terraform-provider",
 				Kind:    apitype.ResourcePlugin,
 				Version: &tfVer,
 			},
 			Parameterization: &workspace.Parameterization{
-				Name:    "aws",
-				Version: awsVer,
-				Value:   []byte(`{"remote":{"url":"registry.opentofu.org/hashicorp/aws","version":"6.46.0"}}`),
+				Name:    "bridged",
+				Version: bridgedVer,
+				Value:   []byte(`{"remote":{"url":"registry.example.com/acme/bridged","version":"1.2.3"}}`),
 			},
-		},
+		}},
 	}
 
 	dir := t.TempDir()
@@ -533,18 +541,176 @@ func TestDedupeEdges(t *testing.T) {
 	t.Parallel()
 
 	got := dedupeEdges([]resolvedEdge{
-		{Caller: "0", Source: "b/m/aws", Target: "2"},
+		{Caller: "0", Source: "b/m/cloud", Target: "2"},
 		{Caller: "", Source: "root", Target: "0"},
-		{Caller: "0", Source: "a/m/aws", Target: "1"},
-		{Caller: "", Source: "root", Target: "0"},     // duplicate
-		{Caller: "0", Source: "b/m/aws", Target: "2"}, // duplicate
+		{Caller: "0", Source: "a/m/cloud", Target: "1"},
+		{Caller: "", Source: "root", Target: "0"},       // duplicate
+		{Caller: "0", Source: "b/m/cloud", Target: "2"}, // duplicate
 	})
 
 	require.Equal(t, []resolvedEdge{
 		{Caller: "", Source: "root", Target: "0"},
-		{Caller: "0", Source: "a/m/aws", Target: "1"},
-		{Caller: "0", Source: "b/m/aws", Target: "2"},
+		{Caller: "0", Source: "a/m/cloud", Target: "1"},
+		{Caller: "0", Source: "b/m/cloud", Target: "2"},
 	}, got)
+}
+
+// writeMultiComponentModule writes a package with a root module and two
+// modules/<name> submodules; withRoot=false leaves the root empty.
+func writeMultiComponentModule(t *testing.T, withRoot bool) string {
+	t.Helper()
+	root := t.TempDir()
+	write := func(rel, content string) {
+		full := filepath.Join(root, filepath.FromSlash(rel))
+		require.NoError(t, os.MkdirAll(filepath.Dir(full), 0o755))
+		require.NoError(t, os.WriteFile(full, []byte(content), 0o600))
+	}
+	if withRoot {
+		write("main.tf", `
+variable "name" { type = string }
+output "greeting" { value = "hello ${var.name}" }
+`)
+	}
+	write("modules/greeter/main.tf", `
+variable "who" { type = string }
+output "hello" { value = "hi ${var.who}" }
+`)
+	write("modules/_user_data/main.tf", `
+output "data" { value = "data" }
+`)
+	return root
+}
+
+// TestParameterizeArgsMultiComponent verifies a package with a root and
+// submodules serves one component per consumable directory — pkg:index:Module
+// for the root and pkg:<name>:Module per modules/<name> — and that a fresh
+// provider re-parameterized from the returned Value serves the identical
+// schema offline.
+func TestParameterizeArgsMultiComponent(t *testing.T) {
+	t.Parallel()
+
+	dir := writeMultiComponentModule(t, true)
+
+	m := &moduleProvider{version: "1.2.3", resolver: stubResolver{}}
+	resp, err := m.parameterizeArgs(t.Context(), []string{"module", dir, "--name", "multi"})
+	require.NoError(t, err)
+	require.Equal(t, "multi", resp.Name)
+
+	assertMultiSchema := func(m *moduleProvider) pulumiSchema.PackageSpec {
+		out, err := m.getSchema(t.Context(), p.GetSchemaRequest{})
+		require.NoError(t, err)
+		var spec pulumiSchema.PackageSpec
+		require.NoError(t, json.Unmarshal([]byte(out.Schema), &spec))
+		require.Equal(t, "multi", spec.Name)
+		require.Equal(t,
+			[]string{"multi:greeter:Module", "multi:index:Module", "multi:user-data:Module"},
+			slices.Sorted(maps.Keys(spec.Resources)))
+		for token, res := range spec.Resources {
+			require.True(t, res.IsComponent, "%s must be a component", token)
+		}
+		require.Equal(t, "string", spec.Resources["multi:index:Module"].InputProperties["name"].Type)
+		require.Equal(t, "string", spec.Resources["multi:greeter:Module"].InputProperties["who"].Type)
+		require.Equal(t, "string", spec.Resources["multi:user-data:Module"].Properties["data"].Type)
+		return spec
+	}
+	spec := assertMultiSchema(m)
+
+	usage := &moduleProvider{version: "1.2.3", resolver: stubResolver{}}
+	resp2, err := usage.parameterize(t.Context(), p.ParameterizeRequest{
+		Value: &p.ParameterizeRequestValue{
+			Name:    resp.Name,
+			Version: resp.Version,
+			Value:   spec.Parameterization.Parameter,
+		},
+	})
+	require.NoError(t, err)
+	require.Equal(t, resp, resp2)
+	assertMultiSchema(usage)
+}
+
+// TestParameterizeArgsSubmodulesOnly verifies a package whose root holds no .tf
+// files — previously a hard "No Terraform files found" failure — parameterizes
+// into submodule components with no index component.
+func TestParameterizeArgsSubmodulesOnly(t *testing.T) {
+	t.Parallel()
+
+	dir := writeMultiComponentModule(t, false)
+
+	m := &moduleProvider{version: "1.2.3", resolver: stubResolver{}}
+	resp, err := m.parameterizeArgs(t.Context(), []string{"module", dir, "--name", "rootless"})
+	require.NoError(t, err)
+	require.Equal(t, "rootless", resp.Name)
+	require.Equal(t, semver.MustParse("0.0.0-dev"), resp.Version)
+
+	assertRootlessSchema := func(m *moduleProvider) pulumiSchema.PackageSpec {
+		out, err := m.getSchema(t.Context(), p.GetSchemaRequest{})
+		require.NoError(t, err)
+		var spec pulumiSchema.PackageSpec
+		require.NoError(t, json.Unmarshal([]byte(out.Schema), &spec))
+		require.Equal(t, "rootless", spec.Name)
+		require.Equal(t,
+			[]string{"rootless:greeter:Module", "rootless:user-data:Module"},
+			slices.Sorted(maps.Keys(spec.Resources)))
+		return spec
+	}
+	spec := assertRootlessSchema(m)
+
+	usage := &moduleProvider{version: "1.2.3", resolver: stubResolver{}}
+	resp2, err := usage.parameterize(t.Context(), p.ParameterizeRequest{
+		Value: &p.ParameterizeRequestValue{
+			Name:    resp.Name,
+			Version: resp.Version,
+			Value:   spec.Parameterization.Parameter,
+		},
+	})
+	require.NoError(t, err)
+	require.Equal(t, resp, resp2)
+	assertRootlessSchema(usage)
+}
+
+// TestConstructParameterizedDispatch drives Construct against a parameterized
+// multi-component package: the submodule token runs the submodule's module (its
+// outputs come back under their schema names), and an unknown token is
+// rejected.
+func TestConstructParameterizedDispatch(t *testing.T) {
+	t.Parallel()
+
+	dir := writeMultiComponentModule(t, true)
+	_, m, endpoint := serveMonitor(t)
+	m.version = "1.2.3"
+	_, err := m.parameterizeArgs(t.Context(), []string{"module", dir, "--name", "multi"})
+	require.NoError(t, err)
+
+	t.Run("submodule component", func(t *testing.T) {
+		t.Parallel()
+		resp, err := m.construct(t.Context(), p.ConstructRequest{
+			Urn:             resource.URN("urn:pulumi:test::proj::multi:greeter:Module::g"),
+			MonitorEndpoint: endpoint,
+			Inputs:          property.NewMap(map[string]property.Value{"who": property.New("world")}),
+		})
+		require.NoError(t, err)
+		require.Equal(t, property.New("hi world"), resp.State.Get("hello"))
+	})
+
+	t.Run("index component", func(t *testing.T) {
+		t.Parallel()
+		resp, err := m.construct(t.Context(), p.ConstructRequest{
+			Urn:             resource.URN("urn:pulumi:test::proj::multi:index:Module::r"),
+			MonitorEndpoint: endpoint,
+			Inputs:          property.NewMap(map[string]property.Value{"name": property.New("world")}),
+		})
+		require.NoError(t, err)
+		require.Equal(t, property.New("hello world"), resp.State.Get("greeting"))
+	})
+
+	t.Run("unknown token", func(t *testing.T) {
+		t.Parallel()
+		_, err := m.construct(t.Context(), p.ConstructRequest{
+			Urn:             resource.URN("urn:pulumi:test::proj::multi:nope:Module::x"),
+			MonitorEndpoint: endpoint,
+		})
+		require.EqualError(t, err, `unknown resource type: "multi:nope:Module"`)
+	})
 }
 
 // nopResolver is a non-nil PackageResolverClient so parameterize gets past its
@@ -580,7 +746,118 @@ func TestParameterizeBeforeHandshakeIsFailedPrecondition(t *testing.T) {
 	t.Parallel()
 	m := &moduleProvider{}
 	_, err := m.parameterize(t.Context(), p.ParameterizeRequest{
-		Args: &p.ParameterizeRequestArgs{Args: []string{"module", "acme/thing/aws"}},
+		Args: &p.ParameterizeRequestArgs{Args: []string{"module", "acme/thing/cloud"}},
 	})
 	require.Equal(t, codes.FailedPrecondition, status.Code(err))
+}
+
+// TestParameterizeSubmoduleNamedIndex verifies a modules/index directory is an
+// ordinary submodule: its terraform `package` and `component` blocks must not
+// name the package, which only the root directory may do.
+func TestParameterizeSubmoduleNamedIndex(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	write := func(rel, content string) {
+		full := filepath.Join(dir, filepath.FromSlash(rel))
+		require.NoError(t, os.MkdirAll(filepath.Dir(full), 0o755))
+		require.NoError(t, os.WriteFile(full, []byte(content), 0o600))
+	}
+	write("modules/index/main.tf", `
+terraform {
+  package {
+    name    = "hijacked"
+    version = "9.9.9"
+  }
+  component {
+    name = "Weird"
+  }
+}
+output "x" { value = 1 }
+`)
+	write("modules/other/main.tf", `output "y" { value = 2 }`)
+
+	m := &moduleProvider{version: "1.2.3", resolver: stubResolver{}}
+	resp, err := m.parameterizeArgs(t.Context(), []string{"module", dir, "--name", "pkg"})
+	require.NoError(t, err)
+	require.Equal(t, p.ParameterizeResponse{Name: "pkg", Version: semver.MustParse("0.0.0-dev")}, resp)
+
+	out, err := m.getSchema(t.Context(), p.GetSchemaRequest{})
+	require.NoError(t, err)
+	var spec pulumiSchema.PackageSpec
+	require.NoError(t, json.Unmarshal([]byte(out.Schema), &spec))
+	require.Equal(t, "pkg", spec.Name)
+	require.Equal(t,
+		[]string{"pkg:index:Module", "pkg:other:Module"},
+		slices.Sorted(maps.Keys(spec.Resources)))
+}
+
+// recordingResolver is a PackageResolverClient that records every spec it
+// resolves and answers with a minimal descriptor.
+type recordingResolver struct {
+	pulumirpc.PackageResolverClient
+	mu    sync.Mutex
+	specs []*pulumirpc.PackageSpec
+}
+
+func (r *recordingResolver) ResolvePackage(
+	_ context.Context, spec *pulumirpc.PackageSpec, _ ...grpc.CallOption,
+) (*pulumirpc.PackageDependency, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.specs = append(r.specs, spec)
+	return &pulumirpc.PackageDependency{Name: "terraform-provider", Kind: "resource", Version: "1.0.0"}, nil
+}
+
+// TestParameterizePerComponentProviderResolution verifies sibling components
+// resolve their providers as the independent configurations they are: the same
+// local name may name different sources in different components, and each
+// component's constraint resolves alone rather than intersecting with its
+// siblings'.
+func TestParameterizePerComponentProviderResolution(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	write := func(rel, content string) {
+		full := filepath.Join(dir, filepath.FromSlash(rel))
+		require.NoError(t, os.MkdirAll(filepath.Dir(full), 0o755))
+		require.NoError(t, os.WriteFile(full, []byte(content), 0o600))
+	}
+	write("main.tf", `
+terraform {
+  required_providers {
+    foo = {
+      source  = "acme/foo"
+      version = "~> 5.0"
+    }
+  }
+}
+output "r" { value = 1 }
+`)
+	write("modules/legacy/main.tf", `
+terraform {
+  required_providers {
+    foo = {
+      source  = "other/foo"
+      version = "~> 4.0"
+    }
+  }
+}
+output "l" { value = 1 }
+`)
+
+	rec := &recordingResolver{}
+	m := &moduleProvider{version: "1.2.3", resolver: rec}
+	_, err := m.parameterizeArgs(t.Context(), []string{"module", dir, "--name", "pkg"})
+	require.NoError(t, err)
+
+	got := make([]string, len(rec.specs))
+	for i, s := range rec.specs {
+		got[i] = s.Source + " " + strings.Join(s.Parameters, " ")
+	}
+	slices.Sort(got)
+	require.Equal(t, []string{
+		"terraform-provider acme/foo ~> 5.0",
+		"terraform-provider other/foo ~> 4.0",
+	}, got)
 }

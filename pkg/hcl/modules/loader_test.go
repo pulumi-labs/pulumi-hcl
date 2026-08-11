@@ -430,22 +430,22 @@ func TestLoaderResolvesViaCustomResolver(t *testing.T) {
 	}
 
 	l := NewLoader(func(packageSource, versionConstraint, _ string) (string, string, error) {
-		require.Equal(t, "acme/widget/aws", packageSource)
+		require.Equal(t, "acme/widget/cloud", packageSource)
 		require.Equal(t, "~> 4.0", versionConstraint)
 		return pkg, "4.2.0", nil
 	})
 
-	root, err := l.LoadModule(t.Context(), "acme/widget/aws", "~> 4.0", t.TempDir())
+	root, err := l.LoadModule(t.Context(), "acme/widget/cloud", "~> 4.0", t.TempDir())
 	require.NoError(t, err)
 	require.Equal(t, pkg, root.SourcePath)
 
 	// Two subdir references into the one resolved package resolve under it; the
 	// resolver only ever sees the package source.
-	a, err := l.LoadModule(t.Context(), "acme/widget/aws//a", "~> 4.0", t.TempDir())
+	a, err := l.LoadModule(t.Context(), "acme/widget/cloud//a", "~> 4.0", t.TempDir())
 	require.NoError(t, err)
 	require.Equal(t, filepath.Join(pkg, "a"), a.SourcePath)
 
-	b, err := l.LoadModule(t.Context(), "acme/widget/aws//b", "~> 4.0", t.TempDir())
+	b, err := l.LoadModule(t.Context(), "acme/widget/cloud//b", "~> 4.0", t.TempDir())
 	require.NoError(t, err)
 	require.Equal(t, filepath.Join(pkg, "b"), b.SourcePath)
 }
@@ -487,4 +487,34 @@ func TestSourceName(t *testing.T) {
 	for source, want := range tests {
 		assert.Equal(t, want, SourceName(source), source)
 	}
+}
+
+// TestLoaderResolvesPackageOnce verifies one package resolves once per Loader
+// regardless of how many of its subdirectories are loaded, while a different
+// constraint or caller still resolves anew.
+func TestLoaderResolvesPackageOnce(t *testing.T) {
+	t.Parallel()
+
+	pkg := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(pkg, "main.tf"), []byte(`output "r" { value = 1 }`), 0o600))
+	require.NoError(t, os.MkdirAll(filepath.Join(pkg, "sub"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(pkg, "sub", "main.tf"), []byte(`output "s" { value = 2 }`), 0o600))
+
+	count := 0
+	l := NewLoader(func(string, string, string) (string, string, error) {
+		count++
+		return pkg, "1.0.0", nil
+	})
+
+	_, _, err := l.ResolveDir("acme/widget/cloud", "", ".")
+	require.NoError(t, err)
+	_, err = l.LoadModule(t.Context(), "acme/widget/cloud", "", ".")
+	require.NoError(t, err)
+	_, err = l.LoadModule(t.Context(), "acme/widget/cloud//sub", "", ".")
+	require.NoError(t, err)
+	require.Equal(t, 1, count)
+
+	_, err = l.LoadModule(t.Context(), "acme/widget/cloud", "~> 2", ".")
+	require.NoError(t, err)
+	require.Equal(t, 2, count)
 }

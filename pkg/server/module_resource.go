@@ -153,13 +153,13 @@ func (m *moduleProvider) handshake(ctx context.Context, req p.HandshakeRequest) 
 }
 
 // getSchema returns the static hcl:index:Module schema, or — once the provider
-// has been parameterized — the parameterized module's typed component schema. A
-// bundle-backed parameterization carries its Value so a generated SDK can
+// has been parameterized — the parameterized package's typed component schemas.
+// A bundle-backed parameterization carries its Value so a generated SDK can
 // re-parameterize; a locally-born provider has no bundle.
 func (m *moduleProvider) getSchema(context.Context, p.GetSchemaRequest) (p.GetSchemaResponse, error) {
 	spec := moduleResourceSchema(m.version)
 	if m.param != nil {
-		spec = m.param.schema.ToPulumiPackageSchema()
+		spec = m.param.spec
 		if m.param.value != nil {
 			spec.Parameterization = &pulumiSchema.ParameterizationSpec{
 				BaseProvider: pulumiSchema.BaseProviderSpec{Name: "hcl", Version: m.version},
@@ -298,18 +298,21 @@ func (m *moduleProvider) construct(ctx context.Context, req p.ConstructRequest) 
 	}, nil
 }
 
-// constructParameterized runs the parameterized module: it maps the typed
-// component inputs to the module's HCL variables, runs the engine against the
-// bundled (offline) module tree, and exposes the module's outputs under their
-// typed schema property names. It mirrors HCLProvider.Construct, the local-path
-// MLC equivalent.
+// constructParameterized runs one component of the parameterized module
+// package, selected by the request's type token: it maps the typed component
+// inputs to the module's HCL variables, runs the engine against the module tree
+// (bundled and offline on the parameterize path, the local directory on the
+// RunPlugin path), and exposes the module's outputs under their typed schema
+// property names. Handshake preconditions are enforced by parameterize and the
+// local birth, not here.
 func (m *moduleProvider) constructParameterized(ctx context.Context, req p.ConstructRequest) (p.ConstructResponse, error) {
-	if m.schemaLoader == nil || m.providerInfoSource == nil {
-		return p.ConstructResponse{}, fmt.Errorf("construct called before a successful handshake")
-	}
 	param := m.param
+	comp, ok := param.components[req.Urn.Type()]
+	if !ok {
+		return p.ConstructResponse{}, fmt.Errorf("unknown resource type: %q", req.Urn.Type())
+	}
 
-	loaded, err := param.loader.LoadModule(ctx, param.rootSource, param.rootVersion, ".")
+	loaded, err := param.loader.LoadModule(ctx, comp.source, param.versionConstraint, ".")
 	if err != nil {
 		return p.ConstructResponse{}, fmt.Errorf("loading module %q: %w", param.name, err)
 	}
@@ -335,10 +338,10 @@ func (m *moduleProvider) constructParameterized(ctx context.Context, req p.Const
 		return p.ConstructResponse{}, fmt.Errorf("starting hook callback server: %w", err)
 	}
 	resmon := m.newConstructMonitor(ctx, req,
-		pulumirpc.NewResourceMonitorClient(monitorConn), componentInputs, param.schema.OutputsToPulumi, hooks)
+		pulumirpc.NewResourceMonitorClient(monitorConn), componentInputs, comp.schema.OutputsToPulumi, hooks)
 
 	loader := pulumiSchema.NewCachedLoader(packages.NewParameterizationAwareLoader(
-		m.schemaLoader, param.packages))
+		m.schemaLoader, comp.packages))
 
 	engineRun, err := run.NewEngine(ctx, loaded.Config, &run.EngineOptions{
 		ProjectName:        string(req.Urn.Project()),
@@ -349,11 +352,11 @@ func (m *moduleProvider) constructParameterized(ctx context.Context, req p.Const
 		WorkDir:            loaded.SourcePath,
 		RootDir:            loaded.SourcePath,
 		AbsolutePaths:      true,
-		Config:             moduleConfig(string(req.Urn.Project()), param.schema.InputsToHCL(req.Inputs)),
+		Config:             moduleConfig(string(req.Urn.Project()), comp.schema.InputsToHCL(req.Inputs)),
 		ResourceMonitor:    resmon,
 		SchemaLoader:       loader,
 		ProviderInfoSource: m.providerInfoSource,
-		Packages:           param.packages,
+		Packages:           comp.packages,
 		ModuleLoader:       param.loader,
 		Parallel:           int(req.Parallel),
 	})

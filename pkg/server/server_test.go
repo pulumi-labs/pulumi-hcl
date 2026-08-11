@@ -1018,6 +1018,82 @@ data "terraform_remote_state" "rs" {
 	}, resp.Packages[0])
 }
 
+// writeSubmodulePackage writes a component package whose modules/greeter
+// submodule requires a provider the root never references.
+func writeSubmodulePackage(t *testing.T, withPlugin, withRoot bool) string {
+	t.Helper()
+	dir := t.TempDir()
+	if withPlugin {
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "PulumiPlugin.yaml"), []byte("runtime: hcl\n"), 0o600))
+	}
+	if withRoot {
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "main.tf"), []byte(`
+output "x" {
+  value = 1
+}
+`), 0o600))
+	}
+	greeterDir := filepath.Join(dir, "modules", "greeter")
+	require.NoError(t, os.MkdirAll(greeterDir, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(greeterDir, "main.tf"), []byte(`
+terraform {
+  required_providers {
+    greeting = {
+      source  = "acme/greeting"
+      version = ">= 3.0"
+    }
+  }
+}
+
+resource "greeting_card" "p" {}
+`), 0o600))
+	return dir
+}
+
+func getRequiredPackages(t *testing.T, dir string) *pulumirpc.GetRequiredPackagesResponse {
+	t.Helper()
+	host := &LanguageHost{}
+	resp, err := host.GetRequiredPackages(t.Context(), &pulumirpc.GetRequiredPackagesRequest{
+		Info: &pulumirpc.ProgramInfo{
+			ProgramDirectory: dir,
+			RootDirectory:    dir,
+			EntryPoint:       ".",
+		},
+	})
+	require.NoError(t, err)
+	return resp
+}
+
+func TestGetRequiredPackages_SubmoduleComponentProviders(t *testing.T) {
+	t.Parallel()
+
+	resp := getRequiredPackages(t, writeSubmodulePackage(t, true, true))
+	assert.Empty(t, resp.Packages)
+	assert.Equal(t, []*pulumirpc.PackageSpec{{
+		Source:     "terraform-provider",
+		Parameters: []string{"acme/greeting", ">= 3.0"},
+	}}, resp.Specs)
+}
+
+func TestGetRequiredPackages_RootlessComponentProviders(t *testing.T) {
+	t.Parallel()
+
+	resp := getRequiredPackages(t, writeSubmodulePackage(t, true, false))
+	assert.Empty(t, resp.Packages)
+	assert.Equal(t, []*pulumirpc.PackageSpec{{
+		Source:     "terraform-provider",
+		Parameters: []string{"acme/greeting", ">= 3.0"},
+	}}, resp.Specs)
+}
+
+func TestGetRequiredPackages_ProgramSkipsUnreferencedModules(t *testing.T) {
+	t.Parallel()
+
+	resp := getRequiredPackages(t, writeSubmodulePackage(t, false, true))
+	assert.Empty(t, resp.Packages)
+	assert.Empty(t, resp.Specs)
+}
+
 // TestPackageDescriptorFromSchemaExtension verifies that an extension
 // parameterization in a package schema is read into the descriptor's extension
 // slot, naming the base provider (whose namespace the extension's tokens use).
