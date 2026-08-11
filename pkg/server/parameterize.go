@@ -106,16 +106,16 @@ func (b bundle) encode() []byte {
 func decodeBundle(value []byte) (bundle, error) {
 	gz, err := gzip.NewReader(bytes.NewReader(value))
 	if err != nil {
-		return bundle{}, fmt.Errorf("decompressing bundle: %w", err)
+		return bundle{}, grpcerr.Errorf(codes.InvalidArgument, "decompressing bundle: %w", err)
 	}
 	defer func() { _ = gz.Close() }()
 	data, err := io.ReadAll(gz)
 	if err != nil {
-		return bundle{}, fmt.Errorf("decompressing bundle: %w", err)
+		return bundle{}, grpcerr.Errorf(codes.InvalidArgument, "decompressing bundle: %w", err)
 	}
 	var b bundle
 	if err := json.Unmarshal(data, &b); err != nil {
-		return bundle{}, fmt.Errorf("decoding bundle: %w", err)
+		return bundle{}, grpcerr.Errorf(codes.InvalidArgument, "decoding bundle: %w", err)
 	}
 	return b, nil
 }

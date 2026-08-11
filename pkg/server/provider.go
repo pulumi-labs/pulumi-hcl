@@ -21,6 +21,7 @@ import (
 
 	"github.com/blang/semver"
 	p "github.com/pulumi/pulumi-go-provider"
+	"github.com/pulumi/pulumi-hcl/pkg/grpcerr"
 	"github.com/pulumi/pulumi-hcl/pkg/hcl/ast"
 	"github.com/pulumi/pulumi-hcl/pkg/hcl/bridge"
 	"github.com/pulumi/pulumi-hcl/pkg/hcl/modules"
@@ -34,6 +35,7 @@ import (
 	"github.com/pulumi/pulumi/sdk/v3/go/common/workspace"
 	"github.com/pulumi/pulumi/sdk/v3/go/property"
 	pulumirpc "github.com/pulumi/pulumi/sdk/v3/proto/go"
+	"google.golang.org/grpc/codes"
 	"google.golang.org/protobuf/types/known/structpb"
 )
 
@@ -136,7 +138,7 @@ func moduleIdentity(loaded *modules.LoadedModule, defaultName string, forceDefau
 	}
 	version, err := semver.ParseTolerant(pkgVersion)
 	if err != nil {
-		return "", version, fmt.Errorf("parsing module version %q: %w", pkgVersion, err)
+		return "", version, grpcerr.Errorf(codes.InvalidArgument, "parsing module version %q: %w", pkgVersion, err)
 	}
 	return tokens.Type(fmt.Sprintf("%s:%s:%s", pkgName, module, componentName)), version, nil
 }
