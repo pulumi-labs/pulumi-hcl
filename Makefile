@@ -70,3 +70,7 @@ dev: ~/.pulumi/bin/$(LANGUAGE_HOST) ~/.pulumi/bin/$(CONVERTER)
 
 generate:
 	go generate ./...
+
+.PHONY: renovate
+renovate:
+	./.github/scripts/renovate-changelog.sh "$(DEP)" "$(VERSION)" "$(FILE)"
