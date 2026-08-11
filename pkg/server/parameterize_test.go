@@ -544,7 +544,7 @@ func TestDedupeEdges(t *testing.T) {
 		{Caller: "0", Source: "b/m/cloud", Target: "2"},
 		{Caller: "", Source: "root", Target: "0"},
 		{Caller: "0", Source: "a/m/cloud", Target: "1"},
-		{Caller: "", Source: "root", Target: "0"},     // duplicate
+		{Caller: "", Source: "root", Target: "0"},       // duplicate
 		{Caller: "0", Source: "b/m/cloud", Target: "2"}, // duplicate
 	})
 
