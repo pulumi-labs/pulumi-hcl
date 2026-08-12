@@ -178,8 +178,8 @@ func (l *Loader) LoadModule(ctx context.Context, source, versionConstraint, call
 	}
 
 	if slices.Contains(l.callStack, resolvedPath) {
-		return nil, fmt.Errorf("module cycle detected: %s",
-			strings.Join(append(l.callStack, resolvedPath), " -> "))
+		return nil, classified(ErrInvalid, fmt.Errorf("module cycle detected: %s",
+			strings.Join(append(l.callStack, resolvedPath), " -> ")))
 	}
 
 	if cached, ok := l.cache[resolvedPath]; ok {
@@ -193,7 +193,7 @@ func (l *Loader) LoadModule(ctx context.Context, source, versionConstraint, call
 
 	config, diags := l.parser.ParseDirectory(resolvedPath)
 	if diags.HasErrors() {
-		return nil, fmt.Errorf("parsing module: %s", diags.Error())
+		return nil, classified(ErrInvalid, fmt.Errorf("parsing module: %s", diags.Error()))
 	}
 
 	module := &LoadedModule{Config: config, SourcePath: resolvedPath, Version: resolvedVersion}
@@ -262,7 +262,7 @@ func statDir(p string) (string, error) {
 		return "", fmt.Errorf("accessing module directory: %w", err)
 	}
 	if !info.IsDir() {
-		return "", fmt.Errorf("module source is not a directory: %s", p)
+		return "", classified(ErrInvalid, fmt.Errorf("module source is not a directory: %s", p))
 	}
 	return p, nil
 }
@@ -272,7 +272,7 @@ func statDir(p string) (string, error) {
 func (l *networkResolver) fetchRemote(source, kind string) (string, error) {
 	pkgAddr, detectedSubdir, err := getmodules.NormalizePackageAddress(source)
 	if err != nil {
-		return "", fmt.Errorf("normalizing module source %q: %w", source, err)
+		return "", classified(ErrInvalid, fmt.Errorf("normalizing module source %q: %w", source, err))
 	}
 	if detectedSubdir != "" {
 		return "", fmt.Errorf("module source %q resolved to package %q with unexpected subdir %q",

@@ -450,6 +450,34 @@ func TestLoaderResolvesViaCustomResolver(t *testing.T) {
 	require.Equal(t, filepath.Join(pkg, "b"), b.SourcePath)
 }
 
+func TestLoadModule_ParseFailureIsErrInvalid(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name  string
+		files map[string]string
+	}{
+		{name: "no tf files", files: nil},
+		{name: "syntax error", files: map[string]string{"main.tf": `output "root" {`}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			pkg := t.TempDir()
+			for name, content := range tt.files {
+				require.NoError(t, os.WriteFile(filepath.Join(pkg, name), []byte(content), 0o600))
+			}
+
+			l := NewLoader(func(_, _, _ string) (string, string, error) {
+				return pkg, "", nil
+			})
+			_, err := l.LoadModule(t.Context(), "./mod", "", t.TempDir())
+			assert.ErrorIs(t, err, ErrInvalid)
+		})
+	}
+}
+
 // buildModuleTarGz packs `files` (name → content) into a gzipped tar archive
 // using the system `tar`. The returned bytes are the raw .tar.gz body that
 // PackageFetcher / go-getter can consume.
