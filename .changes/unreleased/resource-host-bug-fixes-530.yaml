@@ -1,6 +1,0 @@
-kind: bug-fixes
-body: Report module parse failures and other invalid-input errors as gRPC `InvalidArgument` instead of `Unknown`
-time: 2026-08-11T23:58:41Z
-custom:
-    Component: resource-host
-    PR: "530"
