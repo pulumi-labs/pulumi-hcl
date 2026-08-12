@@ -1,6 +1,0 @@
-kind: Improvements
-body: Serve one component per consumable module directory (root and `modules/<name>`), including packages with no root `.tf` files
-time: 2026-08-10T12:00:00Z
-custom:
-    Component: resource-host
-    PR: "529"

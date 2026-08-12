@@ -1,6 +1,0 @@
-kind: Improvements
-body: Support OpenTofu's `language` block, honoring `compatible_with { pulumi = "..." }` version constraints
-time: 2026-08-10T16:57:16Z
-custom:
-    Component: runtime
-    PR: "531"
