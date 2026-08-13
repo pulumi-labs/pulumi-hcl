@@ -2194,7 +2194,8 @@ func evalPreventDestroy(res *ast.Resource, hclCtx *hcl.EvalContext) (bool, error
 			res.Type+"."+res.Name, err)
 	}
 
-	return val.True(), nil
+	// Unknown counts as false for preview.
+	return !val.IsNull() && val.IsKnown() && val.True(), nil
 }
 
 // preventDestroyRefusal is returned from the destroy dispatcher for a guarded

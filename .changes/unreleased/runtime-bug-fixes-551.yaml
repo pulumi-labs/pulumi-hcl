@@ -1,0 +1,6 @@
+kind: bug-fixes
+body: Treat an unknown `prevent_destroy` as unset instead of panicking
+time: 2026-08-13T23:50:58Z
+custom:
+    Component: runtime
+    PR: "551"
