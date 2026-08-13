@@ -156,6 +156,15 @@ func (e *Evaluator) EvaluateCount(expr hcl.Expression) (count int, isBool bool, 
 		return 0, false, true, deps, nil
 	}
 
+	if val.IsNull() {
+		return 0, false, false, deps, hcl.Diagnostics{{
+			Severity: hcl.DiagError,
+			Summary:  "Invalid count value",
+			Detail:   "Count cannot be null.",
+			Subject:  expr.Range().Ptr(),
+		}}
+	}
+
 	if val.Type() == cty.Bool {
 		if val.True() {
 			return 1, true, false, deps, nil
