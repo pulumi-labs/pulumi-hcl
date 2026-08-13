@@ -1,0 +1,6 @@
+kind: bug-fixes
+body: Return a diagnostic instead of panicking when a `count` meta-argument is null
+time: 2026-08-13T23:24:24Z
+custom:
+    Component: runtime
+    PR: "550"

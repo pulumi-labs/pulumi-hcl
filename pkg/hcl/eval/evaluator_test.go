@@ -68,6 +68,8 @@ func TestEvaluateCount(t *testing.T) {
 	require.NoError(t, err)
 	ctx.SetVariable("instance_count", cty.NumberIntVal(3))
 	ctx.SetVariable("unknown_count", cty.UnknownVal(cty.Number))
+	ctx.SetVariable("null_count", cty.NullVal(cty.Number))
+	ctx.SetVariable("null_bool_count", cty.NullVal(cty.Bool))
 
 	eval := NewEvaluator(ctx)
 
@@ -86,6 +88,9 @@ func TestEvaluateCount(t *testing.T) {
 		{"bool_true", `true`, 1, true, false, false},
 		{"bool_false", `false`, 0, true, false, false},
 		{"unknown", `var.unknown_count`, 0, false, true, false},
+		{"null_number", `var.null_count`, 0, false, false, true},
+		{"null_bool", `var.null_bool_count`, 0, false, false, true},
+		{"null_literal", `null`, 0, false, false, true},
 	}
 
 	for _, tt := range tests {
