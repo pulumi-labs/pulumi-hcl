@@ -14,6 +14,10 @@ Run `changie new` from the repo root and answer the prompts:
 
 This writes a file under `.changes/unreleased/`. Commit it with your PR.
 
+The `Dependencies` kind is reserved for automated Renovate updates: a `postUpgradeTasks`
+hook runs `make renovate` (see `.github/scripts/renovate-changelog.sh`), so those
+fragments carry no component or PR number.
+
 2. **Cut a release PR.** 
 
 When you're ready to ship, run:
