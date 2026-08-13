@@ -148,8 +148,8 @@ type Case struct {
 	// matched positionally. For a case directory with numbered stage subdirs
 	// its length must equal the subdir count. For a flat directory each entry
 	// runs the whole directory's file set, so N entries drive N operations
-	// over the same program. Omitted entries (or a nil Stages) default to a
-	// plain apply.
+	// over the same program. A nil Stages runs each disk stage as a preview
+	// followed by an apply.
 	Stages []Stage
 
 	// SkipImport, when non-empty, skips the case's state checks with the
@@ -197,32 +197,37 @@ func RunCase(t *testing.T, caseName string, c Case) {
 }
 
 // resolveStages matches Case.Stages positionally against the file sets loaded
-// from disk. A flat case directory (one file set) fans out to max(1, len(meta))
-// stages over the same files; numbered stage dirs require len(meta) to be
-// zero or exactly the dir count.
+// from disk. A nil Stages runs each file set as preview then apply; otherwise
+// a flat case directory (one file set) fans out to len(meta) stages over the
+// same files, and numbered stage dirs require exactly one entry per dir.
 func resolveStages(fileSets []map[string]string, numbered bool, meta []Stage) ([]stageRun, error) {
+	if len(meta) == 0 {
+		// No explicit stages: each disk stage runs as preview then apply.
+		var runs []stageRun
+		for _, files := range fileSets {
+			runs = append(runs,
+				stageRun{files: files, Stage: Stage{Mode: StagePreview}},
+				stageRun{files: files, Stage: Stage{Mode: StageApply}})
+		}
+		return runs, nil
+	}
+
 	if numbered {
-		if len(meta) != 0 && len(meta) != len(fileSets) {
+		if len(meta) != len(fileSets) {
 			return nil, fmt.Errorf(
 				"case has %d numbered stage dirs but Case.Stages has %d entries",
 				len(fileSets), len(meta))
 		}
 		runs := make([]stageRun, len(fileSets))
 		for i, files := range fileSets {
-			runs[i] = stageRun{files: files}
-			if len(meta) != 0 {
-				runs[i].Stage = meta[i]
-			}
+			runs[i] = stageRun{files: files, Stage: meta[i]}
 		}
 		return runs, nil
 	}
 
-	runs := make([]stageRun, max(1, len(meta)))
+	runs := make([]stageRun, len(meta))
 	for i := range runs {
-		runs[i] = stageRun{files: fileSets[0]}
-		if i < len(meta) {
-			runs[i].Stage = meta[i]
-		}
+		runs[i] = stageRun{files: fileSets[0], Stage: meta[i]}
 	}
 	return runs, nil
 }

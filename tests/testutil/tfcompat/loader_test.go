@@ -34,7 +34,10 @@ func TestResolveStages(t *testing.T) {
 		t.Parallel()
 		runs, err := resolveStages([]map[string]string{a}, false, nil)
 		require.NoError(t, err)
-		assert.Equal(t, []stageRun{{files: a}}, runs)
+		assert.Equal(t, []stageRun{
+			{files: a, Stage: Stage{Mode: StagePreview}},
+			{files: a, Stage: Stage{Mode: StageApply}},
+		}, runs)
 	})
 
 	t.Run("flat fans out over metadata", func(t *testing.T) {
@@ -67,7 +70,12 @@ func TestResolveStages(t *testing.T) {
 		t.Parallel()
 		runs, err := resolveStages([]map[string]string{a, b}, true, nil)
 		require.NoError(t, err)
-		assert.Equal(t, []stageRun{{files: a}, {files: b}}, runs)
+		assert.Equal(t, []stageRun{
+			{files: a, Stage: Stage{Mode: StagePreview}},
+			{files: a, Stage: Stage{Mode: StageApply}},
+			{files: b, Stage: Stage{Mode: StagePreview}},
+			{files: b, Stage: Stage{Mode: StageApply}},
+		}, runs)
 	})
 
 	t.Run("numbered count mismatch", func(t *testing.T) {
