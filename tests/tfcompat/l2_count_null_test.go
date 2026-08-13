@@ -21,11 +21,7 @@ import (
 	"github.com/pulumi/pulumi-hcl/tests/testutil/tfcompat/providers"
 )
 
-// A count meta-argument that evaluates to null. OpenTofu rejects it with a
-// clean diagnostic ("count" must not be null). pulumi-hcl's EvaluateCount
-// checks IsKnown (null is known) but never IsNull, converts the null to a null
-// number, and calls AsBigFloat() on it, which panics ("value is null") and
-// crashes the language host instead of returning a diagnostic.
+// A count meta-argument that evaluates to null.
 func TestL2CountNull(t *testing.T) {
 	t.Parallel()
 	tfcompat.RunCase(t, "l2_count_null", tfcompat.Case{
