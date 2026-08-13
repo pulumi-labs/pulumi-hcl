@@ -208,6 +208,15 @@ func TestEvaluateForEach(t *testing.T) {
 		}
 	})
 
+	t.Run("set with null element rejected", func(t *testing.T) {
+		t.Parallel()
+		expr := parseExpr(t, `toset(["a", null])`)
+		_, _, _, diags := eval.EvaluateForEach(expr)
+		require.Len(t, diags, 1)
+		assert.Equal(t, "Invalid for_each value", diags[0].Summary)
+		assert.Equal(t, "for_each set must not contain null values.", diags[0].Detail)
+	})
+
 	t.Run("nil returns nil", func(t *testing.T) {
 		t.Parallel()
 		result, unknown, _, diags := eval.EvaluateForEach(nil)

@@ -257,6 +257,15 @@ func (e *Evaluator) EvaluateForEach(expr hcl.Expression) (result map[string]cty.
 		for it := val.ElementIterator(); it.Next(); {
 			_, v := it.Element()
 			unmarkedV, _ := v.Unmark()
+			if unmarkedV.IsNull() {
+				diags = append(diags, &hcl.Diagnostic{
+					Severity: hcl.DiagError,
+					Summary:  "Invalid for_each value",
+					Detail:   "for_each set must not contain null values.",
+					Subject:  expr.Range().Ptr(),
+				})
+				return nil, false, deps, diags
+			}
 			result[unmarkedV.AsString()] = v
 		}
 	default:
