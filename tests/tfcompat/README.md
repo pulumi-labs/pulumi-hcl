@@ -35,8 +35,10 @@ loaded and fed verbatim to both paths.
 ## Stages
 
 Each case runs as one or more *stages* — sequential operations against the
-same stack. A stage is an apply by default; `Case.Stages` attaches optional
-per-stage behavior, matched positionally against the stages loaded from disk:
+same stack. With no `Case.Stages`, each file set loaded from disk runs as a
+preview followed by an apply. Setting `Case.Stages` replaces that default
+entirely, attaching per-stage behavior matched positionally against the stages
+loaded from disk:
 
 ```go
 type Stage struct {
