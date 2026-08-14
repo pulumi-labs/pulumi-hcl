@@ -76,6 +76,8 @@ func unionProvider() gp.Provider {
 
 // TestL2UnionDiscriminatorSensitive applies a union whose discriminator is a
 // sensitive (marked) value; it must be unmarked before it is compared.
+//
+// TODO[https://github.com/pulumi/pulumi/pull/24337]: This test can be replaced by a conformance test.
 func TestL2UnionDiscriminatorSensitive(t *testing.T) {
 	t.Parallel()
 	putest.RunCase(t, "l2_union_discriminator_sensitive", putest.Case{
@@ -86,6 +88,8 @@ func TestL2UnionDiscriminatorSensitive(t *testing.T) {
 // TestL2UnionDiscriminatorUnknown previews a union whose discriminator is a
 // computed output, unknown during preview; the variant cannot be chosen so the
 // conversion defers instead of comparing an unknown value.
+//
+// TODO[https://github.com/pulumi/pulumi/pull/24337]: This test can be replaced by a conformance test.
 func TestL2UnionDiscriminatorUnknown(t *testing.T) {
 	t.Parallel()
 	putest.RunCase(t, "l2_union_discriminator_unknown", putest.Case{
