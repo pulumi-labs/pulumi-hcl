@@ -171,8 +171,9 @@ type blockEntry struct {
 	moduleTarget bool
 	// preventDestroy refuses the orphan's delete: the block is still in
 	// configuration with its lifecycle guard set (a count shrink or dropped
-	// for_each key), so its instances may not be destroyed.
-	preventDestroy bool
+	// for_each key), so its instances may not be destroyed. A known-null guard
+	// errors the delete the way OpenTofu does.
+	preventDestroy preventDestroyGuard
 	// guardErr is a prevent_destroy evaluation failure, surfaced when an
 	// orphan of this block is actually deleted: a guard that cannot be
 	// evaluated must refuse the delete, not silently allow it.
@@ -218,8 +219,11 @@ func (b *blockEntry) run(ctx context.Context, args *ResourceHookArgs) error {
 	if b.guardErr != nil {
 		return b.guardErr
 	}
-	if b.preventDestroy {
+	switch b.preventDestroy {
+	case preventDestroyRefuse:
 		return preventDestroyRefusal(name)
+	case preventDestroyNull:
+		return preventDestroyNullRefusal(name)
 	}
 	if b.dryRun {
 		// Provisioners never run during plan.
@@ -337,8 +341,8 @@ func (e *Engine) recordBlockEntry(
 ) {
 	// Per-instance symbols are rejected by evalPreventDestroy, so the block's
 	// module scope evaluates the guard the same way the live-instance path does.
-	guarded, guardErr := evalPreventDestroy(res, evalCtx.HCLContext())
-	if guardErr == nil && !guarded && !hasDestroyProvisioners(res) {
+	guard, guardErr := evalPreventDestroy(res, evalCtx.HCLContext())
+	if guardErr == nil && guard == preventDestroyAllow && !hasDestroyProvisioners(res) {
 		return
 	}
 
@@ -354,7 +358,7 @@ func (e *Engine) recordBlockEntry(
 		token:          resSchema.Token,
 		prefix:         prefix,
 		evalCtx:        evalCtx,
-		preventDestroy: guarded,
+		preventDestroy: guard,
 		guardErr:       guardErr,
 	}
 	_, entry.parentChain = urnTypes(string(probeURN))

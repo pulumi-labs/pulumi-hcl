@@ -1,5 +1,5 @@
 kind: bug-fixes
-body: Treat an unknown `prevent_destroy` as unset instead of panicking
+body: Stop panicking on an unknown `prevent_destroy` and refuse a known-null one at destroy
 time: 2026-08-13T23:50:58Z
 custom:
     Component: runtime
