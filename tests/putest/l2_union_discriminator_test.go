@@ -20,9 +20,9 @@ import (
 	"testing"
 
 	gp "github.com/pulumi/pulumi-go-provider"
+	"github.com/pulumi/pulumi-hcl/tests/testutil/putest"
 	"github.com/pulumi/pulumi/pkg/v3/codegen/schema"
 	"github.com/pulumi/pulumi/sdk/v3/go/property"
-	"github.com/pulumi/pulumi-hcl/tests/testutil/putest"
 )
 
 // unionProvider is a native provider whose `union:index:Thing` resource takes a
