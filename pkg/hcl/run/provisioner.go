@@ -48,7 +48,7 @@ func (e *Engine) bindGlobalHooks(
 	opts *ResourceOptions,
 	resourceName string,
 ) error {
-	if len(res.Provisioners) == 0 && !opts.PreventDestroy {
+	if len(res.Provisioners) == 0 && opts.PreventDestroy == preventDestroyAllow {
 		return nil
 	}
 	if opts.Hooks == nil {
@@ -85,14 +85,20 @@ func (e *Engine) bindGlobalHooks(
 }
 
 // preventDestroyHook returns the hook refusing this instance's delete, or nil
-// when the lifecycle guard is not set.
+// when the lifecycle guard allows it. A known-null guard errors the delete.
 func preventDestroyHook(opts *ResourceOptions, instance *graph.ExpandedResource) ResourceHookFunction {
-	if !opts.PreventDestroy {
-		return nil
-	}
 	addr := instance.Key.String()
-	return func(context.Context, *ResourceHookArgs) error {
-		return preventDestroyRefusal(addr)
+	switch opts.PreventDestroy {
+	case preventDestroyRefuse:
+		return func(context.Context, *ResourceHookArgs) error {
+			return preventDestroyRefusal(addr)
+		}
+	case preventDestroyNull:
+		return func(context.Context, *ResourceHookArgs) error {
+			return preventDestroyNullRefusal(addr)
+		}
+	default:
+		return nil
 	}
 }
 

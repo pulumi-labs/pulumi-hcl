@@ -1743,7 +1743,7 @@ func (e *Engine) registerResourceInstanceInContext(
 		}
 	}
 
-	if len(res.Provisioners) > 0 || opts.PreventDestroy {
+	if len(res.Provisioners) > 0 || opts.PreventDestroy != preventDestroyAllow {
 		if err := e.bindGlobalHooks(ctx, res, resSchema, resourceMapping, instance, evalCtx, opts, resourceName); err != nil {
 			return err
 		}
@@ -1839,11 +1839,11 @@ func (e *Engine) buildResourceOptions(
 
 	// Handle lifecycle options
 	if res.Lifecycle != nil {
-		guarded, err := evalPreventDestroy(res, hclCtx)
+		guard, err := evalPreventDestroy(res, hclCtx)
 		if err != nil {
 			return nil, err
 		}
-		opts.PreventDestroy = guarded
+		opts.PreventDestroy = guard
 		// ignore_changes maps to ignoreChanges. The traversal names are TF
 		// (snake_case) attribute names; the Pulumi engine matches ignoreChanges
 		// paths against Pulumi (camelCase) property names, so they must be
@@ -2165,18 +2165,33 @@ func (e *Engine) buildResourceOptions(
 	return opts, nil
 }
 
-// evalPreventDestroy evaluates res's lifecycle.prevent_destroy in hclCtx. An
-// unknown value (a computed reference during preview) counts as unset.
-// References to per-instance symbols are rejected statically: the guard must
-// be evaluable for instances that have already been removed from the
+// preventDestroyGuard is the delete-time decision for a resource's
+// lifecycle.prevent_destroy; it is consulted only when a destroy is planned, so
+// create and update are always inert.
+type preventDestroyGuard int
+
+const (
+	// preventDestroyAllow lets the delete proceed: unset, false, or unknown.
+	preventDestroyAllow preventDestroyGuard = iota
+	// preventDestroyRefuse refuses the delete: prevent_destroy is true.
+	preventDestroyRefuse
+	// preventDestroyNull errors the delete: prevent_destroy is a known null.
+	preventDestroyNull
+)
+
+// evalPreventDestroy evaluates res's lifecycle.prevent_destroy in hclCtx into a
+// delete-time guard. An unknown value allows the delete; a known null becomes
+// preventDestroyNull, surfaced by the delete hook rather than failing the
+// create. References to per-instance symbols are rejected statically: the guard
+// must be evaluable for instances that have already been removed from the
 // configuration, whose per-instance data is gone.
-func evalPreventDestroy(res *ast.Resource, hclCtx *hcl.EvalContext) (bool, error) {
+func evalPreventDestroy(res *ast.Resource, hclCtx *hcl.EvalContext) (preventDestroyGuard, error) {
 	if res.Lifecycle == nil || res.Lifecycle.PreventDestroy == nil {
-		return false, nil
+		return preventDestroyAllow, nil
 	}
 	for _, trav := range res.Lifecycle.PreventDestroy.Variables() {
 		if root := trav.RootName(); root == "count" || root == "each" {
-			return false, fmt.Errorf(
+			return preventDestroyAllow, fmt.Errorf(
 				"invalid reference in prevent_destroy on %q: the argument cannot refer to %s.*, "+
 					"because it must be evaluable for instances that have already been removed from the configuration",
 				res.Type+"."+res.Name, root)
@@ -2184,17 +2199,25 @@ func evalPreventDestroy(res *ast.Resource, hclCtx *hcl.EvalContext) (bool, error
 	}
 	val, diags := res.Lifecycle.PreventDestroy.Value(hclCtx)
 	if diags.HasErrors() {
-		return false, fmt.Errorf("evaluating prevent_destroy on %q: %s",
+		return preventDestroyAllow, fmt.Errorf("evaluating prevent_destroy on %q: %s",
 			res.Type+"."+res.Name, diags.Error())
 	}
 	val, _ = val.Unmark()
 	val, err := ctyconvert.Convert(val, cty.Bool)
 	if err != nil {
-		return false, fmt.Errorf("invalid prevent_destroy value on %q: %w",
+		return preventDestroyAllow, fmt.Errorf("invalid prevent_destroy value on %q: %w",
 			res.Type+"."+res.Name, err)
 	}
-
-	return val.True(), nil
+	switch {
+	case !val.IsKnown():
+		return preventDestroyAllow, nil
+	case val.IsNull():
+		return preventDestroyNull, nil
+	case val.True():
+		return preventDestroyRefuse, nil
+	default:
+		return preventDestroyAllow, nil
+	}
 }
 
 // preventDestroyRefusal is returned from the destroy dispatcher for a guarded
@@ -2203,6 +2226,14 @@ func preventDestroyRefusal(addr string) error {
 	return fmt.Errorf(
 		"resource instance %s has prevent_destroy set, but the plan calls for it to be destroyed. "+
 			"To proceed, disable prevent_destroy for this resource", addr)
+}
+
+// preventDestroyNullRefusal is returned when a to-be-destroyed instance's
+// prevent_destroy is a known null.
+func preventDestroyNullRefusal(addr string) error {
+	return fmt.Errorf(
+		"resource instance %s has prevent_destroy set to null; when making a dynamic "+
+			"decision to allow destroy, use false instead", addr)
 }
 
 // resolveMovedAliases finds the `moved` blocks that rename the resource instance
@@ -3215,7 +3246,7 @@ type ResourceOptions struct {
 	// engine: the guard must be re-evaluated from current configuration on
 	// every run, while an engine option would persist in state. Never
 	// forwarded to RegisterResource.
-	PreventDestroy bool
+	PreventDestroy preventDestroyGuard
 }
 
 // registerResource registers a resource with the Pulumi engine. tfType is the

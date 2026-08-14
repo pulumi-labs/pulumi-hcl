@@ -1,0 +1,6 @@
+kind: bug-fixes
+body: Stop panicking on an unknown `prevent_destroy` and refuse a known-null one at destroy
+time: 2026-08-13T23:50:58Z
+custom:
+    Component: runtime
+    PR: "551"
