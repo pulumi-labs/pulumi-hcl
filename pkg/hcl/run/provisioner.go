@@ -85,8 +85,7 @@ func (e *Engine) bindGlobalHooks(
 }
 
 // preventDestroyHook returns the hook refusing this instance's delete, or nil
-// when the lifecycle guard allows it. A known-null guard errors the delete the
-// way OpenTofu does, demanding an explicit false.
+// when the lifecycle guard allows it. A known-null guard errors the delete.
 func preventDestroyHook(opts *ResourceOptions, instance *graph.ExpandedResource) ResourceHookFunction {
 	addr := instance.Key.String()
 	switch opts.PreventDestroy {

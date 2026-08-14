@@ -172,7 +172,7 @@ type blockEntry struct {
 	// preventDestroy refuses the orphan's delete: the block is still in
 	// configuration with its lifecycle guard set (a count shrink or dropped
 	// for_each key), so its instances may not be destroyed. A known-null guard
-	// errors the delete the way OpenTofu does.
+	// errors the delete instead.
 	preventDestroy preventDestroyGuard
 	// guardErr is a prevent_destroy evaluation failure, surfaced when an
 	// orphan of this block is actually deleted: a guard that cannot be

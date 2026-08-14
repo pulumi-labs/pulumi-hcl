@@ -2166,29 +2166,25 @@ func (e *Engine) buildResourceOptions(
 }
 
 // preventDestroyGuard is the delete-time decision for a resource's
-// lifecycle.prevent_destroy. Like OpenTofu, the guard is consulted only when a
-// destroy is planned: on create or update every state is inert.
+// lifecycle.prevent_destroy; it is consulted only when a destroy is planned, so
+// create and update are always inert.
 type preventDestroyGuard int
 
 const (
-	// preventDestroyAllow lets the delete proceed: prevent_destroy is unset,
-	// false, or unknown (a computed reference during preview).
+	// preventDestroyAllow lets the delete proceed: unset, false, or unknown.
 	preventDestroyAllow preventDestroyGuard = iota
 	// preventDestroyRefuse refuses the delete: prevent_destroy is true.
 	preventDestroyRefuse
-	// preventDestroyNull errors the delete: prevent_destroy is a known null,
-	// which OpenTofu refuses to interpret as either guarded or unguarded.
+	// preventDestroyNull errors the delete: prevent_destroy is a known null.
 	preventDestroyNull
 )
 
 // evalPreventDestroy evaluates res's lifecycle.prevent_destroy in hclCtx into a
-// delete-time guard. An unknown value (a computed reference during preview)
-// allows the delete; a known null becomes preventDestroyNull, which OpenTofu
-// rejects only when a destroy is actually planned, so it is surfaced by the
-// delete hook rather than failing the create. References to per-instance
-// symbols are rejected statically: the guard must be evaluable for instances
-// that have already been removed from the configuration, whose per-instance
-// data is gone.
+// delete-time guard. An unknown value allows the delete; a known null becomes
+// preventDestroyNull, surfaced by the delete hook rather than failing the
+// create. References to per-instance symbols are rejected statically: the guard
+// must be evaluable for instances that have already been removed from the
+// configuration, whose per-instance data is gone.
 func evalPreventDestroy(res *ast.Resource, hclCtx *hcl.EvalContext) (preventDestroyGuard, error) {
 	if res.Lifecycle == nil || res.Lifecycle.PreventDestroy == nil {
 		return preventDestroyAllow, nil
@@ -2233,8 +2229,7 @@ func preventDestroyRefusal(addr string) error {
 }
 
 // preventDestroyNullRefusal is returned when a to-be-destroyed instance's
-// prevent_destroy is a known null; OpenTofu emits the same demand for an
-// explicit false.
+// prevent_destroy is a known null.
 func preventDestroyNullRefusal(addr string) error {
 	return fmt.Errorf(
 		"resource instance %s has prevent_destroy set to null; when making a dynamic "+
