@@ -2143,11 +2143,19 @@ func selectUnionMemberByConst(val cty.Value, u *schema.UnionType) (schema.Type, 
 
 	attrs := val.AsValueMap()
 	discVal, ok := attrs[hclName]
+	if ok {
+		discVal, _ = discVal.Unmark()
+	}
 	if !ok || discVal.IsNull() {
 		return nil, &missingDiscriminatorError{
 			Discriminator: hclName,
 			Allowed:       allowed,
 		}
+	}
+	if !discVal.IsKnown() {
+		// The discriminator is a computed value not yet known, so the variant
+		// cannot be chosen; a generic object conversion is used instead.
+		return nil, nil
 	}
 
 	for _, c := range withConst {

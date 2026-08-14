@@ -1,0 +1,6 @@
+kind: bug-fixes
+body: Stop panicking on a marked or unknown discriminated-union discriminator
+time: 2026-08-14T00:46:33Z
+custom:
+    Component: runtime
+    PR: "552"
