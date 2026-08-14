@@ -30,6 +30,7 @@ import (
 
 	pfprovider "github.com/hashicorp/terraform-plugin-framework/provider"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	gp "github.com/pulumi/pulumi-go-provider"
 	"github.com/pulumi/pulumi-hcl/tests/testutil"
 	"github.com/pulumi/pulumi-hcl/tests/testutil/pulexec"
 	"github.com/pulumi/pulumi-hcl/tests/testutil/tfexec"
@@ -43,10 +44,14 @@ import (
 type Provider struct {
 	Name string
 	// Factory builds an SDKv2 (helper/schema) provider. Exactly one of
-	// Factory and PFFactory must be set.
+	// Factory, PFFactory, and Native must be set.
 	Factory func() *schema.Provider
 	// PFFactory builds a terraform-plugin-framework provider.
 	PFFactory func() pfprovider.Provider
+	// Native builds a native pulumi-go-provider.
+	//
+	// It is an error to set Customize & Native.
+	Native func() gp.Provider
 	// Customize, if non-nil, runs against the bridged ProviderInfo so tests
 	// can apply non-default Pulumi-side renames (or any other ProviderInfo
 	// tweak) to exercise the bridge mapping behaviour.
@@ -58,6 +63,9 @@ type Case struct {
 	Providers []Provider
 	// Config is set as stack config.
 	Config map[string]string
+	// NoPreview skips the `pulumi preview` that otherwise precedes each stage's
+	// `pulumi up`. Assertions run against the apply.
+	NoPreview bool
 	// ExpectedOutputs, if non-nil, must equal the stack outputs exactly.
 	// Non-string outputs appear in their compact-JSON form (see
 	// pulexec.Result).
@@ -85,22 +93,31 @@ func RunCase(t *testing.T, caseName string, c Case) {
 
 	rec := &tfexec.Recorder{}
 	provs := make([]pulexec.Provider, len(c.Providers))
-	for i, p := range c.Providers {
+	for i, prov := range c.Providers {
 		switch {
-		case p.Factory != nil && p.PFFactory == nil:
-			factory := p.Factory
-			provs[i] = pulexec.SDKv2Provider(t, p.Name,
-				func() *schema.Provider { return tfexec.Wrap(factory(), rec) }, p.Customize)
-		case p.PFFactory != nil && p.Factory == nil:
-			provs[i] = pulexec.PFProvider(t, p.Name, p.PFFactory, rec, p.Customize)
+		case prov.Factory != nil && prov.PFFactory == nil && prov.Native == nil:
+			factory := prov.Factory
+			provs[i] = pulexec.SDKv2Provider(t, prov.Name,
+				func() *schema.Provider { return tfexec.Wrap(factory(), rec) }, prov.Customize)
+		case prov.PFFactory != nil && prov.Factory == nil && prov.Native == nil:
+			provs[i] = pulexec.PFProvider(t, prov.Name, prov.PFFactory, rec, prov.Customize)
+		case prov.Native != nil && prov.Factory == nil && prov.PFFactory == nil:
+			if prov.Customize != nil {
+				t.Fatalf("provider %q: Customize does not apply to a Native provider", prov.Name)
+			}
+			provs[i] = pulexec.NativeProvider(prov.Name, "0.0.1", prov.Native())
 		default:
-			t.Fatalf("provider %q: exactly one of Factory or PFFactory must be set", p.Name)
+			t.Fatalf("provider %q: exactly one of Factory, PFFactory, or Native must be set", prov.Name)
 		}
 	}
 
 	driver := pulexec.NewDriver(t, provs, c.Config)
 	var res pulexec.Result
 	for i, files := range stages {
+		if !c.NoPreview {
+			_, err = driver.Preview(t, files)
+			require.NoErrorf(t, err, "stage %d: pulumi preview failed", i)
+		}
 		res, err = driver.TryApply(t, files)
 		require.NoErrorf(t, err, "stage %d: pulumi up failed", i)
 	}
