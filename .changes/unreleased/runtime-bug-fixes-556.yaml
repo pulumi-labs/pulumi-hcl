@@ -1,0 +1,6 @@
+kind: bug-fixes
+body: Handle null resource `aliases`
+time: 2026-08-17T20:07:11Z
+custom:
+    Component: runtime
+    PR: "556"
