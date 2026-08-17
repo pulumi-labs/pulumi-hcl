@@ -2772,6 +2772,9 @@ func (e *Engine) evaluateAliases(expr hcl.Expression) ([]Alias, error) {
 	if diags.HasErrors() {
 		return nil, diags
 	}
+	if val.IsNull() {
+		return nil, nil
+	}
 	if !val.Type().IsListType() && !val.Type().IsTupleType() {
 		return nil, fmt.Errorf("aliases must be a list")
 	}
