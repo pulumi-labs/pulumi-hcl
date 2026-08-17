@@ -38,6 +38,9 @@ func OrderProvider() *schema.Provider {
 	const delay = 1 * time.Second
 	noop := func(_ context.Context, _ *schema.ResourceData, _ any) diag.Diagnostics { return nil }
 	return &schema.Provider{
+		Schema: map[string]*schema.Schema{
+			"token": {Type: schema.TypeString, Optional: true},
+		},
 		DataSourcesMap: map[string]*schema.Resource{
 			"order_data": {
 				Schema: map[string]*schema.Schema{
