@@ -1396,6 +1396,59 @@ func providerExprKey(expr hcl.Expression) string {
 	return name
 }
 
+// evalSchemaInputs evaluates schema inputs and reports successful values.
+func evalSchemaInputs(
+	hclCtx *hcl.EvalContext,
+	onEvaluated func(resource.PropertyKey, cty.Value),
+) transform.EvalFunc {
+	return func(propKey resource.PropertyKey, expr hcl.Expression, extraVars map[string]cty.Value) (cty.Value, hcl.Diagnostics) {
+		c := hclCtx
+		if len(extraVars) > 0 {
+			c = hclCtx.NewChild()
+			c.Variables = extraVars
+		}
+		val, diags := expr.Value(c)
+		if !diags.HasErrors() && onEvaluated != nil {
+			onEvaluated(propKey, val)
+		}
+		return val, diags
+	}
+}
+
+// evalResourceInputs evaluates resource inputs and records property dependencies.
+func evalResourceInputs(
+	hclCtx *hcl.EvalContext,
+	inputProperties []*schema.Property,
+	onEvaluated func(resource.PropertyKey, cty.Value),
+) (transform.EvalFunc, map[string][]string) {
+	plainInputProps := make(map[string]bool, len(inputProperties))
+	for _, p := range inputProperties {
+		plainInputProps[p.Name] = p.Plain
+	}
+
+	dependsOn := make(map[string][]string)
+	record := func(propKey resource.PropertyKey, val cty.Value) {
+		if onEvaluated != nil {
+			onEvaluated(propKey, val)
+		}
+
+		prop := string(propKey)
+		if _, ok := dependsOn[prop]; !ok {
+			dependsOn[prop] = nil
+		}
+		if plainInputProps[prop] {
+			return
+		}
+		for _, urn := range eval.CollectDepURNs(val) {
+			idx, found := slices.BinarySearch(dependsOn[prop], urn)
+			if !found {
+				dependsOn[prop] = slices.Insert(dependsOn[prop], idx, urn)
+			}
+		}
+	}
+	return evalSchemaInputs(hclCtx, record), dependsOn
+}
+
 func (e *Engine) registerProviderInContext(
 	ctx context.Context, node *graph.Node, provider *ast.Provider,
 	evalCtx *eval.Context, parentURN urn.URN, modInst *moduleInstance,
@@ -1422,16 +1475,9 @@ func (e *Engine) registerProviderInContext(
 	}
 
 	providerMapping := e.resolver.ProviderConfigBodyMapping(ctx, pkgName)
-	inputsMap, _, diags := transform.EvalResourceWithSchema(provider.Config, resSchema, providerMapping,
-		func(_ resource.PropertyKey, expr hcl.Expression, extraVars map[string]cty.Value) (cty.Value, hcl.Diagnostics) {
-			c := hclCtx
-			if len(extraVars) > 0 {
-				child := hclCtx.NewChild()
-				child.Variables = extraVars
-				c = child
-			}
-			return expr.Value(c)
-		})
+	inputEval, dependsOn := evalResourceInputs(hclCtx, resSchema.InputProperties, nil)
+	inputsMap, _, diags := transform.EvalResourceWithSchema(
+		provider.Config, resSchema, providerMapping, inputEval)
 	if diags.HasErrors() {
 		return fmt.Errorf("evaluating provider %s config: %s", provider.Name, diags.Error())
 	}
@@ -1530,6 +1576,11 @@ func (e *Engine) registerProviderInContext(
 	}
 
 	req.Inputs = property.NewMap(inputs)
+	req.PropertyDependencies = dependsOn
+	for _, deps := range dependsOn {
+		req.Dependencies = append(req.Dependencies, deps...)
+	}
+	req.Dependencies = e.cellURNs.widen(req.Dependencies)
 
 	resp, err := e.resmon.RegisterResource(ctx, req)
 	if err != nil {
@@ -1596,20 +1647,6 @@ func (e *Engine) registerResourceInstanceInContext(
 
 	hclCtx := evalCtx.HCLContext()
 
-	dependsOn := make(map[string][]string)
-	addToDependsOn := func(prop, urn string) {
-		idx, found := slices.BinarySearch(dependsOn[prop], urn)
-		if found {
-			return
-		}
-		dependsOn[prop] = slices.Insert(dependsOn[prop], idx, urn)
-	}
-
-	plainInputProps := make(map[string]bool, len(resSchema.InputProperties))
-	for _, p := range resSchema.InputProperties {
-		plainInputProps[p.Name] = p.Plain
-	}
-
 	resourceMapping := e.resolver.ResourceBodyMapping(ctx, res.Type)
 	// terraform_data's attributes are dynamically typed, so their cty types
 	// (e.g. set-ness) survive the Pulumi property round-trip only via the
@@ -1618,45 +1655,14 @@ func (e *Engine) registerResourceInstanceInContext(
 	if res.Type == packages.TerraformDataType {
 		tdataEvaluated = map[string]cty.Value{}
 	}
-	resourceInputs, ephemeralPaths, diags := transform.EvalResourceWithSchema(res.Config, resSchema, resourceMapping,
-		func(propKey resource.PropertyKey, expr hcl.Expression, extraVars map[string]cty.Value) (cty.Value, hcl.Diagnostics) {
-			var val cty.Value
-			var diags hcl.Diagnostics
-			if len(extraVars) > 0 {
-				childCtx := hclCtx.NewChild()
-				childCtx.Variables = extraVars
-				val, diags = expr.Value(childCtx)
-			} else {
-				val, diags = expr.Value(hclCtx)
-			}
-			if diags.HasErrors() {
-				return val, diags
-			}
-
+	inputEval, dependsOn := evalResourceInputs(hclCtx, resSchema.InputProperties,
+		func(propKey resource.PropertyKey, val cty.Value) {
 			if tdataEvaluated != nil {
 				tdataEvaluated[string(propKey)] = val
 			}
-
-			// Record every evaluated property, even with no dependencies: an
-			// absent PropertyDependencies map makes the engine assume every
-			// property depends on every entry in Dependencies — but those
-			// include ordering-only dependencies (widened instance sets,
-			// depends_on, replace_triggered_by), and a delete-before-replace
-			// of such a target would then spuriously replace this resource.
-			if _, ok := dependsOn[string(propKey)]; !ok {
-				dependsOn[string(propKey)] = nil
-			}
-
-			if plainInputProps[string(propKey)] {
-				return val, diags
-			}
-
-			for _, urn := range eval.CollectDepURNs(val) {
-				addToDependsOn(string(propKey), urn)
-			}
-
-			return val, diags
 		})
+	resourceInputs, ephemeralPaths, diags := transform.EvalResourceWithSchema(
+		res.Config, resSchema, resourceMapping, inputEval)
 	if diags.HasErrors() {
 		return diags
 	}
@@ -3392,27 +3398,13 @@ func (e *Engine) invokeDataSourceOnce(
 	}
 
 	dataSourceMapping := e.resolver.DataSourceBodyMapping(ctx, ds.Type)
-	inputs, diags := transform.EvalFunctionWithSchema(ds.Config, funcSchema, dataSourceMapping,
-		func(propKey resource.PropertyKey, expr hcl.Expression, extraVars map[string]cty.Value) (cty.Value, hcl.Diagnostics) {
-			var val cty.Value
-			var diags hcl.Diagnostics
-			if len(extraVars) > 0 {
-				childCtx := hclCtx.NewChild()
-				childCtx.Variables = extraVars
-				val, diags = expr.Value(childCtx)
-			} else {
-				val, diags = expr.Value(hclCtx)
-			}
-			if diags.HasErrors() {
-				return val, diags
-			}
-
-			for _, urn := range eval.CollectDepURNs(val) {
-				addURN(urn)
-			}
-
-			return val, diags
-		})
+	inputEval := evalSchemaInputs(hclCtx, func(_ resource.PropertyKey, val cty.Value) {
+		for _, urn := range eval.CollectDepURNs(val) {
+			addURN(urn)
+		}
+	})
+	inputs, diags := transform.EvalFunctionWithSchema(
+		ds.Config, funcSchema, dataSourceMapping, inputEval)
 	if diags.HasErrors() {
 		return cty.NilVal, diags
 	}
@@ -3693,15 +3685,9 @@ func (e *Engine) processCall(ctx context.Context, node *graph.Node) error {
 		filteredFunc.Inputs = &filteredInputs
 	}
 
-	userArgs, diags := transform.EvalFunctionWithSchema(call.Config, &filteredFunc, nil,
-		func(_ resource.PropertyKey, expr hcl.Expression, extraVars map[string]cty.Value) (cty.Value, hcl.Diagnostics) {
-			if len(extraVars) > 0 {
-				childCtx := e.evaluator.Context().HCLContext().NewChild()
-				childCtx.Variables = extraVars
-				return expr.Value(childCtx)
-			}
-			return e.evaluator.EvaluateExpression(expr)
-		})
+	userArgs, diags := transform.EvalFunctionWithSchema(
+		call.Config, &filteredFunc, nil,
+		evalSchemaInputs(e.evaluator.Context().HCLContext(), nil))
 	if diags.HasErrors() {
 		return fmt.Errorf("evaluating call arguments for %s.%s: %s", call.ResourceName, call.MethodName, diags.Error())
 	}

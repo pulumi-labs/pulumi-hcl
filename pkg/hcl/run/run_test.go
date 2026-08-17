@@ -5341,18 +5341,20 @@ resource "simple_resource" "r" {
 
 	assert.Equal(t, []run.RegisterResourceRequest{
 		{
-			Type:   "pulumi:providers:simple",
-			Name:   `by_key["a"]`,
-			Inputs: property.NewMap(map[string]property.Value{"prefix": property.New("alpha")}),
-			Custom: true,
-			Parent: stackURN,
+			Type:                 "pulumi:providers:simple",
+			Name:                 `by_key["a"]`,
+			Inputs:               property.NewMap(map[string]property.Value{"prefix": property.New("alpha")}),
+			PropertyDependencies: map[string][]string{"prefix": nil},
+			Custom:               true,
+			Parent:               stackURN,
 		},
 		{
-			Type:   "pulumi:providers:simple",
-			Name:   `by_key["b"]`,
-			Inputs: property.NewMap(map[string]property.Value{"prefix": property.New("beta")}),
-			Custom: true,
-			Parent: stackURN,
+			Type:                 "pulumi:providers:simple",
+			Name:                 `by_key["b"]`,
+			Inputs:               property.NewMap(map[string]property.Value{"prefix": property.New("beta")}),
+			PropertyDependencies: map[string][]string{"prefix": nil},
+			Custom:               true,
+			Parent:               stackURN,
 		},
 	}, providerRegs)
 
@@ -5361,6 +5363,79 @@ resource "simple_resource" "r" {
 		`urn:pulumi:test::project::pulumi:providers:simple::by_key["a"]::by_key["a"]-id`,
 		resourceReg.Provider,
 		"the resource must bind to the provider instance selected by its key")
+}
+
+// A provider configuration that consumes a resource output must carry that
+// dependency on its provider-resource registration. The program graph already
+// orders config before the provider during this run; the registration metadata
+// is what preserves the reverse ordering for a later state-driven destroy.
+func TestEngine_ProviderConfigDependencies(t *testing.T) {
+	t.Parallel()
+
+	src := []byte(`
+resource "simple_resource" "config" {
+  input = "token"
+}
+
+provider "simple" {
+  alias  = "configured"
+  prefix = simple_resource.config.input
+}
+
+resource "simple_resource" "consumer" {
+  provider = simple.configured
+  input    = "value"
+}
+`)
+
+	p := parser.NewParser()
+	config, diags := p.ParseSource("test.hcl", src)
+	require.False(t, diags.HasErrors(), "parse error: %s", diags.Error())
+
+	mock := &testutil.MockResourceMonitor{}
+	engine := newTestEngine(t, config, &run.EngineOptions{
+		ModuleLoader:    testModuleLoader(t),
+		ProjectName:     "test-project",
+		StackName:       "dev",
+		ResourceMonitor: mock,
+		WorkDir:         t.TempDir(),
+		RootDir:         t.TempDir(),
+		SchemaLoader: schemaloader.New(t, schema.PackageSpec{
+			Name: "simple",
+			Provider: &schema.ResourceSpec{
+				InputProperties: map[string]schema.PropertySpec{
+					"prefix": {TypeSpec: schema.TypeSpec{Type: "string"}},
+				},
+			},
+			Resources: map[string]schema.ResourceSpec{
+				"simple:index:Resource": {
+					InputProperties: map[string]schema.PropertySpec{
+						"input": {TypeSpec: schema.TypeSpec{Type: "string"}},
+					},
+					ObjectTypeSpec: schema.ObjectTypeSpec{
+						Properties: map[string]schema.PropertySpec{
+							"input": {TypeSpec: schema.TypeSpec{Type: "string"}},
+						},
+					},
+				},
+			},
+		}),
+	})
+
+	require.NoError(t, engine.Run(t.Context()))
+
+	var provider *run.RegisterResourceRequest
+	for i := range mock.RegisteredResources {
+		if mock.RegisteredResources[i].Type == "pulumi:providers:simple" {
+			provider = &mock.RegisteredResources[i]
+			break
+		}
+	}
+	require.NotNil(t, provider, "configured provider should register")
+
+	configURN := "urn:pulumi:test::project::simple:index:Resource::config"
+	assert.Equal(t, []string{configURN}, provider.Dependencies)
+	assert.Equal(t, map[string][]string{"prefix": {configURN}}, provider.PropertyDependencies)
 }
 
 // An aliased provider passed into a module via `providers` must survive a
