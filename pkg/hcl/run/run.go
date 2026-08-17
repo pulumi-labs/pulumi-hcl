@@ -1410,6 +1410,14 @@ func (e *Engine) registerProviderInContext(
 	}
 
 	hclCtx := evalCtx.HCLContext()
+	dependsOn := make(map[string][]string)
+	addToDependsOn := func(prop, urn string) {
+		idx, found := slices.BinarySearch(dependsOn[prop], urn)
+		if found {
+			return
+		}
+		dependsOn[prop] = slices.Insert(dependsOn[prop], idx, urn)
+	}
 
 	// Schema-aware eval is needed so schema.Property.Secret marks survive.
 	pkg, perr := packages.ResolvePackage(ctx, e.pkgLoader, knownProviders(e.config.Terraform), "pulumi_providers_"+pkgName)
@@ -1422,15 +1430,33 @@ func (e *Engine) registerProviderInContext(
 	}
 
 	providerMapping := e.resolver.ProviderConfigBodyMapping(ctx, pkgName)
+	plainInputProps := make(map[string]bool, len(resSchema.InputProperties))
+	for _, p := range resSchema.InputProperties {
+		plainInputProps[p.Name] = p.Plain
+	}
 	inputsMap, _, diags := transform.EvalResourceWithSchema(provider.Config, resSchema, providerMapping,
-		func(_ resource.PropertyKey, expr hcl.Expression, extraVars map[string]cty.Value) (cty.Value, hcl.Diagnostics) {
+		func(propKey resource.PropertyKey, expr hcl.Expression, extraVars map[string]cty.Value) (cty.Value, hcl.Diagnostics) {
 			c := hclCtx
 			if len(extraVars) > 0 {
 				child := hclCtx.NewChild()
 				child.Variables = extraVars
 				c = child
 			}
-			return expr.Value(c)
+			val, diags := expr.Value(c)
+			if diags.HasErrors() {
+				return val, diags
+			}
+
+			if _, ok := dependsOn[string(propKey)]; !ok {
+				dependsOn[string(propKey)] = nil
+			}
+			if !plainInputProps[string(propKey)] {
+				for _, urn := range eval.CollectDepURNs(val) {
+					addToDependsOn(string(propKey), urn)
+				}
+			}
+
+			return val, diags
 		})
 	if diags.HasErrors() {
 		return fmt.Errorf("evaluating provider %s config: %s", provider.Name, diags.Error())
@@ -1530,6 +1556,11 @@ func (e *Engine) registerProviderInContext(
 	}
 
 	req.Inputs = property.NewMap(inputs)
+	req.PropertyDependencies = dependsOn
+	for _, deps := range dependsOn {
+		req.Dependencies = append(req.Dependencies, deps...)
+	}
+	req.Dependencies = e.cellURNs.widen(req.Dependencies)
 
 	resp, err := e.resmon.RegisterResource(ctx, req)
 	if err != nil {

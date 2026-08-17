@@ -5341,18 +5341,20 @@ resource "simple_resource" "r" {
 
 	assert.Equal(t, []run.RegisterResourceRequest{
 		{
-			Type:   "pulumi:providers:simple",
-			Name:   `by_key["a"]`,
-			Inputs: property.NewMap(map[string]property.Value{"prefix": property.New("alpha")}),
-			Custom: true,
-			Parent: stackURN,
+			Type:                 "pulumi:providers:simple",
+			Name:                 `by_key["a"]`,
+			Inputs:               property.NewMap(map[string]property.Value{"prefix": property.New("alpha")}),
+			PropertyDependencies: map[string][]string{"prefix": nil},
+			Custom:               true,
+			Parent:               stackURN,
 		},
 		{
-			Type:   "pulumi:providers:simple",
-			Name:   `by_key["b"]`,
-			Inputs: property.NewMap(map[string]property.Value{"prefix": property.New("beta")}),
-			Custom: true,
-			Parent: stackURN,
+			Type:                 "pulumi:providers:simple",
+			Name:                 `by_key["b"]`,
+			Inputs:               property.NewMap(map[string]property.Value{"prefix": property.New("beta")}),
+			PropertyDependencies: map[string][]string{"prefix": nil},
+			Custom:               true,
+			Parent:               stackURN,
 		},
 	}, providerRegs)
 
