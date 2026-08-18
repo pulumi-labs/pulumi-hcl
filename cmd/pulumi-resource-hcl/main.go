@@ -25,6 +25,8 @@ import (
 	"os"
 
 	p "github.com/pulumi/pulumi-go-provider"
+	comProvider "github.com/pulumi/pulumi/sdk/v3/go/pulumi/provider"
+	pulumirpc "github.com/pulumi/pulumi/sdk/v3/proto/go"
 
 	"github.com/pulumi/pulumi-hcl/pkg/server"
 	"github.com/pulumi/pulumi-hcl/pkg/version"
@@ -40,7 +42,17 @@ func main() {
 
 	ctx := context.Background()
 	v := version.Version().String()
-	if err := p.RunProvider(ctx, "hcl", v, server.NewModuleProvider(ctx, v)); err != nil {
+	// Expanded from p.RunProvider so the rpc server can be wrapped: spec-form
+	// Construct aliases must be collapsed before pulumi-go-provider decodes
+	// (and would drop) them.
+	err := comProvider.MainContext(ctx, "hcl", func(host *comProvider.HostClient) (pulumirpc.ResourceProviderServer, error) {
+		srv, err := p.RawServer("hcl", v, server.NewModuleProvider(ctx, v))(host)
+		if err != nil {
+			return nil, err
+		}
+		return server.WithCollapsedConstructAliases(srv), nil
+	})
+	if err != nil {
 		fmt.Fprintf(os.Stderr, "fatal: %v\n", err)
 		os.Exit(1)
 	}

@@ -99,7 +99,11 @@ func NewLocalProvider(ctx context.Context, modulePath, addr string) (pulumirpc.R
 		loader:     loader,
 		name:       pkgName,
 	}
-	return p.RawServer(pkgName, version.String(), m.asProvider())(nil)
+	srv, err := p.RawServer(pkgName, version.String(), m.asProvider())(nil)
+	if err != nil {
+		return nil, err
+	}
+	return WithCollapsedConstructAliases(srv), nil
 }
 
 // moduleIdentity derives a module's component token and version. The terraform

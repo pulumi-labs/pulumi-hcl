@@ -1,0 +1,6 @@
+kind: bug-fixes
+body: Forward spec-form aliases attached to an HCL component
+time: 2026-08-18T14:44:04Z
+custom:
+    Component: resource-host
+    PR: "543"
