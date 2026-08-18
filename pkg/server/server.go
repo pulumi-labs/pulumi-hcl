@@ -32,6 +32,7 @@ import (
 	"time"
 
 	"github.com/blang/semver"
+	"github.com/hashicorp/hcl/v2/hclwrite"
 	"github.com/pulumi/pulumi-hcl/pkg/codegen"
 	"github.com/pulumi/pulumi-hcl/pkg/hcl/ast"
 	"github.com/pulumi/pulumi-hcl/pkg/hcl/bridge"
@@ -57,6 +58,7 @@ import (
 	"github.com/pulumi/pulumi/sdk/v3/go/common/workspace"
 	"github.com/pulumi/pulumi/sdk/v3/go/property"
 	pulumirpc "github.com/pulumi/pulumi/sdk/v3/proto/go"
+	"github.com/zclconf/go-cty/cty"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/protobuf/types/known/emptypb"
@@ -397,20 +399,29 @@ func readSDKInfos(dir string) (map[string]sdkInfo, error) {
 		if err != nil {
 			continue
 		}
-		var info sdkInfo
-		var stamp struct {
-			Source string `json:"source"`
-		}
-		if err := json.Unmarshal(data, &info.desc); err != nil {
-			errs = append(errs, fmt.Errorf("%q: %w", path, err))
+		info, err := parseSDKInfo(path, data)
+		if err != nil {
+			errs = append(errs, err)
 			continue
-		}
-		if json.Unmarshal(data, &stamp) == nil {
-			info.source = stamp.Source
 		}
 		result[entry.Name()] = info
 	}
 	return result, errors.Join(errs...)
+}
+
+// parseSDKInfo decodes the contents of one hcl.sdk.json; path only labels errors.
+func parseSDKInfo(path string, data []byte) (sdkInfo, error) {
+	var info sdkInfo
+	var stamp struct {
+		Source string `json:"source"`
+	}
+	if err := json.Unmarshal(data, &info.desc); err != nil {
+		return sdkInfo{}, fmt.Errorf("%q: %w", path, err)
+	}
+	if json.Unmarshal(data, &stamp) == nil {
+		info.source = stamp.Source
+	}
+	return info, nil
 }
 
 // sdkDescriptors projects sdkInfos down to the descriptor map the schema
@@ -1195,13 +1206,55 @@ func (host *LanguageHost) Pack(
 	}, nil
 }
 
-// Link links local dependencies into a project. HCL programs don't have
-// traditional package management files, so this is a no-op.
+// Link links local dependencies into a project. HCL programs have no
+// package-management file to edit, so linking only reports the
+// `required_providers` entries that reference the linked SDKs.
 func (host *LanguageHost) Link(
 	ctx context.Context,
 	req *pulumirpc.LinkRequest,
 ) (*pulumirpc.LinkResponse, error) {
-	return &pulumirpc.LinkResponse{}, nil
+	if len(req.Packages) == 0 {
+		return &pulumirpc.LinkResponse{}, nil
+	}
+	f := hclwrite.NewEmptyFile()
+	reqProviders := f.Body().AppendNewBlock("terraform", nil).Body().AppendNewBlock("required_providers", nil)
+	for _, dep := range req.Packages {
+		path := filepath.Join(req.Info.RootDirectory, dep.Path, "hcl.sdk.json")
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return nil, err
+		}
+		info, err := parseSDKInfo(path, data)
+		if err != nil {
+			return nil, err
+		}
+		source, version := requiredProviderEntry(info)
+		attrs := map[string]cty.Value{"source": cty.StringVal(source)}
+		if version != "" {
+			attrs["version"] = cty.StringVal(version)
+		}
+		reqProviders.Body().SetAttributeValue(packageName("", source), cty.ObjectVal(attrs))
+	}
+	instructions := "You can use the package in your HCL program with:\n\n"
+	if len(req.Packages) > 1 {
+		instructions = "You can use the packages in your HCL program with:\n\n"
+	}
+	return &pulumirpc.LinkResponse{ImportInstructions: instructions + string(f.Bytes())}, nil
+}
+
+// requiredProviderEntry returns the `source` and `version` a
+// `required_providers` entry needs to resolve to the SDK described by info:
+// the bridged provider's own source for terraform-provider SDKs, otherwise
+// `pulumi/<package>` where the package is the parameterized name when there is
+// one and the (base) plugin name for plain and extension SDKs.
+func requiredProviderEntry(info sdkInfo) (source, version string) {
+	if info.source != "" {
+		return info.source, info.desc.Parameterization.Version.String()
+	}
+	if p := info.desc.Parameterization; p != nil {
+		return "pulumi/" + p.Name, p.Version.String()
+	}
+	return "pulumi/" + info.desc.Name, versionString(info.desc.Version)
 }
 
 // Ensure resourceMonitorAdapter implements the interface.

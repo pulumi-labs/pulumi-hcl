@@ -18,6 +18,8 @@ import (
 	"encoding/base64"
 	"os"
 	"path/filepath"
+	"slices"
+	"strings"
 	"testing"
 
 	"github.com/blang/semver"
@@ -1123,4 +1125,50 @@ func TestPackageDescriptorFromSchemaExtension(t *testing.T) {
 			Value:   []byte("Hello"),
 		},
 	}, desc)
+}
+
+func TestLinkInstructions(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	host := &LanguageHost{}
+	var deps []*pulumirpc.LinkRequest_LinkDependency
+	for dir, schema := range map[string]string{
+		"aws":       `{"name": "aws", "version": "7.0.0"}`,
+		"stackmgmt": `{"name": "stackmgmt", "version": "2.5.0", "parameterization": {"baseProvider": {"name": "pulumi-component", "version": "1.0.0"}, "parameter": "aGVsbG8="}}`,
+		"random": `{"name": "random", "version": "3.6.0", "parameterization": {"baseProvider": {"name": "terraform-provider", "version": "1.3.0"}, "parameter": "` +
+			base64.StdEncoding.EncodeToString([]byte(`{"remote":{"url":"hashicorp/random","version":"3.6.0"}}`)) + `"}}`,
+	} {
+		sdkDir := filepath.Join(root, "sdks", dir)
+		require.NoError(t, os.MkdirAll(sdkDir, 0o755))
+		_, err := host.GeneratePackage(t.Context(), &pulumirpc.GeneratePackageRequest{Directory: sdkDir, Schema: schema})
+		require.NoError(t, err)
+		deps = append(deps, &pulumirpc.LinkRequest_LinkDependency{Path: filepath.Join("sdks", dir)})
+	}
+	slices.SortFunc(deps, func(a, b *pulumirpc.LinkRequest_LinkDependency) int { return strings.Compare(a.Path, b.Path) })
+
+	resp, err := host.Link(t.Context(), &pulumirpc.LinkRequest{
+		Info:     &pulumirpc.ProgramInfo{RootDirectory: root, ProgramDirectory: root},
+		Packages: deps,
+	})
+	require.NoError(t, err)
+	assert.Equal(t, `You can use the packages in your HCL program with:
+
+terraform {
+  required_providers {
+    aws = {
+      source  = "pulumi/aws"
+      version = "7.0.0"
+    }
+    random = {
+      source  = "hashicorp/random"
+      version = "3.6.0"
+    }
+    stackmgmt = {
+      source  = "pulumi/stackmgmt"
+      version = "2.5.0"
+    }
+  }
+}
+`, resp.ImportInstructions)
 }
