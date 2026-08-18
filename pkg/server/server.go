@@ -1213,12 +1213,17 @@ func (host *LanguageHost) Link(
 	ctx context.Context,
 	req *pulumirpc.LinkRequest,
 ) (*pulumirpc.LinkResponse, error) {
-	if len(req.Packages) == 0 {
+	// The core "pulumi" SDK is built in: it ships no hcl.sdk.json and takes
+	// no required_providers entry.
+	deps := slices.DeleteFunc(slices.Clone(req.Packages), func(dep *pulumirpc.LinkRequest_LinkDependency) bool {
+		return dep.Package.GetName() == "pulumi"
+	})
+	if len(deps) == 0 {
 		return &pulumirpc.LinkResponse{}, nil
 	}
 	f := hclwrite.NewEmptyFile()
 	reqProviders := f.Body().AppendNewBlock("terraform", nil).Body().AppendNewBlock("required_providers", nil)
-	for _, dep := range req.Packages {
+	for _, dep := range deps {
 		path := filepath.Join(req.Info.RootDirectory, dep.Path, "hcl.sdk.json")
 		data, err := os.ReadFile(path)
 		if err != nil {
@@ -1236,7 +1241,7 @@ func (host *LanguageHost) Link(
 		reqProviders.Body().SetAttributeValue(packageName("", source), cty.ObjectVal(attrs))
 	}
 	instructions := "You can use the package in your HCL program with:\n\n"
-	if len(req.Packages) > 1 {
+	if len(deps) > 1 {
 		instructions = "You can use the packages in your HCL program with:\n\n"
 	}
 	return &pulumirpc.LinkResponse{ImportInstructions: instructions + string(f.Bytes())}, nil

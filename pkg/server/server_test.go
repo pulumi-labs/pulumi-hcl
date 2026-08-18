@@ -1146,6 +1146,10 @@ func TestLinkInstructions(t *testing.T) {
 		deps = append(deps, &pulumirpc.LinkRequest_LinkDependency{Path: filepath.Join("sdks", dir)})
 	}
 	slices.SortFunc(deps, func(a, b *pulumirpc.LinkRequest_LinkDependency) int { return strings.Compare(a.Path, b.Path) })
+	deps = append(deps, &pulumirpc.LinkRequest_LinkDependency{
+		Path:    "/nonexistent/core-sdk",
+		Package: &pulumirpc.PackageDependency{Name: "pulumi"},
+	})
 
 	resp, err := host.Link(t.Context(), &pulumirpc.LinkRequest{
 		Info:     &pulumirpc.ProgramInfo{RootDirectory: root, ProgramDirectory: root},
