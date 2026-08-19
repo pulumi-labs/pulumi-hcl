@@ -608,10 +608,12 @@ func TestUnmappedProperty(t *testing.T) {
 		}},
 	}
 	mapping := &bridge.BodyMapping{Fields: map[string]*bridge.FieldMapping{
-		"settings": {TFName: "settings", PulumiName: "settings", TFBlock: true, MaxItemsOne: true,
+		"settings": {
+			TFName: "settings", PulumiName: "settings", TFBlock: true, MaxItemsOne: true,
 			Nested: &bridge.BodyMapping{Fields: map[string]*bridge.FieldMapping{
 				"inner_block": {TFName: "inner_block", PulumiName: "innerBlock", TFBlock: true, MaxItemsOne: true},
-			}}},
+			}},
+		},
 	}}
 
 	src := `

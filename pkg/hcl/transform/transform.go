@@ -498,8 +498,6 @@ func appendBlockListValues(resourceInputs map[string]cty.Value, key string, valu
 	resourceInputs[key] = blockListValue(values)
 }
 
-// tooManySingularBlocks reports more than one block (static or dynamically
-// expanded) for a MaxItems=1 field.
 // unmappedProperty reports a TF name the provider's mapping admitted into the
 // body but its Pulumi schema has no property for — a self-inconsistent
 // provider package (e.g. a bridged nested type whose name two resources share
@@ -519,6 +517,8 @@ func unmappedProperty(tfName, puName string, props []*schema.Property, rng hcl.R
 	}
 }
 
+// tooManySingularBlocks reports more than one block (static or dynamically
+// expanded) for a MaxItems=1 field.
 func tooManySingularBlocks(name string, rng hcl.Range) *hcl.Diagnostic {
 	return &hcl.Diagnostic{
 		Severity: hcl.DiagError,
