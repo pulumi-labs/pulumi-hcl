@@ -3,3 +3,4 @@ body: Return a diagnostic instead of panicking when a provider's mapping names a
 time: 2026-08-19T11:30:00Z
 custom:
     Component: runtime
+    PR: "564"
