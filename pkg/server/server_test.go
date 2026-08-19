@@ -148,7 +148,6 @@ func TestGeneratePackageAndRunUseSameSdksDir(t *testing.T) {
   required_providers {
     myparam = {
       source  = "myparam"
-      version = "1.2.3"
     }
   }
 }
@@ -204,7 +203,6 @@ func TestGetRequiredPackages_ParameterizedPulumiSource(t *testing.T) {
   required_providers {
     subpackage = {
       source  = "pulumi/subpackage"
-      version = "2.0.0"
     }
   }
 }
@@ -768,7 +766,6 @@ func TestMissingNonPulumiSDKs_ImplicitProvider(t *testing.T) {
   required_providers {
     aws = {
       source  = "hashicorp/aws"
-      version = "6.19.0"
     }
   }
 }
@@ -798,8 +795,7 @@ data "archive_file" "lambda" {}
 	const pulumiSrc = `terraform {
   required_providers {
     aws = {
-      source  = "pulumi/aws"
-      version = "6.0.0"
+      source = "pulumi/aws"
     }
   }
 }
@@ -870,7 +866,6 @@ func TestMissingNonPulumiSDKs_UnderscoreProviderName(t *testing.T) {
   required_providers {
     snake_names = {
       source  = "pulumi/snake_names"
-      version = "33.0.0"
     }
   }
 }
@@ -1164,16 +1159,13 @@ func TestLinkInstructions(t *testing.T) {
 terraform {
   required_providers {
     aws = {
-      source  = "pulumi/aws"
-      version = "7.0.0"
+      source = "pulumi/aws"
     }
     random = {
-      source  = "hashicorp/random"
-      version = "3.6.0"
+      source = "hashicorp/random"
     }
     stackmgmt = {
-      source  = "pulumi/stackmgmt"
-      version = "2.5.0"
+      source = "pulumi/stackmgmt"
     }
   }
 }
@@ -1192,8 +1184,7 @@ terraform {
 terraform {
   required_providers {
     stackmgmt = {
-      source  = "pulumi/stackmgmt"
-      version = "2.5.0"
+      source = "pulumi/stackmgmt"
     }
   }
 }

@@ -1238,7 +1238,7 @@ func (host *LanguageHost) Link(
 		if err != nil {
 			return nil, err
 		}
-		source, version := requiredProviderEntry(info)
+		source := requiredProviderSource(info)
 		name := packageName("", source)
 		if _, ok := tfReqs[canonicalSource(source)]; ok && info.source != "" {
 			continue
@@ -1247,11 +1247,9 @@ func (host *LanguageHost) Link(
 			continue
 		}
 		unreferenced++
-		attrs := map[string]cty.Value{"source": cty.StringVal(source)}
-		if version != "" {
-			attrs["version"] = cty.StringVal(version)
-		}
-		reqProviders.Body().SetAttributeValue(name, cty.ObjectVal(attrs))
+		reqProviders.Body().SetAttributeValue(name, cty.ObjectVal(map[string]cty.Value{
+			"source": cty.StringVal(source),
+		}))
 	}
 	switch unreferenced {
 	case 0:
@@ -1267,16 +1265,16 @@ func (host *LanguageHost) Link(
 	}
 }
 
-// requiredProviderEntry returns the `source` and `version` that resolve to
-// the SDK described by info.
-func requiredProviderEntry(info sdkInfo) (source, version string) {
+// requiredProviderSource returns the `source` that resolves to the SDK
+// described by info.
+func requiredProviderSource(info sdkInfo) string {
 	if info.source != "" {
-		return info.source, info.desc.Parameterization.Version.String()
+		return info.source
 	}
 	if p := info.desc.Parameterization; p != nil {
-		return "pulumi/" + p.Name, p.Version.String()
+		return "pulumi/" + p.Name
 	}
-	return "pulumi/" + info.desc.Name, versionString(info.desc.Version)
+	return "pulumi/" + info.desc.Name
 }
 
 // Ensure resourceMonitorAdapter implements the interface.
