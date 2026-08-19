@@ -588,6 +588,56 @@ resource "fake" "f" {
 	}
 }
 
+// A TF name the mapping admits but the Pulumi schema has no property for (a
+// provider whose schema and mapping disagree) is a diagnostic, not a panic.
+func TestUnmappedProperty(t *testing.T) {
+	t.Parallel()
+
+	r := &schema.Resource{
+		Token: "fake:index:F",
+		InputProperties: []*schema.Property{{
+			Name: "settings",
+			Type: &schema.ObjectType{
+				Properties: []*schema.Property{{
+					Name: "innerBlocks",
+					Type: &schema.ArrayType{ElementType: &schema.ObjectType{
+						Properties: []*schema.Property{{Name: "attr", Type: schema.StringType}},
+					}},
+				}},
+			},
+		}},
+	}
+	mapping := &bridge.BodyMapping{Fields: map[string]*bridge.FieldMapping{
+		"settings": {
+			TFName: "settings", PulumiName: "settings", TFBlock: true, MaxItemsOne: true,
+			Nested: &bridge.BodyMapping{Fields: map[string]*bridge.FieldMapping{
+				"inner_block": {TFName: "inner_block", PulumiName: "innerBlock", TFBlock: true, MaxItemsOne: true},
+			}},
+		},
+	}}
+
+	src := `
+resource "fake" "f" {
+  settings {
+    inner_block { attr = "a" }
+  }
+}`
+	file, diags := hclsyntax.ParseConfig([]byte(src), "test.hcl", hcl.Pos{Line: 1, Column: 1})
+	require.False(t, diags.HasErrors(), diags.Error())
+	resourceBody := file.Body.(*hclsyntax.Body).Blocks[0].Body
+
+	evalFn := func(_ resource.PropertyKey, expr hcl.Expression, extraVars map[string]cty.Value) (cty.Value, hcl.Diagnostics) {
+		return expr.Value(&hcl.EvalContext{Variables: extraVars})
+	}
+
+	_, _, diags = EvalResourceWithSchema(resourceBody, r, mapping, evalFn)
+	require.Len(t, diags, 1)
+	assert.Equal(t, `Provider schema has no property for "inner_block"`, diags[0].Summary)
+	assert.Equal(t, `The provider's mapping names "inner_block" as "innerBlock", but its schema defines only: innerBlocks. `+
+		`The provider's schema and mapping disagree; this is a provider bug.`, diags[0].Detail)
+	assert.Equal(t, 4, diags[0].Subject.Start.Line)
+}
+
 func TestCtyToPropertyValue_Primitives(t *testing.T) {
 	t.Parallel()
 
