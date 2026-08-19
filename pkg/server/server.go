@@ -178,30 +178,9 @@ func (host *LanguageHost) GetRequiredPackages(
 		return &pulumirpc.GetRequiredPackagesResponse{}, fmt.Errorf("unable to read SDKs folder: %w", err)
 	}
 
-	dirs, err := requirementDirs(req.Info.ProgramDirectory)
+	tfReqs, pulumiPkgs, err := programRequirements(ctx, req.Info.ProgramDirectory)
 	if err != nil {
 		return &pulumirpc.GetRequiredPackagesResponse{}, err
-	}
-
-	// Resolve every provider referenced anywhere in the module tree to its
-	// source, mirroring tofu: a provider declared in a child module is installed
-	// from its declared source (not the "hashicorp/<name>" default), providers
-	// sharing a source are installed once with their version constraints unioned
-	// (the terraform-provider plugin intersects them at resolve time, erroring on
-	// an empty intersection just as tofu does), and distinct sources are distinct
-	// installs.
-	p := parser.NewParser()
-	loader := modules.NewLoader(modules.LiveResolver(ctx))
-	tfReqs := map[string]*tfRequirement{}
-	pulumiPkgs := map[string]string{}
-	aliases := map[string]*ast.RequiredProvider{}
-	visited := map[string]struct{}{}
-	for _, dir := range dirs {
-		config, diags := p.ParseDirectory(dir)
-		if diags.HasErrors() {
-			continue
-		}
-		collectRequirementsRec(ctx, config, dir, tfReqs, pulumiPkgs, aliases, loader, visited)
 	}
 
 	// Distinct sources resolving to one package name cannot both live at
@@ -269,6 +248,37 @@ func (host *LanguageHost) GetRequiredPackages(
 	}
 
 	return &pulumirpc.GetRequiredPackagesResponse{Packages: pkgs, Specs: specs}, nil
+}
+
+// programRequirements resolves every provider referenced anywhere in the
+// program's module tree (and its component directories) to its source,
+// mirroring tofu: a provider declared in a child module is installed from its
+// declared source (not the "hashicorp/<name>" default), providers sharing a
+// source are installed once with their version constraints unioned (the
+// terraform-provider plugin intersects them at resolve time, erroring on an
+// empty intersection just as tofu does), and distinct sources are distinct
+// installs. Directories that fail to parse contribute nothing.
+func programRequirements(
+	ctx context.Context, programDir string,
+) (tf map[string]*tfRequirement, pulumi map[string]string, err error) {
+	dirs, err := requirementDirs(programDir)
+	if err != nil {
+		return nil, nil, err
+	}
+	p := parser.NewParser()
+	loader := modules.NewLoader(modules.LiveResolver(ctx))
+	tf = map[string]*tfRequirement{}
+	pulumi = map[string]string{}
+	aliases := map[string]*ast.RequiredProvider{}
+	visited := map[string]struct{}{}
+	for _, dir := range dirs {
+		config, diags := p.ParseDirectory(dir)
+		if diags.HasErrors() {
+			continue
+		}
+		collectRequirementsRec(ctx, config, dir, tf, pulumi, aliases, loader, visited)
+	}
+	return tf, pulumi, nil
 }
 
 // descriptorForSource returns the on-disk SDK descriptor that satisfies the
@@ -1209,22 +1219,26 @@ func (host *LanguageHost) Pack(
 
 // Link links local dependencies into a project. HCL programs have no
 // package-management file to edit, so linking only reports the
-// `required_providers` entries that reference the linked SDKs.
+// `required_providers` entries for linked SDKs the program does not yet
+// reference; SDKs it already declares (the `pulumi install` case) print
+// nothing.
 func (host *LanguageHost) Link(
 	ctx context.Context,
 	req *pulumirpc.LinkRequest,
 ) (*pulumirpc.LinkResponse, error) {
-	// The core "pulumi" SDK is built in: it ships no hcl.sdk.json and takes
-	// no required_providers entry.
-	deps := slices.DeleteFunc(slices.Clone(req.Packages), func(dep *pulumirpc.LinkRequest_LinkDependency) bool {
-		return dep.Package.GetName() == "pulumi"
-	})
-	if len(deps) == 0 {
-		return &pulumirpc.LinkResponse{}, nil
+	tfReqs, pulumiPkgs, err := programRequirements(ctx, req.Info.ProgramDirectory)
+	if err != nil {
+		return nil, err
 	}
 	f := hclwrite.NewEmptyFile()
 	reqProviders := f.Body().AppendNewBlock("terraform", nil).Body().AppendNewBlock("required_providers", nil)
-	for _, dep := range deps {
+	unreferenced := 0
+	for _, dep := range req.Packages {
+		// The core "pulumi" SDK is built in: it ships no hcl.sdk.json and
+		// takes no required_providers entry.
+		if dep.Package.GetName() == "pulumi" {
+			continue
+		}
 		path := filepath.Join(req.Info.RootDirectory, dep.Path, "hcl.sdk.json")
 		data, err := os.ReadFile(path)
 		if err != nil {
@@ -1235,17 +1249,32 @@ func (host *LanguageHost) Link(
 			return nil, err
 		}
 		source, version := requiredProviderEntry(info)
+		name := packageName("", source)
+		if _, ok := tfReqs[canonicalSource(source)]; ok && info.source != "" {
+			continue
+		}
+		if _, ok := pulumiPkgs[name]; ok && info.source == "" {
+			continue
+		}
+		unreferenced++
 		attrs := map[string]cty.Value{"source": cty.StringVal(source)}
 		if version != "" {
 			attrs["version"] = cty.StringVal(version)
 		}
-		reqProviders.Body().SetAttributeValue(packageName("", source), cty.ObjectVal(attrs))
+		reqProviders.Body().SetAttributeValue(name, cty.ObjectVal(attrs))
 	}
-	instructions := "You can use the package in your HCL program with:\n\n"
-	if len(deps) > 1 {
-		instructions = "You can use the packages in your HCL program with:\n\n"
+	switch unreferenced {
+	case 0:
+		return &pulumirpc.LinkResponse{}, nil
+	case 1:
+		return &pulumirpc.LinkResponse{
+			ImportInstructions: "You can use the package in your HCL program with:\n\n" + string(f.Bytes()),
+		}, nil
+	default:
+		return &pulumirpc.LinkResponse{
+			ImportInstructions: "You can use the packages in your HCL program with:\n\n" + string(f.Bytes()),
+		}, nil
 	}
-	return &pulumirpc.LinkResponse{ImportInstructions: instructions + string(f.Bytes())}, nil
 }
 
 // requiredProviderEntry returns the `source` and `version` a

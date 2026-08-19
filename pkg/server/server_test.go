@@ -1150,12 +1150,15 @@ func TestLinkInstructions(t *testing.T) {
 		Path:    "/nonexistent/core-sdk",
 		Package: &pulumirpc.PackageDependency{Name: "pulumi"},
 	})
+	link := func() string {
+		resp, err := host.Link(t.Context(), &pulumirpc.LinkRequest{
+			Info:     &pulumirpc.ProgramInfo{RootDirectory: root, ProgramDirectory: root},
+			Packages: deps,
+		})
+		require.NoError(t, err)
+		return resp.ImportInstructions
+	}
 
-	resp, err := host.Link(t.Context(), &pulumirpc.LinkRequest{
-		Info:     &pulumirpc.ProgramInfo{RootDirectory: root, ProgramDirectory: root},
-		Packages: deps,
-	})
-	require.NoError(t, err)
 	assert.Equal(t, `You can use the packages in your HCL program with:
 
 terraform {
@@ -1174,5 +1177,36 @@ terraform {
     }
   }
 }
-`, resp.ImportInstructions)
+`, link(), "an empty program references nothing")
+
+	require.NoError(t, os.WriteFile(filepath.Join(root, "main.tf"), []byte(`
+terraform {
+  required_providers {
+    aws    = { source = "pulumi/aws" }
+    random = { source = "hashicorp/random" }
+  }
+}
+`), 0o644))
+	assert.Equal(t, `You can use the package in your HCL program with:
+
+terraform {
+  required_providers {
+    stackmgmt = {
+      source  = "pulumi/stackmgmt"
+      version = "2.5.0"
+    }
+  }
+}
+`, link(), "only the undeclared package is reported")
+
+	require.NoError(t, os.WriteFile(filepath.Join(root, "main.tf"), []byte(`
+terraform {
+  required_providers {
+    aws       = { source = "pulumi/aws" }
+    random    = { source = "hashicorp/random" }
+    stackmgmt = { source = "pulumi/stackmgmt" }
+  }
+}
+`), 0o644))
+	assert.Equal(t, "", link(), "a program declaring every package needs no instructions")
 }
