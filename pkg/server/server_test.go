@@ -18,6 +18,8 @@ import (
 	"encoding/base64"
 	"os"
 	"path/filepath"
+	"slices"
+	"strings"
 	"testing"
 
 	"github.com/blang/semver"
@@ -146,7 +148,6 @@ func TestGeneratePackageAndRunUseSameSdksDir(t *testing.T) {
   required_providers {
     myparam = {
       source  = "myparam"
-      version = "1.2.3"
     }
   }
 }
@@ -202,7 +203,6 @@ func TestGetRequiredPackages_ParameterizedPulumiSource(t *testing.T) {
   required_providers {
     subpackage = {
       source  = "pulumi/subpackage"
-      version = "2.0.0"
     }
   }
 }
@@ -766,7 +766,6 @@ func TestMissingNonPulumiSDKs_ImplicitProvider(t *testing.T) {
   required_providers {
     aws = {
       source  = "hashicorp/aws"
-      version = "6.19.0"
     }
   }
 }
@@ -796,8 +795,7 @@ data "archive_file" "lambda" {}
 	const pulumiSrc = `terraform {
   required_providers {
     aws = {
-      source  = "pulumi/aws"
-      version = "6.0.0"
+      source = "pulumi/aws"
     }
   }
 }
@@ -868,7 +866,6 @@ func TestMissingNonPulumiSDKs_UnderscoreProviderName(t *testing.T) {
   required_providers {
     snake_names = {
       source  = "pulumi/snake_names"
-      version = "33.0.0"
     }
   }
 }
@@ -1123,4 +1120,84 @@ func TestPackageDescriptorFromSchemaExtension(t *testing.T) {
 			Value:   []byte("Hello"),
 		},
 	}, desc)
+}
+
+func TestLinkInstructions(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	host := &LanguageHost{}
+	var deps []*pulumirpc.LinkRequest_LinkDependency
+	for dir, schema := range map[string]string{
+		"aws":       `{"name": "aws", "version": "7.0.0"}`,
+		"stackmgmt": `{"name": "stackmgmt", "version": "2.5.0", "parameterization": {"baseProvider": {"name": "pulumi-component", "version": "1.0.0"}, "parameter": "aGVsbG8="}}`,
+		"random": `{"name": "random", "version": "3.6.0", "parameterization": {"baseProvider": {"name": "terraform-provider", "version": "1.3.0"}, "parameter": "` +
+			base64.StdEncoding.EncodeToString([]byte(`{"remote":{"url":"hashicorp/random","version":"3.6.0"}}`)) + `"}}`,
+	} {
+		sdkDir := filepath.Join(root, "sdks", dir)
+		require.NoError(t, os.MkdirAll(sdkDir, 0o755))
+		_, err := host.GeneratePackage(t.Context(), &pulumirpc.GeneratePackageRequest{Directory: sdkDir, Schema: schema})
+		require.NoError(t, err)
+		deps = append(deps, &pulumirpc.LinkRequest_LinkDependency{Path: filepath.Join("sdks", dir)})
+	}
+	slices.SortFunc(deps, func(a, b *pulumirpc.LinkRequest_LinkDependency) int { return strings.Compare(a.Path, b.Path) })
+	deps = append(deps, &pulumirpc.LinkRequest_LinkDependency{
+		Path:    "/nonexistent/core-sdk",
+		Package: &pulumirpc.PackageDependency{Name: "pulumi"},
+	})
+	link := func() string {
+		resp, err := host.Link(t.Context(), &pulumirpc.LinkRequest{
+			Info:     &pulumirpc.ProgramInfo{RootDirectory: root, ProgramDirectory: root},
+			Packages: deps,
+		})
+		require.NoError(t, err)
+		return resp.ImportInstructions
+	}
+
+	assert.Equal(t, `You can use the packages in your HCL program with:
+
+terraform {
+  required_providers {
+    aws = {
+      source = "pulumi/aws"
+    }
+    random = {
+      source = "hashicorp/random"
+    }
+    stackmgmt = {
+      source = "pulumi/stackmgmt"
+    }
+  }
+}
+`, link(), "an empty program references nothing")
+
+	require.NoError(t, os.WriteFile(filepath.Join(root, "main.tf"), []byte(`
+terraform {
+  required_providers {
+    aws    = { source = "pulumi/aws" }
+    random = { source = "hashicorp/random" }
+  }
+}
+`), 0o644))
+	assert.Equal(t, `You can use the package in your HCL program with:
+
+terraform {
+  required_providers {
+    stackmgmt = {
+      source = "pulumi/stackmgmt"
+    }
+  }
+}
+`, link(), "only the undeclared package is reported")
+
+	require.NoError(t, os.WriteFile(filepath.Join(root, "main.tf"), []byte(`
+terraform {
+  required_providers {
+    aws       = { source = "pulumi/aws" }
+    random    = { source = "hashicorp/random" }
+    stackmgmt = { source = "pulumi/stackmgmt" }
+  }
+}
+`), 0o644))
+	assert.Equal(t, "", link(), "a program declaring every package needs no instructions")
 }

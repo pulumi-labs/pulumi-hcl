@@ -32,6 +32,7 @@ import (
 	"time"
 
 	"github.com/blang/semver"
+	"github.com/hashicorp/hcl/v2/hclwrite"
 	"github.com/pulumi/pulumi-hcl/pkg/codegen"
 	"github.com/pulumi/pulumi-hcl/pkg/hcl/ast"
 	"github.com/pulumi/pulumi-hcl/pkg/hcl/bridge"
@@ -57,6 +58,7 @@ import (
 	"github.com/pulumi/pulumi/sdk/v3/go/common/workspace"
 	"github.com/pulumi/pulumi/sdk/v3/go/property"
 	pulumirpc "github.com/pulumi/pulumi/sdk/v3/proto/go"
+	"github.com/zclconf/go-cty/cty"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/protobuf/types/known/emptypb"
@@ -176,30 +178,9 @@ func (host *LanguageHost) GetRequiredPackages(
 		return &pulumirpc.GetRequiredPackagesResponse{}, fmt.Errorf("unable to read SDKs folder: %w", err)
 	}
 
-	dirs, err := requirementDirs(req.Info.ProgramDirectory)
+	tfReqs, pulumiPkgs, err := programRequirements(ctx, req.Info.ProgramDirectory)
 	if err != nil {
 		return &pulumirpc.GetRequiredPackagesResponse{}, err
-	}
-
-	// Resolve every provider referenced anywhere in the module tree to its
-	// source, mirroring tofu: a provider declared in a child module is installed
-	// from its declared source (not the "hashicorp/<name>" default), providers
-	// sharing a source are installed once with their version constraints unioned
-	// (the terraform-provider plugin intersects them at resolve time, erroring on
-	// an empty intersection just as tofu does), and distinct sources are distinct
-	// installs.
-	p := parser.NewParser()
-	loader := modules.NewLoader(modules.LiveResolver(ctx))
-	tfReqs := map[string]*tfRequirement{}
-	pulumiPkgs := map[string]string{}
-	aliases := map[string]*ast.RequiredProvider{}
-	visited := map[string]struct{}{}
-	for _, dir := range dirs {
-		config, diags := p.ParseDirectory(dir)
-		if diags.HasErrors() {
-			continue
-		}
-		collectRequirementsRec(ctx, config, dir, tfReqs, pulumiPkgs, aliases, loader, visited)
 	}
 
 	// Distinct sources resolving to one package name cannot both live at
@@ -267,6 +248,32 @@ func (host *LanguageHost) GetRequiredPackages(
 	}
 
 	return &pulumirpc.GetRequiredPackagesResponse{Packages: pkgs, Specs: specs}, nil
+}
+
+// programRequirements resolves every provider referenced by the program's
+// module tree and component directories to its source, skipping directories
+// that fail to parse.
+func programRequirements(
+	ctx context.Context, programDir string,
+) (tf map[string]*tfRequirement, pulumi map[string]string, err error) {
+	dirs, err := requirementDirs(programDir)
+	if err != nil {
+		return nil, nil, err
+	}
+	p := parser.NewParser()
+	loader := modules.NewLoader(modules.LiveResolver(ctx))
+	tf = map[string]*tfRequirement{}
+	pulumi = map[string]string{}
+	aliases := map[string]*ast.RequiredProvider{}
+	visited := map[string]struct{}{}
+	for _, dir := range dirs {
+		config, diags := p.ParseDirectory(dir)
+		if diags.HasErrors() {
+			continue
+		}
+		collectRequirementsRec(ctx, config, dir, tf, pulumi, aliases, loader, visited)
+	}
+	return tf, pulumi, nil
 }
 
 // descriptorForSource returns the on-disk SDK descriptor that satisfies the
@@ -397,20 +404,30 @@ func readSDKInfos(dir string) (map[string]sdkInfo, error) {
 		if err != nil {
 			continue
 		}
-		var info sdkInfo
-		var stamp struct {
-			Source string `json:"source"`
-		}
-		if err := json.Unmarshal(data, &info.desc); err != nil {
-			errs = append(errs, fmt.Errorf("%q: %w", path, err))
+		info, err := parseSDKInfo(path, data)
+		if err != nil {
+			errs = append(errs, err)
 			continue
-		}
-		if json.Unmarshal(data, &stamp) == nil {
-			info.source = stamp.Source
 		}
 		result[entry.Name()] = info
 	}
 	return result, errors.Join(errs...)
+}
+
+// parseSDKInfo decodes the contents of one hcl.sdk.json; path only labels errors.
+func parseSDKInfo(path string, data []byte) (sdkInfo, error) {
+	var info sdkInfo
+	var stamp struct {
+		Source string `json:"source"`
+	}
+	if err := json.Unmarshal(data, &info.desc); err != nil {
+		return sdkInfo{}, fmt.Errorf("%q: %w", path, err)
+	}
+	if err := json.Unmarshal(data, &stamp); err != nil {
+		return sdkInfo{}, fmt.Errorf("%q: %w", path, err)
+	}
+	info.source = stamp.Source
+	return info, nil
 }
 
 // sdkDescriptors projects sdkInfos down to the descriptor map the schema
@@ -1195,13 +1212,69 @@ func (host *LanguageHost) Pack(
 	}, nil
 }
 
-// Link links local dependencies into a project. HCL programs don't have
-// traditional package management files, so this is a no-op.
+// Link has no project file to edit; it reports the `required_providers`
+// entries for linked SDKs the program does not reference yet.
 func (host *LanguageHost) Link(
 	ctx context.Context,
 	req *pulumirpc.LinkRequest,
 ) (*pulumirpc.LinkResponse, error) {
-	return &pulumirpc.LinkResponse{}, nil
+	tfReqs, pulumiPkgs, err := programRequirements(ctx, req.Info.ProgramDirectory)
+	if err != nil {
+		return nil, err
+	}
+	f := hclwrite.NewEmptyFile()
+	reqProviders := f.Body().AppendNewBlock("terraform", nil).Body().AppendNewBlock("required_providers", nil)
+	unreferenced := 0
+	for _, dep := range req.Packages {
+		if dep.Package.GetName() == "pulumi" { // built in; no hcl.sdk.json
+			continue
+		}
+		path := filepath.Join(req.Info.RootDirectory, dep.Path, "hcl.sdk.json")
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return nil, err
+		}
+		info, err := parseSDKInfo(path, data)
+		if err != nil {
+			return nil, err
+		}
+		source := requiredProviderSource(info)
+		name := packageName("", source)
+		if _, ok := tfReqs[canonicalSource(source)]; ok && info.source != "" {
+			continue
+		}
+		if _, ok := pulumiPkgs[name]; ok && info.source == "" {
+			continue
+		}
+		unreferenced++
+		reqProviders.Body().SetAttributeValue(name, cty.ObjectVal(map[string]cty.Value{
+			"source": cty.StringVal(source),
+		}))
+	}
+	switch unreferenced {
+	case 0:
+		return &pulumirpc.LinkResponse{}, nil
+	case 1:
+		return &pulumirpc.LinkResponse{
+			ImportInstructions: "You can use the package in your HCL program with:\n\n" + string(f.Bytes()),
+		}, nil
+	default:
+		return &pulumirpc.LinkResponse{
+			ImportInstructions: "You can use the packages in your HCL program with:\n\n" + string(f.Bytes()),
+		}, nil
+	}
+}
+
+// requiredProviderSource returns the `source` that resolves to the SDK
+// described by info.
+func requiredProviderSource(info sdkInfo) string {
+	if info.source != "" {
+		return info.source
+	}
+	if p := info.desc.Parameterization; p != nil {
+		return "pulumi/" + p.Name
+	}
+	return "pulumi/" + info.desc.Name
 }
 
 // Ensure resourceMonitorAdapter implements the interface.
