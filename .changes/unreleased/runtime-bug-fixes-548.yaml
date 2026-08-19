@@ -1,6 +1,0 @@
-kind: bug-fixes
-body: Return a diagnostic instead of panicking when a `for_each` set contains a null element
-time: 2026-08-13T23:07:34Z
-custom:
-    Component: runtime
-    PR: "548"
