@@ -1,6 +1,0 @@
-kind: Improvements
-body: Print `required_providers` usage instructions after `pulumi package add` and `pulumi install`
-time: 2026-08-18T22:04:21Z
-custom:
-    Component: language-host
-    PR: "560"
