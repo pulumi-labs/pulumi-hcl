@@ -588,6 +588,197 @@ resource "fake" "f" {
 	}
 }
 
+func projectionMismatchSchema() *schema.Resource {
+	geo := &schema.ObjectType{Properties: []*schema.Property{
+		{Name: "countryCodes", Type: &schema.ArrayType{ElementType: schema.StringType}},
+	}}
+	statement := &schema.ObjectType{Properties: []*schema.Property{
+		{Name: "geoMatchStatements", Type: &schema.ArrayType{ElementType: geo}},
+	}}
+	rule := &schema.ObjectType{Properties: []*schema.Property{
+		{Name: "statement", Type: statement},
+	}}
+	return &schema.Resource{
+		Token: "test:index:WebAcl",
+		InputProperties: []*schema.Property{
+			{Name: "rules", Type: &schema.ArrayType{ElementType: rule}},
+		},
+		Properties: []*schema.Property{
+			{Name: "rules", Type: &schema.ArrayType{ElementType: rule}},
+		},
+	}
+}
+
+func projectionMismatchMapping() *bridge.BodyMapping {
+	return &bridge.BodyMapping{Fields: map[string]*bridge.FieldMapping{
+		"rule": {
+			TFName:     "rule",
+			PulumiName: "rules",
+			TFBlock:    true,
+			Nested: &bridge.BodyMapping{Fields: map[string]*bridge.FieldMapping{
+				"statement": {
+					TFName:      "statement",
+					PulumiName:  "statement",
+					TFBlock:     true,
+					MaxItemsOne: true,
+					Nested: &bridge.BodyMapping{Fields: map[string]*bridge.FieldMapping{
+						"geo_match_statement": {
+							TFName:      "geo_match_statement",
+							PulumiName:  "geoMatchStatement",
+							TFBlock:     true,
+							MaxItemsOne: true,
+							Nested: &bridge.BodyMapping{Fields: map[string]*bridge.FieldMapping{
+								"country_codes": {
+									TFName:     "country_codes",
+									PulumiName: "countryCodes",
+								},
+							}},
+						},
+					}},
+				},
+			}},
+		},
+	}}
+}
+
+func projectionMismatchExpectedInputs() property.Map {
+	return property.NewMap(map[string]property.Value{
+		"rules": property.New([]property.Value{
+			property.New(property.NewMap(map[string]property.Value{
+				"statement": property.New(property.NewMap(map[string]property.Value{
+					"geoMatchStatements": property.New([]property.Value{
+						property.New(property.NewMap(map[string]property.Value{
+							"countryCodes": property.New([]property.Value{property.New("GB")}),
+						})),
+					}),
+				})),
+			})),
+		}),
+	})
+}
+
+// The raw provider mapping can flatten a nested MaxItemsOne block even when
+// the bound Pulumi schema retains it as a plural collection. Both static and
+// dynamic HCL blocks must follow the bound schema without losing their values.
+func TestEvalResourceAlignsNestedSchemaProjection(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		src  string
+	}{
+		{
+			name: "static block",
+			src: `resource "fake" "f" {
+  rule {
+    statement {
+      geo_match_statement {
+        country_codes = ["GB"]
+      }
+    }
+  }
+}`,
+		},
+		{
+			name: "dynamic block",
+			src: `resource "fake" "f" {
+  rule {
+    statement {
+      dynamic "geo_match_statement" {
+        for_each = ["GB"]
+        content {
+          country_codes = [geo_match_statement.value]
+        }
+      }
+    }
+  }
+}`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			file, diags := hclsyntax.ParseConfig([]byte(tt.src), "test.hcl", hcl.Pos{Line: 1, Column: 1})
+			require.False(t, diags.HasErrors(), diags.Error())
+			resourceBody := file.Body.(*hclsyntax.Body).Blocks[0].Body
+			evalFn := func(
+				_ resource.PropertyKey, expr hcl.Expression, extraVars map[string]cty.Value,
+			) (cty.Value, hcl.Diagnostics) {
+				return expr.Value(&hcl.EvalContext{Variables: extraVars})
+			}
+
+			inputs, _, diags := EvalResourceWithSchema(
+				resourceBody, projectionMismatchSchema(), projectionMismatchMapping(), evalFn)
+			require.False(t, diags.HasErrors(), "unexpected diags: %v", diags)
+			assert.Equal(t, projectionMismatchExpectedInputs(), inputs)
+		})
+	}
+}
+
+func TestNestedSchemaProjectionOutputAndReferenceShape(t *testing.T) {
+	t.Parallel()
+
+	res := projectionMismatchSchema()
+	mapping := projectionMismatchMapping()
+	outputs, err := ResourceOutputToCty(projectionMismatchExpectedInputs(), res, mapping, false)
+	require.NoError(t, err)
+
+	rules := outputs["rule"]
+	require.True(t, rules.Type().IsListType())
+	rule := rules.Index(cty.NumberIntVal(0))
+	statements := rule.GetAttr("statement")
+	require.True(t, statements.Type().IsTupleType() || statements.Type().IsListType())
+	statement := statements.Index(cty.NumberIntVal(0))
+	geoStatements := statement.GetAttr("geo_match_statement")
+	require.True(t, geoStatements.Type().IsListType())
+	geo := geoStatements.Index(cty.NumberIntVal(0))
+	assert.Equal(t, "GB", geo.GetAttr("country_codes").Index(cty.NumberIntVal(0)).AsString())
+
+	referenceType := ResourceReferenceType(res, mapping)
+	ruleType := referenceType.AttributeType("rule").ElementType()
+	statementType := ruleType.AttributeType("statement").ElementType()
+	geoType := statementType.AttributeType("geo_match_statement")
+	assert.True(t, geoType.IsListType())
+	assert.Equal(t, cty.String, geoType.ElementType().AttributeType("country_codes").ElementType())
+}
+
+func TestUnmatchedBodyMappingReturnsDiagnostic(t *testing.T) {
+	t.Parallel()
+
+	file, diags := hclsyntax.ParseConfig([]byte(`resource "fake" "f" {
+  missing_block {}
+}`), "test.hcl", hcl.Pos{Line: 1, Column: 1})
+	require.False(t, diags.HasErrors(), diags.Error())
+	resourceBody := file.Body.(*hclsyntax.Body).Blocks[0].Body
+	res := &schema.Resource{
+		Token: "test:index:F",
+		InputProperties: []*schema.Property{{
+			Name: "name",
+			Type: &schema.OptionalType{ElementType: schema.StringType},
+		}},
+	}
+	mapping := &bridge.BodyMapping{Fields: map[string]*bridge.FieldMapping{
+		"missing_block": {
+			TFName:     "missing_block",
+			PulumiName: "missingBlock",
+			TFBlock:    true,
+		},
+	}}
+
+	_, _, diags = EvalResourceWithSchema(resourceBody, res, mapping,
+		func(_ resource.PropertyKey, expr hcl.Expression, _ map[string]cty.Value) (cty.Value, hcl.Diagnostics) {
+			return expr.Value(nil)
+		})
+	require.True(t, diags.HasErrors())
+	require.Len(t, diags, 1)
+	assert.Equal(t, "Invalid schema mapping", diags[0].Summary)
+	assert.Contains(t, diags[0].Detail, `block "missing_block"`)
+	require.NotNil(t, diags[0].Subject)
+	assert.Equal(t, 2, diags[0].Subject.Start.Line)
+}
+
 func TestCtyToPropertyValue_Primitives(t *testing.T) {
 	t.Parallel()
 

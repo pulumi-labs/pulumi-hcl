@@ -25,6 +25,7 @@ require (
 	github.com/mitchellh/go-homedir v1.1.0
 	github.com/opentofu/registry-address/v2 v2.0.0-20250611143131-d0a99bd8acdd
 	github.com/opentofu/svchost v0.0.0-20250610175836-86c9e5e3d8c8
+	github.com/pulumi/inflector v0.2.1
 	github.com/pulumi/providertest v0.7.0
 	github.com/pulumi/pulumi-go-provider v1.5.0
 	github.com/pulumi/pulumi-terraform-bridge/v3 v3.134.1-0.20260720151533-5ffabd1227c9
@@ -255,7 +256,6 @@ require (
 	github.com/power-devops/perfstat v0.0.0-20240221224432-82ca36839d55 // indirect
 	github.com/pulumi-labs/pulumi-hcl v0.3.1 // indirect
 	github.com/pulumi/appdash v0.0.0-20231130102222-75f619a67231 // indirect
-	github.com/pulumi/inflector v0.2.1 // indirect
 	github.com/pulumi/pulumi-dotnet/pulumi-language-dotnet/v3 v3.109.1-0.20260729130442-aef193ab2411 // indirect
 	github.com/pulumi/pulumi-java v1.34.0 // indirect
 	github.com/pulumi/pulumi-yaml v1.37.1-0.20260709082604-efc7b02d80e5 // indirect

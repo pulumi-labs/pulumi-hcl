@@ -36,7 +36,6 @@ import (
 	"github.com/pulumi/pulumi/sdk/v3/go/common/resource/archive"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/resource/asset"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/util/cmdutil"
-	"github.com/pulumi/pulumi/sdk/v3/go/common/util/contract"
 	"github.com/pulumi/pulumi/sdk/v3/go/property"
 	"github.com/zclconf/go-cty/cty"
 	"github.com/zclconf/go-cty/cty/convert"
@@ -57,6 +56,7 @@ func EvalFunctionWithSchema(config hcl.Body, r *schema.Function, mapping *bridge
 	if r.Inputs != nil {
 		props = r.Inputs.Properties
 	}
+	mapping = AlignBodyMapping(mapping, props)
 	functionInputs, attrExprs, diags := evalBlockWithSchema(config, props, mapping, eval)
 	if diags.HasErrors() {
 		return property.Map{}, diags
@@ -76,6 +76,7 @@ func EvalFunctionWithSchema(config hcl.Body, r *schema.Function, mapping *bridge
 // mark. Paths are in the assembled inputs' namespace — snake-cased Pulumi
 // names with MaxItemsOne blocks already flattened — and sorted.
 func EvalResourceWithSchema(config hcl.Body, r *schema.Resource, mapping *bridge.BodyMapping, eval EvalFunc) (property.Map, []cty.Path, hcl.Diagnostics) {
+	mapping = AlignBodyMapping(mapping, r.InputProperties)
 	resourceInputs, attrExprs, diags := evalBlockWithSchema(config, r.InputProperties, mapping, eval)
 	if diags.HasErrors() {
 		return property.Map{}, nil, diags
@@ -168,7 +169,10 @@ func evalBlockWithSchema(config hcl.Body, props []*schema.Property, mapping *bri
 	resourceInputs := make(map[string]cty.Value, len(body.Attributes)+len(body.Blocks))
 	for name, attr := range body.Attributes {
 		_, prop := resolvePulumiProperty(name, props, mapping)
-		contract.Assertf(prop != nil, "unable to find schema for validated property")
+		if prop == nil {
+			diags = append(diags, invalidSchemaMapping("attribute", name, attr.NameRange))
+			return cty.Value{}, nil, diags
+		}
 
 		out, attrDiag := eval(resource.PropertyKey(prop.Name), attr.Expr, nil)
 		diags = diags.Extend(attrDiag)
@@ -195,7 +199,10 @@ func evalBlockWithSchema(config hcl.Body, props []*schema.Property, mapping *bri
 		}
 
 		_, prop := resolvePulumiProperty(name, props, mapping)
-		contract.Assertf(prop != nil, "unable to find schema for validated property")
+		if prop == nil {
+			diags = append(diags, invalidSchemaMapping("block", name, block.TypeRange))
+			return cty.Value{}, nil, diags
+		}
 
 		blockProps, isList := blockPropertiesOf(prop.Type)
 		var nestedMapping *bridge.BodyMapping
@@ -228,6 +235,16 @@ func evalBlockWithSchema(config hcl.Body, props []*schema.Property, mapping *bri
 	}
 
 	return cty.ObjectVal(resourceInputs), attrExprs, diags
+}
+
+func invalidSchemaMapping(kind, name string, subject hcl.Range) *hcl.Diagnostic {
+	return &hcl.Diagnostic{
+		Severity: hcl.DiagError,
+		Summary:  "Invalid schema mapping",
+		Detail: fmt.Sprintf("The provider mapping accepts the %s %q, but the bound Pulumi schema has no "+
+			"corresponding property.", kind, name),
+		Subject: subject.Ptr(),
+	}
 }
 
 // blockPropertiesOf returns the inner-block property list and whether the
@@ -1208,6 +1225,7 @@ func ResourceOutputToCty(
 			&schema.Property{Name: "pluginDownloadURL", Type: schema.StringType},
 		)
 	}
+	mapping = AlignBodyMapping(mapping, properties)
 	return propertyObjectToCtyMap("", pv, properties, mapping, dryRun)
 }
 
@@ -1224,6 +1242,7 @@ func ResourceReferenceType(r *schema.Resource, mapping *bridge.BodyMapping) cty.
 			&schema.Property{Name: "pluginDownloadURL", Type: schema.StringType},
 		)
 	}
+	mapping = AlignBodyMapping(mapping, properties)
 	return ctyObjectType(properties, map[string]cty.Type{"id": cty.String}, mapping)
 }
 
@@ -1235,12 +1254,14 @@ func DataSourceReferenceType(fn *schema.Function, mapping *bridge.BodyMapping) c
 	if !ok {
 		return cty.DynamicPseudoType
 	}
+	mapping = AlignBodyMapping(mapping, obj.Properties)
 	return ctyObjectType(obj.Properties, nil, mapping)
 }
 
 // FunctionOutputToCty mirrors ResourceOutputToCty for invoke return values.
 func FunctionOutputToCty(pv property.Map, r *schema.Function, mapping *bridge.BodyMapping, dryRun bool) (cty.Value, error) {
 	if obj, ok := r.ReturnType.(*schema.ObjectType); ok {
+		mapping = AlignBodyMapping(mapping, obj.Properties)
 		o, err := propertyObjectToCtyMap("", pv, obj.Properties, mapping, dryRun)
 		return cty.ObjectVal(o), err
 	}

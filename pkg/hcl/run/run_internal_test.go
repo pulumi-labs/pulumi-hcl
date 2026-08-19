@@ -20,6 +20,7 @@ import (
 	"github.com/hashicorp/hcl/v2"
 	"github.com/pulumi/pulumi-hcl/pkg/hcl/bridge"
 	"github.com/pulumi/pulumi-hcl/pkg/hcl/eval"
+	"github.com/pulumi/pulumi-hcl/pkg/hcl/transform"
 	"github.com/pulumi/pulumi/pkg/v3/codegen/schema"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/resource"
 	"github.com/pulumi/pulumi/sdk/v3/go/property"
@@ -252,6 +253,54 @@ func TestTranslateAttrPathTraversal(t *testing.T) {
 			assert.Equal(t, tt.want, string(text))
 		})
 	}
+}
+
+func TestTranslateAttrPathTraversalAlignedProjection(t *testing.T) {
+	t.Parallel()
+
+	geo := &schema.ObjectType{Properties: []*schema.Property{{
+		Name: "countryCodes", Type: &schema.ArrayType{ElementType: schema.StringType},
+	}}}
+	statement := &schema.ObjectType{Properties: []*schema.Property{{
+		Name: "geoMatchStatements", Type: &schema.ArrayType{ElementType: geo},
+	}}}
+	rule := &schema.ObjectType{Properties: []*schema.Property{{Name: "statement", Type: statement}}}
+	props := []*schema.Property{{Name: "rules", Type: &schema.ArrayType{ElementType: rule}}}
+	mapping := &bridge.BodyMapping{Fields: map[string]*bridge.FieldMapping{
+		"rule": {
+			TFName: "rule", PulumiName: "rules", TFBlock: true,
+			Nested: &bridge.BodyMapping{Fields: map[string]*bridge.FieldMapping{
+				"statement": {
+					TFName: "statement", PulumiName: "statement", TFBlock: true, MaxItemsOne: true,
+					Nested: &bridge.BodyMapping{Fields: map[string]*bridge.FieldMapping{
+						"geo_match_statement": {
+							TFName: "geo_match_statement", PulumiName: "geoMatchStatement",
+							TFBlock: true, MaxItemsOne: true,
+							Nested: &bridge.BodyMapping{Fields: map[string]*bridge.FieldMapping{
+								"country_codes": {TFName: "country_codes", PulumiName: "countryCodes"},
+							}},
+						},
+					}},
+				},
+			}},
+		},
+	}}
+	mapping = transform.AlignBodyMapping(mapping, props)
+
+	traversal := hcl.Traversal{
+		hcl.TraverseAttr{Name: "rule"},
+		hcl.TraverseIndex{Key: cty.NumberIntVal(0)},
+		hcl.TraverseAttr{Name: "statement"},
+		hcl.TraverseIndex{Key: cty.NumberIntVal(0)},
+		hcl.TraverseAttr{Name: "geo_match_statement"},
+		hcl.TraverseIndex{Key: cty.NumberIntVal(0)},
+		hcl.TraverseAttr{Name: "country_codes"},
+	}
+	glob, err := translateAttrPathTraversal(traversal, mapping, props)
+	require.NoError(t, err)
+	text, err := glob.MarshalText()
+	require.NoError(t, err)
+	assert.Equal(t, "rules[0].statement.geoMatchStatements[0].countryCodes", string(text))
 }
 
 // TestIgnoreChangesApplies covers the OpenTofu-style existence check that

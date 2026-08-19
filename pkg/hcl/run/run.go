@@ -1648,6 +1648,8 @@ func (e *Engine) registerResourceInstanceInContext(
 	hclCtx := evalCtx.HCLContext()
 
 	resourceMapping := e.resolver.ResourceBodyMapping(ctx, res.Type)
+	allResourceProperties := append(slices.Clone(resSchema.InputProperties), resSchema.Properties...)
+	resourceMapping = transform.AlignBodyMapping(resourceMapping, allResourceProperties)
 	// terraform_data's attributes are dynamically typed, so their cty types
 	// (e.g. set-ness) survive the Pulumi property round-trip only via the
 	// evaluated values captured here; see wrapTerraformDataInputs.
