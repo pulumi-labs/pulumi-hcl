@@ -418,9 +418,10 @@ func parseSDKInfo(path string, data []byte) (sdkInfo, error) {
 	if err := json.Unmarshal(data, &info.desc); err != nil {
 		return sdkInfo{}, fmt.Errorf("%q: %w", path, err)
 	}
-	if json.Unmarshal(data, &stamp) == nil {
-		info.source = stamp.Source
+	if err := json.Unmarshal(data, &stamp); err != nil {
+		return sdkInfo{}, fmt.Errorf("%q: %w", path, err)
 	}
+	info.source = stamp.Source
 	return info, nil
 }
 
