@@ -250,14 +250,9 @@ func (host *LanguageHost) GetRequiredPackages(
 	return &pulumirpc.GetRequiredPackagesResponse{Packages: pkgs, Specs: specs}, nil
 }
 
-// programRequirements resolves every provider referenced anywhere in the
-// program's module tree (and its component directories) to its source,
-// mirroring tofu: a provider declared in a child module is installed from its
-// declared source (not the "hashicorp/<name>" default), providers sharing a
-// source are installed once with their version constraints unioned (the
-// terraform-provider plugin intersects them at resolve time, erroring on an
-// empty intersection just as tofu does), and distinct sources are distinct
-// installs. Directories that fail to parse contribute nothing.
+// programRequirements resolves every provider referenced by the program's
+// module tree and component directories to its source, skipping directories
+// that fail to parse.
 func programRequirements(
 	ctx context.Context, programDir string,
 ) (tf map[string]*tfRequirement, pulumi map[string]string, err error) {
@@ -1217,11 +1212,8 @@ func (host *LanguageHost) Pack(
 	}, nil
 }
 
-// Link links local dependencies into a project. HCL programs have no
-// package-management file to edit, so linking only reports the
-// `required_providers` entries for linked SDKs the program does not yet
-// reference; SDKs it already declares (the `pulumi install` case) print
-// nothing.
+// Link has no project file to edit; it reports the `required_providers`
+// entries for linked SDKs the program does not reference yet.
 func (host *LanguageHost) Link(
 	ctx context.Context,
 	req *pulumirpc.LinkRequest,
@@ -1234,9 +1226,7 @@ func (host *LanguageHost) Link(
 	reqProviders := f.Body().AppendNewBlock("terraform", nil).Body().AppendNewBlock("required_providers", nil)
 	unreferenced := 0
 	for _, dep := range req.Packages {
-		// The core "pulumi" SDK is built in: it ships no hcl.sdk.json and
-		// takes no required_providers entry.
-		if dep.Package.GetName() == "pulumi" {
+		if dep.Package.GetName() == "pulumi" { // built in; no hcl.sdk.json
 			continue
 		}
 		path := filepath.Join(req.Info.RootDirectory, dep.Path, "hcl.sdk.json")
@@ -1277,11 +1267,8 @@ func (host *LanguageHost) Link(
 	}
 }
 
-// requiredProviderEntry returns the `source` and `version` a
-// `required_providers` entry needs to resolve to the SDK described by info:
-// the bridged provider's own source for terraform-provider SDKs, otherwise
-// `pulumi/<package>` where the package is the parameterized name when there is
-// one and the (base) plugin name for plain and extension SDKs.
+// requiredProviderEntry returns the `source` and `version` that resolve to
+// the SDK described by info.
 func requiredProviderEntry(info sdkInfo) (source, version string) {
 	if info.source != "" {
 		return info.source, info.desc.Parameterization.Version.String()
