@@ -36,7 +36,6 @@ import (
 	"github.com/pulumi/pulumi/sdk/v3/go/common/resource/archive"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/resource/asset"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/util/cmdutil"
-	"github.com/pulumi/pulumi/sdk/v3/go/common/util/contract"
 	"github.com/pulumi/pulumi/sdk/v3/go/property"
 	"github.com/zclconf/go-cty/cty"
 	"github.com/zclconf/go-cty/cty/convert"
@@ -167,8 +166,10 @@ func evalBlockWithSchema(config hcl.Body, props []*schema.Property, mapping *bri
 	attrExprs := make(map[string]hcl.Expression, len(body.Attributes))
 	resourceInputs := make(map[string]cty.Value, len(body.Attributes)+len(body.Blocks))
 	for name, attr := range body.Attributes {
-		_, prop := resolvePulumiProperty(name, props, mapping)
-		contract.Assertf(prop != nil, "unable to find schema for validated property")
+		puName, prop := resolvePulumiProperty(name, props, mapping)
+		if prop == nil {
+			return cty.Value{}, nil, append(diags, unmappedProperty(name, puName, props, attr.Range))
+		}
 
 		out, attrDiag := eval(resource.PropertyKey(prop.Name), attr.Expr, nil)
 		diags = diags.Extend(attrDiag)
@@ -194,8 +195,10 @@ func evalBlockWithSchema(config hcl.Body, props []*schema.Property, mapping *bri
 			continue
 		}
 
-		_, prop := resolvePulumiProperty(name, props, mapping)
-		contract.Assertf(prop != nil, "unable to find schema for validated property")
+		puName, prop := resolvePulumiProperty(name, props, mapping)
+		if prop == nil {
+			return cty.Value{}, nil, append(diags, unmappedProperty(name, puName, props, block.DefRange))
+		}
 
 		blockProps, isList := blockPropertiesOf(prop.Type)
 		var nestedMapping *bridge.BodyMapping
@@ -497,6 +500,25 @@ func appendBlockListValues(resourceInputs map[string]cty.Value, key string, valu
 
 // tooManySingularBlocks reports more than one block (static or dynamically
 // expanded) for a MaxItems=1 field.
+// unmappedProperty reports a TF name the provider's mapping admitted into the
+// body but its Pulumi schema has no property for — a self-inconsistent
+// provider package (e.g. a bridged nested type whose name two resources share
+// with different shapes), which the engine cannot evaluate against.
+func unmappedProperty(tfName, puName string, props []*schema.Property, rng hcl.Range) *hcl.Diagnostic {
+	names := make([]string, len(props))
+	for i, p := range props {
+		names[i] = p.Name
+	}
+	return &hcl.Diagnostic{
+		Severity: hcl.DiagError,
+		Summary:  fmt.Sprintf("Provider schema has no property for %q", tfName),
+		Detail: fmt.Sprintf("The provider's mapping names %q as %q, but its schema defines only: %s. "+
+			"The provider's schema and mapping disagree; this is a provider bug.",
+			tfName, puName, strings.Join(names, ", ")),
+		Subject: rng.Ptr(),
+	}
+}
+
 func tooManySingularBlocks(name string, rng hcl.Range) *hcl.Diagnostic {
 	return &hcl.Diagnostic{
 		Severity: hcl.DiagError,

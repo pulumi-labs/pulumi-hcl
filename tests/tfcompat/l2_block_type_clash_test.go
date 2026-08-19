@@ -27,6 +27,9 @@ import (
 // mapping still flattens the singular block.
 func TestL2BlockTypeClash(t *testing.T) {
 	t.Parallel()
+	t.Skip("TODO[https://github.com/pulumi/pulumi-terraform-bridge/issues/3583]: " +
+		"tfgen overwrites the shared nested type with the unbounded declaration, " +
+		"so the Pulumi schema has no property for the flattened block")
 	tfcompat.RunCase(t, "l2_block_type_clash", tfcompat.Case{
 		Providers: []tfcompat.Provider{
 			{Name: "typeclash", Factory: providers.TypeClashProvider},
