@@ -1,6 +1,6 @@
 kind: bug-fixes
-body: Stop panicking when nested provider schema projections differ
-time: 2026-08-19T14:22:12Z
+body: Return a diagnostic instead of panicking when a provider's mapping names a block or attribute its schema lacks
+time: 2026-08-19T11:30:00Z
 custom:
     Component: runtime
-    PR: "561"
+    PR: "564"

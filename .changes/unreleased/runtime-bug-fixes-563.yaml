@@ -1,0 +1,6 @@
+kind: bug-fixes
+body: Stop panicking when nested provider schema projections differ
+time: 2026-08-19T14:22:12Z
+custom:
+    Component: runtime
+    PR: "563"

@@ -168,10 +168,9 @@ func evalBlockWithSchema(config hcl.Body, props []*schema.Property, mapping *bri
 	attrExprs := make(map[string]hcl.Expression, len(body.Attributes))
 	resourceInputs := make(map[string]cty.Value, len(body.Attributes)+len(body.Blocks))
 	for name, attr := range body.Attributes {
-		_, prop := resolvePulumiProperty(name, props, mapping)
+		puName, prop := resolvePulumiProperty(name, props, mapping)
 		if prop == nil {
-			diags = append(diags, invalidSchemaMapping("attribute", name, attr.NameRange))
-			return cty.Value{}, nil, diags
+			return cty.Value{}, nil, append(diags, unmappedProperty(name, puName, props, attr.Range))
 		}
 
 		out, attrDiag := eval(resource.PropertyKey(prop.Name), attr.Expr, nil)
@@ -198,10 +197,9 @@ func evalBlockWithSchema(config hcl.Body, props []*schema.Property, mapping *bri
 			continue
 		}
 
-		_, prop := resolvePulumiProperty(name, props, mapping)
+		puName, prop := resolvePulumiProperty(name, props, mapping)
 		if prop == nil {
-			diags = append(diags, invalidSchemaMapping("block", name, block.TypeRange))
-			return cty.Value{}, nil, diags
+			return cty.Value{}, nil, append(diags, unmappedProperty(name, puName, props, block.DefRange))
 		}
 
 		blockProps, isList := blockPropertiesOf(prop.Type)
@@ -235,16 +233,6 @@ func evalBlockWithSchema(config hcl.Body, props []*schema.Property, mapping *bri
 	}
 
 	return cty.ObjectVal(resourceInputs), attrExprs, diags
-}
-
-func invalidSchemaMapping(kind, name string, subject hcl.Range) *hcl.Diagnostic {
-	return &hcl.Diagnostic{
-		Severity: hcl.DiagError,
-		Summary:  "Invalid schema mapping",
-		Detail: fmt.Sprintf("The provider mapping accepts the %s %q, but the bound Pulumi schema has no "+
-			"corresponding property.", kind, name),
-		Subject: subject.Ptr(),
-	}
 }
 
 // blockPropertiesOf returns the inner-block property list and whether the
@@ -510,6 +498,25 @@ func appendBlockListValues(resourceInputs map[string]cty.Value, key string, valu
 	// for absent keys), so blockListValue falls back to a tuple rather than
 	// cty.ListVal, which would panic.
 	resourceInputs[key] = blockListValue(values)
+}
+
+// unmappedProperty reports a TF name the provider's mapping admitted into the
+// body but its Pulumi schema has no property for — a self-inconsistent
+// provider package (e.g. a bridged nested type whose name two resources share
+// with different shapes), which the engine cannot evaluate against.
+func unmappedProperty(tfName, puName string, props []*schema.Property, rng hcl.Range) *hcl.Diagnostic {
+	names := make([]string, len(props))
+	for i, p := range props {
+		names[i] = p.Name
+	}
+	return &hcl.Diagnostic{
+		Severity: hcl.DiagError,
+		Summary:  fmt.Sprintf("Provider schema has no property for %q", tfName),
+		Detail: fmt.Sprintf("The provider's mapping names %q as %q, but its schema defines only: %s. "+
+			"The provider's schema and mapping disagree; this is a provider bug.",
+			tfName, puName, strings.Join(names, ", ")),
+		Subject: rng.Ptr(),
+	}
 }
 
 // tooManySingularBlocks reports more than one block (static or dynamically
