@@ -34,7 +34,7 @@ To build the plugins from source for development, install them directly onto you
 ```bash
 go install github.com/pulumi/pulumi-hcl/cmd/pulumi-language-hcl@latest  # for the language
 go install github.com/pulumi/pulumi-hcl/cmd/pulumi-converter-hcl@latest # for the converter
-go install github.com/pulumi/pulumi-hcl/cmd/pulumi-resource-hcl@latest # for the converter
+go install github.com/pulumi/pulumi-hcl/cmd/pulumi-resource-hcl@latest # for the provider
 ```
 
 ## Usage
