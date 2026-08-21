@@ -1,6 +1,6 @@
 # Pulumi HCL Language Reference
 
-Pulumi HCL lets you write Pulumi programs using Terraform-compatible HCL syntax. You get familiar HCL blocks, expressions, and functions while using Pulumi's state management, secrets, and deployment engine. See the [execution model](execution-model.md) for dependency ordering, preview-time unknowns, data-source timing, and failure semantics.
+Pulumi HCL lets you write Pulumi programs using Terraform-compatible HCL syntax. You get familiar HCL blocks, expressions, and functions while using Pulumi's state management, secrets, and deployment engine.
 
 ## Table of Contents
 
