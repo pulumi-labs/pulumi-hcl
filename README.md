@@ -6,7 +6,7 @@ A Pulumi language plugin that enables running Pulumi against a Terraform HCL IaC
 
 This plugin allows you to use familiar Terraform/HCL syntax while leveraging Pulumi's state management, secrets handling, and cloud platform. It parses HCL files and translates them to Pulumi resource registrations at runtime.
 
-See the [language reference](docs/language-reference.md) for the available syntax and the [execution model](docs/execution-model.md) for dependency, preview, and failure semantics.
+See the [language reference](docs/language-reference.md) for the full language spec.
 
 ```hcl
 # main.tf
