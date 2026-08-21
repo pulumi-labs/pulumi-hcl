@@ -341,8 +341,8 @@ func resolvePackage(ctx context.Context, loader schema.ReferenceLoader, descript
 }
 
 // ParameterizationAwareLoader wraps a schema.ReferenceLoader and enriches load
-// requests for parameterized packages with the correct base provider name and
-// parameterization.
+// requests for packages with a local SDK descriptor: the base provider name and
+// parameterization, or for plain packages the version and download URL.
 type ParameterizationAwareLoader struct {
 	inner   schema.ReferenceLoader
 	aliases map[string]workspace.PackageDescriptor
@@ -360,7 +360,7 @@ func (l *ParameterizationAwareLoader) enrich(descriptor *schema.PackageDescripto
 		return descriptor
 	}
 	desc, ok := l.aliases[descriptor.Name]
-	if !ok || desc.Parameterization == nil {
+	if !ok {
 		return descriptor
 	}
 	// Base version may be nil for auto-derived TF-style entries (we let the
@@ -370,6 +370,20 @@ func (l *ParameterizationAwareLoader) enrich(descriptor *schema.PackageDescripto
 	if desc.Version != nil {
 		v := *desc.Version
 		baseVersion = &v
+	}
+	if desc.Parameterization == nil {
+		if desc.ExtensionParameterization != nil {
+			return descriptor
+		}
+		// A git-sourced plugin is found only by its download URL and version.
+		enriched := *descriptor
+		if enriched.Version == nil {
+			enriched.Version = baseVersion
+		}
+		if enriched.DownloadURL == "" {
+			enriched.DownloadURL = desc.PluginDownloadURL
+		}
+		return &enriched
 	}
 	pkgName := desc.Name
 	if pkgName == "" {

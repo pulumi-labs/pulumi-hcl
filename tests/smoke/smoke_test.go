@@ -113,6 +113,28 @@ func TestSmokeInstallConverges(t *testing.T) {
 	})
 }
 
+// TestSmokeGitComponent reproduces https://github.com/pulumi/pulumi-hcl/issues/566:
+// a Pulumi component installed from a git source (Pulumi.yaml `packages:`).
+// Hits GitHub and the public Pulumi registry.
+func TestSmokeGitComponent(t *testing.T) {
+	t.Parallel()
+
+	home := seedPluginCache(t, "github.com_pulumi_component-test-providers.git_test-provider", "tls")
+	integration.ProgramTest(t, &integration.ProgramTestOptions{
+		NoParallel:     true,
+		Dir:            filepath.Join("testdata", "git-component"),
+		PulumiHomeDir:  home,
+		PrepareProject: prepareWithPulumiInstall(home),
+		ExtraRuntimeValidation: func(t *testing.T, stack integration.RuntimeValidationStackInfo) {
+			pem, ok := stack.Outputs["pem"].(string)
+			require.True(t, ok, "pem output must be a string, got %T (%v)",
+				stack.Outputs["pem"], stack.Outputs["pem"])
+			require.True(t, strings.HasPrefix(pem, "-----BEGIN CERTIFICATE-----"),
+				"pem output should be a PEM certificate, got %q", pem)
+		},
+	})
+}
+
 // TestSmokeInLanguageModule proves a plain HCL module (no component or package block) can
 // be served as a Multi-Language Component: `pulumi package add ../randommodule` generates
 // a local SDK, the consuming HCL program instantiates the component as

@@ -210,6 +210,7 @@ func (host *LanguageHost) GetRequiredPackages(
 			Name:             info.Name,
 			Version:          versionString(info.Version),
 			Kind:             "resource",
+			Server:           info.PluginDownloadURL,
 			Parameterization: parameterizationProto(info.Parameterization),
 			Extension:        parameterizationProto(info.ExtensionParameterization),
 		})
@@ -231,13 +232,10 @@ func (host *LanguageHost) GetRequiredPackages(
 	}
 
 	for _, name := range sortedKeys(pulumiPkgs) {
-		// A local SDK descriptor written by `pulumi package add` carries the
-		// parameterization a required_providers entry alone lacks; prefer it.
-		// A terraform-provider descriptor is not this package — it serves a
-		// non-Pulumi source that happens to share the name (e.g. a root on
-		// pulumi/aws with a child module on hashicorp/aws).
-		if info, ok := sdks[name]; ok && info.desc.Name != bridgePackageName {
-			emitPkg(name, info.desc)
+		// The SDK descriptor carries the parameterization and download URL
+		// a required_providers entry alone lacks.
+		if dir, desc, ok := descriptorForPulumiPackage(name, sdks); ok {
+			emitPkg(dir, desc)
 			continue
 		}
 		pkgs = append(pkgs, &pulumirpc.PackageDependency{
@@ -430,12 +428,40 @@ func parseSDKInfo(path string, data []byte) (sdkInfo, error) {
 	return info, nil
 }
 
+// sdkPackageName returns the package an SDK serves: the name of the schema
+// it was generated from.
+func sdkPackageName(desc workspace.PackageDescriptor) string {
+	if desc.Parameterization != nil {
+		return desc.Parameterization.Name
+	}
+	if desc.ExtensionParameterization != nil {
+		return desc.ExtensionParameterization.Name
+	}
+	return desc.Name
+}
+
+// descriptorForPulumiPackage returns the SDK descriptor serving a Pulumi
+// package and its sdks/ directory. The directory may be namespace-prefixed
+// (sdks/<namespace>-<name>), so match on the descriptor. A terraform-provider
+// descriptor serves a non-Pulumi source that happens to share the name.
+func descriptorForPulumiPackage(
+	name string, sdks map[string]sdkInfo,
+) (string, workspace.PackageDescriptor, bool) {
+	for _, dir := range sortedKeys(sdks) {
+		desc := sdks[dir].desc
+		if desc.Name != bridgePackageName && sdkPackageName(desc) == name {
+			return dir, desc, true
+		}
+	}
+	return "", workspace.PackageDescriptor{}, false
+}
+
 // sdkDescriptors projects sdkInfos down to the descriptor map the schema
-// loader and run engine consume.
+// loader and run engine consume, keyed by package name.
 func sdkDescriptors(infos map[string]sdkInfo) map[string]workspace.PackageDescriptor {
 	descs := make(map[string]workspace.PackageDescriptor, len(infos))
-	for name, info := range infos {
-		descs[name] = info.desc
+	for _, info := range infos {
+		descs[sdkPackageName(info.desc)] = info.desc
 	}
 	return descs
 }

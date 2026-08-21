@@ -15,10 +15,13 @@
 package packages
 
 import (
+	"context"
 	"testing"
 
+	"github.com/blang/semver"
 	"github.com/pulumi/pulumi-hcl/tests/testutil/schemaloader"
 	"github.com/pulumi/pulumi/pkg/v3/codegen/schema"
+	"github.com/pulumi/pulumi/sdk/v3/go/common/workspace"
 	"github.com/stretchr/testify/require"
 )
 
@@ -428,4 +431,37 @@ func TestResolveFunction(t *testing.T) {
 			require.Equal(t, tt.wantToken, actualToken)
 		})
 	}
+}
+
+type recordingLoader struct {
+	schema.ReferenceLoader
+	got *schema.PackageDescriptor
+}
+
+func (r *recordingLoader) LoadPackageReferenceV2(
+	_ context.Context, d *schema.PackageDescriptor,
+) (schema.PackageReference, error) {
+	r.got = d
+	return nil, nil
+}
+
+func TestParameterizationAwareLoader_PlainPackageVersionAndURL(t *testing.T) {
+	t.Parallel()
+
+	v := semver.MustParse("0.0.0-x52a8a71555d964542b308da197755c64dbe63352")
+	inner := &recordingLoader{}
+	loader := NewParameterizationAwareLoader(inner, map[string]workspace.PackageDescriptor{
+		"tls-self-signed-cert": {PluginDescriptor: workspace.PluginDescriptor{
+			Name:              "tls-self-signed-cert",
+			Version:           &v,
+			PluginDownloadURL: "git://github.com/pulumi/component-test-providers/test-provider",
+		}},
+	})
+	_, err := loader.LoadPackageReferenceV2(t.Context(), &schema.PackageDescriptor{Name: "tls-self-signed-cert"})
+	require.NoError(t, err)
+	require.Equal(t, &schema.PackageDescriptor{
+		Name:        "tls-self-signed-cert",
+		Version:     &v,
+		DownloadURL: "git://github.com/pulumi/component-test-providers/test-provider",
+	}, inner.got)
 }
