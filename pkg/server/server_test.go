@@ -234,6 +234,69 @@ resource "subpackage_hello_world" "example" {}
 	}, resp.Packages[0])
 }
 
+// TestGetRequiredPackages_GitComponent reproduces
+// https://github.com/pulumi/pulumi-hcl/issues/566: a git-sourced component
+// lives in sdks/<namespace>-<name> and is found only by its download URL.
+func TestGetRequiredPackages_GitComponent(t *testing.T) {
+	t.Parallel()
+
+	projectDir := t.TempDir()
+	sdkDir := filepath.Join(projectDir, "sdks", "pulumi-tls-self-signed-cert")
+	require.NoError(t, os.MkdirAll(sdkDir, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(sdkDir, "hcl.sdk.json"), []byte(`{
+		"Name": "tls-self-signed-cert",
+		"Kind": "resource",
+		"Version": "0.0.0-x52a8a71555d964542b308da197755c64dbe63352",
+		"PluginDownloadURL": "git://github.com/pulumi/component-test-providers/test-provider"
+	}`), 0o600))
+	require.NoError(t, os.WriteFile(filepath.Join(projectDir, "main.tf"), []byte(`terraform {
+  required_providers {
+    tls-self-signed-cert = {
+      source = "pulumi/tls-self-signed-cert"
+    }
+  }
+}
+
+resource "tls-self-signed-cert_self_signed_certificate" "cert" {
+  dns_name = "example.com"
+}
+`), 0o600))
+
+	resp := getRequiredPackages(t, projectDir)
+	assert.Empty(t, resp.Specs)
+	assert.Equal(t, []*pulumirpc.PackageDependency{{
+		Name:    "tls-self-signed-cert",
+		Version: "0.0.0-x52a8a71555d964542b308da197755c64dbe63352",
+		Kind:    "resource",
+		Server:  "git://github.com/pulumi/component-test-providers/test-provider",
+	}}, resp.Packages)
+}
+
+func TestSDKDescriptors_KeyedByPackageName(t *testing.T) {
+	t.Parallel()
+
+	plain := workspace.PackageDescriptor{
+		PluginDescriptor: workspace.PluginDescriptor{Name: "tls-self-signed-cert"},
+	}
+	parameterized := workspace.PackageDescriptor{
+		PluginDescriptor: workspace.PluginDescriptor{Name: "terraform-provider"},
+		Parameterization: &workspace.Parameterization{Name: "random"},
+	}
+	extension := workspace.PackageDescriptor{
+		PluginDescriptor:          workspace.PluginDescriptor{Name: "extbase"},
+		ExtensionParameterization: &workspace.Parameterization{Name: "myext"},
+	}
+	assert.Equal(t, map[string]workspace.PackageDescriptor{
+		"tls-self-signed-cert": plain,
+		"random":               parameterized,
+		"myext":                extension,
+	}, sdkDescriptors(map[string]sdkInfo{
+		"pulumi-tls-self-signed-cert": {desc: plain},
+		"random":                      {desc: parameterized},
+		"myext":                       {desc: extension},
+	}))
+}
+
 // TestGetRequiredPackages_TransitiveModuleSource reproduces
 // https://github.com/pulumi/pulumi-hcl/issues/184: a provider declared in
 // a child module's required_providers with a non-hashicorp source must be

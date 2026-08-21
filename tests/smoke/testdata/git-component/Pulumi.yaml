@@ -1,0 +1,4 @@
+name: smoke-test-git-component
+runtime: hcl
+packages:
+  tls-self-signed-cert: github.com/pulumi/component-test-providers/test-provider@52a8a71555d964542b308da197755c64dbe63352
