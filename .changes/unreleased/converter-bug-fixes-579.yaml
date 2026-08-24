@@ -3,4 +3,4 @@ body: Import resources with no Terraform `id` under the ID the bridge computes f
 time: 2026-08-24T16:02:48.966283+02:00
 custom:
     Component: converter
-    PR: "0"
+    PR: "579"
