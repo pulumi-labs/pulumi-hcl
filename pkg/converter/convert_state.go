@@ -304,11 +304,6 @@ func convertTFState(
 			}
 			id, ok := idAttr(current)
 			if !ok {
-				// The bridge hands ID-less TF resources this sentinel
-				// (tfbridge/tokens/fixups.go, missingIDComputeID), so the
-				// import agrees with whatever the next up computes. Pulumi IDs
-				// need not be unique; an empty one means "deleted", so the
-				// engine rejects it.
 				id = missingID
 			}
 			var outs, ins resource.PropertyMap
