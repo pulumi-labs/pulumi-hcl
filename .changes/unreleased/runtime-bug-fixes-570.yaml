@@ -1,0 +1,6 @@
+kind: bug-fixes
+body: Resolve resources and invokes of extension packages by their extension-namespaced tokens
+time: 2026-08-24T09:45:00Z
+custom:
+    Component: runtime
+    PR: "570"

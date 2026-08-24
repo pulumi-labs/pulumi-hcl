@@ -12,8 +12,9 @@ terraform {
 }
 
 // An extension resource (Greeting) and a base-provider resource (Base) used
-// together; both live in the base provider's namespace ("extbase").
-resource "extbase_greeting" "greeting" {
+// together; Greeting lives in the extension's namespace ("myext") and Base
+// lives in the base provider's namespace ("extbase").
+resource "myext_greeting" "greeting" {
   lifecycle {
     create_before_destroy = true
   }
@@ -24,7 +25,7 @@ resource "extbase_base" "base" {
   }
 }
 output "parameterValue" {
-  value = extbase_greeting.greeting.parameter_value
+  value = myext_greeting.greeting.parameter_value
 }
 output "baseValue" {
   value = extbase_base.base.base_value

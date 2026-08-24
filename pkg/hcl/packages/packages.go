@@ -373,7 +373,7 @@ func (l *ParameterizationAwareLoader) enrich(descriptor *schema.PackageDescripto
 	}
 	if desc.Parameterization == nil {
 		if desc.ExtensionParameterization != nil {
-			return descriptor
+			return extensionDescriptor(desc)
 		}
 		// A git-sourced plugin is found only by its download URL and version.
 		enriched := *descriptor
@@ -412,26 +412,25 @@ func (l *ParameterizationAwareLoader) LoadExtensionReference(
 		if desc.ExtensionParameterization == nil || desc.Name != baseName {
 			continue
 		}
-		var baseVersion *semver.Version
-		if desc.Version != nil {
-			v := *desc.Version
-			baseVersion = &v
-		}
-		ref, err := l.inner.LoadPackageReferenceV2(ctx, &schema.PackageDescriptor{
-			Name:    baseName,
-			Version: baseVersion,
-			Parameterization: &schema.ParameterizationDescriptor{
-				Name:    desc.ExtensionParameterization.Name,
-				Version: desc.ExtensionParameterization.Version,
-				Value:   desc.ExtensionParameterization.Value,
-			},
-		})
+		ref, err := l.inner.LoadPackageReferenceV2(ctx, extensionDescriptor(desc))
 		if err != nil {
 			return nil, false, err
 		}
 		return ref, true, nil
 	}
 	return nil, false, nil
+}
+
+func extensionDescriptor(desc workspace.PackageDescriptor) *schema.PackageDescriptor {
+	return &schema.PackageDescriptor{
+		Name:    desc.Name,
+		Version: desc.Version,
+		Parameterization: &schema.ParameterizationDescriptor{
+			Name:    desc.ExtensionParameterization.Name,
+			Version: desc.ExtensionParameterization.Version,
+			Value:   desc.ExtensionParameterization.Value,
+		},
+	}
 }
 
 func (l *ParameterizationAwareLoader) LoadPackage(pkg string, version *semver.Version) (*schema.Package, error) {
