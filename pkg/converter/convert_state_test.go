@@ -244,7 +244,28 @@ func TestConvertTFState_SkipsUnimportable(t *testing.T) {
 				"mode": "managed", "type": "unknown_widget", "name": "g",
 				"provider": "provider[\"registry.terraform.io/acme/unknown\"]",
 				"instances": [ { "attributes": { "id": "widget-1" } } ]
-			},
+			}
+		]
+	}`)
+
+	resp := convertTFState(t.Context(), exampleInfoSource(t), exampleLoader(t), nil, nil, state)
+
+	// The data source skips silently; the other two each warn.
+	assert.Empty(t, resp.Resources)
+	assert.Len(t, resp.Diagnostics, 2)
+	for _, d := range resp.Diagnostics {
+		assert.Equal(t, hcl.DiagWarning, d.Severity)
+	}
+}
+
+// TestConvertTFState_MissingID pins the ID a resource with no `id` attribute
+// imports under: the sentinel the bridge computes for it, not an empty ID,
+// which the engine reads as a deleted resource.
+func TestConvertTFState_MissingID(t *testing.T) {
+	t.Parallel()
+
+	state := parseState(t, `{
+		"resources": [
 			{
 				"mode": "managed", "type": "example_resource", "name": "no_id",
 				"provider": "provider[\"registry.terraform.io/acme/example\"]",
@@ -255,12 +276,10 @@ func TestConvertTFState_SkipsUnimportable(t *testing.T) {
 
 	resp := convertTFState(t.Context(), exampleInfoSource(t), exampleLoader(t), nil, nil, state)
 
-	// The data source skips silently; the other three each warn.
-	assert.Empty(t, resp.Resources)
-	assert.Len(t, resp.Diagnostics, 3)
-	for _, d := range resp.Diagnostics {
-		assert.Equal(t, hcl.DiagWarning, d.Severity)
-	}
+	require.Empty(t, resp.Diagnostics)
+	require.Len(t, resp.Resources, 1)
+	assert.Equal(t, "missing ID", resp.Resources[0].ID)
+	assert.Equal(t, property.New("hello"), resp.Resources[0].Inputs.AsMap()["inputOne"])
 }
 
 func TestConvertTFState_CountAndForEach(t *testing.T) {
