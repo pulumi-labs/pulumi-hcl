@@ -137,7 +137,11 @@ var expectedFailures = map[string]string{
 	"l2-resource-hook-after-failure": "PCL pcl.Hook nodes not yet supported by HCL codegen",
 	"l2-resource-hook-on-error":      "PCL pcl.Hook nodes not yet supported by HCL codegen",
 	"l2-resource-hook-ignore-errors": "PCL pcl.Hook nodes not yet supported by HCL codegen",
-	"l2-resource-read":               "PCL pcl.ReadResource nodes not yet supported by HCL codegen",
+	"l2-resource-hook-panic":         "PCL pcl.Hook nodes not yet supported by HCL codegen (added in v3.259.0)",
+	"l1-component-sourceless": "sourceless PCL components (token-only, no source directory) are not supported" +
+		" by HCL codegen: the emitted module source \"./.\" includes the root module in itself and hangs" +
+		" (added in v3.259.0)",
+	"l2-resource-read": "PCL pcl.ReadResource nodes not yet supported by HCL codegen",
 	"l2-provider-call-explicit": "upstream fixture declares `provider \"call\"`, which" +
 		" is reserved as the namespace for resource method calls in HCL",
 	"l2-config-default-from-invoke": "HCL codegen does not support a config variable whose" +
