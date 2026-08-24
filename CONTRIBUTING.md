@@ -52,6 +52,13 @@ The `Release` workflow fires on any push to `master` that touches `CHANGELOG.md`
 
 The workflow no-ops if the tag already exists, so re-running it is safe.
 
+Step (2) is fully automated via
+[`maintain-release-pr.yml`](.github/workflows/maintain-release-pr.yml), which maintains a
+release PR on every push to `master` that adds unreleased changes. Step (3) is fully
+automated via [`weekly-release.yml`](.github/workflows/weekly-release.yml), which merges
+the open release PR every Monday at 09:00 UTC and pings Slack (or pings that no release
+is needed).
+
 ### Versioning
 
 The `auto` argument to `changie batch` picks the next version from the fragments: any
