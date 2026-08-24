@@ -23,6 +23,7 @@ import (
 	"fmt"
 	"maps"
 	"math/big"
+	"path/filepath"
 	"slices"
 	"strings"
 
@@ -586,7 +587,11 @@ func BuildFromConfig(config *ast.Config, moduleLoader ModuleLoader, workDir stri
 	if err := checkRemovedStillExists(g.removed, root, config); err != nil {
 		return nil, err
 	}
-	rootScope := &moduleScope{config: config}
+	rootDir, err := filepath.Abs(workDir)
+	if err != nil {
+		return nil, fmt.Errorf("resolving working directory: %w", err)
+	}
+	rootScope := &moduleScope{config: config, sourcePath: rootDir}
 	g.scopes[root] = rootScope
 
 	contract.AssertNoErrorf(errors.Join(
@@ -868,6 +873,9 @@ type moduleScope struct {
 	parent     *moduleScope
 	mod        *ast.Module
 	parentPath modulepath.Path
+	// sourcePath is the module's resolved source directory, used to detect
+	// module cycles while inlining.
+	sourcePath string
 }
 
 // inheritedProviderDeps returns an edge to the nearest ancestor's default
@@ -1667,6 +1675,22 @@ func (g *Graph) inlineModule(
 		return fmt.Errorf("loading module %s: %w", name, err)
 	}
 
+	// Module expansion is static — count/for_each do not gate inlining — so a
+	// source directory that is already being expanded on the ancestor chain
+	// can only recurse forever. The same directory as a sibling is fine.
+	for s := parent; s != nil; s = s.parent {
+		if s.sourcePath != loaded.SourcePath {
+			continue
+		}
+		chain := []string{loaded.SourcePath}
+		for a := parent; a != nil; a = a.parent {
+			chain = append(chain, a.sourcePath)
+		}
+		slices.Reverse(chain)
+		return fmt.Errorf("module %q source %q creates a module cycle: %s",
+			name, mod.Source, strings.Join(chain, " -> "))
+	}
+
 	path := parentPath.Append(modulepath.NewStep(name))
 	// Rewrite child-declared removed addresses to root-relative before
 	// validating, so the child's own declarations are checked against its
@@ -1686,6 +1710,7 @@ func (g *Graph) inlineModule(
 		parent:     parent,
 		mod:        mod,
 		parentPath: parentPath,
+		sourcePath: loaded.SourcePath,
 	}
 	g.scopes[path] = scope
 	modInfo := &ModuleInfo{

@@ -1,0 +1,6 @@
+kind: bug-fixes
+body: Error on `module` cycles instead of hanging
+time: 2026-08-24T09:57:26Z
+custom:
+    Component: runtime
+    PR: "574"

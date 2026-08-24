@@ -87,6 +87,99 @@ output "instance_id" {
 	}
 }
 
+// TestBuildFromConfigSelfModuleCycle: a module whose source resolves back to
+// the root directory must fail with a cycle error instead of recursing forever.
+func TestBuildFromConfigSelfModuleCycle(t *testing.T) {
+	t.Parallel()
+	src := []byte(`
+module "self" {
+  source = "./."
+}
+`)
+	config, diags := parser.NewParser().ParseSource("main.tf", src)
+	require.False(t, diags.HasErrors(), diags.Error())
+
+	loader := fakeModuleLoader{modules: map[string]*LoadedModule{
+		"./.": {Config: config, SourcePath: "/proj"},
+	}}
+
+	_, err := BuildFromConfig(config, loader, "/proj")
+	require.EqualError(t, err,
+		`inlining module self: module "self" source "./." creates a module cycle: /proj -> /proj`)
+}
+
+// TestBuildFromConfigIndirectModuleCycle: a cycle through an intermediate
+// module (a -> b -> a) must fail, while the same module reused as a sibling
+// stays legal (covered by the a-under-root and a-under-b duplication here
+// erroring only on the ancestor repeat).
+func TestBuildFromConfigIndirectModuleCycle(t *testing.T) {
+	t.Parallel()
+	rootSrc := []byte(`
+module "a" {
+  source = "./a"
+}
+`)
+	aSrc := []byte(`
+module "b" {
+  source = "./b"
+}
+`)
+	bSrc := []byte(`
+module "a" {
+  source = "./a"
+}
+`)
+	p := parser.NewParser()
+	root, diags := p.ParseSource("main.tf", rootSrc)
+	require.False(t, diags.HasErrors(), diags.Error())
+	a, diags := p.ParseSource("a.tf", aSrc)
+	require.False(t, diags.HasErrors(), diags.Error())
+	b, diags := p.ParseSource("b.tf", bSrc)
+	require.False(t, diags.HasErrors(), diags.Error())
+
+	loader := fakeModuleLoader{modules: map[string]*LoadedModule{
+		"./a": {Config: a, SourcePath: "/proj/a"},
+		"./b": {Config: b, SourcePath: "/proj/b"},
+	}}
+
+	_, err := BuildFromConfig(root, loader, "/proj")
+	require.EqualError(t, err,
+		`inlining module a: inlining nested module b: inlining nested module a: `+
+			`module "a" source "./a" creates a module cycle: /proj -> /proj/a -> /proj/b -> /proj/a`)
+}
+
+// TestBuildFromConfigSiblingModuleReuse: the same module included twice as
+// siblings is not a cycle and must build.
+func TestBuildFromConfigSiblingModuleReuse(t *testing.T) {
+	t.Parallel()
+	rootSrc := []byte(`
+module "x" {
+  source = "./child"
+}
+
+module "y" {
+  source = "./child"
+}
+`)
+	childSrc := []byte(`
+resource "simple_resource" "r" {
+  input_one = "a"
+}
+`)
+	p := parser.NewParser()
+	root, diags := p.ParseSource("main.tf", rootSrc)
+	require.False(t, diags.HasErrors(), diags.Error())
+	child, diags := p.ParseSource("child.tf", childSrc)
+	require.False(t, diags.HasErrors(), diags.Error())
+
+	loader := fakeModuleLoader{modules: map[string]*LoadedModule{
+		"./child": {Config: child, SourcePath: "/proj/child"},
+	}}
+
+	_, err := BuildFromConfig(root, loader, "/proj")
+	require.NoError(t, err)
+}
+
 func TestVariableValidationResourceRefSplitsNode(t *testing.T) {
 	t.Parallel()
 	// gate's validation references a resource, so the rules move to a

@@ -60,9 +60,8 @@ var fetchMu sync.Mutex
 type Loader struct {
 	mu sync.Mutex
 
-	parser    *parser.Parser
-	cache     map[string]*LoadedModule
-	callStack []string
+	parser *parser.Parser
+	cache  map[string]*LoadedModule
 
 	resolve ResolverFunc
 	// resolved caches successful package resolutions, so one package resolves
@@ -177,19 +176,9 @@ func (l *Loader) LoadModule(ctx context.Context, source, versionConstraint, call
 		return nil, fmt.Errorf("resolving module source %q: %w", source, err)
 	}
 
-	if slices.Contains(l.callStack, resolvedPath) {
-		return nil, classified(ErrInvalid, fmt.Errorf("module cycle detected: %s",
-			strings.Join(append(l.callStack, resolvedPath), " -> ")))
-	}
-
 	if cached, ok := l.cache[resolvedPath]; ok {
 		return cached, nil
 	}
-
-	l.callStack = append(l.callStack, resolvedPath)
-	defer func() {
-		l.callStack = l.callStack[:len(l.callStack)-1]
-	}()
 
 	config, diags := l.parser.ParseDirectory(resolvedPath)
 	if diags.HasErrors() {
@@ -531,11 +520,6 @@ func isRegistrySource(source string) bool {
 func hashSource(source string) string {
 	h := sha256.Sum256([]byte(source))
 	return hex.EncodeToString(h[:8])
-}
-
-// GetCallStack returns the current module call stack (for debugging/error messages).
-func (l *Loader) GetCallStack() []string {
-	return append([]string{}, l.callStack...)
 }
 
 // ComponentTypeName derives a component type name from a module's name,
