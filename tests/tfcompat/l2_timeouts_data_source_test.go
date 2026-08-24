@@ -21,9 +21,10 @@ import (
 	"github.com/pulumi/pulumi-hcl/tests/testutil/tfcompat/providers"
 )
 
-func TestL2TimeoutsAttributeReference(t *testing.T) {
+// TestL2TimeoutsDataSource: A data source's `timeouts` block is readable as an attribute.
+func TestL2TimeoutsDataSource(t *testing.T) {
 	t.Parallel()
-	tfcompat.RunCase(t, "l2_timeouts_attribute_reference", tfcompat.Case{
+	tfcompat.RunCase(t, "l2_timeouts_data_source", tfcompat.Case{
 		Providers: []tfcompat.Provider{
 			{Name: "timeoutable", Factory: providers.TimeoutableProvider},
 		},

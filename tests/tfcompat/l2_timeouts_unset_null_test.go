@@ -21,9 +21,10 @@ import (
 	"github.com/pulumi/pulumi-hcl/tests/testutil/tfcompat/providers"
 )
 
-func TestL2TimeoutsAttributeReference(t *testing.T) {
+// TestL2TimeoutsUnsetNull: A resource that declares timeouts but configures none reads `timeouts` as null.
+func TestL2TimeoutsUnsetNull(t *testing.T) {
 	t.Parallel()
-	tfcompat.RunCase(t, "l2_timeouts_attribute_reference", tfcompat.Case{
+	tfcompat.RunCase(t, "l2_timeouts_unset_null", tfcompat.Case{
 		Providers: []tfcompat.Provider{
 			{Name: "timeoutable", Factory: providers.TimeoutableProvider},
 		},

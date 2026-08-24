@@ -346,6 +346,7 @@ var timeoutsSchema = &hcl.BodySchema{
 		{Name: "read"},
 		{Name: "update"},
 		{Name: "delete"},
+		{Name: "default"},
 	},
 }
 

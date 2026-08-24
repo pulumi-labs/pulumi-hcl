@@ -1258,6 +1258,19 @@ func TestResourceReferenceTypeSetField(t *testing.T) {
 	assert.Equal(t, cty.Set(cty.Number), typ.AttributeType("ports"))
 }
 
+// TestResourceReferenceTypeTimeouts pins that a resource declaring operation
+// timeouts types `timeouts` as an object of exactly those operations, matching
+// the runtime value the engine exposes.
+func TestResourceReferenceTypeTimeouts(t *testing.T) {
+	t.Parallel()
+
+	res := &schema.Resource{Token: "test:index:R"}
+	typ := ResourceReferenceType(res, &bridge.BodyMapping{Timeouts: []string{"create", "default"}})
+	assert.Equal(t, cty.Object(map[string]cty.Type{"create": cty.String, "default": cty.String}), typ.AttributeType("timeouts"))
+
+	assert.False(t, ResourceReferenceType(res, &bridge.BodyMapping{}).HasAttribute("timeouts"))
+}
+
 // TestResourceOutputToCtySchemaSecretElided pins that a schema-secret output
 // keeps its sensitive mark even when the provider elides the (unknown) value
 // during preview, so a downstream stack output stays secret.

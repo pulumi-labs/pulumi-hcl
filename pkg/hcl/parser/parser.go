@@ -848,7 +848,11 @@ func (p *Parser) decodeDataBlock(block *hcl.Block) (*ast.DataSource, hcl.Diagnos
 			diags = append(diags, dataLifecycleArgDiags(lcResult.Lifecycle, subBlock)...)
 			ds.Preconditions = append(ds.Preconditions, lcResult.Preconditions...)
 			ds.Postconditions = append(ds.Postconditions, lcResult.Postconditions...)
-		case "connection", "provisioner", "timeouts":
+		case "timeouts":
+			timeouts, timeoutsDiags := p.parseTimeoutsBlock(subBlock)
+			diags = append(diags, timeoutsDiags...)
+			ds.Timeouts = timeouts
+		case "connection", "provisioner":
 			diags = append(diags, &hcl.Diagnostic{
 				Severity: hcl.DiagError,
 				Summary:  "Unsupported block type",
@@ -1312,6 +1316,10 @@ func (p *Parser) parseTimeoutsBlock(block *hcl.Block) (*ast.Timeouts, hcl.Diagno
 
 	if attr, ok := content.Attributes["delete"]; ok {
 		timeouts.Delete = attr.Expr
+	}
+
+	if attr, ok := content.Attributes["default"]; ok {
+		timeouts.Default = attr.Expr
 	}
 
 	return timeouts, diags

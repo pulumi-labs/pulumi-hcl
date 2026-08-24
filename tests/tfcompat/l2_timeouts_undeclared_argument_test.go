@@ -21,11 +21,13 @@ import (
 	"github.com/pulumi/pulumi-hcl/tests/testutil/tfcompat/providers"
 )
 
-func TestL2TimeoutsAttributeReference(t *testing.T) {
+// TestL2TimeoutsUndeclaredArgument: Setting a timeout for an operation the resource does not declare is an unsupported argument.
+func TestL2TimeoutsUndeclaredArgument(t *testing.T) {
 	t.Parallel()
-	tfcompat.RunCase(t, "l2_timeouts_attribute_reference", tfcompat.Case{
+	tfcompat.RunCase(t, "l2_timeouts_undeclared_argument", tfcompat.Case{
 		Providers: []tfcompat.Provider{
 			{Name: "timeoutable", Factory: providers.TimeoutableProvider},
 		},
+		Stages: []tfcompat.Stage{{ExpectErr: "Unsupported argument"}},
 	})
 }

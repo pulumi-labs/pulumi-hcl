@@ -15,8 +15,11 @@
 package bridge_test
 
 import (
+	"context"
 	"testing"
+	"time"
 
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
 	"github.com/pulumi/pulumi-hcl/pkg/hcl/bridge"
 	"github.com/pulumi/pulumi-terraform-bridge/v3/pkg/tfbridge"
@@ -321,4 +324,41 @@ func TestResourceBodyMapping_MissingResourceReturnsNil(t *testing.T) {
 func TestResourceBodyMapping_NilProviderInfoReturnsNil(t *testing.T) {
 	t.Parallel()
 	require.Nil(t, bridge.ResourceBodyMapping(nil, "any"))
+}
+
+func TestResourceBodyMapping_Timeouts(t *testing.T) {
+	t.Parallel()
+	dur := time.Minute
+	sdk := &schema.Provider{
+		ResourcesMap: map[string]*schema.Resource{
+			"test_timed": {
+				Timeouts: &schema.ResourceTimeout{Create: &dur, Delete: &dur, Default: &dur},
+				Schema:   map[string]*schema.Schema{"name": {Type: schema.TypeString, Optional: true}},
+			},
+			"test_untimed": {
+				Schema: map[string]*schema.Schema{"name": {Type: schema.TypeString, Optional: true}},
+			},
+			"test_own_timeouts": {
+				Timeouts: &schema.ResourceTimeout{Create: &dur},
+				Schema: map[string]*schema.Schema{
+					"timeouts": {Type: schema.TypeString, Optional: true},
+				},
+			},
+		},
+		DataSourcesMap: map[string]*schema.Resource{
+			"test_source": {
+				Timeouts: &schema.ResourceTimeout{Read: &dur},
+				Schema:   map[string]*schema.Schema{"name": {Type: schema.TypeString, Optional: true}},
+				ReadContext: func(context.Context, *schema.ResourceData, any) diag.Diagnostics {
+					return nil
+				},
+			},
+		},
+	}
+	info := newTestProvider(t, sdk, nil)
+
+	require.Equal(t, []string{"create", "delete", "default"}, bridge.ResourceBodyMapping(info, "test_timed").Timeouts)
+	require.Nil(t, bridge.ResourceBodyMapping(info, "test_untimed").Timeouts)
+	require.Nil(t, bridge.ResourceBodyMapping(info, "test_own_timeouts").Timeouts)
+	require.Equal(t, []string{"read"}, bridge.DataSourceBodyMapping(info, "test_source").Timeouts)
 }

@@ -37,6 +37,8 @@ type Timeouts struct {
 	Update hcl.Expression
 	// Delete is the timeout for delete operations.
 	Delete hcl.Expression
+	// Default is the timeout for operations without one of their own.
+	Default hcl.Expression
 	// DeclRange is the source range of the timeouts block.
 	DeclRange hcl.Range
 }

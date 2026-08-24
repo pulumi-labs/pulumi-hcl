@@ -1246,7 +1246,25 @@ func ResourceReferenceType(r *schema.Resource, mapping *bridge.BodyMapping) cty.
 			&schema.Property{Name: "pluginDownloadURL", Type: schema.StringType},
 		)
 	}
-	return ctyObjectType(properties, map[string]cty.Type{"id": cty.String}, mapping)
+	seed := map[string]cty.Type{"id": cty.String}
+	if t, ok := TimeoutsType(mapping); ok {
+		seed["timeouts"] = t
+	}
+	return ctyObjectType(properties, seed, mapping)
+}
+
+// TimeoutsType returns the type of the `timeouts` block implied for a resource
+// or data source — one optional string per declared operation — and false when
+// its schema declares none.
+func TimeoutsType(mapping *bridge.BodyMapping) (cty.Type, bool) {
+	if mapping == nil || mapping.Timeouts == nil {
+		return cty.NilType, false
+	}
+	attrs := make(map[string]cty.Type, len(mapping.Timeouts))
+	for _, op := range mapping.Timeouts {
+		attrs[op] = cty.String
+	}
+	return cty.Object(attrs), true
 }
 
 // DataSourceReferenceType returns the cty type of a `data.<type>.<name>`
@@ -1257,7 +1275,11 @@ func DataSourceReferenceType(fn *schema.Function, mapping *bridge.BodyMapping) c
 	if !ok {
 		return cty.DynamicPseudoType
 	}
-	return ctyObjectType(obj.Properties, nil, mapping)
+	var seed map[string]cty.Type
+	if t, ok := TimeoutsType(mapping); ok {
+		seed = map[string]cty.Type{"timeouts": t}
+	}
+	return ctyObjectType(obj.Properties, seed, mapping)
 }
 
 // FunctionOutputToCty mirrors ResourceOutputToCty for invoke return values.

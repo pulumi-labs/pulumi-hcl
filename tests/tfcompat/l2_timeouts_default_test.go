@@ -21,9 +21,10 @@ import (
 	"github.com/pulumi/pulumi-hcl/tests/testutil/tfcompat/providers"
 )
 
-func TestL2TimeoutsAttributeReference(t *testing.T) {
+// TestL2TimeoutsDefault: A `default` timeout is readable as an attribute alongside the declared operations.
+func TestL2TimeoutsDefault(t *testing.T) {
 	t.Parallel()
-	tfcompat.RunCase(t, "l2_timeouts_attribute_reference", tfcompat.Case{
+	tfcompat.RunCase(t, "l2_timeouts_default", tfcompat.Case{
 		Providers: []tfcompat.Provider{
 			{Name: "timeoutable", Factory: providers.TimeoutableProvider},
 		},

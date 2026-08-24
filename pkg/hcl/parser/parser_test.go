@@ -192,6 +192,28 @@ module "vpc" {
 	}
 }
 
+func TestParseTimeouts(t *testing.T) {
+	t.Parallel()
+	src := []byte(`
+resource "aws_instance" "web" {
+  timeouts {
+    create  = "1h"
+    default = "10m"
+  }
+}
+`)
+	config, diags := NewParser().ParseSource("test.hcl", src)
+	require.False(t, diags.HasErrors(), diags.Error())
+
+	timeouts := config.Resources["aws_instance.web"].Timeouts
+	require.NotNil(t, timeouts)
+	assert.NotNil(t, timeouts.Create)
+	assert.NotNil(t, timeouts.Default)
+	assert.Nil(t, timeouts.Read)
+	assert.Nil(t, timeouts.Update)
+	assert.Nil(t, timeouts.Delete)
+}
+
 func TestParseProvisioners(t *testing.T) {
 	t.Parallel()
 	src := []byte(`
@@ -1287,7 +1309,6 @@ func TestParseDataRejectsResourceSurface(t *testing.T) {
 		{"name", "pulumi {\n  name = \"n\"\n}", "Unsupported argument"},
 		{"provisioner", "provisioner \"local-exec\" {\n  command = \"true\"\n}", "Unsupported block type"},
 		{"connection", "connection {\n  host = \"h\"\n}", "Unsupported block type"},
-		{"timeouts", "timeouts {\n  read = \"1m\"\n}", "Unsupported block type"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
