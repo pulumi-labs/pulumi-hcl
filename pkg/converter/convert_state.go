@@ -304,9 +304,7 @@ func convertTFState(
 			}
 			id, ok := idAttr(current)
 			if !ok {
-				warn("Skipped resource without id", fmt.Sprintf(
-					"an instance of %s has no string `id` attribute to import by", res.Addr))
-				continue
+				id = missingID
 			}
 			var outs, ins resource.PropertyMap
 			var err error
@@ -639,6 +637,10 @@ func resourceSchema(
 	}
 	return res, nil
 }
+
+// missingID is the ID the bridge computes for a TF resource that has no usable
+// string `id` of its own.
+const missingID = "missing ID"
 
 // idAttr extracts the `id` attribute verbatim.
 func idAttr(src *states.ResourceInstanceObjectSrc) (string, bool) {

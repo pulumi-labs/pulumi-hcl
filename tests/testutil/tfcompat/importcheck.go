@@ -53,11 +53,6 @@ func runImportCheck(
 		if c.SkipImport != "" {
 			t.Skipf("state check skipped: %s", c.SkipImport)
 		}
-		for _, p := range c.Providers {
-			if p.PFFactory != nil {
-				t.Skip("TODO[github.com/pulumi/pulumi-hcl#167]: state-import check does not support plugin-framework providers yet")
-			}
-		}
 		statePath := filepath.Join(tfStateDir, "terraform.tfstate")
 		require.FileExists(t, statePath)
 
@@ -83,6 +78,12 @@ func runImportCheck(
 		require.NoErrorf(t, err, "up after import failed:\n%s", res.Output)
 		assertNoMutatingOps(t, "up", rec)
 		assertNoDestructiveOps(t, "up", res.Changes)
+
+		// The case's state assertions hold of imported state too: whatever the
+		// providers compute on a create, the import has to reproduce.
+		if c.AssertState != nil {
+			c.AssertState(t, res.Resources)
+		}
 
 		// TF state records no module inputs, so an imported component carries
 		// none and the up above records them. Nothing may remain after that.
