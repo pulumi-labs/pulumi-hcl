@@ -8,12 +8,12 @@ package {
   }
 }
 
-// Extension parameterization: the SDK is published as "myext" but the resource
-// tokens live in the base provider's namespace ("extbase").
-resource "greeting" "extbase:index:Greeting" {
+// Extension parameterization: the SDK is published as "myext" and the resource
+// tokens live in the extension's own namespace.
+resource "greeting" "myext:index:Greeting" {
 }
 
-resource "greetingComp" "extbase:index:GreetingComponent" {
+resource "greetingComp" "myext:index:GreetingComponent" {
 }
 
 output "parameterValue" {
@@ -25,7 +25,7 @@ output "parameterValueFromComponent" {
 }
 
 output "invokeGreeting" {
-  value = invoke("extbase:index:greet", {
+  value = invoke("myext:index:greet", {
     name = "Pulumi"
   }).greeting
 }

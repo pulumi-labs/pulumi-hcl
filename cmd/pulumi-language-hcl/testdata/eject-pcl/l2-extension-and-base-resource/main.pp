@@ -9,8 +9,9 @@ package {
 }
 
 // An extension resource (Greeting) and a base-provider resource (Base) used
-// together; both live in the base provider's namespace ("extbase").
-resource "greeting" "extbase:index:Greeting" {
+// together; Greeting lives in the extension's namespace ("myext") and Base
+// lives in the base provider's namespace ("extbase").
+resource "greeting" "myext:index:Greeting" {
 }
 
 resource "base" "extbase:index:Base" {
