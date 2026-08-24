@@ -123,8 +123,10 @@ type Case struct {
 	// here.
 	Config map[string]string
 
-	// AssertState, if set, runs after `pulumi up`. Use for assertions on
-	// resource fields that aren't reachable via stack outputs (e.g. Protect).
+	// AssertState, if set, runs after `pulumi up` — both the case's own and
+	// the one the state-import check runs, so it holds of imported state too.
+	// Use for assertions on resource fields that aren't reachable via stack
+	// outputs (e.g. Protect).
 	AssertState func(t *testing.T, resources []apitype.ResourceV3)
 
 	// OrderDeterministic, if true, compares provider operations in arrival

@@ -66,6 +66,7 @@ func (p *pfxProvider) Resources(context.Context) []func() resource.Resource {
 		func() resource.Resource { return &pfxObj{} },
 		func() resource.Resource { return &pfxMatrix{} },
 		func() resource.Resource { return &pfxFlat{} },
+		func() resource.Resource { return &pfxAnon{} },
 	}
 }
 
@@ -599,3 +600,49 @@ func (r *pfxMatrix) Update(ctx context.Context, req resource.UpdateRequest, resp
 }
 
 func (r *pfxMatrix) Delete(_ context.Context, _ resource.DeleteRequest, _ *resource.DeleteResponse) {}
+
+// pfxAnon declares no `id` attribute at all — legal for a plugin-framework
+// resource, and the shape the bridge answers with its "missing ID" sentinel
+// because there is no ID property to project. Its state carries no `id` for
+// an import to key on either.
+type pfxAnon struct{}
+
+var _ resource.Resource = (*pfxAnon)(nil)
+
+type pfxAnonModel struct {
+	Name types.String `tfsdk:"name"`
+}
+
+func (r *pfxAnon) Metadata(_ context.Context, req resource.MetadataRequest, resp *resource.MetadataResponse) {
+	resp.TypeName = req.ProviderTypeName + "_anon"
+}
+
+func (r *pfxAnon) Schema(_ context.Context, _ resource.SchemaRequest, resp *resource.SchemaResponse) {
+	resp.Schema = rschema.Schema{
+		Attributes: map[string]rschema.Attribute{
+			"name": rschema.StringAttribute{Required: true},
+		},
+	}
+}
+
+func (r *pfxAnon) Create(ctx context.Context, req resource.CreateRequest, resp *resource.CreateResponse) {
+	var plan pfxAnonModel
+	resp.Diagnostics.Append(req.Plan.Get(ctx, &plan)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+	resp.Diagnostics.Append(resp.State.Set(ctx, &plan)...)
+}
+
+func (r *pfxAnon) Read(_ context.Context, _ resource.ReadRequest, _ *resource.ReadResponse) {}
+
+func (r *pfxAnon) Update(ctx context.Context, req resource.UpdateRequest, resp *resource.UpdateResponse) {
+	var plan pfxAnonModel
+	resp.Diagnostics.Append(req.Plan.Get(ctx, &plan)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+	resp.Diagnostics.Append(resp.State.Set(ctx, &plan)...)
+}
+
+func (r *pfxAnon) Delete(_ context.Context, _ resource.DeleteRequest, _ *resource.DeleteResponse) {}
