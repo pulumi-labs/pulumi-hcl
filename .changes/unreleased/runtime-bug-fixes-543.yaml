@@ -1,0 +1,6 @@
+kind: bug-fixes
+body: Preserve spec-form `aliases` (such as `noParent`) on components, so re-parenting an aliased component no longer recreates it
+time: 2026-08-25T10:17:19Z
+custom:
+    Component: runtime
+    PR: "543"

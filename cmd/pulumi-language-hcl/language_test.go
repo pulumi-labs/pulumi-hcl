@@ -146,8 +146,6 @@ var expectedFailures = map[string]string{
 		" is reserved as the namespace for resource method calls in HCL",
 	"l2-config-default-from-invoke": "HCL codegen does not support a config variable whose" +
 		" default is sourced from an invoke result",
-	"provider-alias-component": "component aliases are not propagated to children, so re-parenting" +
-		" an aliased component recreates it (https://github.com/pulumi/pulumi-hcl/issues/543)",
 }
 
 // expectedEjectFailures lists tests whose eject (HCL→PCL conversion) step is
