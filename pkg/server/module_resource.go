@@ -391,7 +391,7 @@ func (m *moduleProvider) newConstructMonitor(
 		componentType:           string(req.Urn.Type()),
 		componentName:           string(req.Urn.Name()),
 		componentInputs:         componentInputs,
-		aliases:                 aliasURNsToProto(req.Aliases),
+		aliases:                 aliasesToProto(req.Aliases),
 		protect:                 req.Protect,
 		dependencies:            urnsToStrings(req.Dependencies),
 		providers:               providersToProto(req.Providers),
@@ -525,13 +525,28 @@ func wrapModuleOutputs(outputs property.Map) property.Map {
 	})
 }
 
-func aliasURNsToProto(urns []resource.URN) []*pulumirpc.Alias {
-	if len(urns) == 0 {
+func aliasesToProto(aliases []resource.Alias) []*pulumirpc.Alias {
+	if len(aliases) == 0 {
 		return nil
 	}
-	out := make([]*pulumirpc.Alias, len(urns))
-	for i, u := range urns {
-		out[i] = &pulumirpc.Alias{Alias: &pulumirpc.Alias_Urn{Urn: string(u)}}
+	out := make([]*pulumirpc.Alias, len(aliases))
+	for i, a := range aliases {
+		if a.URN != "" {
+			out[i] = &pulumirpc.Alias{Alias: &pulumirpc.Alias_Urn{Urn: string(a.URN)}}
+			continue
+		}
+		spec := &pulumirpc.Alias_Spec{
+			Name:    a.Name,
+			Type:    a.Type,
+			Stack:   a.Stack,
+			Project: a.Project,
+		}
+		if a.NoParent {
+			spec.Parent = &pulumirpc.Alias_Spec_NoParent{NoParent: true}
+		} else if a.Parent != "" {
+			spec.Parent = &pulumirpc.Alias_Spec_ParentUrn{ParentUrn: string(a.Parent)}
+		}
+		out[i] = &pulumirpc.Alias{Alias: &pulumirpc.Alias_Spec_{Spec: spec}}
 	}
 	return out
 }
