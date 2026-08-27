@@ -475,7 +475,7 @@ func RequirementSpecs(
 		reqs = append(reqs, resolve.Request{
 			Alias: alias,
 			Spec: &pulumirpc.PackageSpec{
-				Source: bridgePackageName, Version: bridgeVersion(config), Parameters: params,
+				Source: bridgePackageName, Version: bridgePackageVersion, Parameters: params,
 			},
 		})
 	}

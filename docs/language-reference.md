@@ -52,7 +52,6 @@ The full set of [expressions](#expressions) and [built-in functions](#built-in-f
 | `import`    | Import existing cloud resources                   |
 | `check`     | Non-blocking assertions about infrastructure      |
 | `terraform` | Version constraints and component declarations    |
-| `pulumi`    | Pulumi-specific program-level options             |
 
 ## Variables
 

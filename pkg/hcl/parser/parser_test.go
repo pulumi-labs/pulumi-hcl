@@ -627,48 +627,6 @@ widget "x" {
 	require.Equal(t, `Blocks of type "widget" are not expected here.`, diags[0].Detail)
 }
 
-func TestParsePulumiBlock(t *testing.T) {
-	t.Parallel()
-
-	t.Run("pins the terraform-provider version", func(t *testing.T) {
-		t.Parallel()
-		config, diags := NewParser().ParseSource("test.hcl", []byte(`
-pulumi {
-  terraform_provider_version = "1.4.2"
-}
-`))
-		require.False(t, diags.HasErrors(), "diags: %v", diags)
-		require.NotNil(t, config.Pulumi)
-		require.Equal(t, "1.4.2", config.Pulumi.TerraformProviderVersion)
-	})
-
-	t.Run("rejects a non-semver version", func(t *testing.T) {
-		t.Parallel()
-		_, diags := NewParser().ParseSource("test.hcl", []byte(`
-pulumi {
-  terraform_provider_version = "not-a-version"
-}
-`))
-		require.True(t, diags.HasErrors())
-		require.Equal(t, "Invalid terraform_provider_version", diags[0].Summary)
-	})
-
-	t.Run("rejects a duplicate declaration", func(t *testing.T) {
-		t.Parallel()
-		_, diags := NewParser().ParseSource("test.hcl", []byte(`
-pulumi {
-  terraform_provider_version = "1.4.2"
-}
-
-pulumi {
-  terraform_provider_version = "1.4.3"
-}
-`))
-		require.True(t, diags.HasErrors())
-		require.Equal(t, "Duplicate terraform_provider_version attribute", diags[0].Summary)
-	})
-}
-
 func TestParseProvisionerInvalidWhen(t *testing.T) {
 	t.Parallel()
 	src := []byte(`

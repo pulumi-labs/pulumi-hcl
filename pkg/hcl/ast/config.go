@@ -26,10 +26,6 @@ type Config struct {
 	// and provider requirements).
 	Terraform *Terraform
 
-	// Pulumi contains the top-level pulumi block configuration
-	// (Pulumi-specific program-level options).
-	Pulumi *Pulumi
-
 	// Language contains the language block's Pulumi compatibility
 	// declaration, if any.
 	Language *Language

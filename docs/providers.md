@@ -89,13 +89,14 @@ Pulumi providers require a semver version, instead of a full version constraint.
 ### Pinning the bridge plugin
 
 Non-Pulumi providers are served by a pinned release of the
-`terraform-provider` plugin. To use a different release, set
-`terraform_provider_version` in a top-level `pulumi` block:
+`terraform-provider` plugin. To use a different release, set the
+`terraformProviderVersion` runtime option in `Pulumi.yaml`:
 
-```hcl
-pulumi {
-  terraform_provider_version = "1.3.0"
-}
+```yaml
+runtime:
+  name: hcl
+  options:
+    terraformProviderVersion: 1.3.0
 ```
 
 ## Configuration

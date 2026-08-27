@@ -30,6 +30,7 @@ import (
 	pulumirpc "github.com/pulumi/pulumi/sdk/v3/proto/go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"google.golang.org/protobuf/types/known/structpb"
 )
 
 // bridgedSDK is the shape `pulumi install` writes for a non-Pulumi provider:
@@ -347,37 +348,60 @@ terraform {
 	}}, resp.Specs)
 }
 
-// TestGetRequiredPackages_PinnedBridgeVersion verifies that a top-level
-// pulumi block's terraform_provider_version overrides the built-in
+// TestGetRequiredPackages_PinnedBridgeVersion verifies that the
+// terraformProviderVersion runtime option overrides the built-in
 // terraform-provider pin in the install specs.
 func TestGetRequiredPackages_PinnedBridgeVersion(t *testing.T) {
 	t.Parallel()
 
-	dir := t.TempDir()
-	require.NoError(t, os.WriteFile(filepath.Join(dir, "main.tf"), []byte(`
-pulumi {
-  terraform_provider_version = "9.9.9"
-}
-
+	newRequest := func(t *testing.T, options map[string]any) *pulumirpc.GetRequiredPackagesRequest {
+		dir := t.TempDir()
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "main.tf"), []byte(`
 resource "random_pet" "p" {}
 `), 0o600))
+		opts, err := structpb.NewStruct(options)
+		require.NoError(t, err)
+		return &pulumirpc.GetRequiredPackagesRequest{
+			Info: &pulumirpc.ProgramInfo{
+				ProgramDirectory: dir,
+				RootDirectory:    dir,
+				EntryPoint:       ".",
+				Options:          opts,
+			},
+		}
+	}
 
-	host := &LanguageHost{}
-	resp, err := host.GetRequiredPackages(t.Context(), &pulumirpc.GetRequiredPackagesRequest{
-		Info: &pulumirpc.ProgramInfo{
-			ProgramDirectory: dir,
-			RootDirectory:    dir,
-			EntryPoint:       ".",
-		},
+	t.Run("pins the terraform-provider version", func(t *testing.T) {
+		t.Parallel()
+		host := &LanguageHost{}
+		resp, err := host.GetRequiredPackages(t.Context(),
+			newRequest(t, map[string]any{"terraformProviderVersion": "9.9.9"}))
+		require.NoError(t, err)
+
+		assert.Empty(t, resp.Packages)
+		assert.Equal(t, []*pulumirpc.PackageSpec{{
+			Source:     "terraform-provider",
+			Version:    "9.9.9",
+			Parameters: []string{"hashicorp/random"},
+		}}, resp.Specs)
 	})
-	require.NoError(t, err)
 
-	assert.Empty(t, resp.Packages)
-	assert.Equal(t, []*pulumirpc.PackageSpec{{
-		Source:     "terraform-provider",
-		Version:    "9.9.9",
-		Parameters: []string{"hashicorp/random"},
-	}}, resp.Specs)
+	t.Run("rejects a non-semver version", func(t *testing.T) {
+		t.Parallel()
+		host := &LanguageHost{}
+		_, err := host.GetRequiredPackages(t.Context(),
+			newRequest(t, map[string]any{"terraformProviderVersion": "not-a-version"}))
+		require.EqualError(t, err, `runtime option terraformProviderVersion: "not-a-version" is not `+
+			`a valid semver version: No Major.Minor.Patch elements found`)
+	})
+
+	t.Run("rejects a non-string version", func(t *testing.T) {
+		t.Parallel()
+		host := &LanguageHost{}
+		_, err := host.GetRequiredPackages(t.Context(),
+			newRequest(t, map[string]any{"terraformProviderVersion": 9}))
+		require.EqualError(t, err, "runtime option terraformProviderVersion: expected a string, got 9")
+	})
 }
 
 func TestGetRequiredPackages_TransitiveModuleSourceResolvedSDK(t *testing.T) {

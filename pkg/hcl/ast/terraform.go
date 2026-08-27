@@ -60,24 +60,6 @@ type Terraform struct {
 	DeclRange hcl.Range
 }
 
-// Pulumi represents a top-level pulumi block with Pulumi-specific
-// program-level options.
-//
-// Syntax:
-//
-//	pulumi {
-//	  terraform_provider_version = "1.3.0"
-//	}
-type Pulumi struct {
-	// TerraformProviderVersion pins the terraform-provider plugin release
-	// that install specs for bridged Terraform providers resolve to,
-	// overriding the built-in default.
-	TerraformProviderVersion string
-
-	// DeclRange is the source range of the pulumi block.
-	DeclRange hcl.Range
-}
-
 // Language represents a language block declaring implementation
 // compatibility (OpenTofu's extensible successor to required_version).
 //
