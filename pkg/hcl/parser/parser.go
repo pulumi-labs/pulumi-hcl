@@ -139,6 +139,8 @@ func (p *Parser) parseBlock(config *ast.Config, block *hcl.Block) hcl.Diagnostic
 	switch block.Type {
 	case "terraform":
 		return p.parseTerraformBlock(config, block)
+	case "pulumi":
+		return p.parsePulumiBlock(config, block)
 	case "language":
 		return p.parseLanguageBlock(config, block)
 	case "provider":
@@ -284,6 +286,47 @@ func (p *Parser) parseTerraformBlock(config *ast.Config, block *hcl.Block) hcl.D
 	}
 
 	config.Terraform = tf
+	return diags
+}
+
+// parsePulumiBlock parses a top-level pulumi block. Multiple pulumi blocks
+// merge into a single configuration, the same way terraform blocks do.
+func (p *Parser) parsePulumiBlock(config *ast.Config, block *hcl.Block) hcl.Diagnostics {
+	content, diags := block.Body.Content(pulumiBlockSchema)
+
+	pb := config.Pulumi
+	if pb == nil {
+		pb = &ast.Pulumi{DeclRange: block.DefRange}
+	}
+
+	if attr, ok := content.Attributes["terraform_provider_version"]; ok {
+		if pb.TerraformProviderVersion != "" {
+			diags = append(diags, &hcl.Diagnostic{
+				Severity: hcl.DiagError,
+				Summary:  "Duplicate terraform_provider_version attribute",
+				Detail:   "terraform_provider_version is already set by a previous pulumi block.",
+				Subject:  attr.Range.Ptr(),
+			})
+		} else {
+			var version string
+			valDiags := gohcl.DecodeExpression(attr.Expr, nil, &version)
+			diags = append(diags, valDiags...)
+			if !valDiags.HasErrors() {
+				if _, err := semver.Parse(version); err != nil {
+					diags = append(diags, &hcl.Diagnostic{
+						Severity: hcl.DiagError,
+						Summary:  "Invalid terraform_provider_version",
+						Detail:   fmt.Sprintf("%q is not a valid semver version: %s", version, err),
+						Subject:  attr.Expr.Range().Ptr(),
+					})
+				} else {
+					pb.TerraformProviderVersion = version
+				}
+			}
+		}
+	}
+
+	config.Pulumi = pb
 	return diags
 }
 

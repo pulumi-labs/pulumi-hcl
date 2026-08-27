@@ -184,6 +184,30 @@ resource "aws_s3_bucket" "b" {}
 	}, got)
 }
 
+// TestRequirementSpecs_PinnedBridgeVersion verifies that a top-level pulumi
+// block's terraform_provider_version overrides the built-in terraform-provider
+// pin in a module's requirement specs.
+func TestRequirementSpecs_PinnedBridgeVersion(t *testing.T) {
+	t.Parallel()
+
+	const src = `pulumi {
+  terraform_provider_version = "9.9.9"
+}
+
+resource "aws_s3_bucket" "b" {}
+`
+	cfg, diags := parser.NewParser().ParseSource("main.tf", []byte(src))
+	require.False(t, diags.HasErrors(), "diags: %v", diags)
+
+	assert.Equal(t, []resolve.Request{
+		{Alias: "aws", Spec: &pulumirpc.PackageSpec{
+			Source:     "terraform-provider",
+			Version:    "9.9.9",
+			Parameters: []string{"hashicorp/aws"},
+		}},
+	}, RequirementSpecs(t.Context(), nil, cfg, ""))
+}
+
 // refMonitorServer adds getResource support to captureMonitorServer so a
 // construct test can resolve a resource passed in by reference.
 type refMonitorServer struct {

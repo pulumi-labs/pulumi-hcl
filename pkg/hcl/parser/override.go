@@ -62,7 +62,7 @@ func applyOverrides(primary, override []*hcl.Block) (blocks, deferred []*hcl.Blo
 
 	for _, block := range override {
 		switch block.Type {
-		case "locals", "terraform":
+		case "locals", "terraform", "pulumi":
 			deferred = append(deferred, block)
 			continue
 		case "language":
@@ -215,6 +215,8 @@ func (p *Parser) mergeParsedOverride(config *ast.Config, block *hcl.Block) hcl.D
 		return mergeOverrideLocals(config, block)
 	case "terraform":
 		return p.mergeOverrideTerraform(config, block)
+	case "pulumi":
+		return p.mergeOverridePulumi(config, block)
 	default:
 		return nil
 	}
@@ -243,6 +245,21 @@ func mergeOverrideLocals(config *ast.Config, block *hcl.Block) hcl.Diagnostics {
 		existing.DeclRange = attr.Range
 	}
 
+	return diags
+}
+
+// mergeOverridePulumi folds an override file's pulumi block into the one the
+// primary files declare: each setting it makes replaces the original.
+func (p *Parser) mergeOverridePulumi(config *ast.Config, block *hcl.Block) hcl.Diagnostics {
+	parsed := ast.NewConfig()
+	diags := p.parsePulumiBlock(parsed, block)
+	if config.Pulumi == nil {
+		config.Pulumi = parsed.Pulumi
+		return diags
+	}
+	if parsed.Pulumi.TerraformProviderVersion != "" {
+		config.Pulumi.TerraformProviderVersion = parsed.Pulumi.TerraformProviderVersion
+	}
 	return diags
 }
 

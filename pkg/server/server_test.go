@@ -347,6 +347,39 @@ terraform {
 	}}, resp.Specs)
 }
 
+// TestGetRequiredPackages_PinnedBridgeVersion verifies that a top-level
+// pulumi block's terraform_provider_version overrides the built-in
+// terraform-provider pin in the install specs.
+func TestGetRequiredPackages_PinnedBridgeVersion(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "main.tf"), []byte(`
+pulumi {
+  terraform_provider_version = "9.9.9"
+}
+
+resource "random_pet" "p" {}
+`), 0o600))
+
+	host := &LanguageHost{}
+	resp, err := host.GetRequiredPackages(t.Context(), &pulumirpc.GetRequiredPackagesRequest{
+		Info: &pulumirpc.ProgramInfo{
+			ProgramDirectory: dir,
+			RootDirectory:    dir,
+			EntryPoint:       ".",
+		},
+	})
+	require.NoError(t, err)
+
+	assert.Empty(t, resp.Packages)
+	assert.Equal(t, []*pulumirpc.PackageSpec{{
+		Source:     "terraform-provider",
+		Version:    "9.9.9",
+		Parameters: []string{"hashicorp/random"},
+	}}, resp.Specs)
+}
+
 func TestGetRequiredPackages_TransitiveModuleSourceResolvedSDK(t *testing.T) {
 	t.Parallel()
 

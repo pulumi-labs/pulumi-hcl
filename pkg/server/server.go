@@ -167,6 +167,16 @@ const bridgePackageName = "terraform-provider"
 // each release (see renovate.json5).
 const bridgePackageVersion = "1.3.0" // renovate: github-releases pulumi/pulumi-terraform-provider
 
+// bridgeVersion returns the terraform-provider release install specs resolve
+// to: the version the program pins via the top-level pulumi block's
+// terraform_provider_version, or the built-in default.
+func bridgeVersion(config *ast.Config) string {
+	if config != nil && config.Pulumi != nil && config.Pulumi.TerraformProviderVersion != "" {
+		return config.Pulumi.TerraformProviderVersion
+	}
+	return bridgePackageVersion
+}
+
 // GetRequiredPackages returns the packages required to run an HCL program,
 // keyed by provider source — a local name may resolve to different sources
 // in different modules, and those are distinct requirements. Pulumi-source
@@ -185,7 +195,7 @@ func (host *LanguageHost) GetRequiredPackages(
 		return &pulumirpc.GetRequiredPackagesResponse{}, fmt.Errorf("unable to read SDKs folder: %w", err)
 	}
 
-	tfReqs, pulumiPkgs, err := programRequirements(ctx, req.Info.ProgramDirectory)
+	tfReqs, pulumiPkgs, bridgeVer, err := programRequirements(ctx, req.Info.ProgramDirectory)
 	if err != nil {
 		return &pulumirpc.GetRequiredPackagesResponse{}, err
 	}
@@ -234,7 +244,7 @@ func (host *LanguageHost) GetRequiredPackages(
 		}
 		specs = append(specs, &pulumirpc.PackageSpec{
 			Source:     bridgePackageName,
-			Version:    bridgePackageVersion,
+			Version:    bridgeVer,
 			Parameters: params,
 		})
 	}
@@ -258,28 +268,35 @@ func (host *LanguageHost) GetRequiredPackages(
 
 // programRequirements resolves every provider referenced by the program's
 // module tree and component directories to its source, skipping directories
-// that fail to parse.
+// that fail to parse. bridgeVer is the terraform-provider release the
+// program's root config pins (or the built-in default).
 func programRequirements(
 	ctx context.Context, programDir string,
-) (tf map[string]*tfRequirement, pulumi map[string]string, err error) {
+) (tf map[string]*tfRequirement, pulumi map[string]string, bridgeVer string, err error) {
 	dirs, err := requirementDirs(programDir)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, "", err
 	}
 	p := parser.NewParser()
 	loader := modules.NewLoader(modules.LiveResolver(ctx))
 	tf = map[string]*tfRequirement{}
 	pulumi = map[string]string{}
+	bridgeVer = bridgePackageVersion
 	aliases := map[string]*ast.RequiredProvider{}
 	visited := map[string]struct{}{}
-	for _, dir := range dirs {
+	for i, dir := range dirs {
 		config, diags := p.ParseDirectory(dir)
 		if diags.HasErrors() {
 			continue
 		}
+		// dirs[0] is the program directory itself; its pulumi block governs
+		// the whole program's install specs.
+		if i == 0 {
+			bridgeVer = bridgeVersion(config)
+		}
 		collectRequirementsRec(ctx, config, dir, tf, pulumi, aliases, loader, visited)
 	}
-	return tf, pulumi, nil
+	return tf, pulumi, bridgeVer, nil
 }
 
 // descriptorForSource returns the on-disk SDK descriptor that satisfies the
@@ -1252,7 +1269,7 @@ func (host *LanguageHost) Link(
 	ctx context.Context,
 	req *pulumirpc.LinkRequest,
 ) (*pulumirpc.LinkResponse, error) {
-	tfReqs, pulumiPkgs, err := programRequirements(ctx, req.Info.ProgramDirectory)
+	tfReqs, pulumiPkgs, _, err := programRequirements(ctx, req.Info.ProgramDirectory)
 	if err != nil {
 		return nil, err
 	}
