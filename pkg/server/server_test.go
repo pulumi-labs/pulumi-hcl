@@ -30,6 +30,7 @@ import (
 	pulumirpc "github.com/pulumi/pulumi/sdk/v3/proto/go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"google.golang.org/protobuf/types/known/structpb"
 )
 
 // bridgedSDK is the shape `pulumi install` writes for a non-Pulumi provider:
@@ -342,8 +343,65 @@ terraform {
 	assert.Empty(t, resp.Packages)
 	assert.Equal(t, []*pulumirpc.PackageSpec{{
 		Source:     "terraform-provider",
+		Version:    bridgePackageVersion,
 		Parameters: []string{"rollbar/rollbar", ">= 1.0"},
 	}}, resp.Specs)
+}
+
+// TestGetRequiredPackages_PinnedBridgeVersion verifies that the
+// terraformProviderVersion runtime option overrides the built-in
+// terraform-provider pin in the install specs.
+func TestGetRequiredPackages_PinnedBridgeVersion(t *testing.T) {
+	t.Parallel()
+
+	newRequest := func(t *testing.T, options map[string]any) *pulumirpc.GetRequiredPackagesRequest {
+		dir := t.TempDir()
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "main.tf"), []byte(`
+resource "random_pet" "p" {}
+`), 0o600))
+		opts, err := structpb.NewStruct(options)
+		require.NoError(t, err)
+		return &pulumirpc.GetRequiredPackagesRequest{
+			Info: &pulumirpc.ProgramInfo{
+				ProgramDirectory: dir,
+				RootDirectory:    dir,
+				EntryPoint:       ".",
+				Options:          opts,
+			},
+		}
+	}
+
+	t.Run("pins the terraform-provider version", func(t *testing.T) {
+		t.Parallel()
+		host := &LanguageHost{}
+		resp, err := host.GetRequiredPackages(t.Context(),
+			newRequest(t, map[string]any{"terraformProviderVersion": "9.9.9"}))
+		require.NoError(t, err)
+
+		assert.Empty(t, resp.Packages)
+		assert.Equal(t, []*pulumirpc.PackageSpec{{
+			Source:     "terraform-provider",
+			Version:    "9.9.9",
+			Parameters: []string{"hashicorp/random"},
+		}}, resp.Specs)
+	})
+
+	t.Run("rejects a non-semver version", func(t *testing.T) {
+		t.Parallel()
+		host := &LanguageHost{}
+		_, err := host.GetRequiredPackages(t.Context(),
+			newRequest(t, map[string]any{"terraformProviderVersion": "not-a-version"}))
+		require.EqualError(t, err, `runtime option terraformProviderVersion: "not-a-version" is not `+
+			`a valid semver version: No Major.Minor.Patch elements found`)
+	})
+
+	t.Run("rejects a non-string version", func(t *testing.T) {
+		t.Parallel()
+		host := &LanguageHost{}
+		_, err := host.GetRequiredPackages(t.Context(),
+			newRequest(t, map[string]any{"terraformProviderVersion": 9}))
+		require.EqualError(t, err, "runtime option terraformProviderVersion: expected a string, got 9")
+	})
 }
 
 func TestGetRequiredPackages_TransitiveModuleSourceResolvedSDK(t *testing.T) {
@@ -552,6 +610,7 @@ terraform {
 	// regardless of module-walk order ("< 3.2" sorts before ">= 3.0").
 	assert.Equal(t, []*pulumirpc.PackageSpec{{
 		Source:     "terraform-provider",
+		Version:    bridgePackageVersion,
 		Parameters: []string{"hashicorp/dns", "< 3.2, >= 3.0"},
 	}}, resp.Specs)
 }
@@ -594,6 +653,7 @@ resource "aws_s3_bucket" "b" {}
 	}}, resp.Packages)
 	assert.Equal(t, []*pulumirpc.PackageSpec{{
 		Source:     "terraform-provider",
+		Version:    bridgePackageVersion,
 		Parameters: []string{"hashicorp/aws"},
 	}}, resp.Specs)
 
@@ -699,6 +759,7 @@ terraform {
 	assert.Empty(t, resp.Packages)
 	assert.Equal(t, []*pulumirpc.PackageSpec{{
 		Source:     "terraform-provider",
+		Version:    bridgePackageVersion,
 		Parameters: []string{"hashicorp/dns", ">= 3.0"},
 	}}, resp.Specs)
 }
@@ -810,8 +871,8 @@ terraform {
 	assert.Empty(t, resp.Packages)
 	// Specs are sorted by source.
 	assert.Equal(t, []*pulumirpc.PackageSpec{
-		{Source: "terraform-provider", Parameters: []string{"hashicorp/dns"}},
-		{Source: "terraform-provider", Parameters: []string{"rollbar/rollbar"}},
+		{Source: "terraform-provider", Version: bridgePackageVersion, Parameters: []string{"hashicorp/dns"}},
+		{Source: "terraform-provider", Version: bridgePackageVersion, Parameters: []string{"rollbar/rollbar"}},
 	}, resp.Specs)
 }
 
@@ -1131,6 +1192,7 @@ func TestGetRequiredPackages_SubmoduleComponentProviders(t *testing.T) {
 	assert.Empty(t, resp.Packages)
 	assert.Equal(t, []*pulumirpc.PackageSpec{{
 		Source:     "terraform-provider",
+		Version:    bridgePackageVersion,
 		Parameters: []string{"acme/greeting", ">= 3.0"},
 	}}, resp.Specs)
 }
@@ -1142,6 +1204,7 @@ func TestGetRequiredPackages_RootlessComponentProviders(t *testing.T) {
 	assert.Empty(t, resp.Packages)
 	assert.Equal(t, []*pulumirpc.PackageSpec{{
 		Source:     "terraform-provider",
+		Version:    bridgePackageVersion,
 		Parameters: []string{"acme/greeting", ">= 3.0"},
 	}}, resp.Specs)
 }

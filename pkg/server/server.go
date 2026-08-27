@@ -160,6 +160,42 @@ func (host *LanguageHost) Close() error {
 // parameterization.
 const bridgePackageName = "terraform-provider"
 
+// bridgePackageVersion pins the terraform-provider release install specs
+// resolve to. Left unset, the CLI reuses whatever version is already in the
+// plugin cache, so a stale install keeps serving long-fixed schema bugs
+// (https://github.com/pulumi/pulumi-hcl/issues/204). Renovate bumps it on
+// each release (see renovate.json5).
+const bridgePackageVersion = "1.3.0" // renovate: github-releases pulumi/pulumi-terraform-provider
+
+// terraformProviderVersionOption is the Pulumi.yaml runtime option that
+// overrides bridgePackageVersion:
+//
+//	runtime:
+//	  name: hcl
+//	  options:
+//	    terraformProviderVersion: 1.3.0
+const terraformProviderVersionOption = "terraformProviderVersion"
+
+// bridgeVersion returns the terraform-provider release install specs resolve
+// to: the terraformProviderVersion runtime option when set, else the built-in
+// default.
+func bridgeVersion(info *pulumirpc.ProgramInfo) (string, error) {
+	raw, ok := info.GetOptions().AsMap()[terraformProviderVersionOption]
+	if !ok {
+		return bridgePackageVersion, nil
+	}
+	version, ok := raw.(string)
+	if !ok {
+		return "", fmt.Errorf("runtime option %s: expected a string, got %v",
+			terraformProviderVersionOption, raw)
+	}
+	if _, err := semver.Parse(version); err != nil {
+		return "", fmt.Errorf("runtime option %s: %q is not a valid semver version: %w",
+			terraformProviderVersionOption, version, err)
+	}
+	return version, nil
+}
+
 // GetRequiredPackages returns the packages required to run an HCL program,
 // keyed by provider source — a local name may resolve to different sources
 // in different modules, and those are distinct requirements. Pulumi-source
@@ -179,6 +215,11 @@ func (host *LanguageHost) GetRequiredPackages(
 	}
 
 	tfReqs, pulumiPkgs, err := programRequirements(ctx, req.Info.ProgramDirectory)
+	if err != nil {
+		return &pulumirpc.GetRequiredPackagesResponse{}, err
+	}
+
+	bridgeVer, err := bridgeVersion(req.Info)
 	if err != nil {
 		return &pulumirpc.GetRequiredPackagesResponse{}, err
 	}
@@ -227,6 +268,7 @@ func (host *LanguageHost) GetRequiredPackages(
 		}
 		specs = append(specs, &pulumirpc.PackageSpec{
 			Source:     bridgePackageName,
+			Version:    bridgeVer,
 			Parameters: params,
 		})
 	}
