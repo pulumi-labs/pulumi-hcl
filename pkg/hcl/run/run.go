@@ -1828,7 +1828,7 @@ func (e *Engine) registerResourceInstanceInContext(
 
 	var iOpts inheritableOpts
 	if opts.Protect {
-		iOpts.Protect = ptr(true)
+		iOpts.Protect = new(true)
 	}
 	iOpts.RetainOnDelete = opts.RetainOnDelete
 	e.resourceInheritableOpts.Set(instance.Key, iOpts)
@@ -5157,8 +5157,6 @@ func (e *Engine) checkConfigPulumiVersion(
 	}
 	return nil
 }
-
-func ptr[T any](v T) *T { return &v }
 
 // ctyAsString reads a cty value as a string, tolerating marks (resource
 // output leaves carry DepMarks) and returning "" for null / unknown /
