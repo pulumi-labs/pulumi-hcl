@@ -1257,7 +1257,8 @@ func TestLinkInstructions(t *testing.T) {
 	for dir, schema := range map[string]string{
 		"aws":       `{"name": "aws", "version": "7.0.0"}`,
 		"stackmgmt": `{"name": "stackmgmt", "version": "2.5.0", "parameterization": {"baseProvider": {"name": "pulumi-component", "version": "1.0.0"}, "parameter": "aGVsbG8="}}`,
-		"random": `{"name": "random", "version": "3.6.0", "parameterization": {"baseProvider": {"name": "terraform-provider", "version": "1.3.0"}, "parameter": "` +
+		"random": `{"name": "random", "version": "3.6.0", "parameterization": {"baseProvider": {"name": "` +
+			bridgePackageName + `", "version": "` + bridgePackageVersion + `"}, "parameter": "` +
 			base64.StdEncoding.EncodeToString([]byte(`{"remote":{"url":"hashicorp/random","version":"3.6.0"}}`)) + `"}}`,
 	} {
 		sdkDir := filepath.Join(root, "sdks", dir)
