@@ -30,9 +30,10 @@ func TimeoutableProvider() *schema.Provider {
 		ResourcesMap: map[string]*schema.Resource{
 			"timeoutable_resource": {
 				Timeouts: &schema.ResourceTimeout{
-					Create: &dur,
-					Update: &dur,
-					Delete: &dur,
+					Create:  &dur,
+					Update:  &dur,
+					Delete:  &dur,
+					Default: &dur,
 				},
 				Schema: map[string]*schema.Schema{
 					"input_one": {Type: schema.TypeString, Optional: true},
@@ -46,6 +47,18 @@ func TimeoutableProvider() *schema.Provider {
 				ReadContext:   func(_ context.Context, _ *schema.ResourceData, _ any) diag.Diagnostics { return nil },
 				UpdateContext: func(_ context.Context, _ *schema.ResourceData, _ any) diag.Diagnostics { return nil },
 				DeleteContext: func(_ context.Context, _ *schema.ResourceData, _ any) diag.Diagnostics { return nil },
+			},
+		},
+		DataSourcesMap: map[string]*schema.Resource{
+			"timeoutable_data": {
+				Timeouts: &schema.ResourceTimeout{Read: &dur},
+				Schema: map[string]*schema.Schema{
+					"result": {Type: schema.TypeString, Computed: true},
+				},
+				ReadContext: func(_ context.Context, d *schema.ResourceData, _ any) diag.Diagnostics {
+					d.SetId("timeoutable-data-id")
+					return diag.FromErr(d.Set("result", "read"))
+				},
 			},
 		},
 	}

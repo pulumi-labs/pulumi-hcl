@@ -1258,6 +1258,39 @@ func TestResourceReferenceTypeSetField(t *testing.T) {
 	assert.Equal(t, cty.Set(cty.Number), typ.AttributeType("ports"))
 }
 
+// TestResourceReferenceTypeTimeouts pins that a resource declaring operation
+// timeouts types `timeouts` as an object of exactly those operations, matching
+// the runtime value the engine exposes.
+func TestResourceReferenceTypeTimeouts(t *testing.T) {
+	t.Parallel()
+
+	res := &schema.Resource{Token: "test:index:R"}
+	typ := ResourceReferenceType(res, &bridge.BodyMapping{Timeouts: []string{"create", "default"}})
+	assert.Equal(t, cty.Object(map[string]cty.Type{"create": cty.String, "default": cty.String}), typ.AttributeType("timeouts"))
+
+	assert.False(t, ResourceReferenceType(res, &bridge.BodyMapping{}).HasAttribute("timeouts"))
+}
+
+// TestDataSourceReferenceTypeTimeouts pins that a data source declaring
+// operation timeouts types `timeouts` alongside its return properties, and
+// that a non-object return type stays dynamic.
+func TestDataSourceReferenceTypeTimeouts(t *testing.T) {
+	t.Parallel()
+
+	fn := &schema.Function{
+		Token: "test:index:getR",
+		ReturnType: &schema.ObjectType{Properties: []*schema.Property{
+			{Name: "result", Type: schema.StringType},
+		}},
+	}
+	typ := DataSourceReferenceType(fn, &bridge.BodyMapping{Timeouts: []string{"read"}})
+	assert.Equal(t, cty.Object(map[string]cty.Type{"read": cty.String}), typ.AttributeType("timeouts"))
+	assert.True(t, typ.HasAttribute("result"))
+
+	scalar := &schema.Function{Token: "test:index:getS", ReturnType: schema.StringType}
+	assert.Equal(t, cty.DynamicPseudoType, DataSourceReferenceType(scalar, nil))
+}
+
 // TestResourceOutputToCtySchemaSecretElided pins that a schema-secret output
 // keeps its sensitive mark even when the provider elides the (unknown) value
 // during preview, so a downstream stack output stays secret.

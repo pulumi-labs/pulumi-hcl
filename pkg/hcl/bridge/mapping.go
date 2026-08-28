@@ -15,6 +15,8 @@
 package bridge
 
 import (
+	"time"
+
 	"github.com/pulumi/pulumi-terraform-bridge/v3/pkg/tfbridge"
 	"github.com/pulumi/pulumi-terraform-bridge/v3/pkg/tfbridge/info"
 	shim "github.com/pulumi/pulumi-terraform-bridge/v3/pkg/tfshim"
@@ -52,6 +54,13 @@ type FieldMapping struct {
 type BodyMapping struct {
 	// Fields is keyed by TF (snake_case) name.
 	Fields map[string]*FieldMapping
+
+	// Timeouts lists the operations (create, read, update, delete, default)
+	// whose timeout the resource or data source declares: the attributes of
+	// the `timeouts` block the SDK implies for it. Nil when it declares none,
+	// or when its schema defines a `timeouts` field of its own, which takes
+	// the block's place.
+	Timeouts []string
 }
 
 // Lookup returns the mapping for tfName, or nil if no such field exists.
@@ -101,7 +110,7 @@ func ResourceBodyMapping(info *tfbridge.ProviderInfo, tfType string) *BodyMappin
 	if r := info.Resources[tfType]; r != nil {
 		fieldOverrides = r.Fields
 	}
-	return bodyMappingFromSchema(res.Schema(), fieldOverrides)
+	return withTimeouts(bodyMappingFromSchema(res.Schema(), fieldOverrides), res)
 }
 
 // DataSourceBodyMapping builds a BodyMapping for the given TF data source.
@@ -117,7 +126,31 @@ func DataSourceBodyMapping(info *tfbridge.ProviderInfo, tfType string) *BodyMapp
 	if d := info.DataSources[tfType]; d != nil {
 		fieldOverrides = d.Fields
 	}
-	return bodyMappingFromSchema(ds.Schema(), fieldOverrides)
+	return withTimeouts(bodyMappingFromSchema(ds.Schema(), fieldOverrides), ds)
+}
+
+// withTimeouts records on m the operations res declares a timeout for, unless
+// res defines a `timeouts` field of its own.
+func withTimeouts(m *BodyMapping, res shim.Resource) *BodyMapping {
+	t := res.Timeouts()
+	if m == nil || t == nil {
+		return m
+	}
+	if _, own := res.Schema().GetOk("timeouts"); own {
+		return m
+	}
+	m.Timeouts = []string{}
+	for _, op := range []struct {
+		name string
+		d    *time.Duration
+	}{
+		{"create", t.Create}, {"read", t.Read}, {"update", t.Update}, {"delete", t.Delete}, {"default", t.Default},
+	} {
+		if op.d != nil {
+			m.Timeouts = append(m.Timeouts, op.name)
+		}
+	}
+	return m
 }
 
 // ProviderConfigBodyMapping builds a BodyMapping for the provider config block.

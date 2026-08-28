@@ -3903,6 +3903,66 @@ resource "aws_instance" "web" {
 	}
 }
 
+func TestEngine_TimeoutsDefault(t *testing.T) {
+	t.Parallel()
+
+	src := []byte(`
+resource "aws_instance" "web" {
+  ami           = "ami-12345"
+  instance_type = "t3.micro"
+
+  timeouts {
+    create  = "60m"
+    default = "5m"
+  }
+}
+`)
+
+	config, diags := parser.NewParser().ParseSource("test.hcl", src)
+	require.False(t, diags.HasErrors(), diags.Error())
+
+	mock := &testutil.MockResourceMonitor{}
+	engine := newTestEngine(t, config, &run.EngineOptions{
+		ModuleLoader:    testModuleLoader(t),
+		ProjectName:     "test-project",
+		StackName:       "dev",
+		ResourceMonitor: mock,
+		WorkDir:         t.TempDir(),
+		RootDir:         t.TempDir(),
+		SchemaLoader: schemaloader.New(t, schema.PackageSpec{
+			Name: "aws",
+			Resources: map[string]schema.ResourceSpec{
+				"aws:index:Instance": {
+					InputProperties: map[string]schema.PropertySpec{
+						"ami":          {TypeSpec: schema.TypeSpec{Type: "string"}},
+						"instanceType": {TypeSpec: schema.TypeSpec{Type: "string"}},
+					},
+					ObjectTypeSpec: schema.ObjectTypeSpec{
+						Properties: map[string]schema.PropertySpec{
+							"ami":          {TypeSpec: schema.TypeSpec{Type: "string"}},
+							"instanceType": {TypeSpec: schema.TypeSpec{Type: "string"}},
+						},
+					},
+				},
+			},
+		}),
+	})
+
+	require.NoError(t, engine.Run(t.Context()))
+
+	var instanceReq *run.RegisterResourceRequest
+	for i := range mock.RegisteredResources {
+		if mock.RegisteredResources[i].Type == "aws:index:Instance" {
+			instanceReq = &mock.RegisteredResources[i]
+			break
+		}
+	}
+
+	require.NotNil(t, instanceReq, "expected aws:index:Instance resource to be registered")
+
+	assert.Equal(t, &run.CustomTimeouts{Create: 3600, Read: 300, Update: 300, Delete: 300}, instanceReq.CustomTimeouts)
+}
+
 func TestEngine_SensitiveResourceOptions(t *testing.T) {
 	t.Parallel()
 

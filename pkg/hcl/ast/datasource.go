@@ -69,6 +69,9 @@ type DataSource struct {
 	// Postconditions contains postcondition checks (evaluated after the read).
 	Postconditions []*CheckRule
 
+	// Timeouts contains timeout configuration, if present.
+	Timeouts *Timeouts
+
 	// DeclRange is the source range of the entire data block.
 	DeclRange hcl.Range
 

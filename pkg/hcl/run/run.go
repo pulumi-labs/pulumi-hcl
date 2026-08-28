@@ -1673,7 +1673,26 @@ func (e *Engine) registerResourceInstanceInContext(
 		}
 	}
 
-	opts, err := e.buildResourceOptions(ctx, node, res, instance, evalCtx, parentURN, modInst, resourceMapping, resSchema.InputProperties, resSchema.Properties, resourceInputs)
+	timeouts, timeoutsRole, err := evalTimeouts(res.Timeouts, resourceMapping, hclCtx)
+	if err != nil {
+		return err
+	}
+	if timeoutsRole == timeoutsInput && !timeouts.IsNull() {
+		pv, err := transform.CtyToPropertyValue(timeouts)
+		if err != nil {
+			return fmt.Errorf("converting timeouts: %w", err)
+		}
+		prop := resourceMapping.Lookup("timeouts").PulumiName
+		resourceInputs = resourceInputs.Set(prop, pv)
+		for _, urn := range eval.CollectDepURNs(timeouts) {
+			idx, found := slices.BinarySearch(dependsOn[prop], urn)
+			if !found {
+				dependsOn[prop] = slices.Insert(dependsOn[prop], idx, urn)
+			}
+		}
+	}
+
+	opts, err := e.buildResourceOptions(ctx, node, res, instance, evalCtx, parentURN, modInst, resourceMapping, resSchema.InputProperties, resSchema.Properties, resourceInputs, timeouts)
 	if err != nil {
 		return err
 	}
@@ -1783,6 +1802,18 @@ func (e *Engine) registerResourceInstanceInContext(
 		outputObj["id"] = cty.StringVal(id)
 	}
 	outputObj["urn"] = cty.StringVal(string(urn)).Mark(eval.SyntheticMark)
+	if timeoutsRole == timeoutsAttribute {
+		outputObj["timeouts"] = timeouts
+	} else if timeoutsRole == timeoutsInput && !resourceMapping.Lookup("timeouts").TFBlock {
+		// The SDK copies the configured timeouts into state on every plan and
+		// apply, so state that lacks them (an imported resource: reads drop
+		// timeouts) is repopulated from config. A concrete provider value wins.
+		if cur, ok := outputObj["timeouts"]; ok {
+			if unmarked, _ := cur.Unmark(); unmarked.IsNull() || !unmarked.IsKnown() {
+				outputObj["timeouts"] = timeouts
+			}
+		}
+	}
 
 	markedOutputs := cty.ObjectVal(outputObj).Mark(eval.DepMark(urn))
 
@@ -1814,12 +1845,144 @@ func (e *Engine) registerResourceInstanceInContext(
 	return nil
 }
 
+// allTimeoutOps is the set of operations a `timeouts` block can configure.
+var allTimeoutOps = []string{"create", "read", "update", "delete", "default"}
+
+// timeoutsRole says how a resource's `timeouts` block is realized.
+type timeoutsRole int
+
+const (
+	// timeoutsNone: the block is not part of the resource value.
+	timeoutsNone timeoutsRole = iota
+	// timeoutsAttribute: the schema strips the block, so the engine exposes
+	// its value as a synthesized attribute of the resource.
+	timeoutsAttribute
+	// timeoutsInput: the schema declares a `timeouts` object of its own (the
+	// wire schema keeps the SDK-injected block; Plugin Framework providers
+	// define one), so the block is sent as an ordinary input property and
+	// reads back through the resource's outputs.
+	timeoutsInput
+)
+
+// timeoutsDeclaredOps returns the operations the resource's schema accepts a
+// timeout for and how the block is realized. nil ops means a `timeouts` block
+// is not accepted at all.
+func timeoutsDeclaredOps(mapping *bridge.BodyMapping) ([]string, timeoutsRole) {
+	if mapping == nil {
+		// No schema knowledge: accept everything, expose nothing.
+		return allTimeoutOps, timeoutsNone
+	}
+	if f := mapping.Lookup("timeouts"); f != nil {
+		if f.Nested == nil {
+			return nil, timeoutsNone
+		}
+		return slices.Sorted(maps.Keys(f.Nested.Fields)), timeoutsInput
+	}
+	if mapping.Timeouts != nil {
+		return mapping.Timeouts, timeoutsAttribute
+	}
+	return nil, timeoutsNone
+}
+
+// evalTimeouts evaluates a `timeouts` block against the operations the
+// resource's schema declares a timeout for, returning the value of the
+// block: null when it is absent, and one string attribute per declared
+// operation otherwise. A block on a resource that accepts none, or an
+// argument for an operation it does not declare, is an error.
+func evalTimeouts(t *ast.Timeouts, mapping *bridge.BodyMapping, hclCtx *hcl.EvalContext) (cty.Value, timeoutsRole, error) {
+	ops, role := timeoutsDeclaredOps(mapping)
+	if ops == nil {
+		if t == nil {
+			return cty.NilVal, timeoutsNone, nil
+		}
+		return cty.NilVal, timeoutsNone, fmt.Errorf("%s: Unsupported block type; Blocks of type \"timeouts\" are not expected here",
+			t.DeclRange)
+	}
+	attrTypes := make(map[string]cty.Type, len(ops))
+	for _, op := range ops {
+		attrTypes[op] = cty.String
+	}
+	ty := cty.Object(attrTypes)
+	if t == nil {
+		return cty.NullVal(ty), role, nil
+	}
+	attrs := make(map[string]cty.Value, len(ops))
+	for _, op := range ops {
+		attrs[op] = cty.NullVal(cty.String)
+	}
+	for name, expr := range map[string]hcl.Expression{
+		"create": t.Create, "read": t.Read, "update": t.Update, "delete": t.Delete, "default": t.Default,
+	} {
+		if expr == nil {
+			continue
+		}
+		if !ty.HasAttribute(name) {
+			return cty.NilVal, role, fmt.Errorf("%s: Unsupported argument; An argument named %q is not expected here",
+				expr.Range(), name)
+		}
+		val, diags := expr.Value(hclCtx)
+		if diags.HasErrors() {
+			return cty.NilVal, role, fmt.Errorf("evaluating timeouts.%s: %s", name, diags.Error())
+		}
+		val, err := ctyconvert.Convert(val, cty.String)
+		if err != nil {
+			return cty.NilVal, role, fmt.Errorf("%s: Incorrect attribute value type; Inappropriate value for attribute %q: %s",
+				expr.Range(), name, err)
+		}
+		attrs[name] = val
+	}
+	return cty.ObjectVal(attrs), role, nil
+}
+
+// customTimeoutsFromValue derives the Pulumi custom timeouts from an evaluated
+// `timeouts` block; an operation without a timeout of its own takes `default`.
+// Unknown timeouts are left unset. Returns nil when none is configured.
+func customTimeoutsFromValue(timeouts cty.Value) (*CustomTimeouts, error) {
+	if timeouts.IsNull() {
+		return nil, nil
+	}
+	attr := func(name string) cty.Value {
+		if !timeouts.Type().HasAttribute(name) {
+			return cty.NullVal(cty.String)
+		}
+		v, _ := timeouts.GetAttr(name).Unmark()
+		return v
+	}
+	dflt := attr("default")
+	ct := &CustomTimeouts{}
+	configured := false
+	for _, op := range []struct {
+		name string
+		dst  *float64
+	}{
+		{"create", &ct.Create}, {"read", &ct.Read}, {"update", &ct.Update}, {"delete", &ct.Delete},
+	} {
+		v := attr(op.name)
+		if v.IsNull() {
+			v = dflt
+		}
+		if v.IsNull() || !v.IsKnown() {
+			continue
+		}
+		d, err := time.ParseDuration(v.AsString())
+		if err != nil {
+			return nil, fmt.Errorf("parsing %q timeout: %w", op.name, err)
+		}
+		*op.dst = d.Seconds()
+		configured = true
+	}
+	if !configured {
+		return nil, nil
+	}
+	return ct, nil
+}
+
 // buildResourceOptions builds resource options using the provided eval context and parent URN.
 func (e *Engine) buildResourceOptions(
 	ctx context.Context, node *graph.Node, res *ast.Resource, instance *graph.ExpandedResource,
 	evalCtx *eval.Context, parentURN urn.URN,
 	modInst *moduleInstance, resourceMapping *bridge.BodyMapping,
-	inputProps, outputProps []*schema.Property, inputs property.Map,
+	inputProps, outputProps []*schema.Property, inputs property.Map, timeouts cty.Value,
 ) (*ResourceOptions, error) {
 	modInfo := node.ModuleInfo
 	opts := &ResourceOptions{}
@@ -1941,48 +2104,11 @@ func (e *Engine) buildResourceOptions(
 		}
 	}
 
-	// Handle timeouts
-	if res.Timeouts != nil {
-		ct := &CustomTimeouts{}
-		hasTimeouts := false
-		evalTimeout := func(expr hcl.Expression) (float64, bool) {
-			if expr == nil {
-				return 0, false
-			}
-			val, diags := e.evaluator.EvaluateExpression(expr)
-			if diags.HasErrors() {
-				return 0, false
-			}
-			val, _ = val.Unmark()
-			if val.Type() != cty.String || val.IsNull() || !val.IsKnown() {
-				return 0, false
-			}
-			d, err := time.ParseDuration(val.AsString())
-			if err != nil {
-				return 0, false
-			}
-			return d.Seconds(), true
-		}
-		if v, ok := evalTimeout(res.Timeouts.Create); ok {
-			ct.Create = v
-			hasTimeouts = true
-		}
-		if v, ok := evalTimeout(res.Timeouts.Read); ok {
-			ct.Read = v
-			hasTimeouts = true
-		}
-		if v, ok := evalTimeout(res.Timeouts.Update); ok {
-			ct.Update = v
-			hasTimeouts = true
-		}
-		if v, ok := evalTimeout(res.Timeouts.Delete); ok {
-			ct.Delete = v
-			hasTimeouts = true
-		}
-		if hasTimeouts {
-			opts.CustomTimeouts = ct
-		}
+	customTimeouts, err := customTimeoutsFromValue(timeouts)
+	if err != nil {
+		return nil, err
 	}
+	opts.CustomTimeouts = customTimeouts
 
 	// Handle moved blocks - resolve aliases from moved blocks that target this resource
 	movedAliases := e.resolveMovedAliases(ctx, res, instance.Index, instance.EachKeyString(), modInst)
@@ -3398,6 +3524,10 @@ func (e *Engine) invokeDataSourceOnce(
 	}
 
 	dataSourceMapping := e.resolver.DataSourceBodyMapping(ctx, ds.Type)
+	timeouts, timeoutsRole, err := evalTimeouts(ds.Timeouts, dataSourceMapping, hclCtx)
+	if err != nil {
+		return cty.NilVal, err
+	}
 	inputEval := evalSchemaInputs(hclCtx, func(_ resource.PropertyKey, val cty.Value) {
 		for _, urn := range eval.CollectDepURNs(val) {
 			addURN(urn)
@@ -3407,6 +3537,16 @@ func (e *Engine) invokeDataSourceOnce(
 		ds.Config, funcSchema, dataSourceMapping, inputEval)
 	if diags.HasErrors() {
 		return cty.NilVal, diags
+	}
+	if timeoutsRole == timeoutsInput && !timeouts.IsNull() {
+		pv, err := transform.CtyToPropertyValue(timeouts)
+		if err != nil {
+			return cty.NilVal, fmt.Errorf("converting timeouts: %w", err)
+		}
+		inputs = inputs.Set(dataSourceMapping.Lookup("timeouts").PulumiName, pv)
+		for _, urn := range eval.CollectDepURNs(timeouts) {
+			addURN(urn)
+		}
 	}
 
 	invokeReq := InvokeRequest{
@@ -3507,6 +3647,14 @@ func (e *Engine) invokeDataSourceOnce(
 	ctyOutputs, err := transform.FunctionOutputToCty(outputs, funcSchema, dataSourceMapping, e.dryRun)
 	if err != nil {
 		return cty.NilVal, fmt.Errorf("converting function outputs to HCL types: %w", err)
+	}
+	if timeoutsRole == timeoutsAttribute && ctyOutputs.Type().IsObjectType() && ctyOutputs.IsKnown() && !ctyOutputs.IsNull() {
+		attrs := ctyOutputs.AsValueMap()
+		if attrs == nil {
+			attrs = map[string]cty.Value{}
+		}
+		attrs["timeouts"] = timeouts
+		ctyOutputs = cty.ObjectVal(attrs)
 	}
 
 	if err := evaluatePostconditionValues(ds.Postconditions, hclCtx, ctyOutputs, node.Key.String()); err != nil {
