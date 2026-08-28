@@ -141,7 +141,13 @@ var expectedFailures = map[string]string{
 	"l1-component-sourceless": "sourceless PCL components (token-only, no source directory) are not supported" +
 		" by HCL codegen: the emitted module source \"./.\" includes the root module in itself and hangs" +
 		" (added in v3.259.0)",
-	"l2-resource-read": "PCL pcl.ReadResource nodes not yet supported by HCL codegen",
+	"l2-resource-read":         "PCL pcl.ReadResource nodes not yet supported by HCL codegen",
+	"l2-resource-read-unknown": "PCL pcl.ReadResource nodes not yet supported by HCL codegen (added in v3.260.0)",
+	"l2-map-keys-invoke-call": "HCL codegen renames a call() result property to its TF name before" +
+		" traversing the schema type: unknown property 'string_map' among [stringMap] (added in v3.260.0)",
+	"l2-discriminated-union-marked-key": "whole objects in stack outputs must keep their wire-format" +
+		" (camelCase) keys, but the runtime emits the TF-renamed snake_case keys:" +
+		" expected 'discriminantKind', got 'discriminant_kind' (added in v3.260.0)",
 	"l2-provider-call-explicit": "upstream fixture declares `provider \"call\"`, which" +
 		" is reserved as the namespace for resource method calls in HCL",
 	"l2-config-default-from-invoke": "HCL codegen does not support a config variable whose" +
