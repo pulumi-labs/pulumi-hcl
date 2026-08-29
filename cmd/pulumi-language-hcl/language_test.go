@@ -147,7 +147,11 @@ var expectedFailures = map[string]string{
 		" traversing the schema type: unknown property 'string_map' among [stringMap] (added in v3.260.0)",
 	"l2-discriminated-union-marked-key": "whole objects in stack outputs must keep their wire-format" +
 		" (camelCase) keys, but the runtime emits the TF-renamed snake_case keys:" +
-		" expected 'discriminantKind', got 'discriminant_kind' (added in v3.260.0)",
+		" expected 'discriminantKind', got 'discriminant_kind'" +
+		" (added in v3.260.0, https://github.com/pulumi/pulumi-hcl/issues/589)",
+	"l2-reserved-names": "whole objects in stack outputs must keep their wire-format (camelCase) keys," +
+		" but the runtime emits the TF-renamed snake_case keys: expected 'elementType', got 'element_type'" +
+		" (asserted since v3.260.0, https://github.com/pulumi/pulumi-hcl/issues/589)",
 	"l2-provider-call-explicit": "upstream fixture declares `provider \"call\"`, which" +
 		" is reserved as the namespace for resource method calls in HCL",
 	"l2-config-default-from-invoke": "HCL codegen does not support a config variable whose" +
