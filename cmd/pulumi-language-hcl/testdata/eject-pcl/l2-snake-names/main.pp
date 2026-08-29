@@ -16,3 +16,8 @@ resource "third" "snake_names:cool_module:another_resource" {
   }).nested_output[0]["key"].value
 }
 
+// Whole objects in stack outputs keep their wire-format (snake_case) keys
+output "theOutput" {
+  value = first.the_output
+}
+
