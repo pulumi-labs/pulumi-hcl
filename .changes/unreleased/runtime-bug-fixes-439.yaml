@@ -1,6 +1,0 @@
-kind: bug-fixes
-body: Expose a resource's or data source's `timeouts` block as an attribute typed by the operations it declares; accept `default`
-time: 2026-07-21T13:00:00Z
-custom:
-    Component: runtime
-    PR: "439"
