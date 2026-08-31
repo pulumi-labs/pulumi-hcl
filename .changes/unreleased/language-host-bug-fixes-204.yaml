@@ -1,6 +1,0 @@
-kind: bug-fixes
-body: Pin the `terraform-provider` plugin version in install specs so `pulumi install` no longer reuses a stale cached release; the pin can be overridden with the `terraformProviderVersion` runtime option in `Pulumi.yaml`
-time: 2026-08-27T18:19:00.811492+02:00
-custom:
-    Component: language-host
-    PR: "204"
