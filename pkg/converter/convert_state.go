@@ -41,6 +41,7 @@ import (
 	"github.com/pulumi/pulumi-hcl/vendored/addrs"
 	"github.com/pulumi/pulumi-hcl/vendored/statefile"
 	"github.com/pulumi/pulumi-hcl/vendored/states"
+	"github.com/pulumi/pulumi-terraform-bridge/v3/pkg/reservedkeys"
 	"github.com/pulumi/pulumi-terraform-bridge/v3/pkg/tfbridge"
 	"github.com/pulumi/pulumi/pkg/v3/codegen/convert"
 	"github.com/pulumi/pulumi/pkg/v3/codegen/schema"
@@ -539,6 +540,15 @@ func translateInstanceValues(
 	}
 	if idProp == nil {
 		outs["id"] = resource.NewStringProperty(id)
+	}
+	// The state's own schema version travels with the values in the metadata
+	// the bridge keeps its Terraform state under, so the provider runs its
+	// state upgraders over them exactly as Terraform would. Without it the
+	// values read as version 0 and the whole upgrade chain runs over state
+	// that is already current.
+	if current.SchemaVersion != 0 {
+		outs[reservedkeys.Meta] = resource.NewStringProperty(
+			fmt.Sprintf(`{"schema_version":"%d"}`, current.SchemaVersion))
 	}
 	return outs, ins, nil
 }

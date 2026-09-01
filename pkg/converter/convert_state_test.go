@@ -593,6 +593,8 @@ func TestConvertTFState_ValueFallbacks(t *testing.T) {
 	// they carry their own schema version, and the provider upgrades them.
 	drifted := byID["old-schema"].Outputs.AsMap()
 	assert.Equal(t, property.New("hello"), drifted["inputOne"])
+	assert.Equal(t, property.New(`{"schema_version":"5"}`), drifted["__meta"],
+		"the state's version travels with its values")
 
 	// Flatmap attributes have no translation at all.
 	assert.Nil(t, byID["flatmap"].Outputs, "pre-0.12 state imports by id only")
@@ -603,9 +605,8 @@ func TestConvertTFState_ValueFallbacks(t *testing.T) {
 }
 
 // A resource whose provider declares a schema version imports its values like
-// any other: the version the mapping reports cannot be trusted to match, since
-// a mapping records no version for a provider plugin built before it carried
-// them.
+// any other, and records the version those values are at, so the provider
+// upgrades them only if they are behind the schema it now serves.
 func TestConvertTFState_VersionedResource(t *testing.T) {
 	t.Parallel()
 
@@ -642,6 +643,7 @@ func TestConvertTFState_VersionedResource(t *testing.T) {
 
 	outs := resp.Resources[0].Outputs.AsMap()
 	assert.Equal(t, property.New("hello"), outs["inputOne"])
+	assert.Equal(t, property.New(`{"schema_version":"1"}`), outs["__meta"])
 }
 
 // TestConvertTFState_ModuleResources pins the module import shape: a component
