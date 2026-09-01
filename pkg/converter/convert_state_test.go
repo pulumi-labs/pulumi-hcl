@@ -572,7 +572,7 @@ func TestConvertTFState_ValueFallbacks(t *testing.T) {
 			{
 				"mode": "managed", "type": "example_resource", "name": "drifted",
 				"provider": "provider[\"registry.terraform.io/acme/example\"]",
-				"instances": [ { "schema_version": 5, "attributes": { "id": "old-schema" } } ]
+				"instances": [ { "schema_version": 5, "attributes": { "id": "old-schema", "input_one": "hello" } } ]
 			},
 			{
 				"mode": "managed", "type": "example_resource", "name": "legacy",
@@ -584,14 +584,64 @@ func TestConvertTFState_ValueFallbacks(t *testing.T) {
 
 	resp := convertTFState(t.Context(), exampleInfoSource(t), exampleLoader(t), nil, nil, state)
 	require.Len(t, resp.Resources, 2)
+	byID := map[string]plugin.ResourceImport{}
 	for _, r := range resp.Resources {
-		assert.Nil(t, r.Outputs, "%s should import by id only", r.ID)
-		assert.Nil(t, r.Inputs)
+		byID[r.ID] = r
 	}
-	require.Len(t, resp.Diagnostics, 2)
-	for _, d := range resp.Diagnostics {
-		assert.Equal(t, "Importing without values", d.Summary)
-	}
+
+	// Attributes at a version the provider does not map are still imported:
+	// they carry their own schema version, and the provider upgrades them.
+	drifted := byID["old-schema"].Outputs.AsMap()
+	assert.Equal(t, property.New("hello"), drifted["inputOne"])
+
+	// Flatmap attributes have no translation at all.
+	assert.Nil(t, byID["flatmap"].Outputs, "pre-0.12 state imports by id only")
+	assert.Nil(t, byID["flatmap"].Inputs)
+
+	require.Len(t, resp.Diagnostics, 1)
+	assert.Equal(t, "Importing without values", resp.Diagnostics[0].Summary)
+}
+
+// A resource whose provider declares a schema version imports its values like
+// any other: the version the mapping reports cannot be trusted to match, since
+// a mapping records no version for a provider plugin built before it carried
+// them.
+func TestConvertTFState_VersionedResource(t *testing.T) {
+	t.Parallel()
+
+	info := roundtrip(t, tfbridge.ProviderInfo{
+		P: shimv2.NewProvider(&sdkschema.Provider{
+			ResourcesMap: map[string]*sdkschema.Resource{
+				"example_resource": {
+					SchemaVersion: 1,
+					Schema: map[string]*sdkschema.Schema{
+						"input_one": {Type: sdkschema.TypeString, Optional: true},
+					},
+				},
+			},
+		}),
+		Name: "example",
+		Resources: map[string]*tfbridge.ResourceInfo{
+			"example_resource": {Tok: "example:index/resource:Resource"},
+		},
+	})
+	state := parseState(t, `{
+		"resources": [
+			{
+				"mode": "managed", "type": "example_resource", "name": "b",
+				"provider": "provider[\"registry.terraform.io/acme/example\"]",
+				"instances": [ { "schema_version": 1, "attributes": { "id": "res-1", "input_one": "hello" } } ]
+			}
+		]
+	}`)
+
+	src := fakeInfoSource{infos: map[string]*tfbridge.ProviderInfo{"example": info}}
+	resp := convertTFState(t.Context(), src, exampleLoader(t), nil, nil, state)
+	assert.Empty(t, resp.Diagnostics)
+	require.Len(t, resp.Resources, 1)
+
+	outs := resp.Resources[0].Outputs.AsMap()
+	assert.Equal(t, property.New("hello"), outs["inputOne"])
 }
 
 // TestConvertTFState_ModuleResources pins the module import shape: a component

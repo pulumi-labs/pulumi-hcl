@@ -24,8 +24,7 @@ import (
 // The resource declares schema version 1 and supports no import, like
 // tls_private_key. Its state instance is at the version the provider declares,
 // so importing it must supply the instance's values rather than fall back to
-// an id-only import the resource cannot serve. Fails today:
-// https://github.com/pulumi/pulumi-hcl/issues/594.
+// an id-only import the resource cannot serve.
 func TestL2VersionedResourceImport(t *testing.T) {
 	t.Parallel()
 	tfcompat.RunCase(t, "l2_versioned_resource_import", tfcompat.Case{
