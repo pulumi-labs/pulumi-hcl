@@ -247,6 +247,22 @@ func TestCtyToResourceInputs(t *testing.T) {
 			}),
 		},
 		{
+			name: "const values fill omitted properties",
+			properties: []*schema.Property{
+				{Name: "kind", Type: schema.StringType, ConstValue: "Constant"},
+				{Name: "flag", Type: schema.BoolType, ConstValue: true},
+				{Name: "count", Type: schema.IntType, ConstValue: int32(3)},
+				{Name: "ratio", Type: schema.NumberType, ConstValue: 1.5},
+			},
+			input: cty.ObjectVal(map[string]cty.Value{}),
+			expected: property.NewMap(map[string]property.Value{
+				"kind":  property.New("Constant"),
+				"flag":  property.New(true),
+				"count": property.New(float64(3)),
+				"ratio": property.New(1.5),
+			}),
+		},
+		{
 			name: "static default value string",
 			properties: []*schema.Property{
 				{
