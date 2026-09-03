@@ -803,7 +803,7 @@ func ctyToObject(path string, val cty.Value, properties []*schema.Property, attr
 			continue
 		}
 		if c := prop.ConstValue; c != nil {
-			v, err := property.Any(c)
+			v, err := schemaLiteralToProperty(c)
 			if err != nil {
 				return property.Map{}, fmt.Errorf("%q: const value %#v: %w", prop.Name, c, err)
 			}
@@ -822,6 +822,19 @@ func ctyToObject(path string, val cty.Value, properties []*schema.Property, attr
 		}
 	}
 	return property.NewMap(result), nil
+}
+
+// schemaLiteralToProperty converts a schema-bound literal (a default or const
+// value) to a property value. Schema binding stores integers as int or int32,
+// which property.Any rejects, so they are widened to float64 first.
+func schemaLiteralToProperty(v any) (property.Value, error) {
+	switch i := v.(type) {
+	case int:
+		v = float64(i)
+	case int32:
+		v = float64(i)
+	}
+	return property.Any(v)
 }
 
 func getDefault(path string, d *schema.DefaultValue, typ schema.Type) (property.Value, error) {
@@ -843,13 +856,7 @@ func getDefault(path string, d *schema.DefaultValue, typ schema.Type) (property.
 		}
 	}
 	if v := d.Value; v != nil {
-		switch i := d.Value.(type) {
-		case int:
-			v = float64(i)
-		case int32:
-			v = float64(i)
-		}
-		v, err := property.Any(v)
+		v, err := schemaLiteralToProperty(v)
 		if err != nil {
 			// This indicates an invalid schema
 			return property.Value{}, fmt.Errorf("%q: reading default value from %#v: %w",
