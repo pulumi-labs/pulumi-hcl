@@ -947,6 +947,9 @@ func (ft *fileTransformer) emitFile(
 				tokens hclwrite.Tokens
 			}
 			var opts []optEntry
+			if forEach, ok := block.Body.Attributes["for_each"]; ok {
+				opts = append(opts, optEntry{"range", ft.transformForEachExpr(forEach.Expr)})
+			}
 			for _, attr := range inputAttributes(block.Body, isProviderMeta) {
 				name, _ := transform.PulumiCaseFromSnakeCase(attr.Name, providerRes.InputProperties)
 				start := attr.Range().Start.Byte

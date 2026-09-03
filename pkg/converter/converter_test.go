@@ -1130,3 +1130,77 @@ output "result" {
 `
 	assert.Equal(t, expected, string(out.Bytes()))
 }
+
+// TestEjectRangedProvider converts a provider block with `for_each` to a PCL
+// provider resource with a `range` option, and a keyed provider reference to
+// an index into that resource.
+func TestEjectRangedProvider(t *testing.T) {
+	t.Parallel()
+
+	testSchema := schema.PackageSpec{
+		Name:    "test",
+		Version: "1.0.0",
+		Provider: &schema.ResourceSpec{
+			InputProperties: map[string]schema.PropertySpec{
+				"prefix": {TypeSpec: schema.TypeSpec{Type: "string"}},
+			},
+		},
+		Resources: map[string]schema.ResourceSpec{
+			"test:index:Item": {
+				InputProperties: map[string]schema.PropertySpec{
+					"value": {TypeSpec: schema.TypeSpec{Type: "string"}},
+				},
+			},
+		},
+	}
+	loader := schemaloader.New(t, testSchema)
+
+	src := []byte(`terraform {
+  required_providers {
+    test = {
+      source  = "pulumi/test"
+      version = "1.0.0"
+    }
+  }
+}
+
+provider "test" {
+  alias = "by_key"
+  for_each = {
+    a = "alpha"
+    b = "beta"
+  }
+  prefix = each.value
+}
+
+resource "test_item" "fixed" {
+  provider = test.by_key["a"]
+  value    = "fixed"
+}
+`)
+
+	out := hclwrite.NewEmptyFile()
+	diags := transformSingleFile(t, src, "main.tf", out.Body(), loader, nil)
+	require.False(t, diags.HasErrors(), diags.Error())
+
+	expected := `resource "by_key" "pulumi:providers:test" {
+  prefix = range.value
+  options {
+    range = {
+      a = "alpha"
+      b = "beta"
+    }
+  }
+}
+
+resource "fixed" "test:index:Item" {
+  value = "fixed"
+  options {
+    provider            = by_key["a"]
+    deleteBeforeReplace = true
+  }
+}
+
+`
+	assert.Equal(t, expected, string(out.Bytes()))
+}
