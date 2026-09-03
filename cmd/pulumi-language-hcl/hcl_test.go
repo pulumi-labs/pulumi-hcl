@@ -3054,3 +3054,75 @@ output result {
 		"provider": property.New("escaped-provider"),
 	}), mock.InvokedFunctions[0].Args)
 }
+
+// TestRangedProvider converts a PCL provider resource with a `range` option.
+// The provider block must carry `for_each`, and resources that select an
+// instance by key must resolve to that instance. PCL does not bind `range`
+// inside an options block, so the keys are literals.
+func TestRangedProvider(t *testing.T) {
+	t.Parallel()
+
+	testSchema := schema.PackageSpec{
+		Name:    "test",
+		Version: "1.0.0",
+		Provider: &schema.ResourceSpec{
+			InputProperties: map[string]schema.PropertySpec{
+				"prefix": {TypeSpec: schema.TypeSpec{Type: "string"}},
+			},
+		},
+		Resources: map[string]schema.ResourceSpec{
+			"test:index:Item": {
+				InputProperties: map[string]schema.PropertySpec{
+					"value": {TypeSpec: schema.TypeSpec{Type: "string"}},
+				},
+			},
+		},
+	}
+
+	pclSource := `resource "byKey" "pulumi:providers:test" {
+    options {
+        range = {
+            a = "alpha"
+            b = "beta"
+        }
+    }
+    prefix = range.value
+}
+
+resource "fixed" "test:index:Item" {
+    options {
+        provider = byKey["a"]
+    }
+    value = "fixed"
+}
+
+resource "other" "test:index:Item" {
+    options {
+        provider = byKey["b"]
+    }
+    value = "other"
+}
+`
+	mock := testConvertedPCL(t, pclSource, testSchema)
+
+	providers := map[string]property.Map{}
+	providerURNs := map[string]string{}
+	itemProviders := map[string]string{}
+	for _, r := range mock.RegisteredResources {
+		switch r.Type {
+		case "pulumi:providers:test":
+			providers[r.Name] = r.Inputs
+			providerURNs[r.Name] = fmt.Sprintf("urn:pulumi:test::project::pulumi:providers:test::%s::%s-id", r.Name, r.Name)
+		case "test:index:Item":
+			itemProviders[r.Name] = r.Provider
+		}
+	}
+	assert.Equal(t, map[string]property.Map{
+		`byKey["a"]`: property.NewMap(map[string]property.Value{"prefix": property.New("alpha")}),
+		`byKey["b"]`: property.NewMap(map[string]property.Value{"prefix": property.New("beta")}),
+	}, providers)
+	assert.Equal(t, map[string]string{
+		"fixed": providerURNs[`byKey["a"]`],
+		"other": providerURNs[`byKey["b"]`],
+	}, itemProviders)
+}
