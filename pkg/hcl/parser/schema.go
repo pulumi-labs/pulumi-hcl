@@ -386,3 +386,27 @@ var importSchema = &hcl.BodySchema{
 		{Name: "for_each"},
 	},
 }
+
+// reservedNames returns the argument and block names s claims, so an argument
+// with one of those names must be written in the `_` escaping block to be
+// read as block-type-specific configuration.
+func reservedNames(s *hcl.BodySchema) map[string]bool {
+	names := make(map[string]bool, len(s.Attributes)+len(s.Blocks))
+	for _, attr := range s.Attributes {
+		names[attr.Name] = true
+	}
+	for _, block := range s.Blocks {
+		names[block.Type] = true
+	}
+	return names
+}
+
+// The argument and block names each block type reserves for meta-arguments.
+// An argument with one of these names is read as block-type-specific
+// configuration only inside the block's `_` escaping block.
+var (
+	ResourceReservedNames = reservedNames(resourceSchema)
+	DataReservedNames     = reservedNames(dataBlockSchema)
+	ProviderReservedNames = reservedNames(providerSchema)
+	ModuleReservedNames   = reservedNames(moduleSchema)
+)

@@ -152,10 +152,6 @@ var expectedFailures = map[string]string{
 	"l2-reserved-names": "whole objects in stack outputs must keep their wire-format (camelCase) keys," +
 		" but the runtime emits the TF-renamed snake_case keys: expected 'elementType', got 'element_type'" +
 		" (asserted since v3.260.0, https://github.com/pulumi/pulumi-hcl/issues/589)",
-	"l2-resource-const": "upstream fixture names a property `count`, which HCL reserves as the resource" +
-		" `count` meta-argument; codegen does not emit and the converter does not read the `_` escaping" +
-		" block: Unsupported attribute; This value does not have any attributes" +
-		" (asserted since v3.261.0, https://github.com/pulumi/pulumi-hcl/issues/600)",
 	"l2-provider-call-explicit": "upstream fixture declares `provider \"call\"`, which" +
 		" is reserved as the namespace for resource method calls in HCL",
 	"l2-config-default-from-invoke": "HCL codegen does not support a config variable whose" +

@@ -35,6 +35,7 @@ import (
 	"github.com/pulumi/pulumi-hcl/pkg/hcl/ast"
 	"github.com/pulumi/pulumi-hcl/pkg/hcl/comments"
 	"github.com/pulumi/pulumi-hcl/pkg/hcl/packages"
+	"github.com/pulumi/pulumi-hcl/pkg/hcl/parser"
 	"github.com/pulumi/pulumi-hcl/pkg/hcl/transform"
 	"github.com/pulumi/pulumi/pkg/v3/codegen"
 	"github.com/pulumi/pulumi/pkg/v3/codegen/schema"
@@ -563,6 +564,24 @@ var resourceOptionHCLToPCL = map[string]string{
 	"version":                   "version",
 }
 
+// The predicates below report whether a top-level attribute of a block is a
+// meta-argument (or resource option) rather than block-type-specific
+// configuration.
+
+func isResourceOption(name string) bool {
+	_, ok := resourceOptionHCLToPCL[name]
+	return ok
+}
+
+func isDataMeta(name string) bool {
+	_, ok := invokeOptionHCLToPCL[name]
+	return ok || name == "for_each" || name == "count"
+}
+
+func isModuleMeta(name string) bool { return parser.ModuleReservedNames[name] }
+
+func isProviderMeta(name string) bool { return name == "alias" }
+
 // emitFile writes the PCL form of body to out using ft as a (possibly
 // project-wide) symbol table. The caller owns construction of ft and only
 // per-file context (src, filename, body, paramInfos) flows through here.
@@ -684,19 +703,15 @@ func (ft *fileTransformer) emitFile(
 				blk.Body().SetAttributeRaw("__logicalName", hclwrite.TokensForValue(cty.StringVal(logicalName)))
 			}
 			var rangeExpr, providersExpr hclsyntax.Expression
-			for _, attr := range sortedAttributes(block.Body.Attributes) {
+			for _, attr := range block.Body.Attributes {
 				switch attr.Name {
-				case "source":
-					continue
 				case "count", "for_each":
 					rangeExpr = attr.Expr
-					continue
 				case "providers":
 					providersExpr = attr.Expr
-					continue
-				case "depends_on", "version":
-					continue
 				}
+			}
+			for _, attr := range inputAttributes(block.Body, isModuleMeta) {
 				start := attr.Range().Start.Byte
 				ft.emitLeadingComments(blk.Body(), start)
 				blk.Body().SetAttributeRaw(attr.Name, ft.withTrailing(ft.transformExpr(attr.Expr), start))
@@ -746,10 +761,7 @@ func (ft *fileTransformer) emitFile(
 			}
 
 			// Emit input properties first (skip resource option attributes).
-			for _, attr := range sortedAttributes(block.Body.Attributes) {
-				if _, isOpt := resourceOptionHCLToPCL[attr.Name]; isOpt {
-					continue
-				}
+			for _, attr := range inputAttributes(block.Body, isResourceOption) {
 				name, _ := transform.PulumiCaseFromSnakeCase(attr.Name, res.InputProperties)
 				start := attr.Range().Start.Byte
 				ft.emitLeadingComments(blk.Body(), start)
@@ -812,6 +824,18 @@ func (ft *fileTransformer) emitFile(
 				case "dynamic":
 					d := ft.convertDynamicBlock(blk.Body(), subBlock, res.InputProperties)
 					resultDiags = append(resultDiags, d...)
+				case "_":
+					// Blocks in the escaping block are input properties
+					// whatever their names; the runtime still expands a
+					// dynamic block written there.
+					for _, escaped := range subBlock.Body.Blocks {
+						if escaped.Type == "dynamic" {
+							d := ft.convertDynamicBlock(blk.Body(), escaped, res.InputProperties)
+							resultDiags = append(resultDiags, d...)
+						} else {
+							propertyBlocks = append(propertyBlocks, escaped)
+						}
+					}
 				case "lifecycle":
 					for _, attr := range sortedAttributes(subBlock.Body.Attributes) {
 						switch attr.Name {
@@ -933,10 +957,7 @@ func (ft *fileTransformer) emitFile(
 				tokens hclwrite.Tokens
 			}
 			var opts []optEntry
-			for _, attr := range sortedAttributes(block.Body.Attributes) {
-				if attr.Name == "alias" {
-					continue
-				}
+			for _, attr := range inputAttributes(block.Body, isProviderMeta) {
 				name, _ := transform.PulumiCaseFromSnakeCase(attr.Name, providerRes.InputProperties)
 				start := attr.Range().Start.Byte
 				ft.emitLeadingComments(blk.Body(), start)
@@ -1008,11 +1029,33 @@ func (ft *fileTransformer) emitFile(
 
 // sortedAttributes returns attributes sorted by source position.
 func sortedAttributes(attrs hclsyntax.Attributes) []*hclsyntax.Attribute {
-	result := slices.Collect(maps.Values(attrs))
-	sort.Slice(result, func(i, j int) bool {
-		return result[i].NameRange.Start.Byte < result[j].NameRange.Start.Byte
+	return sortAttributes(slices.Collect(maps.Values(attrs)))
+}
+
+// sortAttributes sorts attrs by source position.
+func sortAttributes(attrs []*hclsyntax.Attribute) []*hclsyntax.Attribute {
+	sort.Slice(attrs, func(i, j int) bool {
+		return attrs[i].NameRange.Start.Byte < attrs[j].NameRange.Start.Byte
 	})
-	return result
+	return attrs
+}
+
+// inputAttributes returns body's block-type-specific attributes in source
+// order: the top-level attributes for which isMeta is false, plus every
+// attribute of the `_` escaping block, whatever its name.
+func inputAttributes(body *hclsyntax.Body, isMeta func(name string) bool) []*hclsyntax.Attribute {
+	var result []*hclsyntax.Attribute
+	for _, attr := range body.Attributes {
+		if !isMeta(attr.Name) {
+			result = append(result, attr)
+		}
+	}
+	for _, block := range body.Blocks {
+		if block.Type == "_" {
+			result = slices.AppendSeq(result, maps.Values(block.Body.Attributes))
+		}
+	}
+	return sortAttributes(result)
 }
 
 // convertHCLTypeExpr converts an HCL type constraint expression to a PCL type string.
@@ -1835,38 +1878,40 @@ func (ft *fileTransformer) invokeExprTokens(hclType, dsName string) hclwrite.Tok
 
 	var argAttrs, optAttrs []hclwrite.ObjectAttrTokens
 	if body, ok := ft.dataBlocks[dataReference{hclType, dsName}]; ok {
+		for _, attr := range inputAttributes(body, isDataMeta) {
+			name, _ := transform.PulumiCaseFromSnakeCase(attr.Name, inputProps)
+			argAttrs = append(argAttrs, hclwrite.ObjectAttrTokens{
+				Name:  hclwrite.TokensForIdentifier(name),
+				Value: ft.transformExpr(attr.Expr),
+			})
+		}
 		for _, attr := range sortedAttributes(body.Attributes) {
-			if attr.Name == "for_each" || attr.Name == "count" {
-				continue
-			}
 			if pclName, isOpt := invokeOptionHCLToPCL[attr.Name]; isOpt {
 				optAttrs = append(optAttrs, hclwrite.ObjectAttrTokens{
 					Name:  hclwrite.TokensForIdentifier(pclName),
 					Value: ft.transformExpr(attr.Expr),
 				})
-			} else {
-				name, _ := transform.PulumiCaseFromSnakeCase(attr.Name, inputProps)
-				argAttrs = append(argAttrs, hclwrite.ObjectAttrTokens{
-					Name:  hclwrite.TokensForIdentifier(name),
-					Value: ft.transformExpr(attr.Expr),
-				})
 			}
 		}
 		// Pulumi-specific invoke options live in a nested `pulumi` block; the
-		// remaining blocks are array-of-object input properties.
+		// remaining blocks, including those in the `_` escaping block, are
+		// array-of-object input properties.
 		var inputBlocks []*hclsyntax.Block
 		for _, b := range body.Blocks {
-			if b.Type != "pulumi" {
-				inputBlocks = append(inputBlocks, b)
-				continue
-			}
-			for _, attr := range sortedAttributes(b.Body.Attributes) {
-				if pclName, isOpt := invokeOptionHCLToPCL[attr.Name]; isOpt {
-					optAttrs = append(optAttrs, hclwrite.ObjectAttrTokens{
-						Name:  hclwrite.TokensForIdentifier(pclName),
-						Value: ft.transformExpr(attr.Expr),
-					})
+			switch b.Type {
+			case "_":
+				inputBlocks = append(inputBlocks, b.Body.Blocks...)
+			case "pulumi":
+				for _, attr := range sortedAttributes(b.Body.Attributes) {
+					if pclName, isOpt := invokeOptionHCLToPCL[attr.Name]; isOpt {
+						optAttrs = append(optAttrs, hclwrite.ObjectAttrTokens{
+							Name:  hclwrite.TokensForIdentifier(pclName),
+							Value: ft.transformExpr(attr.Expr),
+						})
+					}
 				}
+			default:
+				inputBlocks = append(inputBlocks, b)
 			}
 		}
 		argAttrs = append(argAttrs, ft.blocksToObjectAttrs(inputBlocks, inputProps)...)

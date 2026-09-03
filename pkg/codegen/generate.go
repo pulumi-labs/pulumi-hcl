@@ -28,6 +28,7 @@ import (
 	"github.com/pulumi/pulumi-hcl/pkg/hcl/comments"
 	"github.com/pulumi/pulumi-hcl/pkg/hcl/eval"
 	"github.com/pulumi/pulumi-hcl/pkg/hcl/packages"
+	"github.com/pulumi/pulumi-hcl/pkg/hcl/parser"
 	"github.com/pulumi/pulumi-hcl/pkg/hcl/transform"
 	"github.com/pulumi/pulumi-terraform-bridge/v3/pkg/tfbridge"
 	"github.com/pulumi/pulumi/pkg/v3/codegen"
@@ -1066,11 +1067,12 @@ func (g *generator) genInvokeDataSource(body *hclwrite.Body, ds spilledDataSourc
 					}
 				}
 				hclName := transform.SnakeCaseFromPulumiCase(keyName)
+				target := inputBody(block.Body(), hclName, parser.DataReservedNames)
 				if objType, ok := transform.AsHCLBlockType(propType); ok {
-					d := g.genBlocks(block.Body(), hclName, item.Value, objType)
+					d := g.genBlocks(target, hclName, item.Value, objType)
 					diags = append(diags, d...)
 				} else {
-					d := g.genExpression(block.Body(), hclName, item.Value, propType)
+					d := g.genExpression(target, hclName, item.Value, propType)
 					diags = append(diags, d...)
 				}
 			}
@@ -1152,24 +1154,47 @@ func (g *generator) genResource(body *hclwrite.Body, r *pcl.Resource) hcl.Diagno
 	d = g.genResourceOptions(block.Body(), r)
 	diags = append(diags, d...)
 
+	d = g.genInputs(block.Body(), r, parser.ResourceReservedNames)
+	return append(diags, d...)
+}
+
+// genInputs writes r's input properties to body. An input whose HCL name is
+// in reserved goes in the block's `_` escaping block instead, so the runtime
+// reads it as a property rather than as a meta-argument.
+func (g *generator) genInputs(body *hclwrite.Body, r *pcl.Resource, reserved map[string]bool) hcl.Diagnostics {
 	var inputs []*schema.Property
 	if r.Schema != nil {
 		inputs = r.Schema.InputProperties
 	}
 
+	var diags hcl.Diagnostics
 	for _, attr := range r.Inputs {
 		inputType := findPropertyType(inputs, attr.Name)
 		hclName := transform.SnakeCaseFromPulumiCase(attr.Name)
-		g.emitLeadingComments(block.Body(), attr.SyntaxNode())
+		target := inputBody(body, hclName, reserved)
+		g.emitLeadingComments(target, attr.SyntaxNode())
 		if objType, ok := transform.AsHCLBlockType(inputType); ok {
-			d := g.genBlocks(block.Body(), hclName, attr.Value, objType)
+			d := g.genBlocks(target, hclName, attr.Value, objType)
 			diags = append(diags, d...)
 		} else {
-			d := g.genAttributeWithTrailing(block.Body(), hclName, attr.Value, inputType, attr.SyntaxNode())
+			d := g.genAttributeWithTrailing(target, hclName, attr.Value, inputType, attr.SyntaxNode())
 			diags = append(diags, d...)
 		}
 	}
 	return diags
+}
+
+// inputBody returns the body an argument named name is written to: body
+// itself, or its `_` escaping block when name is one of the block type's
+// reserved meta-argument names.
+func inputBody(body *hclwrite.Body, name string, reserved map[string]bool) *hclwrite.Body {
+	if !reserved[name] {
+		return body
+	}
+	if escape := body.FirstMatchingBlock("_", nil); escape != nil {
+		return escape.Body()
+	}
+	return body.AppendNewBlock("_", nil).Body()
 }
 
 // genProvider emits a `provider "<pkg>" { ... }` block for a PCL provider
@@ -1226,23 +1251,8 @@ func (g *generator) genProvider(body *hclwrite.Body, r *pcl.Resource) hcl.Diagno
 		}
 	}
 
-	var inputs []*schema.Property
-	if r.Schema != nil {
-		inputs = r.Schema.InputProperties
-	}
-	for _, attr := range r.Inputs {
-		inputType := findPropertyType(inputs, attr.Name)
-		hclName := transform.SnakeCaseFromPulumiCase(attr.Name)
-		g.emitLeadingComments(block.Body(), attr.SyntaxNode())
-		if objType, ok := transform.AsHCLBlockType(inputType); ok {
-			d := g.genBlocks(block.Body(), hclName, attr.Value, objType)
-			diags = append(diags, d...)
-		} else {
-			d := g.genAttributeWithTrailing(block.Body(), hclName, attr.Value, inputType, attr.SyntaxNode())
-			diags = append(diags, d...)
-		}
-	}
-	return diags
+	d := g.genInputs(block.Body(), r, parser.ProviderReservedNames)
+	return append(diags, d...)
 }
 
 // genResourceOptions generates HCL meta-arguments for a resource's options.
@@ -1995,8 +2005,9 @@ func (g *generator) genModule(body *hclwrite.Body, c *pcl.Component) hcl.Diagnos
 	}
 
 	for _, attr := range c.Inputs {
-		g.emitLeadingComments(block.Body(), attr.SyntaxNode())
-		d := g.genAttributeWithTrailing(block.Body(), attr.Name, attr.Value, schema.AnyType, attr.SyntaxNode())
+		target := inputBody(block.Body(), attr.Name, parser.ModuleReservedNames)
+		g.emitLeadingComments(target, attr.SyntaxNode())
+		d := g.genAttributeWithTrailing(target, attr.Name, attr.Value, schema.AnyType, attr.SyntaxNode())
 		diags = append(diags, d...)
 	}
 	return diags

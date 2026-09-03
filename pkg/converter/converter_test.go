@@ -949,3 +949,95 @@ func TestEjectMultiFileHCL(t *testing.T) {
 		"providers.pp": "",
 	}, pclFiles)
 }
+
+// TestEjectEscapedArguments feeds in the `_` escaping blocks the codegen emits
+// for arguments whose names collide with meta-arguments: the escaped
+// arguments convert to inputs, while the top-level meta-arguments of the same
+// names still convert to options.
+func TestEjectEscapedArguments(t *testing.T) {
+	t.Parallel()
+
+	testSchema := schema.PackageSpec{
+		Name:    "test",
+		Version: "1.0.0",
+		Resources: map[string]schema.ResourceSpec{
+			"test:index:Item": {
+				InputProperties: map[string]schema.PropertySpec{
+					"count":    {TypeSpec: schema.TypeSpec{Type: "integer"}},
+					"provider": {TypeSpec: schema.TypeSpec{Type: "string"}},
+					"value":    {TypeSpec: schema.TypeSpec{Type: "string"}},
+				},
+			},
+		},
+		Functions: map[string]schema.FunctionSpec{
+			"test:index:echo": {
+				Inputs: &schema.ObjectTypeSpec{
+					Properties: map[string]schema.PropertySpec{
+						"provider": {TypeSpec: schema.TypeSpec{Type: "string"}},
+					},
+				},
+				Outputs: &schema.ObjectTypeSpec{
+					Properties: map[string]schema.PropertySpec{
+						"result": {TypeSpec: schema.TypeSpec{Type: "string"}},
+					},
+				},
+			},
+		},
+	}
+	loader := schemaloader.New(t, testSchema)
+
+	src := []byte(`terraform {
+  required_providers {
+    test = {
+      source  = "pulumi/test"
+      version = "1.0.0"
+    }
+  }
+}
+
+data "test_echo" "lookup" {
+  _ {
+    provider = "escaped"
+  }
+}
+
+resource "test_item" "escaped" {
+  count = 2
+  value = data.test_echo.lookup.result
+  _ {
+    count    = 3
+    provider = "literal"
+  }
+}
+
+module "child" {
+  source = "./child"
+  _ {
+    source = "escaped"
+  }
+}
+`)
+
+	out := hclwrite.NewEmptyFile()
+	diags := transformSingleFile(t, src, "main.tf", out.Body(), loader, nil)
+	require.False(t, diags.HasErrors(), diags.Error())
+
+	expected := `resource "escaped" "test:index:Item" {
+  value = invoke("test:index:echo", {
+    provider = "escaped"
+  }).result
+  count    = 3
+  provider = "literal"
+  options {
+    range               = 2
+    deleteBeforeReplace = true
+  }
+}
+
+component "child" "./child" {
+  source = "escaped"
+}
+
+`
+	assert.Equal(t, expected, string(out.Bytes()))
+}

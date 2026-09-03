@@ -2974,3 +2974,83 @@ resource "test_resource" "r" {
 		property.NewSegment("settings"), property.NewSegment(0), property.NewSegment("token"),
 	)}, r.HideDiffs)
 }
+
+// TestEscapedArguments converts PCL whose inputs are named after HCL
+// meta-arguments. The codegen must write those inputs in a `_` escaping block
+// so the runtime passes them through as inputs instead of expanding the
+// resource or misreading the argument.
+func TestEscapedArguments(t *testing.T) {
+	t.Parallel()
+
+	testSchema := schema.PackageSpec{
+		Name:    "test",
+		Version: "1.0.0",
+		Resources: map[string]schema.ResourceSpec{
+			"test:index:Item": {
+				InputProperties: map[string]schema.PropertySpec{
+					"count":     {TypeSpec: schema.TypeSpec{Type: "integer"}},
+					"lifecycle": {TypeSpec: schema.TypeSpec{Type: "string"}},
+					"value":     {TypeSpec: schema.TypeSpec{Type: "string"}},
+				},
+			},
+		},
+		Functions: map[string]schema.FunctionSpec{
+			"test:index:echo": {
+				Inputs: &schema.ObjectTypeSpec{
+					Properties: map[string]schema.PropertySpec{
+						"provider": {TypeSpec: schema.TypeSpec{Type: "string"}},
+					},
+				},
+				Outputs: &schema.ObjectTypeSpec{
+					Properties: map[string]schema.PropertySpec{
+						"result": {TypeSpec: schema.TypeSpec{Type: "string"}},
+					},
+				},
+			},
+		},
+	}
+
+	componentPCL := `config "source" "string" {}
+
+resource "inner" "test:index:Item" {
+    value = source
+}
+`
+	parentPCL := `resource "escaped" "test:index:Item" {
+    count = 3
+    lifecycle = "not-a-block"
+}
+
+component "mod" "./mod" {
+    source = "escaped-source"
+}
+
+output result {
+    value = invoke("test:index:echo", { provider = "escaped-provider" }).result
+}
+`
+	mock := testConvertedPCLWithComponent(t, parentPCL, map[string]string{
+		"./mod": componentPCL,
+	}, nil, testSchema)
+
+	inputs := map[string]property.Map{}
+	for _, r := range mock.RegisteredResources {
+		if r.Type == "test:index:Item" {
+			inputs[r.Name] = r.Inputs
+		}
+	}
+	assert.Equal(t, map[string]property.Map{
+		"escaped": property.NewMap(map[string]property.Value{
+			"count":     property.New(3.0),
+			"lifecycle": property.New("not-a-block"),
+		}),
+		"mod-inner": property.NewMap(map[string]property.Value{
+			"value": property.New("escaped-source"),
+		}),
+	}, inputs)
+
+	require.Len(t, mock.InvokedFunctions, 1)
+	assert.Equal(t, property.NewMap(map[string]property.Value{
+		"provider": property.New("escaped-provider"),
+	}), mock.InvokedFunctions[0].Args)
+}
