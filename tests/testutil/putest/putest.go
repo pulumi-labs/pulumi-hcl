@@ -92,26 +92,7 @@ func RunCase(t *testing.T, caseName string, c Case) {
 	require.NoError(t, err)
 
 	rec := &tfexec.Recorder{}
-	provs := make([]pulexec.Provider, len(c.Providers))
-	for i, prov := range c.Providers {
-		switch {
-		case prov.Factory != nil && prov.PFFactory == nil && prov.Native == nil:
-			factory := prov.Factory
-			provs[i] = pulexec.SDKv2Provider(t, prov.Name,
-				func() *schema.Provider { return tfexec.Wrap(factory(), rec) }, prov.Customize)
-		case prov.PFFactory != nil && prov.Factory == nil && prov.Native == nil:
-			provs[i] = pulexec.PFProvider(t, prov.Name, prov.PFFactory, rec, prov.Customize)
-		case prov.Native != nil && prov.Factory == nil && prov.PFFactory == nil:
-			if prov.Customize != nil {
-				t.Fatalf("provider %q: Customize does not apply to a Native provider", prov.Name)
-			}
-			provs[i] = pulexec.NativeProvider(prov.Name, "0.0.1", prov.Native())
-		default:
-			t.Fatalf("provider %q: exactly one of Factory, PFFactory, or Native must be set", prov.Name)
-		}
-	}
-
-	driver := pulexec.NewDriver(t, provs, c.Config)
+	driver := pulexec.NewDriver(t, Providers(t, rec, c.Providers), c.Config)
 	var res pulexec.Result
 	for i, files := range stages {
 		if !c.NoPreview {
@@ -131,4 +112,29 @@ func RunCase(t *testing.T, caseName string, c Case) {
 	if c.AssertOps != nil {
 		c.AssertOps(t, rec.Ops())
 	}
+}
+
+// Providers bridges each Provider into the in-process pulexec form the engine
+// attaches to, with every provider operation recorded into rec.
+func Providers(t *testing.T, rec *tfexec.Recorder, provs []Provider) []pulexec.Provider {
+	t.Helper()
+	out := make([]pulexec.Provider, len(provs))
+	for i, prov := range provs {
+		switch {
+		case prov.Factory != nil && prov.PFFactory == nil && prov.Native == nil:
+			factory := prov.Factory
+			out[i] = pulexec.SDKv2Provider(t, prov.Name,
+				func() *schema.Provider { return tfexec.Wrap(factory(), rec) }, prov.Customize)
+		case prov.PFFactory != nil && prov.Factory == nil && prov.Native == nil:
+			out[i] = pulexec.PFProvider(t, prov.Name, prov.PFFactory, rec, prov.Customize)
+		case prov.Native != nil && prov.Factory == nil && prov.PFFactory == nil:
+			if prov.Customize != nil {
+				t.Fatalf("provider %q: Customize does not apply to a Native provider", prov.Name)
+			}
+			out[i] = pulexec.NativeProvider(prov.Name, "0.0.1", prov.Native())
+		default:
+			t.Fatalf("provider %q: exactly one of Factory, PFFactory, or Native must be set", prov.Name)
+		}
+	}
+	return out
 }
