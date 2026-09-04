@@ -266,6 +266,14 @@ output "all_counted" {
 output "keyed_id" {
   value = random_pet.keyed["a"].id
 }
+
+output "counted_instance" {
+  value = random_pet.counted[0]
+}
+
+output "keyed_instance" {
+  value = random_pet.keyed["a"]
+}
 `
 	config, diags := parser.NewParser().ParseSource("main.tf", []byte(src))
 	require.False(t, diags.HasErrors(), diags.Error())
@@ -282,10 +290,13 @@ output "keyed_id" {
 		"length": {Type: TypeNumber},
 	}, Required: []string{"length"}}
 	assert.Equal(t, map[string]*PropertySpec{
-		"counted_id":  {Type: TypeString},
-		"keyed_id":    {Type: TypeString},
-		"all_counted": {Type: TypeArray, Items: elem},
+		"counted_id":       {Type: TypeString},
+		"keyed_id":         {Type: TypeString},
+		"all_counted":      {Type: TypeArray, Items: elem},
+		"counted_instance": elem,
+		"keyed_instance":   elem,
 	}, moduleSchema.OutputProperties)
+	assert.Equal(t, []string{"all_counted", "counted_instance", "keyed_instance"}, moduleSchema.RequiredOutputs)
 }
 
 // mappingResolver resolves resources and their bridge body mappings by TF type,
