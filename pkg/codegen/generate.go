@@ -1214,10 +1214,15 @@ func (g *generator) genProvider(body *hclwrite.Body, r *pcl.Resource) hcl.Diagno
 	var diags hcl.Diagnostics
 
 	// Pulumi-specific options go in a nested `pulumi { }` block so they cannot
-	// collide with the provider's own configuration attributes. `alias` is a
-	// Terraform-standard meta-argument and stays at the top level.
+	// collide with the provider's own configuration attributes. `alias` and
+	// `for_each` are Terraform-standard meta-arguments and stay at the top
+	// level.
 	opts := r.Options
 	if opts != nil {
+		if opts.Range != nil {
+			d := g.genProviderRange(block.Body(), opts.Range)
+			diags = append(diags, d...)
+		}
 		var pulumiBlockBody *hclwrite.Body
 		pulumiBody := func() *hclwrite.Body {
 			if pulumiBlockBody == nil {
@@ -1485,21 +1490,46 @@ func (g *generator) genRange(body *hclwrite.Body, rangeExpr model.Expression) (i
 		return instanceNamingIndex, nil
 
 	default:
-		exprTokens, d := g.exprTokens(rangeExpr, schema.AnyType)
-		if d.HasErrors() {
-			return instanceNamingNone, d
-		}
-		var tokens hclwrite.Tokens
-		switch rangeType.(type) {
-		case *model.ListType, *model.TupleType:
-			tokens = wrapListAsMapForEach(exprTokens)
-		default:
-			tokens = exprTokens
-		}
-		body.SetAttributeRaw("for_each", tokens)
-		g.currentRangeKind = rangeKindForEach
-		return instanceNamingKey, nil
+		return instanceNamingKey, g.genForEach(body, rangeExpr, rangeType)
 	}
+}
+
+// genForEach emits a collection-valued PCL range option as a `for_each`
+// meta-argument. A list range becomes a map keyed by the stringified index so
+// `range.key` keeps indexing it.
+func (g *generator) genForEach(body *hclwrite.Body, rangeExpr model.Expression, rangeType model.Type) hcl.Diagnostics {
+	exprTokens, d := g.exprTokens(rangeExpr, schema.AnyType)
+	if d.HasErrors() {
+		return d
+	}
+	var tokens hclwrite.Tokens
+	switch rangeType.(type) {
+	case *model.ListType, *model.TupleType:
+		tokens = wrapListAsMapForEach(exprTokens)
+	default:
+		tokens = exprTokens
+	}
+	body.SetAttributeRaw("for_each", tokens)
+	g.currentRangeKind = rangeKindForEach
+	return nil
+}
+
+// genProviderRange emits a provider resource's range option. A provider block
+// accepts `for_each` only: an integer or boolean range has no `count`
+// equivalent there, so it is a diagnostic.
+func (g *generator) genProviderRange(body *hclwrite.Body, rangeExpr model.Expression) hcl.Diagnostics {
+	rangeType := model.ResolveOutputs(rangeExpr.Type())
+	if model.InputType(model.BoolType).ConversionFrom(rangeType) == model.SafeConversion ||
+		model.InputType(model.NumberType).ConversionFrom(rangeType) == model.SafeConversion {
+		return hcl.Diagnostics{{
+			Severity: hcl.DiagError,
+			Summary:  "unsupported provider range",
+			Detail: "a provider block accepts only a collection-valued range (`for_each`); " +
+				"a boolean or integer range has no `count` equivalent on a provider",
+			Subject: rangeExpr.SyntaxNode().Range().Ptr(),
+		}}
+	}
+	return g.genForEach(body, rangeExpr, rangeType)
 }
 
 // pinnedNameTokens builds the `pulumi { name = ... }` template that pins a
