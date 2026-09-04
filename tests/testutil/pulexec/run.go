@@ -111,6 +111,10 @@ type Driver struct {
 	pt        *pulumitest.PulumiTest
 	dir       string
 	providers []Provider
+	// componentDir is the local HCL component the project consumes, relative
+	// to dir. The language host reads a component's providers from the
+	// component's own sdks folder, so it receives the stub SDKs too.
+	componentDir string
 	// install is set when reattach providers are present: their SDKs are
 	// written by the real `pulumi install` flow, run once per stage.
 	install bool
@@ -127,6 +131,24 @@ type Driver struct {
 // NewDriver builds the project dir, attaches the bridged providers, and sets
 // any stack config. Call Driver.Apply once per stage.
 func NewDriver(t *testing.T, provs []Provider, config map[string]string) *Driver {
+	t.Helper()
+	return newDriver(t, provs, config, "hcl", "", "")
+}
+
+// NewYAMLDriver builds a project whose root program is YAML and whose
+// packages entry points at the local HCL component directory pkgDir. The
+// engine launches that component through the language host's RunPlugin RPC,
+// so the component provider also runs in the test process.
+func NewYAMLDriver(t *testing.T, pkgDir string, provs []Provider, config map[string]string) *Driver {
+	t.Helper()
+	return newDriver(t, provs, config, "yaml", fmt.Sprintf("packages:\n  %s: ./%s\n", pkgDir, pkgDir), pkgDir)
+}
+
+// newDriver builds the project with the given Pulumi.yaml runtime, any extra
+// top-level project stanzas, and the component directory the project consumes.
+func newDriver(
+	t *testing.T, provs []Provider, config map[string]string, runtime, extraProject, componentDir string,
+) *Driver {
 	t.Helper()
 
 	hostPort := serveLanguageHost(t)
@@ -149,10 +171,8 @@ func NewDriver(t *testing.T, provs []Provider, config map[string]string) *Driver
 	// The project name is used as the default namespace for user config. It
 	// must not collide with any attached provider name, or user config like
 	// "<project>:foo" would be misrouted to the provider.
-	pulumiYAML := `name: tfcompat
-runtime: hcl
-backend:
-  url: file://` + filepath.Join(dir, "state") + "\n"
+	pulumiYAML := "name: tfcompat\nruntime: " + runtime +
+		"\nbackend:\n  url: file://" + filepath.Join(dir, "state") + "\n" + extraProject
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "Pulumi.yaml"), []byte(pulumiYAML), 0o600))
 
 	env := [][2]string{
@@ -189,7 +209,7 @@ backend:
 		opts = append(opts, opttest.AttachProvider(
 			p.Name,
 			func(ctx context.Context, pt providers.PulumiTest) (providers.Port, error) {
-				handle, err := startProvider(ctx, p.Start)
+				handle, err := startProvider(ctx, p.Start, nil)
 				if err != nil {
 					return 0, err
 				}
@@ -202,11 +222,12 @@ backend:
 		pt.SetConfig(t, k, v)
 	}
 	return &Driver{
-		pt:        pt,
-		dir:       dir,
-		providers: provs,
-		install:   len(reattach) > 0,
-		extraEnv:  extraEnv,
+		pt:           pt,
+		dir:          dir,
+		providers:    provs,
+		componentDir: componentDir,
+		install:      len(reattach) > 0,
+		extraEnv:     extraEnv,
 	}
 }
 
@@ -341,22 +362,28 @@ func (d *Driver) writeFiles(t *testing.T, programFiles map[string]string) {
 // short-circuits plugin lookup to the in-process gRPC server.
 func (d *Driver) writeStubSDKs(t *testing.T) {
 	t.Helper()
+	dirs := []string{d.dir}
+	if d.componentDir != "" {
+		dirs = append(dirs, filepath.Join(d.dir, d.componentDir))
+	}
 	for _, p := range d.providers {
 		if p.Start == nil {
 			// Reattach providers get real SDKs from `pulumi install`.
 			continue
 		}
-		sdkDir := filepath.Join(d.dir, "sdks", p.Name)
-		require.NoError(t, os.MkdirAll(sdkDir, 0o755))
 		desc := fmt.Appendf(nil, `{"name":%q,"kind":"resource"}`+"\n", p.Name)
-		require.NoError(t, os.WriteFile(
-			filepath.Join(sdkDir, "hcl.sdk.json"), desc, 0o600,
-		))
+		for _, dir := range dirs {
+			sdkDir := filepath.Join(dir, "sdks", p.Name)
+			require.NoError(t, os.MkdirAll(sdkDir, 0o755))
+			require.NoError(t, os.WriteFile(
+				filepath.Join(sdkDir, "hcl.sdk.json"), desc, 0o600,
+			))
+		}
 	}
 }
 
 func startProvider(
-	ctx context.Context, start func(context.Context) (pulumirpc.ResourceProviderServer, error),
+	ctx context.Context, start func(context.Context) (pulumirpc.ResourceProviderServer, error), cancel chan bool,
 ) (*rpcutil.ServeHandle, error) {
 	// Fail fast on providers that cannot start at all; the router then builds
 	// one instance server per engine connection.
@@ -365,6 +392,7 @@ func startProvider(
 	}
 
 	handle, err := rpcutil.ServeWithOptions(rpcutil.ServeOptions{
+		Cancel: cancel,
 		Init: func(srv *grpc.Server) error {
 			pulumirpc.RegisterResourceProviderServer(srv, newConnRoutedProvider(start))
 			return nil
@@ -407,6 +435,49 @@ func converterShim(t *testing.T, port int) string {
 	return dir
 }
 
+// workspaceEnv returns the process env overlaid with the stack workspace's
+// env vars, for commands the harness must run itself rather than through
+// pulumitest.
+func (d *Driver) workspaceEnv(t *testing.T) []string {
+	t.Helper()
+	stack := d.pt.CurrentStack()
+	require.NotNil(t, stack, "driver has no stack")
+	// Go child processes resolve duplicate env entries last-wins, so
+	// appending overrides the test process env.
+	env := os.Environ()
+	for k, v := range stack.Workspace().GetEnvVars() {
+		env = append(env, k+"="+v)
+	}
+	return env
+}
+
+// PackageSchema writes programFiles and returns the package schema of the
+// local package directory dir, as `pulumi package get-schema ./<dir>` prints
+// it. The output is returned on failure too, so callers can report it.
+func (d *Driver) PackageSchema(t *testing.T, programFiles map[string]string, dir string) ([]byte, error) {
+	t.Helper()
+	d.writeFiles(t, programFiles)
+
+	// pulumitest attaches the providers only around its own operations, so
+	// this command gets its own provider servers.
+	cancel := make(chan bool)
+	t.Cleanup(func() { close(cancel) })
+	ports := map[providers.ProviderName]providers.Port{}
+	for _, p := range d.providers {
+		if p.Start == nil {
+			continue
+		}
+		handle, err := startProvider(t.Context(), p.Start, cancel)
+		require.NoError(t, err)
+		ports[providers.ProviderName(p.Name)] = providers.Port(handle.Port)
+	}
+
+	cmd := exec.Command("pulumi", "package", "get-schema", "./"+dir)
+	cmd.Dir = d.dir
+	cmd.Env = append(d.workspaceEnv(t), "PULUMI_DEBUG_PROVIDERS="+providers.GetDebugProvidersEnv(ports))
+	return cmd.CombinedOutput()
+}
+
 // Import writes programFiles and runs `pulumi import --from hcl` with the
 // given converter arguments. The converter is served in-process behind a PATH
 // shim, and the CLI's mapper resolves mappings through the providers the
@@ -430,13 +501,10 @@ func (d *Driver) Import(t *testing.T, programFiles map[string]string, converterA
 	}, converterArgs...)
 	cmd := exec.Command("pulumi", args...)
 	cmd.Dir = d.dir
-	env := os.Environ()
+	env := d.workspaceEnv(t)
 	envPath := os.Getenv("PATH")
-	for k, v := range stack.Workspace().GetEnvVars() {
-		env = append(env, k+"="+v)
-		if k == "PATH" {
-			envPath = v
-		}
+	if p, ok := stack.Workspace().GetEnvVars()["PATH"]; ok {
+		envPath = p
 	}
 	shimDir := converterShim(t, d.serveConverter(t))
 	env = append(env, "PATH="+shimDir+string(os.PathListSeparator)+envPath)

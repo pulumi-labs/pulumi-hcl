@@ -86,7 +86,9 @@ jobs:
             go-test-
       - uses: pulumi/actions@8e5e406f4007fca908480587cb9893c07090f58d # v7
         with:
-          pulumi-version: "dev"
+          # tests/mlctest needs https://github.com/pulumi/pulumi/pull/24571 and
+          # https://github.com/pulumi/pulumi/pull/24572.
+          pulumi-version: "pr#24572"
         env:
           GITHUB_TOKEN: ${{ secrets.PULUMI_BOT_TOKEN }}
       - uses: opentofu/setup-opentofu@v2
