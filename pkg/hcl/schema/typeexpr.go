@@ -21,9 +21,25 @@ import (
 	"github.com/zclconf/go-cty/cty"
 )
 
+// rangedRefMark marks the unknown list or map a counted or for_each resource,
+// data source, or module reference is seeded as. An index into such a
+// collection resolves to an instance or errors, so the instance is never null
+// and its attributes carry the refinements of a direct reference. A collection
+// from anywhere else, such as a variable, may hold null elements and is left
+// alone.
+type rangedRefMark struct{}
+
+// markRangedRef marks val as a ranged reference when ranged is true.
+func markRangedRef(val cty.Value, ranged bool) cty.Value {
+	if ranged {
+		return val.Mark(rangedRefMark{})
+	}
+	return val
+}
+
 // typeExpr evaluates expr against ctx for its type, the way HCL would, except
 // that traversals are applied one step at a time so an object indexed out of
-// an unknown collection regains the null refinements of its type. Every other
+// a ranged reference regains the null refinements of its type. Every other
 // expression is delegated to HCL.
 func typeExpr(expr hcl.Expression, ctx *hcl.EvalContext) (cty.Value, hcl.Diagnostics) {
 	switch e := expr.(type) {
@@ -59,11 +75,12 @@ func typeExpr(expr hcl.Expression, ctx *hcl.EvalContext) (cty.Value, hcl.Diagnos
 	return expr.Value(ctx)
 }
 
-// traverse applies traversal to val one step at a time. An unknown collection,
-// such as a counted or for_each reference, yields an unrefined unknown when
-// indexed; when that element is an object it is rebuilt with the refinements
-// its type implies, as a direct reference to the same object carries, so
-// attributes reached through the index keep their nullability.
+// traverse applies traversal to val one step at a time. A ranged reference
+// yields an unrefined unknown when indexed; when that instance is an object it
+// is rebuilt with the refinements its type implies, as a direct reference to
+// the same object carries, so attributes reached through the index keep their
+// nullability. The instance sheds the ranged-reference mark, since it is no
+// longer a collection of instances.
 func traverse(val cty.Value, traversal hcl.Traversal) (cty.Value, hcl.Diagnostics) {
 	for _, step := range traversal {
 		collection := val
@@ -72,8 +89,10 @@ func traverse(val cty.Value, traversal hcl.Traversal) (cty.Value, hcl.Diagnostic
 		if diags.HasErrors() {
 			return val, diags
 		}
-		if _, isIndex := step.(hcl.TraverseIndex); isIndex && !collection.IsKnown() && val.Type().IsObjectType() {
-			val = transform.RefinedUnknown(val.Type(), false).WithSameMarks(val)
+		if _, isIndex := step.(hcl.TraverseIndex); isIndex && collection.HasMark(rangedRefMark{}) && val.Type().IsObjectType() {
+			_, marks := val.Unmark()
+			delete(marks, rangedRefMark{})
+			val = transform.RefinedUnknown(val.Type(), false).WithMarks(marks)
 		}
 	}
 	return val, nil

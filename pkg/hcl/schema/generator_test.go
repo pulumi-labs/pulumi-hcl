@@ -315,6 +315,40 @@ output "parenthesized_length" {
 	}, moduleSchema.RequiredOutputs)
 }
 
+// TestIndexedVariableElementStaysNullable shows that only a ranged reference
+// refines the instance an index yields: a list variable may hold null
+// elements, so an element indexed out of it stays nullable, as do its
+// attributes.
+func TestIndexedVariableElementStaysNullable(t *testing.T) {
+	t.Parallel()
+
+	const src = `
+variable "l" {
+  type     = list(object({ a = string }))
+  nullable = false
+}
+
+output "first" {
+  value = var.l[0]
+}
+
+output "first_a" {
+  value = var.l[0].a
+}
+`
+	config, diags := parser.NewParser().ParseSource("main.tf", []byte(src))
+	require.False(t, diags.HasErrors(), diags.Error())
+
+	moduleSchema, err := GenerateModuleSchema(
+		t.Context(), config, nil, componentToken("pkg", "index", "pkg"), semver.MustParse("0.0.0-dev"))
+	require.NoError(t, err)
+	assert.Equal(t, map[string]*PropertySpec{
+		"first":   {Type: TypeObject, Properties: map[string]*PropertySpec{"a": {Type: TypeString}}},
+		"first_a": {Type: TypeString},
+	}, moduleSchema.OutputProperties)
+	assert.Equal(t, []string{"l"}, moduleSchema.RequiredOutputs)
+}
+
 // TestUnsupportedAttributeIsError shows that a reference to an attribute the
 // resolved schema lacks fails typing with HCL's own diagnostic.
 func TestUnsupportedAttributeIsError(t *testing.T) {

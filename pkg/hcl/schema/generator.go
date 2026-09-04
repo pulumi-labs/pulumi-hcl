@@ -382,8 +382,9 @@ func seedResourceTypes(
 			return fmt.Errorf("resolving resource %q: no schema for type %q", key, res.Type)
 		}
 		mapping := resolver.ResourceBodyMapping(ctx, res.Type)
+		ranged := res.Count != nil || res.ForEach != nil
 		ty := rangedType(transform.ResourceReferenceType(schemaRes, mapping), res.Count != nil, res.ForEach != nil)
-		scope.SetResource(key, urn.URN(""), transform.RefinedUnknown(ty, false))
+		scope.SetResource(key, urn.URN(""), markRangedRef(transform.RefinedUnknown(ty, false), ranged))
 	}
 
 	for _, key := range slices.Sorted(maps.Keys(config.DataSources)) {
@@ -396,8 +397,9 @@ func seedResourceTypes(
 			return fmt.Errorf("resolving data source %q: no schema for type %q", key, ds.Type)
 		}
 		mapping := resolver.DataSourceBodyMapping(ctx, ds.Type)
+		ranged := ds.Count != nil || ds.ForEach != nil
 		ty := rangedType(transform.DataSourceReferenceType(fn, mapping), ds.Count != nil, ds.ForEach != nil)
-		scope.SetDataSource(key, transform.RefinedUnknown(ty, false))
+		scope.SetDataSource(key, markRangedRef(transform.RefinedUnknown(ty, false), ranged))
 	}
 	return nil
 }
@@ -449,9 +451,9 @@ func seedModuleTypes(
 		var val cty.Value
 		switch {
 		case call.Count != nil:
-			val = cty.UnknownVal(cty.List(obj.Type())).RefineNotNull()
+			val = cty.UnknownVal(cty.List(obj.Type())).RefineNotNull().Mark(rangedRefMark{})
 		case call.ForEach != nil:
-			val = cty.UnknownVal(cty.Map(obj.Type())).RefineNotNull()
+			val = cty.UnknownVal(cty.Map(obj.Type())).RefineNotNull().Mark(rangedRefMark{})
 		default:
 			val = obj
 		}
