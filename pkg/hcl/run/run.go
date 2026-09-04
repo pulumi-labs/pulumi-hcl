@@ -2408,6 +2408,70 @@ func (e *Engine) resolveMovedAliases(
 	return aliases
 }
 
+// movedFromModuleInits returns the init nodes of the still-configured modules
+// that `moved` blocks name as prior homes of the block's resource, following
+// chained moves. The resource's cell is ordered after those inits so that
+// resolveMovedAliases finds the prior module's component already registered
+// when it resolves the prior parent URN (priorComponentURN); without that
+// ordering the alias silently degrades whenever the resource wins the race.
+//
+// The walk is the static shadow of resolveMovedAliases's chain walk: instance
+// keys are ignored, so it over-approximates to every instance of the named
+// modules, which only adds ordering.
+func (e *Engine) movedFromModuleInits(node *graph.Node) []pdag.Node {
+	res := node.Resource
+	if res == nil {
+		return nil
+	}
+	resPath := modulepath.Root()
+	if node.ModuleInfo != nil {
+		resPath = node.ModuleInfo.Path
+	}
+	type addr struct {
+		path      modulepath.Path
+		typ, name string
+	}
+	start := addr{resPath, res.Type, res.Name}
+	work := []addr{start}
+	seen := map[addr]bool{start: true}
+	needInit := map[modulepath.Path]bool{}
+	for len(work) > 0 {
+		cur := work[0]
+		work = work[1:]
+		for _, scope := range ancestorPaths(cur.path) {
+			for _, moved := range e.graph.MovedBlocks(scope) {
+				to, ok := ast.ParseTargetAddr(moved.To)
+				if !ok || to.Type == "" { // skip whole-module-call moves
+					continue
+				}
+				if scope.Join(to.Module).Config() != cur.path || to.Type != cur.typ || to.Name != cur.name {
+					continue
+				}
+				from, ok := ast.ParseTargetAddr(moved.From)
+				if !ok || from.Type == "" {
+					continue
+				}
+				prior := addr{scope.Join(from.Module).Config(), from.Type, from.Name}
+				if seen[prior] {
+					continue
+				}
+				seen[prior] = true
+				work = append(work, prior)
+				if prior.path != resPath && !prior.path.IsRoot() {
+					needInit[prior.path] = true
+				}
+			}
+		}
+	}
+	var inits []pdag.Node
+	for path := range needInit {
+		if init, ok := e.graph.KeyNode(graph.NodeKey{Module: path, ID: "__init__"}); ok {
+			inits = append(inits, init)
+		}
+	}
+	return inits
+}
+
 // oldModulePaths applies the whole-module-call `moved` blocks that rename a
 // module enclosing (or equal to) path, following chained renames, and returns
 // every prior module path the object lived at, nearest rename first. It

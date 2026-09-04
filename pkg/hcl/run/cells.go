@@ -27,6 +27,7 @@ import (
 	"github.com/pulumi/pulumi-hcl/pkg/hcl/graph"
 	"github.com/pulumi/pulumi-hcl/pkg/hcl/modulepath"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/resource/urn"
+	"github.com/pulumi/pulumi/sdk/v3/go/common/util/logging"
 	"github.com/zclconf/go-cty/cty"
 )
 
@@ -293,7 +294,22 @@ func (e *Engine) wireCell(g *graph.Graph, node *graph.Node, mi *moduleInstance) 
 	if !ok {
 		return fmt.Errorf("no graph node for %q", node.Key.String())
 	}
-	return b.CompleteBefore(blockNode)
+	if err := b.CompleteBefore(blockNode); err != nil {
+		return err
+	}
+
+	// A moved block's target registers after the init of each module it moved
+	// out of, so its alias can name that module's component as its prior
+	// parent. An edge that would close a cycle — the module's own inputs read
+	// the moved-out resource — is skipped: the program still runs, at the cost
+	// of that alias. Wired after every mandatory edge of this cell, so the
+	// cycle surfaces on this optional edge and not on one wired later.
+	for _, init := range e.movedFromModuleInits(node) {
+		if err := b.DependOn(init); err != nil {
+			logging.V(5).Infof("moved: cannot order %s after prior module init: %v", node.Key, err)
+		}
+	}
+	return nil
 }
 
 // cellEvalState resolves the evaluation context, parent URN, and module
