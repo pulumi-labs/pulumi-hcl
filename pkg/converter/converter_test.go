@@ -1041,3 +1041,166 @@ component "child" "./child" {
 `
 	assert.Equal(t, expected, string(out.Bytes()))
 }
+
+// TestEjectTopLevelOptionNamesAreInputs checks that the converter reserves
+// the same top-level names as the parser: an attribute named after an option
+// that lives in the `pulumi` block (`version`, `protect`, ...) is an input
+// property, while the `pulumi` block still supplies the option.
+func TestEjectTopLevelOptionNamesAreInputs(t *testing.T) {
+	t.Parallel()
+
+	testSchema := schema.PackageSpec{
+		Name:    "test",
+		Version: "1.0.0",
+		Resources: map[string]schema.ResourceSpec{
+			"test:index:Item": {
+				InputProperties: map[string]schema.PropertySpec{
+					"protect": {TypeSpec: schema.TypeSpec{Type: "boolean"}},
+					"version": {TypeSpec: schema.TypeSpec{Type: "string"}},
+				},
+			},
+		},
+		Functions: map[string]schema.FunctionSpec{
+			"test:index:echo": {
+				Inputs: &schema.ObjectTypeSpec{
+					Properties: map[string]schema.PropertySpec{
+						"version": {TypeSpec: schema.TypeSpec{Type: "string"}},
+					},
+				},
+				Outputs: &schema.ObjectTypeSpec{
+					Properties: map[string]schema.PropertySpec{
+						"result": {TypeSpec: schema.TypeSpec{Type: "string"}},
+					},
+				},
+			},
+		},
+	}
+	loader := schemaloader.New(t, testSchema)
+
+	src := []byte(`terraform {
+  required_providers {
+    test = {
+      source  = "pulumi/test"
+      version = "1.0.0"
+    }
+  }
+}
+
+data "test_echo" "lookup" {
+  version = "v2"
+  pulumi {
+    version = "2.0.0"
+  }
+}
+
+resource "test_item" "item" {
+  version = "v1"
+  protect = true
+  pulumi {
+    protect = false
+  }
+}
+
+output "result" {
+  value = data.test_echo.lookup.result
+}
+`)
+
+	out := hclwrite.NewEmptyFile()
+	diags := transformSingleFile(t, src, "main.tf", out.Body(), loader, nil)
+	require.False(t, diags.HasErrors(), diags.Error())
+
+	expected := `resource "item" "test:index:Item" {
+  version = "v1"
+  protect = true
+  options {
+    protect             = false
+    deleteBeforeReplace = true
+  }
+}
+
+output "result" {
+  value = invoke("test:index:echo", {
+    version = "v2"
+    }, {
+    version = "2.0.0"
+  }).result
+}
+
+`
+	assert.Equal(t, expected, string(out.Bytes()))
+}
+
+// TestEjectRangedProvider converts a provider block with `for_each` to a PCL
+// provider resource with a `range` option, and a keyed provider reference to
+// an index into that resource.
+func TestEjectRangedProvider(t *testing.T) {
+	t.Parallel()
+
+	testSchema := schema.PackageSpec{
+		Name:    "test",
+		Version: "1.0.0",
+		Provider: &schema.ResourceSpec{
+			InputProperties: map[string]schema.PropertySpec{
+				"prefix": {TypeSpec: schema.TypeSpec{Type: "string"}},
+			},
+		},
+		Resources: map[string]schema.ResourceSpec{
+			"test:index:Item": {
+				InputProperties: map[string]schema.PropertySpec{
+					"value": {TypeSpec: schema.TypeSpec{Type: "string"}},
+				},
+			},
+		},
+	}
+	loader := schemaloader.New(t, testSchema)
+
+	src := []byte(`terraform {
+  required_providers {
+    test = {
+      source  = "pulumi/test"
+      version = "1.0.0"
+    }
+  }
+}
+
+provider "test" {
+  alias = "by_key"
+  for_each = {
+    a = "alpha"
+    b = "beta"
+  }
+  prefix = each.value
+}
+
+resource "test_item" "fixed" {
+  provider = test.by_key["a"]
+  value    = "fixed"
+}
+`)
+
+	out := hclwrite.NewEmptyFile()
+	diags := transformSingleFile(t, src, "main.tf", out.Body(), loader, nil)
+	require.False(t, diags.HasErrors(), diags.Error())
+
+	expected := `resource "by_key" "pulumi:providers:test" {
+  prefix = range.value
+  options {
+    range = {
+      a = "alpha"
+      b = "beta"
+    }
+  }
+}
+
+resource "fixed" "test:index:Item" {
+  value = "fixed"
+  options {
+    provider            = by_key["a"]
+    deleteBeforeReplace = true
+  }
+}
+
+`
+	assert.Equal(t, expected, string(out.Bytes()))
+}

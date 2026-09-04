@@ -565,22 +565,17 @@ var resourceOptionHCLToPCL = map[string]string{
 }
 
 // The predicates below report whether a top-level attribute of a block is a
-// meta-argument (or resource option) rather than block-type-specific
-// configuration.
+// meta-argument rather than block-type-specific configuration. They match the
+// parser: every other option lives in the nested `pulumi` block, so a
+// top-level attribute with an option's name is an input property.
 
-func isResourceOption(name string) bool {
-	_, ok := resourceOptionHCLToPCL[name]
-	return ok
-}
+func isResourceMeta(name string) bool { return parser.ResourceReservedNames[name] }
 
-func isDataMeta(name string) bool {
-	_, ok := invokeOptionHCLToPCL[name]
-	return ok || name == "for_each" || name == "count"
-}
+func isDataMeta(name string) bool { return parser.DataReservedNames[name] }
 
 func isModuleMeta(name string) bool { return parser.ModuleReservedNames[name] }
 
-func isProviderMeta(name string) bool { return name == "alias" }
+func isProviderMeta(name string) bool { return parser.ProviderReservedNames[name] }
 
 // emitFile writes the PCL form of body to out using ft as a (possibly
 // project-wide) symbol table. The caller owns construction of ft and only
@@ -761,7 +756,7 @@ func (ft *fileTransformer) emitFile(
 			}
 
 			// Emit input properties first (skip resource option attributes).
-			for _, attr := range inputAttributes(block.Body, isResourceOption) {
+			for _, attr := range inputAttributes(block.Body, isResourceMeta) {
 				name, _ := transform.PulumiCaseFromSnakeCase(attr.Name, res.InputProperties)
 				start := attr.Range().Start.Byte
 				ft.emitLeadingComments(blk.Body(), start)
@@ -775,16 +770,11 @@ func (ft *fileTransformer) emitFile(
 			}
 			var opts []optEntry
 			for _, attr := range sortedAttributes(block.Body.Attributes) {
-				if pclName, isOpt := resourceOptionHCLToPCL[attr.Name]; isOpt {
+				if pclName, isOpt := resourceOptionHCLToPCL[attr.Name]; isOpt && isResourceMeta(attr.Name) {
 					var tokens hclwrite.Tokens
-					switch attr.Name {
-					case "additional_secret_outputs":
-						tokens = ft.transformPropertyPathList(attr.Expr, res.Properties)
-					case "hide_diffs", "replace_on_changes":
-						tokens = ft.transformPropertyPathList(attr.Expr, res.InputProperties)
-					case "for_each":
+					if attr.Name == "for_each" {
 						tokens = ft.transformForEachExpr(attr.Expr)
-					default:
+					} else {
 						tokens = ft.transformExpr(attr.Expr)
 					}
 					opts = append(opts, optEntry{pclName, tokens})
@@ -957,6 +947,9 @@ func (ft *fileTransformer) emitFile(
 				tokens hclwrite.Tokens
 			}
 			var opts []optEntry
+			if forEach, ok := block.Body.Attributes["for_each"]; ok {
+				opts = append(opts, optEntry{"range", ft.transformForEachExpr(forEach.Expr)})
+			}
 			for _, attr := range inputAttributes(block.Body, isProviderMeta) {
 				name, _ := transform.PulumiCaseFromSnakeCase(attr.Name, providerRes.InputProperties)
 				start := attr.Range().Start.Byte
@@ -1886,7 +1879,7 @@ func (ft *fileTransformer) invokeExprTokens(hclType, dsName string) hclwrite.Tok
 			})
 		}
 		for _, attr := range sortedAttributes(body.Attributes) {
-			if pclName, isOpt := invokeOptionHCLToPCL[attr.Name]; isOpt {
+			if pclName, isOpt := invokeOptionHCLToPCL[attr.Name]; isOpt && isDataMeta(attr.Name) {
 				optAttrs = append(optAttrs, hclwrite.ObjectAttrTokens{
 					Name:  hclwrite.TokensForIdentifier(pclName),
 					Value: ft.transformExpr(attr.Expr),
