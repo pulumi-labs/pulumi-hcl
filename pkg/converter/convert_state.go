@@ -499,16 +499,8 @@ func translateInstanceValues(
 	if info.P == nil {
 		return nil, nil, errors.New("the mapping carries no provider schema")
 	}
-	shimRes, ok := info.P.ResourcesMap().GetOk(tfType)
-	if !ok {
+	if _, ok := info.P.ResourcesMap().GetOk(tfType); !ok {
 		return nil, nil, fmt.Errorf("provider schema has no resource %q", tfType)
-	}
-	// Without a live provider there is no UpgradeResourceState, so
-	// version-drifted attributes cannot be translated.
-	if int(current.SchemaVersion) != shimRes.SchemaVersion() {
-		return nil, nil, fmt.Errorf(
-			"state attributes have schema version %d but the provider maps version %d",
-			current.SchemaVersion, shimRes.SchemaVersion())
 	}
 	res, err := resourceSchema(ctx, loader, token)
 	if err != nil {
