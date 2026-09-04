@@ -15,12 +15,18 @@
 package run
 
 import (
+	"fmt"
 	"testing"
 
 	"github.com/hashicorp/hcl/v2"
+	"github.com/pulumi/pulumi-hcl/pkg/hcl/ast"
 	"github.com/pulumi/pulumi-hcl/pkg/hcl/bridge"
 	"github.com/pulumi/pulumi-hcl/pkg/hcl/eval"
+	"github.com/pulumi/pulumi-hcl/pkg/hcl/graph"
+	"github.com/pulumi/pulumi-hcl/pkg/hcl/modulepath"
+	"github.com/pulumi/pulumi-hcl/pkg/hcl/parser"
 	"github.com/pulumi/pulumi/pkg/v3/codegen/schema"
+	"github.com/pulumi/pulumi/pkg/v3/util/pdag"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/resource"
 	"github.com/pulumi/pulumi/sdk/v3/go/property"
 	"github.com/stretchr/testify/assert"
@@ -428,4 +434,93 @@ func TestTranslateSecretOutputName(t *testing.T) {
 			assert.Equal(t, tt.want, got)
 		})
 	}
+}
+
+// TestMovedFromModuleInits pins the ordering that keeps a moved-out resource's
+// alias intact: the resource's cell must wait for the init of every
+// still-configured module a chain of moved blocks names as a prior home, or
+// resolveMovedAliases races processModuleInit for the prior module's component
+// URN and silently drops the alias when it wins (#586).
+func TestMovedFromModuleInits(t *testing.T) {
+	t.Parallel()
+
+	parse := func(name, src string) *ast.Config {
+		config, diags := parser.NewParser().ParseSource(name, []byte(src))
+		require.False(t, diags.HasErrors(), diags.Error())
+		return config
+	}
+
+	child := parse("mod.hcl", `resource "simple_resource" "kept" { input_one = "k" }`)
+	root := parse("root.hcl", `
+module "b" { source = "./mod" }
+module "c" { source = "./mod" }
+
+resource "simple_resource" "r" { input_one = "x" }
+
+# Chained move: module.c.r -> module.b.moved_r -> simple_resource.r, composed
+# with the module.a -> module.b call rename from the flaky case. The resource
+# must wait for both prior modules' inits; the whole-call rename adds none.
+moved {
+  from = module.a
+  to   = module.b
+}
+
+moved {
+  from = module.c.simple_resource.r
+  to   = module.b.simple_resource.moved_r
+}
+
+moved {
+  from = module.b.simple_resource.moved_r
+  to   = simple_resource.r
+}
+`)
+
+	g, err := graph.BuildFromConfig(root, fakeModuleLoader{modules: map[string]*graph.LoadedModule{
+		"./mod": {Config: child, SourcePath: "./mod"},
+	}}, ".")
+	require.NoError(t, err)
+	require.Empty(t, g.Validate())
+
+	var resNode *graph.Node
+	for _, node := range g.ExpandableNodes() {
+		if node.ModuleInfo == nil && node.Type == graph.NodeTypeResource {
+			resNode = node
+		}
+	}
+	require.NotNil(t, resNode, "no root resource node")
+
+	initNode := func(name string) pdag.Node {
+		init, ok := g.KeyNode(graph.NodeKey{
+			Module: modulepath.Root().Append(modulepath.NewStep(name)),
+			ID:     "__init__",
+		})
+		require.True(t, ok, "no init node for module.%s", name)
+		return init
+	}
+
+	e := &Engine{graph: g}
+	assert.ElementsMatch(t, []pdag.Node{initNode("b"), initNode("c")}, e.movedFromModuleInits(resNode))
+
+	// The kept resource inside the module is no moved target: no ordering.
+	var childNode *graph.Node
+	for _, node := range g.ExpandableNodes() {
+		if node.ModuleInfo != nil && node.Type == graph.NodeTypeResource {
+			childNode = node
+		}
+	}
+	require.NotNil(t, childNode, "no child resource node")
+	assert.Empty(t, e.movedFromModuleInits(childNode))
+}
+
+type fakeModuleLoader struct {
+	modules map[string]*graph.LoadedModule
+}
+
+func (f fakeModuleLoader) LoadModule(source, _, _ string) (*graph.LoadedModule, error) {
+	m, ok := f.modules[source]
+	if !ok {
+		return nil, fmt.Errorf("no module %q", source)
+	}
+	return m, nil
 }
