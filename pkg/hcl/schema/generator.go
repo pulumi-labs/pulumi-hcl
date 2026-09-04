@@ -324,12 +324,11 @@ func seedProviderFunctions(
 // failure is returned. Each local binds the value it evaluated to, preserving
 // the nullability refinements references through the local read later.
 func seedLocalTypes(scope *eval.Context, config *ast.Config) error {
-	evaluator := eval.NewEvaluator(scope)
 	remaining := maps.Clone(config.Locals)
 	for len(remaining) > 0 {
 		progress := false
 		for name, l := range remaining {
-			val, diags := evaluator.Evaluate(l.Value)
+			val, diags := typeExpr(l.Value, scope.HCLContext())
 			if diags.HasErrors() {
 				continue
 			}
@@ -339,7 +338,7 @@ func seedLocalTypes(scope *eval.Context, config *ast.Config) error {
 		}
 		if !progress {
 			for _, name := range slices.Sorted(maps.Keys(remaining)) {
-				_, diags := evaluator.Evaluate(remaining[name].Value)
+				_, diags := typeExpr(remaining[name].Value, scope.HCLContext())
 				return fmt.Errorf("typing local %q: %s", name, diags.Error())
 			}
 		}
@@ -383,8 +382,9 @@ func seedResourceTypes(
 			return fmt.Errorf("resolving resource %q: no schema for type %q", key, res.Type)
 		}
 		mapping := resolver.ResourceBodyMapping(ctx, res.Type)
+		ranged := res.Count != nil || res.ForEach != nil
 		ty := rangedType(transform.ResourceReferenceType(schemaRes, mapping), res.Count != nil, res.ForEach != nil)
-		scope.SetResource(key, urn.URN(""), transform.RefinedUnknown(ty, false))
+		scope.SetResource(key, urn.URN(""), markRangedRef(transform.RefinedUnknown(ty, false), ranged))
 	}
 
 	for _, key := range slices.Sorted(maps.Keys(config.DataSources)) {
@@ -397,8 +397,9 @@ func seedResourceTypes(
 			return fmt.Errorf("resolving data source %q: no schema for type %q", key, ds.Type)
 		}
 		mapping := resolver.DataSourceBodyMapping(ctx, ds.Type)
+		ranged := ds.Count != nil || ds.ForEach != nil
 		ty := rangedType(transform.DataSourceReferenceType(fn, mapping), ds.Count != nil, ds.ForEach != nil)
-		scope.SetDataSource(key, transform.RefinedUnknown(ty, false))
+		scope.SetDataSource(key, markRangedRef(transform.RefinedUnknown(ty, false), ranged))
 	}
 	return nil
 }
@@ -450,9 +451,9 @@ func seedModuleTypes(
 		var val cty.Value
 		switch {
 		case call.Count != nil:
-			val = cty.UnknownVal(cty.List(obj.Type())).RefineNotNull()
+			val = cty.UnknownVal(cty.List(obj.Type())).RefineNotNull().Mark(rangedRefMark{})
 		case call.ForEach != nil:
-			val = cty.UnknownVal(cty.Map(obj.Type())).RefineNotNull()
+			val = cty.UnknownVal(cty.Map(obj.Type())).RefineNotNull().Mark(rangedRefMark{})
 		default:
 			val = obj
 		}
@@ -469,7 +470,7 @@ func inferOutputType(evaluator *eval.Evaluator, o *ast.Output) (cty.Value, error
 	if o.Value == nil {
 		return cty.NilVal, fmt.Errorf("output has no value expression")
 	}
-	val, diags := evaluator.Evaluate(o.Value)
+	val, diags := typeExpr(o.Value, evaluator.Context().HCLContext())
 	if diags.HasErrors() {
 		return cty.NilVal, fmt.Errorf("%s", diags.Error())
 	}

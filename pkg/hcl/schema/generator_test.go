@@ -255,6 +255,10 @@ resource "random_pet" "keyed" {
   length   = 2
 }
 
+variable "i" {
+  type = number
+}
+
 output "counted_id" {
   value = random_pet.counted[0].id
 }
@@ -265,6 +269,22 @@ output "all_counted" {
 
 output "keyed_id" {
   value = random_pet.keyed["a"].id
+}
+
+output "counted_instance" {
+  value = random_pet.counted[0]
+}
+
+output "keyed_instance" {
+  value = random_pet.keyed["a"]
+}
+
+output "indexed_by_var" {
+  value = random_pet.counted[var.i]
+}
+
+output "parenthesized_length" {
+  value = (random_pet.keyed)["a"].length
 }
 `
 	config, diags := parser.NewParser().ParseSource("main.tf", []byte(src))
@@ -282,10 +302,76 @@ output "keyed_id" {
 		"length": {Type: TypeNumber},
 	}, Required: []string{"length"}}
 	assert.Equal(t, map[string]*PropertySpec{
-		"counted_id":  {Type: TypeString},
-		"keyed_id":    {Type: TypeString},
-		"all_counted": {Type: TypeArray, Items: elem},
+		"counted_id":           {Type: TypeString},
+		"keyed_id":             {Type: TypeString},
+		"all_counted":          {Type: TypeArray, Items: elem},
+		"counted_instance":     elem,
+		"keyed_instance":       elem,
+		"indexed_by_var":       elem,
+		"parenthesized_length": {Type: TypeNumber},
 	}, moduleSchema.OutputProperties)
+	assert.Equal(t, []string{
+		"all_counted", "counted_instance", "indexed_by_var", "keyed_instance", "parenthesized_length",
+	}, moduleSchema.RequiredOutputs)
+}
+
+// TestIndexedVariableElementStaysNullable shows that only a ranged reference
+// refines the instance an index yields: a list variable may hold null
+// elements, so an element indexed out of it stays nullable, as do its
+// attributes.
+func TestIndexedVariableElementStaysNullable(t *testing.T) {
+	t.Parallel()
+
+	const src = `
+variable "l" {
+  type     = list(object({ a = string }))
+  nullable = false
+}
+
+output "first" {
+  value = var.l[0]
+}
+
+output "first_a" {
+  value = var.l[0].a
+}
+`
+	config, diags := parser.NewParser().ParseSource("main.tf", []byte(src))
+	require.False(t, diags.HasErrors(), diags.Error())
+
+	moduleSchema, err := GenerateModuleSchema(
+		t.Context(), config, nil, componentToken("pkg", "index", "pkg"), semver.MustParse("0.0.0-dev"))
+	require.NoError(t, err)
+	assert.Equal(t, map[string]*PropertySpec{
+		"first":   {Type: TypeObject, Properties: map[string]*PropertySpec{"a": {Type: TypeString}}},
+		"first_a": {Type: TypeString},
+	}, moduleSchema.OutputProperties)
+	assert.Equal(t, []string{"l"}, moduleSchema.RequiredOutputs)
+}
+
+// TestUnsupportedAttributeIsError shows that a reference to an attribute the
+// resolved schema lacks fails typing with HCL's own diagnostic.
+func TestUnsupportedAttributeIsError(t *testing.T) {
+	t.Parallel()
+
+	const src = `
+resource "random_pet" "name" {
+  length = 2
+}
+
+output "missing" {
+  value = random_pet.name.missing
+}
+`
+	config, diags := parser.NewParser().ParseSource("main.tf", []byte(src))
+	require.False(t, diags.HasErrors(), diags.Error())
+
+	resolver := stubResolver{resources: map[string]*pulumiSchema.Resource{
+		"random_pet": {Properties: []*pulumiSchema.Property{{Name: "length", Type: pulumiSchema.IntType}}},
+	}}
+	_, err := GenerateModuleSchema(
+		t.Context(), config, &Binder{Resources: resolver}, componentToken("pkg", "index", "pkg"), semver.MustParse("0.0.0-dev"))
+	require.EqualError(t, err, `typing output "missing": main.tf:7,26-34: Unsupported attribute; This object does not have an attribute named "missing".`)
 }
 
 // mappingResolver resolves resources and their bridge body mappings by TF type,
